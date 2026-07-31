@@ -116,6 +116,14 @@ llm-galgame-prototype/
 
 模型不得生成 `line_id`。唯一 ID 由程序分配，避免模型重复、改写或伪造标识。
 
+状态更新使用行内 `state_patch` 行，可出现在任意位置（建议段尾）：
+
+```jsonl
+{"type":"state_patch","patch":{"recent_summary":"苏遥阻止了主角触碰终端","characters":{"suyao":{"emotion":"serious"}}}}
+```
+
+`state_patch` 行不进入播放路径，由运行时校验并合并后应用到 `StoryState`（多个 patch 按顺序合并）。流式解析时逐行处理：围栏标记（```jsonl 等）被跳过；若某行解析失败且此前已发布事件，则中止并保留已发布前缀，由运行时修复续写；若尚未发布任何事件，则整体回退到全量解析（覆盖围栏包裹/单块输出）。
+
 ### 4.2 运行时与落盘事件
 
 所有可播放文本——`dialogue` 和 `narration`——都会获得 `line_id`：
