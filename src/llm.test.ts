@@ -145,17 +145,10 @@ function makeTestHistory(): StoryContextEvent[] {
 }
 
 // ---------------------------------------------------------------------------
-// removeMarkdownFence — test the regex logic (inlined in test since
-// the function is module-private; identical logic to the source)
+// removeMarkdownFence — imported from jsonl.ts (shared helper)
 // ---------------------------------------------------------------------------
 
-function removeMarkdownFence(text: string): string {
-  return text
-    .trim()
-    .replace(/^```(?:jsonl|json)?\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-}
+import { removeMarkdownFence } from "./jsonl.js";
 
 describe("removeMarkdownFence", () => {
   it("strips ```json fence from both ends", () => {

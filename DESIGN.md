@@ -53,7 +53,9 @@ llm-galgame-prototype/
 ├─ prompts/
 │  ├─ characters.txt
 │  ├─ story_line.txt
-│  └─ guideline.txt
+│  ├─ guideline.txt
+│  ├─ instructions.yaml
+│  └─ author.yaml
 ├─ sessions/
 │  └─ .gitkeep
 └─ src/
@@ -67,7 +69,26 @@ llm-galgame-prototype/
    ├─ prefetch.ts
    ├─ media.ts
    ├─ ui.ts
-   └─ game.ts
+   ├─ game.ts
+   ├─ interaction/
+   │  └─ input-engine.ts
+   ├─ story/
+   │  ├─ types.ts
+   │  ├─ state.ts
+   │  ├─ patch.ts
+   │  └─ context-builder.ts
+   ├─ runtime/
+   │  ├─ branch-manager.ts
+   │  ├─ generation-scheduler.ts
+   │  ├─ playback-buffer.ts
+   │  └─ metrics.ts
+   └─ ui/
+      └─ web/
+         ├─ server.ts
+         ├─ web-ui.ts
+         ├─ game-bridge.ts
+         ├─ autocomplete-manager.ts
+         └─ public/index.html
 ```
 
 模块职责：
@@ -232,10 +253,31 @@ Enter/Space 下一句，Ctrl+C 退出
 ## 9. 配置
 
 ```yaml
+api:
+  model: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+  api_key_env: OPENAI_API_KEY
+  timeout_ms: 60000
+  token_limit_field: max_completion_tokens
+
+generation:
+  temperature: 0.9
+  max_tokens: 800
+  repair_attempts: 1
+
+text_buffer:
+  refill_threshold_lines: 3
+
 prefetch:
-  branch_dialogue_lines: 3
-  branch_max_events: 8
-  branch_concurrency: 3
+  branch_dialogue_lines: 2
+  branch_max_events: 5
+  branch_concurrency: 4
+
+autocomplete:
+  minimum_characters: 4
+  debounce_ms: 350
+  max_suffix_characters: 20
+  confidence_threshold: 0.55
 
 media:
   audio:
