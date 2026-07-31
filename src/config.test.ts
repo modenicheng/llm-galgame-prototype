@@ -74,7 +74,6 @@ describe("loadConfig defaults", () => {
 
     // Prefetch defaults (branch_dialogue_lines explicit, rest defaults)
     expect(config.prefetch.branch_dialogue_lines).toBe(3); // explicit
-    expect(config.prefetch.branch_max_events).toBe(8); // default
     expect(config.prefetch.branch_concurrency).toBe(3); // default
 
     // Autocomplete defaults
@@ -96,12 +95,8 @@ describe("loadConfig defaults", () => {
 
     // Game defaults
     expect(config.game.history_events).toBe(80);
-    expect(config.game.max_events_per_segment).toBe(12);
     expect(config.game.sessions_dir).toBe("sessions");
     expect(config.game.show_line_ids).toBe(true);
-
-    // Text buffer defaults
-    expect(config.text_buffer.refill_threshold_lines).toBe(3);
   });
 });
 
@@ -125,21 +120,9 @@ describe("loadConfig with all fields", () => {
       "  max_tokens: 2000",
       "  repair_attempts: 3",
       "",
-      "text_buffer:",
-      "  start_threshold_lines: 3",
-      "  target_lines: 8",
-      "  refill_threshold_lines: 4",
-      "",
       "prefetch:",
       "  branch_dialogue_lines: 5",
-      "  branch_max_events: 15",
       "  branch_concurrency: 4",
-      "  choice:",
-      "    enabled: false",
-      "    max_branches: 5",
-      "    dialogue_lines: 4",
-      "    max_events: 12",
-      "    concurrency: 2",
       "",
       "autocomplete:",
       "  enabled: false",
@@ -163,8 +146,6 @@ describe("loadConfig with all fields", () => {
       "    active_target_lines: 5",
       "    refill_threshold_lines: 3",
       "    branch_prefetch_lines: 3",
-      "    choice_prefetch_lines: 4",
-      "    input_preview_lines: 2",
       "    batch_size: 4",
       "    max_concurrency: 3",
       "    mock_latency_ms: 1200",
@@ -172,7 +153,6 @@ describe("loadConfig with all fields", () => {
       "",
       "game:",
       "  history_events: 100",
-      "  max_events_per_segment: 20",
       "  sessions_dir: my_sessions",
       "  show_line_ids: false",
     ].join("\n");
@@ -193,7 +173,6 @@ describe("loadConfig with all fields", () => {
 
     // Prefetch
     expect(config.prefetch.branch_dialogue_lines).toBe(5);
-    expect(config.prefetch.branch_max_events).toBe(15);
     expect(config.prefetch.branch_concurrency).toBe(4);
 
     // Autocomplete
@@ -215,12 +194,8 @@ describe("loadConfig with all fields", () => {
 
     // Game
     expect(config.game.history_events).toBe(100);
-    expect(config.game.max_events_per_segment).toBe(20);
     expect(config.game.sessions_dir).toBe("my_sessions");
     expect(config.game.show_line_ids).toBe(false);
-
-    // Text buffer
-    expect(config.text_buffer.refill_threshold_lines).toBe(4);
   });
 });
 

@@ -25,12 +25,8 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
       max_tokens: 500,
       repair_attempts: 0,
     },
-    text_buffer: {
-      refill_threshold_lines: 3,
-    },
     prefetch: {
       branch_dialogue_lines: 2,
-      branch_max_events: 4,
       branch_concurrency: 2,
     },
     autocomplete: {
@@ -54,7 +50,6 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
     },
     game: {
       history_events: 80,
-      max_events_per_segment: 12,
       sessions_dir: "sessions",
       show_line_ids: true,
     },

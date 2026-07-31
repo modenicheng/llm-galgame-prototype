@@ -265,12 +265,8 @@ generation:
   max_tokens: 800
   repair_attempts: 1
 
-text_buffer:
-  refill_threshold_lines: 3
-
 prefetch:
   branch_dialogue_lines: 2
-  branch_max_events: 5
   branch_concurrency: 4
 
 autocomplete:
@@ -293,14 +289,12 @@ media:
 
 game:
   history_events: 80
-  max_events_per_segment: 12
   sessions_dir: sessions
   show_line_ids: true
 ```
 
 校验规则包括：
 
-- `branch_max_events >= branch_dialogue_lines`。
 - `refill_threshold_lines < active_target_lines`。
 - `audio.enabled: true` 时 provider 不能是 `disabled`。
 

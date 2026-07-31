@@ -147,7 +147,7 @@ export class Game {
       // request is created until this task naturally completes.
       this.playbackBuffer.enqueueMany(currentOutcome.preview);
       for (const event of currentOutcome.preview) this.registerBuffered([event]);
-      this.status.setPhase("后台续写", "已选分支接管正式路径，低水位时持续流式补充");
+      this.status.setPhase("后台续写", "已选分支接管正式路径，续写段持续流式补充");
 
       const continuationPromise = this.prepareContinuationAfterSelection(
         segment,
@@ -266,7 +266,6 @@ export class Game {
         // segment. Do not wait for a provider to close the stream after it has
         // already produced the next interaction point.
         controller.abort();
-        this.reconcileTextBuffer();
       }
     };
 
@@ -634,7 +633,6 @@ export class Game {
 
     this.buffered.delete(event.line_id);
     this.updateBufferStatus();
-    this.reconcileTextBuffer();
     this.media.markPresented(event.line_id);
 
     if (event.type === "narration") {
@@ -1110,24 +1108,8 @@ export class Game {
   }
 
   /**
-   * Check the formal playback watermark. Generation is started by the active
-   * segment lifecycle; this method is the invariant check used whenever a
-   * line is consumed or appended, so a low buffer can never be mistaken for
-   * a normal refill point.
+   * Check the formal playback watermark.
    */
-  private reconcileTextBuffer(): void {
-    const linesAhead = this.playbackBuffer.countTextLinesAhead();
-    const { refill_threshold_lines } = this.config.text_buffer;
-
-    if (this.playbackBuffer.hasUnconsumedInteraction()) return;
-    if (linesAhead <= refill_threshold_lines) {
-      if (this.generationScheduler.hasActivePathTask()) return;
-      console.log(
-        `\x1b[2m[Buffer] 文本缓冲低水位: 剩余 ${linesAhead} 句 (阈值 ${refill_threshold_lines})，等待新的正式续写任务\x1b[0m`
-      );
-    }
-  }
-
   private async runTrackedJob<T>(
     id: string,
     label: string,

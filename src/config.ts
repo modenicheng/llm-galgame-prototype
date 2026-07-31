@@ -25,16 +25,6 @@ interface RefinementContext {
   addIssue(issue: unknown): void;
 }
 
-interface PrefetchConfig {
-  branch_dialogue_lines: number;
-  branch_max_events: number;
-  branch_concurrency: number;
-}
-
-export interface TextBufferConfig {
-  refill_threshold_lines: number;
-}
-
 export interface AppConfig {
   api: {
     model: string;
@@ -48,10 +38,8 @@ export interface AppConfig {
     max_tokens: number;
     repair_attempts: number;
   };
-  text_buffer: TextBufferConfig;
   prefetch: {
     branch_dialogue_lines: number;
-    branch_max_events: number;
     branch_concurrency: number;
   };
   autocomplete: AutocompleteConfig;
@@ -60,7 +48,6 @@ export interface AppConfig {
   };
   game: {
     history_events: number;
-    max_events_per_segment: number;
     sessions_dir: string;
     show_line_ids: boolean;
   };
@@ -144,25 +131,10 @@ const ConfigSchema = z.object({
     max_tokens: z.number().int().positive().default(1400),
     repair_attempts: z.number().int().min(0).max(5).default(2)
   }),
-  text_buffer: z
-    .object({
-      refill_threshold_lines: z.number().int().min(1).max(20).default(3),
-    })
-    .default({ refill_threshold_lines: 3 }),
   prefetch: z
     .object({
       branch_dialogue_lines: z.number().int().min(1).max(20).default(3),
-      branch_max_events: z.number().int().min(1).max(50).default(8),
       branch_concurrency: z.number().int().min(1).max(10).default(3),
-    })
-    .superRefine((value: PrefetchConfig, context: RefinementContext) => {
-      if (value.branch_max_events < value.branch_dialogue_lines) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["branch_max_events"],
-          message: "branch_max_events 不能小于 branch_dialogue_lines。"
-        });
-      }
     }),
   autocomplete: z.object({
     minimum_characters: z.number().int().min(1).default(4),
@@ -175,7 +147,6 @@ const ConfigSchema = z.object({
   }),
   game: z.object({
     history_events: z.number().int().positive().default(80),
-    max_events_per_segment: z.number().int().min(2).max(50).default(12),
     sessions_dir: z.string().min(1).default("sessions"),
     show_line_ids: z.boolean().default(true)
   })
