@@ -150,32 +150,14 @@ export interface StoryStatePatch {
 }
 
 /**
- * Optional planning metadata returned by the model. This is never shown
- * to the player; it helps the runtime anticipate upcoming branches and
- * resource needs.
- */
-export interface PlanningPatch {
-  /** One-sentence description of the next planned scene. */
-  next_scene_plan?: string;
-  /** Thread identifiers the model intends to advance soon. */
-  thread_hints?: string[];
-  /** Per-character narrative directions. */
-  character_directions?: Record<string, string>;
-  /** Interaction modes the model anticipates within the next few turns. */
-  anticipated_interactions?: string[];
-}
-
-/**
- * The top-level envelope returned by the LLM for each generation request.
- * Replaces the old raw-JSONL protocol.
+ * The top-level result of a generation request: ordered events plus the
+ * merged state updates collected from in-band state_patch lines.
  */
 export interface GenerationEnvelope {
   /** Ordered narrative events for this segment. */
   events: GeneratedEvent[];
   /** Partial state updates the runtime applies after loading events. */
   state_patch: StoryStatePatch;
-  /** Optional planning hints for the prefetch scheduler. */
-  planning_notes?: PlanningPatch;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,41 +369,6 @@ export const StoryStatePatchSchema = z.object({
       recent_tendencies: z.array(z.string()).optional(),
     })
     .optional(),
-});
-
-export const PlanningPatchSchema = z.object({
-  next_scene_plan: z.string().optional(),
-  thread_hints: z.array(z.string()).optional(),
-  character_directions: z.record(z.string(), z.string()).optional(),
-  anticipated_interactions: z.array(z.string()).optional(),
-});
-
-export const GenerationEnvelopeSchema = z.object({
-  events: z.array(
-    z.discriminatedUnion("type", [
-      DialogueDraftEventSchema,
-      NarrationDraftEventSchema,
-      InteractionEventSchema,
-      z.object({
-        type: z.literal("end"),
-        ending_id: z.string().min(1),
-        text: z.string().min(1),
-      }),
-      // Legacy choice event for backward compatibility
-      z.object({
-        type: z.literal("choice"),
-        prompt: z.string().min(1),
-        options: z.array(
-          z.object({
-            id: z.string().min(1),
-            text: z.string().min(1),
-          }),
-        ).min(2).max(5),
-      }),
-    ])
-  ),
-  state_patch: StoryStatePatchSchema,
-  planning_notes: PlanningPatchSchema.optional(),
 });
 
 export const BranchCandidateSchema = z.object({

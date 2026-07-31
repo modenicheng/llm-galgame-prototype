@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { StoryGenerator } from "./llm.js";
-import { GenerationEnvelopeSchema, AutocompleteResultSchema } from "./story/types.js";
+import { AutocompleteResultSchema } from "./story/types.js";
 import type { AppConfig } from "./config.js";
 import type { PromptBundle } from "./prompts.js";
 import type { StoryContextEvent, InteractionEvent, ModelEvent } from "./schema.js";
@@ -43,7 +43,7 @@ function makeTestInstructions() {
 }
 
 function makeTestGenerator(
-  overrides?: Partial<AppConfig>,
+  overrides?: Parameters<typeof makeTestConfig>[0],
 ): StoryGenerator {
   return new StoryGenerator(
     makeTestConfig(overrides),
@@ -225,89 +225,6 @@ describe("parseGenerationEnvelope", () => {
         (t: string) => parseTerminalModelJsonl(t),
       );
     }).toThrow();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// GenerationEnvelopeSchema — direct Zod validation edge cases
-// ---------------------------------------------------------------------------
-
-describe("GenerationEnvelopeSchema edge cases", () => {
-  it("accepts envelope with null portrait", () => {
-    const result = GenerationEnvelopeSchema.safeParse({
-      events: [
-        {
-          type: "dialogue",
-          speaker: "NPC",
-          text: "Hello",
-          portrait: null,
-        },
-      ],
-      state_patch: {},
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts envelope with legacy choice event for backward compatibility", () => {
-    const result = GenerationEnvelopeSchema.safeParse({
-      events: [
-        { type: "narration", text: "你面前有两条路。" },
-        {
-          type: "choice",
-          prompt: "走哪边？",
-          options: [
-            { id: "left", text: "左边" },
-            { id: "right", text: "右边" },
-          ],
-        },
-      ],
-      state_patch: {},
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts envelope with complete StoryStatePatch fields", () => {
-    const result = GenerationEnvelopeSchema.safeParse({
-      events: [{ type: "narration", text: "测试。" }],
-      state_patch: {
-        scene: { id: "new_scene", location: "神殿", purpose: "探索" },
-        canon: { artifact_found: true },
-        characters: {
-          hero: { location: "神殿", emotion: "兴奋" },
-        },
-        open_threads: [
-          {
-            id: "t1",
-            summary: "调查神殿",
-            status: "active",
-            last_touched_turn: 3,
-          },
-        ],
-        recent_summary: "英雄进入了神殿。",
-        player_profile: { recent_tendencies: ["探索"] },
-      },
-      planning_notes: {
-        next_scene_plan: "发现隐藏密室",
-        thread_hints: ["hidden_room"],
-        character_directions: { hero: "寻找线索" },
-        anticipated_interactions: ["input"],
-      },
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects envelope with missing events array", () => {
-    const result = GenerationEnvelopeSchema.safeParse({
-      state_patch: {},
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects envelope with missing state_patch", () => {
-    const result = GenerationEnvelopeSchema.safeParse({
-      events: [{ type: "narration", text: "test" }],
-    });
-    expect(result.success).toBe(false);
   });
 });
 
@@ -628,9 +545,8 @@ describe("requestEnvelope streaming", () => {
     expect(envelope.events[1]!.type).toBe("end");
   });
 
-  it("buffers and falls back when the first line is not line-parsable (fence-wrapped block)", async () => {
+  it("parses multiple lines delivered in a single chunk (fence-wrapped block)", async () => {
     const gen = makeTestGenerator();
-    // Whole text is one JSONL block; first chunk cannot be parsed standalone.
     mockClient(gen, makeStream([
       '```jsonl\n{"type":"narration","text":"夜深。"}\n{"type":"dialogue","speaker":"A","text":"Hi。"}\n{"type":"end","ending_id":"e","text":"终"}\n```',
     ]));

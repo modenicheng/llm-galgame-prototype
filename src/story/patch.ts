@@ -50,7 +50,10 @@ export function mergePatches(
   let open_threads = b.open_threads ?? a.open_threads;
   if (a.open_threads && b.open_threads) {
     const map = new Map(a.open_threads.map((t) => [t.id, t] as const));
-    for (const thread of b.open_threads) map.set(thread.id, thread);
+    for (const thread of b.open_threads) {
+      const existing = map.get(thread.id);
+      map.set(thread.id, existing ? mergeThreadStatus(existing, thread) : thread);
+    }
     open_threads = [...map.values()];
   }
 

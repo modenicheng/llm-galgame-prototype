@@ -340,9 +340,9 @@ export class StoryGenerator {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
-      // On retry: add repair instruction + prefix hint
+      // On retry: add repair instruction describing the previous failure.
       const repairInstruction = lastError
-        ? `\n上一份输出在第 ${lastError} 行出错。请从上一行之后继续，不要重复已输出的内容。`
+        ? `\n上一份输出出错：${lastError}。请修正该问题后从失败位置继续，不要重复已输出的内容。`
         : "";
 
       const callStart = Date.now();
@@ -352,7 +352,7 @@ export class StoryGenerator {
       let streamAborted = false;
       let usage = { input: 0, output: 0 };
 
-        const controller = new AbortController();
+      const controller = new AbortController();
       const signalCleanup = signal
         ? (() => {
             const onAbort = () => controller.abort();
@@ -363,10 +363,6 @@ export class StoryGenerator {
 
       // Parsed JSONL events and in-band state patches.
       const patches: StoryStatePatch[] = [];
-      // "jsonl" — parse line-by-line and publish immediately;
-      // "buffer" — line-by-line parsing failed before anything was published,
-      //            buffer the whole text and parse once at the end.
-      let mode: "jsonl" | "buffer" = "jsonl";
 
       try {
         const stream = await this.client.chat.completions.create(
@@ -393,26 +389,20 @@ export class StoryGenerator {
           const trimmed = line.trim();
           if (trimmed.startsWith("```") || trimmed.endsWith("```")) continue;
 
-          // Already buffering — wait for the end and parse the whole text.
-          if (mode === "buffer") continue;
-
-          // JSONL mode — parse each line immediately.
+          // Parse each line immediately.
           let parsed: unknown;
           try {
             parsed = JSON.parse(trimmed);
           } catch (error) {
-            // Not valid JSON. If we have already published events or applied
-            // patches, the stream is corrupt — abort and preserve the prefix.
-            // Otherwise switch to buffered fallback (covers pretty-printed
-            // JSON and fence-wrapped payloads).
-            if (events.length > 0 || patches.length > 0) {
-              streamAborted = true;
-              lastError = `第 ${rawLines.length} 行不是合法 JSON：${error instanceof Error ? error.message : String(error)}`;
-              controller.abort();
-              break;
-            }
-            mode = "buffer";
-            continue;
+            // Malformed line. Once events have been published (or patches
+            // applied), the stream is corrupt — abort and preserve the
+            // prefix so the runtime can keep what is already playable.
+            // Otherwise retry the whole request (fence/JSONL shape errors
+            // are fixed by the repair instruction on the next attempt).
+            streamAborted = true;
+            lastError = `第 ${rawLines.length} 行不是合法 JSON：${error instanceof Error ? error.message : String(error)}`;
+            controller.abort();
+            break;
           }
 
           // In-band state update — validated here, applied by the runtime
@@ -421,13 +411,10 @@ export class StoryGenerator {
             try {
               patches.push(StatePatchLineSchema.parse(parsed).patch as StoryStatePatch);
             } catch (error) {
-              if (events.length > 0 || patches.length > 0) {
-                streamAborted = true;
-                lastError = `第 ${rawLines.length} 行 state_patch 校验失败：${error instanceof Error ? error.message : String(error)}`;
-                controller.abort();
-                break;
-              }
-              mode = "buffer";
+              streamAborted = true;
+              lastError = `第 ${rawLines.length} 行 state_patch 校验失败：${error instanceof Error ? error.message : String(error)}`;
+              controller.abort();
+              break;
             }
             continue;
           }
@@ -440,15 +427,10 @@ export class StoryGenerator {
               console.log(`[LLM] ${type} 首句 ${Date.now() - callStart}ms → ${event.type}`);
             }
           } catch (error) {
-            // Schema violation. Same policy as malformed JSON: abort and
-            // preserve published events, or fall back to whole-text parsing.
-            if (events.length > 0 || patches.length > 0) {
-              streamAborted = true;
-              lastError = `第 ${rawLines.length} 行事件校验失败：${error instanceof Error ? error.message : String(error)}`;
-              controller.abort();
-              break;
-            }
-            mode = "buffer";
+            streamAborted = true;
+            lastError = `第 ${rawLines.length} 行事件校验失败：${error instanceof Error ? error.message : String(error)}`;
+            controller.abort();
+            break;
           }
         }
 
@@ -471,7 +453,7 @@ export class StoryGenerator {
           // the active playback path. Keep the partial stream and fail it so
           // the runtime can preserve what is already playable.
           if (options?.onEvent && (events.length > 0 || patches.length > 0)) {
-            throw new Error(`JSONL 第 ${events.length + patches.length + 1} 行校验失败：${lastError}`);
+            throw new Error(`JSONL 流在第 ${rawLines.length} 行校验失败：${lastError}`);
           }
           continue;
         }
@@ -486,8 +468,9 @@ export class StoryGenerator {
         // Try to parse the result
         try {
           const fullText = rawLines.join("\n");
-          if (mode === "jsonl" && events.length > 0) {
-            // JSONL mode — validate the batch (terminal placement rules, etc.).
+          if (events.length > 0) {
+            // Events were parsed incrementally — validate the batch now
+            // (terminal placement rules, etc.) and collect any patches.
             const result = fallbackParse(fullText);
             this.metrics?.recordLLMRequest(type, usage, latencyMs);
             return {
@@ -496,7 +479,9 @@ export class StoryGenerator {
             };
           }
 
-          // Buffered mode — whole-text parse with fence stripping.
+          // No events were published — whole-text parse with fence stripping
+          // (covers fence-wrapped or batched outputs that were not
+          // line-parsable, e.g. a single chunk containing many lines).
           const result = this.parseGenerationEnvelope(fullText, fallbackParse);
           this.metrics?.recordLLMRequest(type, usage, latencyMs);
           return {

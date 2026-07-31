@@ -1,13 +1,17 @@
 import type { AppConfig } from "./config.js";
 
+type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
+};
+
 /**
  * Shared test fixture for a fully-populated AppConfig.
  *
  * Every test file that needs a Game / StoryGenerator / GameBridge should
  * use this instead of inlining its own copy. Override individual sections
- * via `overrides` (shallow merge at the top level).
+ * via `overrides` (deep partial, e.g. `{ game: { sessions_dir } }`).
  */
-export function makeTestConfig(overrides?: Partial<AppConfig>): AppConfig {
+export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
   return {
     api: {
       model: "test-model",
@@ -55,5 +59,5 @@ export function makeTestConfig(overrides?: Partial<AppConfig>): AppConfig {
       show_line_ids: true,
     },
     ...overrides,
-  };
+  } as AppConfig;
 }

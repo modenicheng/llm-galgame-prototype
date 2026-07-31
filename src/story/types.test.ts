@@ -10,8 +10,6 @@ import {
   InteractionEventSchema,
   StoryStateSchema,
   StoryStatePatchSchema,
-  GenerationEnvelopeSchema,
-  PlanningPatchSchema,
   BranchCandidateSchema,
   AutocompleteResultSchema,
 } from "./types.js";
@@ -27,7 +25,6 @@ import type {
   CharacterState,
   StoryState,
   StoryStatePatch,
-  PlanningPatch,
   BranchSource,
   BranchStatus,
   BranchCandidate,
@@ -178,13 +175,8 @@ describe("type exports", () => {
       state_patch: {
         recent_summary: "The player opened the door.",
       },
-      planning_notes: {
-        next_scene_plan: "The room contains a mysterious artifact.",
-        thread_hints: ["artifact_mystery"],
-      },
     };
     expect(envelope.events).toHaveLength(2);
-    expect(envelope.planning_notes?.next_scene_plan).toBeDefined();
   });
 
   it("BranchCandidate should support all lifecycle statuses", () => {
@@ -376,95 +368,6 @@ describe("StoryStatePatchSchema", () => {
           last_touched_turn: 5,
         },
       ],
-    });
-    expect(result.success).toBe(true);
-  });
-});
-
-describe("GenerationEnvelopeSchema", () => {
-  it("should parse a valid minimal envelope", () => {
-    const result = GenerationEnvelopeSchema.safeParse({
-      events: [
-        { type: "narration", text: "It begins." },
-      ],
-      state_patch: {
-        recent_summary: "The story has started.",
-      },
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("should parse an envelope with mixed event types", () => {
-    const result = GenerationEnvelopeSchema.safeParse({
-      events: [
-        { type: "narration", text: "A figure emerges from the shadows." },
-        {
-          type: "dialogue",
-          speaker: "Stranger",
-          text: "Who goes there?",
-          portrait: {
-            character: "stranger",
-            expression: "suspicious",
-            position: "center",
-          },
-        },
-        {
-          type: "interaction",
-          interaction_id: "int-1",
-          prompt: "Identify yourself.",
-          mode: "input",
-          input: {
-            kind: "question",
-            placeholder: "Your name...",
-            max_length: 50,
-          },
-        },
-      ],
-      state_patch: {
-        recent_summary: "A mysterious stranger appeared.",
-      },
-      planning_notes: {
-        next_scene_plan: "Depending on the player's response...",
-        anticipated_interactions: ["conversation"],
-      },
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("should fail when events array is empty", () => {
-    const result = GenerationEnvelopeSchema.safeParse({
-      events: [],
-      state_patch: {},
-    });
-    // An empty array is still a valid array — the schema accepts it.
-    // This test documents the current behaviour.
-    expect(result.success).toBe(true);
-  });
-
-  it("should fail for an unknown event type", () => {
-    const result = GenerationEnvelopeSchema.safeParse({
-      events: [{ type: "unknown_type", text: "???" }],
-      state_patch: {},
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
-describe("PlanningPatchSchema", () => {
-  it("should parse an empty planning patch", () => {
-    const result = PlanningPatchSchema.safeParse({});
-    expect(result.success).toBe(true);
-  });
-
-  it("should parse a fully populated planning patch", () => {
-    const result = PlanningPatchSchema.safeParse({
-      next_scene_plan: "Introduce the main antagonist",
-      thread_hints: ["antagonist_reveal", "mystery_deepens"],
-      character_directions: {
-        villain: "Threaten the player but leave an opening for escape",
-        sidekick: "Warn the player about the danger",
-      },
-      anticipated_interactions: ["dialogue", "combat"],
     });
     expect(result.success).toBe(true);
   });

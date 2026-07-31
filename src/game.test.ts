@@ -618,7 +618,7 @@ describe("JSONL store initialization", () => {
 
   it("should create the sessions directory during run()", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { ...makeTestConfig().game, sessions_dir: sessionsDir } });
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const generator = makeMockGenerator();
     const status = makeMockStatus();
     const ui = makeMockUI();
@@ -645,7 +645,7 @@ describe("JSONL store initialization", () => {
 
   it("should create a .jsonl file and write events to it during a successful run", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { ...makeTestConfig().game, sessions_dir: sessionsDir } });
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const ui = makeMockUI();
     const media = makeMockMedia();
@@ -685,7 +685,7 @@ describe("State patch rejection", () => {
 
   it("should record a state patch rejection when applyPatch throws", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { ...makeTestConfig().game, sessions_dir: sessionsDir } });
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const ui = makeMockUI();
     const media = makeMockMedia();
@@ -710,7 +710,7 @@ describe("State patch rejection", () => {
 
   it("should NOT record a rejection when the state patch is valid", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { ...makeTestConfig().game, sessions_dir: sessionsDir } });
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const ui = makeMockUI();
     const media = makeMockMedia();
@@ -733,7 +733,7 @@ describe("State patch rejection", () => {
 
   it("should continue running after a patch rejection (non-fatal)", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { ...makeTestConfig().game, sessions_dir: sessionsDir } });
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const ui = makeMockUI();
     const media = makeMockMedia();

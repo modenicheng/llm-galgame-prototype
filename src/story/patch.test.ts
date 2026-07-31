@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 import { ZodError } from "zod";
-import { applyPatch, validatePatch } from "./patch.js";
+import { applyPatch, mergePatches, validatePatch } from "./patch.js";
 import { createInitialState } from "./state.js";
 import type { StoryState, StoryStatePatch, StoryThread } from "./types.js";
 
@@ -557,5 +557,63 @@ describe("applyPatch", () => {
         "The hero was captured and thrown in the dungeon.",
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mergePatches
+// ---------------------------------------------------------------------------
+
+describe("mergePatches", () => {
+  it("merges two patches with b winning at every level", () => {
+    const merged = mergePatches(
+      {
+        scene: { location: "酒馆" },
+        canon: { gold: 50 },
+        characters: { hero: { emotion: "平静" } },
+        recent_summary: "旧摘要。",
+      },
+      {
+        scene: { time: "night" },
+        canon: { torch: true },
+        characters: { hero: { location: "神殿" } },
+        recent_summary: "新摘要。",
+      },
+    );
+
+    expect(merged.scene).toEqual({ location: "酒馆", time: "night" });
+    expect(merged.canon).toEqual({ gold: 50, torch: true });
+    expect(merged.characters?.hero).toEqual({ emotion: "平静", location: "神殿" });
+    expect(merged.recent_summary).toBe("新摘要。");
+  });
+
+  it("keeps thread status progression (no downgrade) when merging by id", () => {
+    const merged = mergePatches(
+      {
+        open_threads: [
+          { id: "t1", summary: "调查", status: "new", last_touched_turn: 1 },
+        ],
+      },
+      {
+        open_threads: [
+          { id: "t1", summary: "调查", status: "active", last_touched_turn: 2 },
+        ],
+      },
+    );
+
+    expect(merged.open_threads?.[0]?.status).toBe("active");
+  });
+
+  it("appends threads from both patches when ids differ", () => {
+    const merged = mergePatches(
+      { open_threads: [{ id: "a", summary: "A", status: "new", last_touched_turn: 1 }] },
+      { open_threads: [{ id: "b", summary: "B", status: "active", last_touched_turn: 2 }] },
+    );
+
+    expect(merged.open_threads).toHaveLength(2);
+  });
+
+  it("returns an empty patch when both inputs are empty", () => {
+    expect(mergePatches({}, {})).toEqual({});
   });
 });
