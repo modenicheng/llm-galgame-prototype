@@ -865,6 +865,65 @@ describe("Input preview cancellation", () => {
     expect(ui.renderNarration).toHaveBeenCalledTimes(3);
     expect(game.getMetrics().input.preview_count).toBe(2);
   });
+
+  it("leaves no buffered/media residue when a completed response is cancelled", async () => {
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const ui = makeMockUI();
+    const media = makeMockMedia();
+
+    const editor = ui.inputEditor as ReturnType<typeof vi.fn>;
+    editor
+      .mockResolvedValueOnce({ action: "confirm", text: "第一次" })
+      .mockResolvedValueOnce({ action: "confirm", text: "第二次" });
+    const preview = ui.inputPreview as ReturnType<typeof vi.fn>;
+    preview
+      .mockResolvedValueOnce({ action: "cancel" })
+      .mockResolvedValueOnce({ action: "confirm" });
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "interaction",
+          interaction_id: "int_1",
+          prompt: "说什么？",
+          mode: "input",
+          input: { kind: "free_text", placeholder: "...", max_length: 200 },
+        },
+      ]),
+    );
+    const generateInputResponse = generator.generateInputResponse as ReturnType<typeof vi.fn>;
+    // First response resolves immediately (completed BEFORE the cancel);
+    // second resolves normally.
+    generateInputResponse
+      .mockResolvedValueOnce(envelope([narrationEvent("已完成的回应。")]))
+      .mockResolvedValueOnce(envelope([narrationEvent("第二次回应。")]));
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, ui, media);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // Only the second (committed) response may reach the media timeline;
+    // the cancelled first response must never appear.
+    const appendActive = media.appendActive as ReturnType<typeof vi.fn>;
+    const appendedTexts = appendActive.mock.calls.flatMap((call) =>
+      (call[0] as RuntimePlayableEvent[]).map((e) => e.text),
+    );
+    expect(appendedTexts).not.toContain("已完成的回应。");
+    expect(appendedTexts).toContain("第二次回应。");
+
+    const buffered = (game as any).buffered as Map<string, RuntimePlayableEvent>;
+    // Every rendered line is consumed and removed; the cancelled response
+    // must leave no residue behind.
+    expect([...buffered.values()]).toEqual([]);
+    // 开场 + 第二次回应 + 结尾 = 3 段旁白；第一次的回应从未渲染。
+    expect(ui.renderNarration).toHaveBeenCalledTimes(3);
+  });
 });
 
 // ---------------------------------------------------------------------------

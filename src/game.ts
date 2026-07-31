@@ -828,12 +828,14 @@ export class Game {
       )
       .then((envelope) => {
         if (responseController.signal.aborted) return [];
-        // Defer state patch until player confirms with second Enter
+        // Defer state patch until player confirms with second Enter.
         pendingStatePatch = envelope.state_patch;
         const events = this.filterPlayableEvents(envelope.events);
         const materialized = this.materializePlayableEvents(events);
-        this.registerBuffered(materialized);
-        this.media.appendActive(materialized);
+        // Note: events are NOT registered into the formal buffer / media
+        // timeline here. Registration happens only after the player confirms
+        // (see below), so cancelling the preview can never leave stale state
+        // behind, even if the response completed before the cancel.
         this.inputEngine.setResponseEvents(session, materialized);
         this.status.setJob(
           "input-response",
@@ -912,6 +914,14 @@ export class Game {
 
     if (responseState.error) {
       console.log(`\n\x1b[2m\x1b[33m警告：NPC 回应生成失败 — ${responseState.error.message}\x1b[0m\x1b[0m`);
+    }
+
+    // Register the confirmed response into the formal buffer and media
+    // timeline only now — anything registered earlier could never be
+    // un-registered if the player cancelled the preview.
+    if (responseEvents.length > 0) {
+      this.registerBuffered(responseEvents);
+      this.media.appendActive(responseEvents);
     }
 
     this.status.removeJob("input-response");
