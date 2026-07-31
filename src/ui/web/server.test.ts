@@ -483,14 +483,12 @@ describe("WebServer", () => {
 
       const ws = await wsConnect(port);
       ws.send(JSON.stringify({ type: "advance" } satisfies ClientMessage));
-      ws.send(JSON.stringify({ type: "advance_ack" } satisfies ClientMessage));
-      ws.send(JSON.stringify({ type: "composition_start" } satisfies ClientMessage));
+      ws.send(JSON.stringify({ type: "input_confirm", interaction_id: "i1" } satisfies ClientMessage));
 
       await delay(150);
-      expect(received).toHaveLength(3);
+      expect(received).toHaveLength(2);
       expect(received[0]).toEqual({ type: "advance" });
-      expect(received[1]).toEqual({ type: "advance_ack" });
-      expect(received[2]).toEqual({ type: "composition_start" });
+      expect(received[1]).toEqual({ type: "input_confirm", interaction_id: "i1" });
 
       ws.close();
     });

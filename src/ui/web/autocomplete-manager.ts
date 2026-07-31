@@ -24,7 +24,6 @@ interface PendingRequest {
 
 export class AutocompleteManager {
   private pending: PendingRequest | null = null;
-  private composing = false;
   private latestRevision = 0;
   private abortController: AbortController | null = null;
 
@@ -33,11 +32,6 @@ export class AutocompleteManager {
     private readonly server: WebServer,
     private readonly generator: StoryGenerator,
   ) {}
-
-  /** Mark that IME composition is in progress — suppress autocomplete. */
-  setComposing(active: boolean): void {
-    this.composing = active;
-  }
 
   /**
    * Handle an input_change event from the browser.
@@ -104,8 +98,6 @@ export class AutocompleteManager {
     history: StoryContextEvent[],
     interaction: InteractionEvent,
   ): Promise<void> {
-    if (this.composing) return;
-
     this.abortController?.abort();
     this.abortController = new AbortController();
     const signal = this.abortController.signal;

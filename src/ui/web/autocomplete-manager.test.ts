@@ -229,39 +229,6 @@ describe("AutocompleteManager", () => {
     fastManager.dispose();
   });
 
-  // ---- Composition suppression ----
-
-  it("does not fire autocomplete during IME composition", async () => {
-    vi.useFakeTimers();
-    const ws = makeMockWs();
-
-    manager.setComposing(true);
-
-    manager.onInputChange(ws, "hello", "int-1", 1, state, history, interaction);
-    await vi.advanceTimersByTimeAsync(60);
-
-    expect(generator.generateAutocomplete).not.toHaveBeenCalled();
-
-    vi.useRealTimers();
-  });
-
-  it("resumes autocomplete after composition ends", async () => {
-    vi.useFakeTimers();
-    const ws = makeMockWs();
-
-    manager.setComposing(true);
-    manager.onInputChange(ws, "hello", "int-1", 1, state, history, interaction);
-    await vi.advanceTimersByTimeAsync(60);
-    expect(generator.generateAutocomplete).not.toHaveBeenCalled();
-
-    manager.setComposing(false);
-    manager.onInputChange(ws, "hello world", "int-1", 2, state, history, interaction);
-    await vi.advanceTimersByTimeAsync(60);
-    expect(generator.generateAutocomplete).toHaveBeenCalledTimes(1);
-
-    vi.useRealTimers();
-  });
-
   // ---- Empty / short input handling ----
 
   it("sends null for text shorter than minimum_characters", () => {

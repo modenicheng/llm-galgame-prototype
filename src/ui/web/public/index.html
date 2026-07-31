@@ -396,7 +396,6 @@ let ws;
 let currentInteraction = null;
 let autocompleteSuffix = "";
 let isComposing = false;
-let compositionJustEnded = false;
 
 // ---- WebSocket ----
 
@@ -582,10 +581,6 @@ let inputRevision = 0;
 document.getElementById("text-input").addEventListener("input", (e) => {
   updateCharCount();
   if (isComposing) return; // Don't send during IME composition
-  if (compositionJustEnded) {
-    compositionJustEnded = false;
-    // Send immediately after composition ends
-  }
   inputRevision++;
   sendInputChange(e.target.value);
 });
@@ -596,7 +591,6 @@ document.getElementById("text-input").addEventListener("compositionstart", () =>
 
 document.getElementById("text-input").addEventListener("compositionend", (e) => {
   isComposing = false;
-  compositionJustEnded = true;
   inputRevision++;
   sendInputChange(e.target.value);
 });
@@ -694,23 +688,7 @@ function updateGhostText() {
   } else {
     ghost.textContent = "";
   }
-  // Sync ghost text styling
-  syncGhostPosition();
 }
-
-function syncGhostPosition() {
-  const input = document.getElementById("text-input");
-  const ghost = document.getElementById("ghost-text");
-  const inputStyles = window.getComputedStyle(input);
-  ghost.style.fontFamily = inputStyles.fontFamily;
-  ghost.style.fontSize = inputStyles.fontSize;
-  ghost.style.lineHeight = inputStyles.lineHeight;
-  ghost.style.padding = inputStyles.padding;
-}
-
-// Initial sync
-window.addEventListener("load", syncGhostPosition);
-window.addEventListener("resize", syncGhostPosition);
 
 // ---- Preview modal ----
 

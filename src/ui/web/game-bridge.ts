@@ -74,16 +74,6 @@ export class GameBridge {
         return;
       }
 
-      // Route composition state changes
-      if (msg.type === "composition_start") {
-        this.autocomplete.setComposing(true);
-        return;
-      }
-      if (msg.type === "composition_end") {
-        this.autocomplete.setComposing(false);
-        return;
-      }
-
       // All other messages are forwarded to WebUI
       this.webUi.routeMessage(msg);
     });

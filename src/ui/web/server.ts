@@ -31,14 +31,11 @@ export type ClientMessage =
   | { type: "input_cancel"; interaction_id: string }
   | { type: "option_select"; option_id: string; interaction_id: string }
   | { type: "advance" }
-  | { type: "advance_ack" }
   | { type: "preview_confirm" }
   | { type: "preview_cancel" }
   | { type: "hybrid_choice"; option_id: string }
   | { type: "hybrid_input"; text: string }
-  | { type: "hybrid_cancel" }
-  | { type: "composition_start" }
-  | { type: "composition_end" };
+  | { type: "hybrid_cancel" };
 
 // Sub-types for ServerMessage payloads
 export interface DisplayEvent {
