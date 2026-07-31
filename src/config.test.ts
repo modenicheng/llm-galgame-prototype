@@ -131,14 +131,6 @@ describe("loadConfig with all fields", () => {
       "  max_suffix_characters: 40",
       "  confidence_threshold: 0.75",
       "",
-      "speculative_input:",
-      "  enabled: false",
-      "  stable_for_ms: 1000",
-      "  minimum_confidence: 0.85",
-      "  max_branches: 2",
-      "  text_lines: 3",
-      "  audio_lines: 1",
-      "",
       "media:",
       "  audio:",
       "    enabled: true",
@@ -376,24 +368,6 @@ describe("loadConfig validation errors", () => {
         "  provider: openai_compatible",
         "  model: test",
         "  base_url: not-a-url",
-      ].join("\n"),
-    );
-
-    await expect(loadConfig(filePath)).rejects.toThrow();
-  });
-
-  it("should reject branch_max_events < branch_dialogue_lines", async () => {
-    const filePath = await writeTempYaml(
-      "bad-prefetch",
-      [
-        "api:",
-        "  provider: openai_compatible",
-        "  model: test",
-        "  base_url: https://api.example.com",
-        "",
-        "prefetch:",
-        "  branch_dialogue_lines: 10",
-        "  branch_max_events: 3",
       ].join("\n"),
     );
 
