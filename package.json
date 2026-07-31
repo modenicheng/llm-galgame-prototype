@@ -1,0 +1,32 @@
+{
+  "name": "llm-galgame-prototype",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "LLM-driven GalGame prototype with branch prefetching and media lookahead scheduling.",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "dev:web": "tsx src/main.ts --web",
+    "dev:tui": "tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "dotenv": "latest",
+    "openai": "latest",
+    "yaml": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

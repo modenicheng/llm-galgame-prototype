@@ -1,0 +1,21 @@
+control:
+  world:
+    mode: preferred
+  characters:
+    mode: preferred
+  plot:
+    mode: free
+  endings:
+    mode: free
+  style:
+    mode: locked
+
+rules:
+  locked:
+    - "故事中不存在超自然力量"
+    - "不要直接描述玩家未选择的心理活动"
+  preferred:
+    - "整体气质克制"
+    - "避免长篇世界观解释"
+  seeds:
+    - "故事从一台被遗忘的旧终端开始"

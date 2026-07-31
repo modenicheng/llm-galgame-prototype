@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+sessions/*.jsonl
+!sessions/.gitkeep
+assets/audio/*
+npm-debug.log*
+.DS_Store
+.codegraph/
+.omo/
+nul
+sessions/state.json

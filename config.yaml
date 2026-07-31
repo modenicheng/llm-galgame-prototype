@@ -1,0 +1,73 @@
+api:
+  provider: openai_compatible
+  model: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+  api_key_env: OPENAI_API_KEY
+  timeout_ms: 60000
+  token_limit_field: max_completion_tokens
+
+generation:
+  temperature: 0.9
+  max_tokens: 800
+  repair_attempts: 1
+
+text_buffer:
+  start_threshold_lines: 2
+  target_lines: 6
+  refill_threshold_lines: 3
+
+prefetch:
+  # 每个选项至少提前生成多少条 dialogue。
+  branch_dialogue_lines: 2
+  branch_max_events: 5
+  branch_concurrency: 4
+  choice:
+    enabled: true
+    max_branches: 3
+    dialogue_lines: 2
+    max_events: 4
+    concurrency: 4
+
+autocomplete:
+  enabled: true
+  minimum_characters: 4
+  debounce_ms: 350
+  max_suffix_characters: 20
+  confidence_threshold: 0.55
+
+speculative_input:
+  enabled: true
+  stable_for_ms: 700
+  minimum_confidence: 0.72
+  max_branches: 1
+  text_lines: 1
+  audio_lines: 0
+
+media:
+  audio:
+    # 文本预研默认关闭。改为 true + mock 可观察异步媒体调度。
+    enabled: false
+    provider: disabled
+    # 当前播放位置前方维持 3 条可用资源；降到 2 条时补充。
+    active_target_lines: 3
+    refill_threshold_lines: 2
+    # 每个候选分支先准备前 2 条媒体资源。
+    branch_prefetch_lines: 2
+    choice_prefetch_lines: 1
+    input_preview_lines: 1
+    batch_size: 2
+    max_concurrency: 2
+    mock_latency_ms: 800
+    output_dir: assets/audio
+
+game:
+  history_events: 80
+  max_events_per_segment: 12
+  sessions_dir: sessions
+  show_line_ids: true
+
+memory:
+  max_open_threads: 10
+  max_known_facts_per_character: 20
+  summary_max_chars: 500
+  state_snapshot_interval_turns: 3

@@ -1,0 +1,11 @@
+角色设定示例，请由作者替换。
+
+林澈：高中生，理性克制，观察力强。说话简洁，偶尔带冷幽默。
+苏遥：转学生，外表温和，实际十分警觉。避免直接说明真实目的。
+
+立绘约定：
+- linche/default
+- linche/thinking
+- suyao/default
+- suyao/smile
+- suyao/serious

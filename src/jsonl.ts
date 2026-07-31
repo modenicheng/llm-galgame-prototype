@@ -1,0 +1,125 @@
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
+import {
+  ModelEventSchema,
+  type ModelEvent,
+  type ModelPlayableEvent,
+  type StoredEvent
+} from "./schema.js";
+
+function removeMarkdownFence(text: string): string {
+  return text
+    .trim()
+    .replace(/^```(?:jsonl|json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+function parseLines(text: string): ModelEvent[] {
+  const normalized = removeMarkdownFence(text);
+  const lines = normalized
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    throw new Error("模型没有返回任何 JSONL 事件。");
+  }
+
+  return lines.map((line, index) => {
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch (error) {
+      throw new Error(`第 ${index + 1} 行不是合法 JSON：${String(error)}\n${line}`);
+    }
+    return ModelEventSchema.parse(value) as ModelEvent;
+  });
+}
+
+function isTerminalEvent(event: ModelEvent): boolean {
+  return event.type === "choice" || event.type === "end" || event.type === "interaction";
+}
+
+function validateInteractionEvent(event: ModelEvent & { type: "interaction" }): void {
+  if (
+    (event.mode === "choice" || event.mode === "hybrid") &&
+    (!event.options || event.options.length === 0)
+  ) {
+    throw new Error(
+      `interaction 事件 mode="${event.mode}" 必须提供非空的 options 数组。`
+    );
+  }
+  if (
+    (event.mode === "input" || event.mode === "hybrid") &&
+    !event.input
+  ) {
+    throw new Error(
+      `interaction 事件 mode="${event.mode}" 必须提供 input 字段。`
+    );
+  }
+}
+
+export function parseTerminalModelJsonl(text: string, _maxEvents: number): ModelEvent[] {
+  const events = parseLines(text);
+  const terminalIndexes = events
+    .map((event, index) => (isTerminalEvent(event) ? index : -1))
+    .filter((index) => index >= 0);
+
+  if (terminalIndexes.length !== 1 || terminalIndexes[0] !== events.length - 1) {
+    throw new Error("完整剧情段必须且只能在最后一行出现一个 choice、interaction 或 end 事件。");
+  }
+
+  if (events.length < 2) {
+    throw new Error("完整剧情段至少需要一条可播放文本和一个 choice/interaction/end 事件。");
+  }
+
+  const terminal = events[events.length - 1]!;
+  if (terminal.type === "interaction") {
+    validateInteractionEvent(terminal);
+  }
+
+  return events;
+}
+
+export function parsePrefetchModelJsonl(
+  text: string,
+  _maxEvents: number,
+  minDialogueLines: number
+): ModelPlayableEvent[] {
+  const events = parseLines(text);
+
+  for (const event of events) {
+    if (isTerminalEvent(event)) {
+      throw new Error(
+        "分支预取片段只能包含 narration/dialogue，不得提前生成 choice、interaction 或 end。"
+      );
+    }
+  }
+
+  const playable = events as ModelPlayableEvent[];
+  const dialogueCount = playable.filter((event) => event.type === "dialogue").length;
+  if (dialogueCount < minDialogueLines) {
+    throw new Error(
+      `分支预取片段只包含 ${dialogueCount} 条 dialogue，至少需要 ${minDialogueLines} 条。`
+    );
+  }
+
+  return playable;
+}
+
+export class JsonlSessionStore {
+  readonly filePath: string;
+
+  constructor(sessionsDir: string, sessionId: string) {
+    this.filePath = path.resolve(sessionsDir, `${sessionId}.jsonl`);
+  }
+
+  async initialize(): Promise<void> {
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+  }
+
+  async append(event: StoredEvent): Promise<void> {
+    await appendFile(this.filePath, `${JSON.stringify(event)}\n`, "utf8");
+  }
+}
