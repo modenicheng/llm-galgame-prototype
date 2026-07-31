@@ -452,12 +452,15 @@ export class Game {
     const selectStart = Date.now();
     let preview: RuntimePlayableEvent[];
     let liveSelection: LiveBranchSelection | undefined;
-    const selectedState = this.status.snapshot().branches[selected.id]?.state;
+    // Read the candidate state from the BranchManager itself (source of
+    // truth) instead of the status snapshot, which may lag behind.
+    const candidate = branchManager.getCandidate(selected.id);
+    const selectedState = candidate?.status;
 
     try {
-      if (selectedState === "ready" || selectedState === "failed" || selectedState === "cancelled") {
+      if (selectedState === "ready" || selectedState === "failed" || selectedState === "discarded") {
         // A failed candidate must enter the existing retry path. Only a
-        // queued/running candidate can be adopted as a live active task.
+        // queued/generating candidate can be adopted as a live active task.
         preview = await branchManager.selectCandidate(selected.id);
       } else {
         const live = branchManager.selectCandidateLive(selected.id);
@@ -546,10 +549,13 @@ export class Game {
     let failure: unknown;
 
     const handoffIfReady = (): void => {
-      const dialogueCount = selection.events.filter((event) => event.type === "dialogue").length;
-      if (dialogueCount >= this.config.prefetch.branch_dialogue_lines) {
+      // Count all playable lines (dialogue + narration) so a branch that
+      // produced mostly narration can still hand over to the continuation
+      // request instead of running until the model stops on its own.
+      const playableCount = selection.events.filter(isPlayableEvent).length;
+      if (playableCount >= this.config.prefetch.branch_dialogue_lines) {
         console.log(
-          `\x1b[2m[Prefetch] 已选分支达到 ${dialogueCount} 条对白，立即交接正式续写\x1b[0m`,
+          `\x1b[2m[Prefetch] 已选分支达到 ${playableCount} 条可播放行，立即交接正式续写\x1b[0m`,
         );
         selection.handoff();
       }
@@ -941,18 +947,19 @@ export class Game {
   ): Promise<SegmentOutcome> {
     this.status.setPhase("等待选择", "可选择预设选项，或自由输入");
 
-    const result = await this.ui.renderHybridInteraction(
-      interaction,
-      this.status
-    );
-
-    if (result.type === "cancel") {
-      return this.handleHybridInteraction(
+    // Loop until the player picks an option or submits free text; cancels
+    // simply re-enter the same interaction (no recursion).
+    let result: Awaited<ReturnType<GameUI["renderHybridInteraction"]>>;
+    while (true) {
+      result = await this.ui.renderHybridInteraction(
         interaction,
-        turn,
-        branchManager,
-        prefetchContext
+        this.status
       );
+      if (result.type === "cancel") {
+        this.status.setPhase("等待选择", "可选择预设选项，或自由输入");
+        continue;
+      }
+      break;
     }
 
     if (result.type === "choice") {
