@@ -532,6 +532,42 @@ describe("BranchPrefetchGroup take()", () => {
     expect(selection.events).toEqual(events);
   });
 
+  it("should hand off a live branch after enough dialogue events", async () => {
+    let resolveGeneration!: (events: RuntimePlayableEvent[]) => void;
+    let rejectGeneration!: (error: Error) => void;
+    let signal!: AbortSignal;
+    let emit!: (event: RuntimePlayableEvent) => void;
+    const generate = vi.fn((_option: ChoiceOption, requestSignal: AbortSignal, onEvent: (event: RuntimePlayableEvent) => void) => {
+      signal = requestSignal;
+      emit = onEvent;
+      return new Promise<RuntimePlayableEvent[]>((resolve, reject) => {
+        resolveGeneration = resolve;
+        rejectGeneration = reject;
+        requestSignal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    });
+    const group = new BranchPrefetchGroup({
+      choice: makeChoiceEvent(makeOptions(1)),
+      concurrency: 1,
+      status: createMockStatus() as any,
+      generate,
+    });
+
+    group.start();
+    const selection = group.selectLive("opt_0");
+    const events = makeDialogueEvents(2);
+    emit!(events[0]!);
+    emit!(events[1]!);
+    selection.handoff();
+
+    await expect(selection.done).resolves.toEqual(events);
+    expect(signal!.aborted).toBe(true);
+    // The underlying promise can reject after handoff without changing the
+    // already committed live selection.
+    resolveGeneration!(events);
+    rejectGeneration!(new Error("late failure"));
+  });
+
   it("should cancel other branches when taking one", async () => {
     const { generate, controllers } = createControllableGenerate();
 

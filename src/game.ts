@@ -269,6 +269,10 @@ export class Game {
           const context = [...history, ...segment.events];
           segment.branchManager = this.createBranchManagerForTerminal(event, turn, context);
         }
+        // The terminal event is the contract boundary of this generation
+        // segment. Do not wait for a provider to close the stream after it has
+        // already produced the next interaction point.
+        controller.abort();
         this.reconcileTextBuffer();
       }
     };
@@ -612,6 +616,16 @@ export class Game {
     let completed = false;
     let failure: unknown;
 
+    const handoffIfReady = (): void => {
+      const dialogueCount = selection.events.filter((event) => event.type === "dialogue").length;
+      if (dialogueCount >= this.config.prefetch.branch_dialogue_lines) {
+        console.log(
+          `\x1b[2m[Prefetch] 已选分支达到 ${dialogueCount} 条对白，立即交接正式续写\x1b[0m`,
+        );
+        selection.handoff();
+      }
+    };
+
     const enqueueIfNew = (event: RuntimePlayableEvent): void => {
       if (seen.has(event.line_id)) return;
       seen.add(event.line_id);
@@ -621,6 +635,7 @@ export class Game {
       this.registerBuffered([event]);
       this.media.appendActive([event]);
       queue.push(event);
+      handoffIfReady();
     };
     const unsubscribe = selection.subscribe(enqueueIfNew);
     // Catch events emitted between selectLive() and subscribe(). JavaScript
@@ -638,6 +653,7 @@ export class Game {
         queue.close();
       });
 
+    handoffIfReady();
     await this.consumePlayableEvents(initialEvents, turn);
 
     while (true) {

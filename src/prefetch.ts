@@ -28,6 +28,7 @@ interface BranchEntry {
   deferred: Deferred<RuntimePlayableEvent[]>;
   events: RuntimePlayableEvent[];
   error: Error | null;
+  handedOff: boolean;
 }
 
 export interface BranchPrefetchOptions {
@@ -50,6 +51,8 @@ export interface LiveBranchSelection {
   events: RuntimePlayableEvent[];
   done: Promise<RuntimePlayableEvent[]>;
   subscribe(listener: (event: RuntimePlayableEvent) => void): () => void;
+  /** Stop the candidate request after its usable prefix has been adopted. */
+  handoff(): void;
 }
 
 export class BranchPrefetchGroup {
@@ -69,7 +72,8 @@ export class BranchPrefetchGroup {
         controller: new AbortController(),
         deferred: createDeferred<RuntimePlayableEvent[]>(),
         events: [],
-        error: null
+        error: null,
+        handedOff: false
       };
       this.entries.set(option.id, entry);
       this.listeners.set(option.id, new Set());
@@ -128,11 +132,28 @@ export class BranchPrefetchGroup {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
+      handoff: () => this.handoffEntry(entry),
     };
   }
 
   cancelAll(): void {
     for (const entry of this.entries.values()) this.cancelEntry(entry);
+  }
+
+  private handoffEntry(entry: BranchEntry): void {
+    if (entry.state !== "running" || entry.handedOff) return;
+    entry.handedOff = true;
+    entry.controller.abort();
+    // Resolve immediately with the committed prefix. The HTTP iterator may
+    // take time to observe AbortSignal, but it must not hold up continuation.
+    entry.state = "ready";
+    entry.deferred.resolve(entry.events);
+    this.options.status.setJob(
+      `branch:${entry.option.id}`,
+      `分支：${entry.option.text}`,
+      "ready",
+    );
+    this.syncStatus(entry);
   }
 
   private pump(): void {
@@ -185,6 +206,7 @@ export class BranchPrefetchGroup {
       })
       .catch((error: unknown) => {
         if (entry.controller.signal.aborted) {
+          if (entry.handedOff) return;
           entry.state = "cancelled";
           const abortError = new Error(`分支预取已取消：${entry.option.text}`);
           abortError.name = "AbortError";

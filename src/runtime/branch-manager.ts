@@ -79,7 +79,14 @@ export class BranchManager {
       },
       onEvent: (option, event) => {
         const candidate = this.candidates.get(option.id);
-        if (candidate) candidate.events.push(event);
+        if (
+          candidate &&
+          !candidate.events.some(
+            (existing) => (existing as RuntimePlayableEvent).line_id === event.line_id,
+          )
+        ) {
+          candidate.events.push(event);
+        }
         options.onEvent?.(option, event);
       },
       onReady: (option, events) => {
