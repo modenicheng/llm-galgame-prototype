@@ -736,6 +736,57 @@ describe("JSONL store initialization", () => {
     const game = new Game(config, generator, status, ui, media);
     await expect(game.run()).rejects.toThrow(/剧情段连续失败/);
   });
+
+  it("routes a repaired segment's choice into the normal branch flow", async () => {
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const ui = makeMockUI();
+    const media = makeMockMedia();
+    (ui.choose as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "a", text: "选项A" });
+
+    const generator = makeMockGenerator();
+    let openingCalls = 0;
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_t, _s, _sig, options) => {
+        openingCalls += 1;
+        if (openingCalls === 1) {
+          options!.onEvent!({ type: "narration", text: "开场半句。" });
+          throw new Error("网络中断");
+        }
+        throw new Error("unexpected second opening call");
+      },
+    );
+    // Repair continuation ends in a choice; the branch flow must take over.
+    (generator.generateContinuation as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async () =>
+        envelope([
+          narrationEvent("修复段内容。"),
+          {
+            type: "choice",
+            prompt: "怎么选？",
+            options: [
+              { id: "a", text: "选项A" },
+              { id: "b", text: "选项B" },
+            ],
+          },
+        ]),
+      )
+      .mockImplementationOnce(async () =>
+        envelope([narrationEvent("续写结尾。"), endEvent("end_1", "Fin.")]),
+      );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+
+    const game = new Game(config, generator, status, ui, media);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // 开场半句 + 修复段 + 分支 + 续写结尾 = 4 段旁白；结局 1 次。
+    expect(ui.renderNarration).toHaveBeenCalledTimes(4);
+    expect(ui.renderEnd).toHaveBeenCalledTimes(1);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

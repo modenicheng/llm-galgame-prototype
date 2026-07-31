@@ -339,21 +339,29 @@ export class Game {
           `\x1b[2m[Repair] 生成段失败，保留 ${playable.length} 条事件，启动修复续写（剩余 ${repairBudget - 1} 次）\x1b[0m`,
         );
         this.status.setJob(`repair:${segment.taskId}`, "段失败修复续写", "running");
-        const repaired = this.startActiveSegment(
-          "continuation",
-          turn,
-          fullContext,
-          playable,
-        );
-        void repaired.done.catch(() => undefined);
-        const outcome = await this.consumeActiveSegment(
-          repaired,
-          turn,
-          fullContext,
-          repairBudget - 1,
-        );
-        this.status.removeJob(`repair:${segment.taskId}`);
-        return outcome;
+        try {
+          const repaired = this.startActiveSegment(
+            "continuation",
+            turn,
+            fullContext,
+            playable,
+          );
+          void repaired.done.catch(() => undefined);
+          const outcome = await this.consumeActiveSegment(
+            repaired,
+            turn,
+            fullContext,
+            repairBudget - 1,
+          );
+          // The caller (run loop) will wait for the *original* segment's done
+          // before adopting a live branch. Fully tear down the repaired
+          // segment first so the generation scheduler is idle and the branch
+          // controller is not aborted mid-adoption.
+          await repaired.done.catch(() => undefined);
+          return outcome;
+        } finally {
+          this.status.removeJob(`repair:${segment.taskId}`);
+        }
       }
 
       const event = next.value;
@@ -366,6 +374,7 @@ export class Game {
         this.advanceBufferedEvent(event);
         await this.recordModelEvent(event, turn);
         segment.branchManager?.discardAll();
+        this.status.removeJob(`continuation:${turn}`);
         this.status.setPhase("结束", "剧情已经结束");
         this.ui.renderEnd(event);
         return { type: "end" };
