@@ -666,6 +666,76 @@ describe("JSONL store initialization", () => {
     expect(content).toContain('"type":"narration"');
     expect(content).toContain('"type":"end"');
   });
+
+  it("preserves generated events and repairs the segment when the opening stream fails", async () => {
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const ui = makeMockUI();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    let openingCalls = 0;
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_turn, _state, _signal, options) => {
+        openingCalls += 1;
+        if (openingCalls === 1) {
+          // Stream two events, then fail mid-stream before any terminal event.
+          options!.onEvent!({ type: "narration", text: "第一句。" });
+          options!.onEvent!({ type: "dialogue", speaker: "小樱", text: "第二句。" });
+          throw new Error("网络中断");
+        }
+        throw new Error("unexpected second opening call");
+      },
+    );
+    // The repair path must use a continuation request seeded with the
+    // preserved prefix.
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_turn, _state, history, prefetchedEvents) => {
+        expect(prefetchedEvents).toHaveLength(2);
+        expect(history).toContainEqual(
+          expect.objectContaining({ type: "dialogue", speaker: "小樱" }),
+        );
+        return envelope([narrationEvent("修复后的开场。"), endEvent("end_1", "Fin.")]);
+      },
+    );
+
+    const game = new Game(config, generator, status, ui, media);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    expect(openingCalls).toBe(1);
+    // 第一句旁白 + 修复段旁白；第二句对话；结局一次。
+    expect(ui.renderNarration).toHaveBeenCalledTimes(2);
+    expect(ui.renderDialogue).toHaveBeenCalledTimes(1);
+    expect(ui.renderEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws when segment repairs are exhausted", async () => {
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const ui = makeMockUI();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    // Both the opening and the repair continuation fail after publishing
+    // one event; the budget of one repair must be exhausted.
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_t, _s, _sig, options) => {
+        options!.onEvent!({ type: "narration", text: "半句。" });
+        throw new Error("open 失败");
+      },
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_t, _s, _h, _p, _sig, options) => {
+        options!.onEvent!({ type: "narration", text: "修复段半句。" });
+        throw new Error("修复失败");
+      },
+    );
+
+    const game = new Game(config, generator, status, ui, media);
+    await expect(game.run()).rejects.toThrow(/剧情段连续失败/);
+  });
 });
 
 // ---------------------------------------------------------------------------

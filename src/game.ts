@@ -311,12 +311,49 @@ export class Game {
     segment: ActiveSegment,
     turn: number,
     priorContext: StoryContextEvent[],
+    repairBudget = Math.max(1, this.config.generation.repair_attempts),
   ): Promise<SegmentOutcome> {
     while (true) {
       const next = await segment.queue.next();
       if (next.done) {
-        await segment.done;
-        throw new Error("生成段结束时没有收到 choice、interaction 或 end 事件。");
+        // The segment ended without a terminal event. This happens when the
+        // underlying request failed mid-stream (network error or a schema
+        // violation after events were already published). Preserve the events
+        // that were generated before the failure and repair with a fresh
+        // continuation request instead of crashing the whole run.
+        const failure = await segment.done
+          .then(() => new Error("生成段结束时没有收到 choice、interaction 或 end 事件。"))
+          .catch((reason: unknown) =>
+            reason instanceof Error ? reason : new Error(String(reason))
+          );
+        const playable = segment.events.filter(isPlayableEvent);
+        if (playable.length === 0) throw failure;
+        if (repairBudget <= 0) {
+          throw new Error(
+            `剧情段连续失败（已保留 ${playable.length} 条事件）：${failure.message}`,
+          );
+        }
+
+        const fullContext = [...priorContext, ...segment.events];
+        console.log(
+          `\x1b[2m[Repair] 生成段失败，保留 ${playable.length} 条事件，启动修复续写（剩余 ${repairBudget - 1} 次）\x1b[0m`,
+        );
+        this.status.setJob(`repair:${segment.taskId}`, "段失败修复续写", "running");
+        const repaired = this.startActiveSegment(
+          "continuation",
+          turn,
+          fullContext,
+          playable,
+        );
+        void repaired.done.catch(() => undefined);
+        const outcome = await this.consumeActiveSegment(
+          repaired,
+          turn,
+          fullContext,
+          repairBudget - 1,
+        );
+        this.status.removeJob(`repair:${segment.taskId}`);
+        return outcome;
       }
 
       const event = next.value;
