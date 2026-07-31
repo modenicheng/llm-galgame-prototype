@@ -169,7 +169,7 @@ choice 或 end × 1
 narration/dialogue × N
 ```
 
-不得含 `choice` 或 `end`。默认要求至少 3 条 `dialogue`，由 `prefetch.branch_dialogue_lines` 调整。这里“3 条”指三个对白事件，不强行定义为三次完整问答，以免限制叙事节奏。
+不得含 `choice` 或 `end`。默认要求至少 3 条 `dialogue`，由 `prefetch.branch_dialogue_lines` 调整。这里“3 条”指三个对白事件，不强行定义为三次完整问答，以免限制叙事节奏。注意：`branch_dialogue_lines` 同时作为已选分支交接正式续写的“可播放行数”阈值（live 分支在达到该行数时立即 handoff，防止纯旁白分支无法交接）。
 
 ## 6. 分支预取与取消
 

@@ -11,7 +11,8 @@ generation:
   repair_attempts: 1
 
 prefetch:
-  # 每个选项至少提前生成多少条 dialogue。
+  # 每个选项至少提前生成多少条 dialogue(提示词 min_dialogue + 解析校验下限);
+  # 同时作为 live 分支交接正式续写的可播放行数阈值。
   branch_dialogue_lines: 2
   branch_concurrency: 4
 

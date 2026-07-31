@@ -1073,3 +1073,135 @@ describe("Metrics pass-through", () => {
     expect(game2.getMetrics().prefetch.branches_requested).toBe(9);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Hybrid interaction cancel loop / narration-only branch handoff
+// ---------------------------------------------------------------------------
+
+describe("Hybrid cancel loop", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(path.join(tmpdir(), "galgame-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("re-enters the same interaction on cancel instead of recursing", async () => {
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const ui = makeMockUI();
+    const media = makeMockMedia();
+
+    const renderHybrid = ui.renderHybridInteraction as ReturnType<typeof vi.fn>;
+    renderHybrid
+      .mockResolvedValueOnce({ type: "cancel" })
+      .mockResolvedValueOnce({ type: "choice", optionId: "a" });
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "interaction",
+          interaction_id: "int_1",
+          prompt: "怎么做？",
+          mode: "hybrid",
+          options: [
+            { id: "a", text: "选项A" },
+            { id: "b", text: "选项B" },
+          ],
+          input: { kind: "free_text", placeholder: "...", max_length: 200 },
+        },
+      ]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, ui, media);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // cancel → re-render → choice: two render calls, one branch flow.
+    // (hybrid choices are picked inside renderHybridInteraction; ui.choose
+    // is only used by plain choice events.)
+    expect(renderHybrid).toHaveBeenCalledTimes(2);
+    expect(ui.renderEnd).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Narration-only branch handoff", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(path.join(tmpdir(), "galgame-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("hands a narration-only branch over to the continuation once playable lines reach the threshold", async () => {
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const ui = makeMockUI();
+    const media = makeMockMedia();
+
+    // The selected branch stays "generating" at selection time: it has
+    // emitted one line; the second line arrives right after the choice.
+    // Both options get their own emitter (each prefetch entry appends to
+    // its own event list), keyed by option id.
+    const emitters = new Map<string, () => void>();
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "choice",
+          prompt: "走哪边？",
+          options: [
+            { id: "a", text: "选项A" },
+            { id: "b", text: "选项B" },
+          ],
+        },
+      ]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_t, _s, _h, _choice, option, _signal, options) => {
+        options!.onEvent!({ type: "narration", text: `分支${option.id}第一句。` });
+        await new Promise<void>((resolve) => {
+          emitters.set(option.id, () => {
+            options!.onEvent!({ type: "narration", text: `分支${option.id}第二句。` });
+            resolve();
+          });
+        });
+        return [];
+      },
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("续写。"), endEvent("end_1", "Fin.")]),
+    );
+
+    // Emit the second line right when the player picks an option: the live
+    // selection observes it and hands off once playable lines hit the
+    // threshold (branch_dialogue_lines = 2).
+    (ui.choose as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      emitters.get("a")?.();
+      return { id: "a", text: "选项A" };
+    });
+
+    const game = new Game(config, generator, status, ui, media);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // 开场 + 分支两句 + 续写 = 4 段旁白;结局一次。
+    expect(ui.renderNarration).toHaveBeenCalledTimes(4);
+    expect(ui.renderEnd).toHaveBeenCalledTimes(1);
+  });
+});

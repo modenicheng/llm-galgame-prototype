@@ -452,8 +452,9 @@ export class Game {
     const selectStart = Date.now();
     let preview: RuntimePlayableEvent[];
     let liveSelection: LiveBranchSelection | undefined;
-    // Read the candidate state from the BranchManager itself (source of
-    // truth) instead of the status snapshot, which may lag behind.
+    // Decide from the BranchCandidate semantic layer (source of truth);
+    // status.branches is only a display view of the prefetch group and may
+    // disagree with the candidate (e.g. after a live handoff).
     const candidate = branchManager.getCandidate(selected.id);
     const selectedState = candidate?.status;
 
