@@ -790,6 +790,84 @@ describe("JSONL store initialization", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Input preview cancellation
+// ---------------------------------------------------------------------------
+
+describe("Input preview cancellation", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(path.join(tmpdir(), "galgame-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("aborts the stale NPC response when the preview is cancelled; its events never render", async () => {
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const ui = makeMockUI();
+    const media = makeMockMedia();
+
+    // Editor: first confirm "你好", then (after preview cancel) "你好吗".
+    const editor = ui.inputEditor as ReturnType<typeof vi.fn>;
+    editor
+      .mockResolvedValueOnce({ action: "confirm", text: "你好" })
+      .mockResolvedValueOnce({ action: "confirm", text: "你好吗" });
+    const preview = ui.inputPreview as ReturnType<typeof vi.fn>;
+    preview
+      .mockResolvedValueOnce({ action: "cancel" })
+      .mockResolvedValueOnce({ action: "confirm" });
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "interaction",
+          interaction_id: "int_1",
+          prompt: "说什么？",
+          mode: "input",
+          input: { kind: "free_text", placeholder: "...", max_length: 200 },
+        },
+      ]),
+    );
+
+    // First (stale) response: a pending promise resolved only after run()
+    // completes. Second response: resolves normally.
+    let resolveStale!: (value: unknown) => void;
+    const staleResponse = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    const generateInputResponse = generator.generateInputResponse as ReturnType<typeof vi.fn>;
+    generateInputResponse
+      .mockImplementationOnce(() => staleResponse)
+      .mockResolvedValueOnce(envelope([narrationEvent("回应。")]));
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, ui, media);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // At this point only the committed response (and opening/continuation)
+    // have rendered: 开场 + 回应 + 结尾 = 3.
+    expect(ui.renderNarration).toHaveBeenCalledTimes(3);
+    expect(ui.inputEditor).toHaveBeenCalledTimes(2);
+    expect(ui.inputPreview).toHaveBeenCalledTimes(2);
+    expect(generateInputResponse).toHaveBeenCalledTimes(2);
+
+    // Now the stale response finally arrives — it must be discarded.
+    resolveStale(envelope([narrationEvent("过期回应。")]));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(ui.renderNarration).toHaveBeenCalledTimes(3);
+    expect(game.getMetrics().input.preview_count).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // State patch rejection recording
 // ---------------------------------------------------------------------------
 

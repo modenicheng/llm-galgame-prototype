@@ -812,15 +812,22 @@ export class Game {
       "running"
     );
 
+    // Cancelling the preview must abort the in-flight response request so a
+    // stale NPC reply can never pollute the buffer / media timeline after the
+    // player has already moved on to a new edit session.
+    const responseController = new AbortController();
+
     const responsePromise: Promise<RuntimePlayableEvent[]> = this.generator
       .generateInputResponse(
         turn + 1,
         this.storyState,
         [...this.events],
         interaction,
-        editResult.text
+        editResult.text,
+        responseController.signal,
       )
       .then((envelope) => {
+        if (responseController.signal.aborted) return [];
         // Defer state patch until player confirms with second Enter
         pendingStatePatch = envelope.state_patch;
         const events = this.filterPlayableEvents(envelope.events);
@@ -836,6 +843,7 @@ export class Game {
         return materialized;
       })
       .catch((error) => {
+        if (responseController.signal.aborted) return [];
         const err = error instanceof Error ? error : new Error(String(error));
         responseState.error = err;
         this.status.setJob(
@@ -864,7 +872,9 @@ export class Game {
     this.metrics.recordInputPreview(previewDwellMs);
 
     if (previewResult.action === "cancel") {
-      // Return to editing
+      // Return to editing — abort the stale response request so its events
+      // can never be buffered or rendered for the previous edit session.
+      responseController.abort();
       this.inputEngine.cancel(session);
       this.status.removeJob("input-response");
       this.status.clearBranches();
