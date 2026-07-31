@@ -291,6 +291,24 @@ export interface AutocompleteResult {
 // Zod schemas for runtime validation
 // ---------------------------------------------------------------------------
 
+export const PortraitSchema = z.object({
+  character: z.string().min(1),
+  expression: z.string().min(1),
+  position: z.enum(["left", "center", "right"]).default("center")
+});
+
+export const DialogueDraftEventSchema = z.object({
+  type: z.literal("dialogue"),
+  speaker: z.string().min(1),
+  text: z.string().min(1),
+  portrait: PortraitSchema.nullish()
+});
+
+export const NarrationDraftEventSchema = z.object({
+  type: z.literal("narration"),
+  text: z.string().min(1)
+});
+
 const InputSpecSchema = z.object({
   kind: z.enum([
     "free_text",
@@ -381,25 +399,8 @@ export const PlanningPatchSchema = z.object({
 export const GenerationEnvelopeSchema = z.object({
   events: z.array(
     z.discriminatedUnion("type", [
-      // Note: DialogueDraftEventSchema and NarrationDraftEventSchema are
-      // validated separately by schema.ts; we inline lightweight versions
-      // here for standalone envelope validation.
-      z.object({
-        type: z.literal("dialogue"),
-        speaker: z.string().min(1),
-        text: z.string().min(1),
-        portrait: z
-          .object({
-            character: z.string().min(1),
-            expression: z.string().min(1),
-            position: z.enum(["left", "center", "right"]).default("center"),
-          })
-          .nullish(),
-      }),
-      z.object({
-        type: z.literal("narration"),
-        text: z.string().min(1),
-      }),
+      DialogueDraftEventSchema,
+      NarrationDraftEventSchema,
       InteractionEventSchema,
       z.object({
         type: z.literal("end"),
@@ -439,22 +440,8 @@ export const BranchCandidateSchema = z.object({
   intent: z.string().optional(),
   events: z.array(
     z.discriminatedUnion("type", [
-      z.object({
-        type: z.literal("dialogue"),
-        speaker: z.string().min(1),
-        text: z.string().min(1),
-        portrait: z
-          .object({
-            character: z.string().min(1),
-            expression: z.string().min(1),
-            position: z.enum(["left", "center", "right"]).default("center"),
-          })
-          .nullish(),
-      }),
-      z.object({
-        type: z.literal("narration"),
-        text: z.string().min(1),
-      }),
+      DialogueDraftEventSchema,
+      NarrationDraftEventSchema,
       InteractionEventSchema,
       z.object({
         type: z.literal("end"),

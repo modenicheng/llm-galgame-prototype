@@ -391,20 +391,18 @@ export class Game {
     return null;
   }
 
-  private async handleChoice(
+  /**
+   * Adopt the player-selected branch: take its buffered events (or adopt the
+   * live generation task), retry on demand if the prefetch failed, then
+   * activate the branch in the media scheduler and formal buffer.
+   */
+  private async adoptSelectedBranch(
+    selected: ChoiceOption,
     choice: ChoiceEvent,
     turn: number,
-    branchManager: BranchManager | null,
-    prefetchContext: StoryContextEvent[]
-  ): Promise<ChoiceSelection> {
-    if (!branchManager) throw new Error("内部错误：choice 缺少分支预取组。 ");
-
-    this.status.setPhase("等待选择", "各分支正在并行预取；可随时选择");
-    const selected = await this.ui.choose(choice, this.status);
-    this.choiceTimestamp = Date.now();
-    await this.recordPlayerChoice(selected, turn);
-    console.log(`\n你选择了：${selected.text}`);
-
+    branchManager: BranchManager,
+    prefetchContext: StoryContextEvent[],
+  ): Promise<{ preview: RuntimePlayableEvent[]; liveSelection?: LiveBranchSelection }> {
     this.status.setPhase("切换分支", "取消未选分支，装载已选预取片段");
     const selectStart = Date.now();
     let preview: RuntimePlayableEvent[];
@@ -440,6 +438,34 @@ export class Game {
     this.media.activateBranch(selected.id);
     this.media.appendActive(preview);
     this.registerBuffered(preview);
+
+    return {
+      preview,
+      ...(liveSelection ? { liveSelection } : {}),
+    };
+  }
+
+  private async handleChoice(
+    choice: ChoiceEvent,
+    turn: number,
+    branchManager: BranchManager | null,
+    prefetchContext: StoryContextEvent[]
+  ): Promise<ChoiceSelection> {
+    if (!branchManager) throw new Error("内部错误：choice 缺少分支预取组。 ");
+
+    this.status.setPhase("等待选择", "各分支正在并行预取；可随时选择");
+    const selected = await this.ui.choose(choice, this.status);
+    this.choiceTimestamp = Date.now();
+    await this.recordPlayerChoice(selected, turn);
+    console.log(`\n你选择了：${selected.text}`);
+
+    const { preview, liveSelection } = await this.adoptSelectedBranch(
+      selected,
+      choice,
+      turn,
+      branchManager,
+      prefetchContext,
+    );
 
     for (const option of choice.options) {
       this.status.removeJob(`branch:${option.id}`);
@@ -884,52 +910,23 @@ export class Game {
       let liveSelection: LiveBranchSelection | undefined;
 
       if (branchManager) {
-        try {
-          const branchState = this.status.snapshot().branches[result.optionId]?.state;
-          if (branchState === "ready" || branchState === "failed" || branchState === "cancelled") {
-            preview = await branchManager.selectCandidate(result.optionId);
-          } else {
-            const live = branchManager.selectCandidateLive(result.optionId);
-            preview = [...live.events];
-            liveSelection = live;
-          }
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          this.status.setJob(
-            "selected-branch-retry",
-            "已选分支重试",
-            "running"
-          );
-          const syntheticChoice: ChoiceEvent = {
-            type: "choice",
-            prompt: interaction.prompt,
-            options: interaction.options.map((o) => ({
-              id: o.id,
-              text: o.text,
-            })),
-          };
-          const retryPromise = this.generator
-            .generateBranchPrefetch(
-              turn + 1,
-              this.storyState,
-              prefetchContext,
-              syntheticChoice,
-              { id: selected.id, text: selected.text }
-            )
-            .then((envelope) => this.materializePlayableEvents(this.filterPlayableEvents(envelope.events)));
-          preview = await this.ui.waitForTask(
-            retryPromise,
-            `分支预取失败，正在重试：${message}`,
-            this.status
-          );
-          this.media.prefetchBranch(selected.id, preview);
-          this.status.removeJob("selected-branch-retry");
-        }
-
-        this.media.activateBranch(selected.id);
-        this.media.appendActive(preview);
-        this.registerBuffered(preview);
+        const syntheticChoice: ChoiceEvent = {
+          type: "choice",
+          prompt: interaction.prompt,
+          options: interaction.options.map((o) => ({
+            id: o.id,
+            text: o.text,
+          })),
+        };
+        const adopted = await this.adoptSelectedBranch(
+          selected,
+          syntheticChoice,
+          turn,
+          branchManager,
+          prefetchContext,
+        );
+        preview = adopted.preview;
+        liveSelection = adopted.liveSelection;
 
         for (const option of interaction.options) {
           this.status.removeJob(`branch:${option.id}`);

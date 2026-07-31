@@ -1,11 +1,19 @@
 import { z } from "zod";
 import {
   InteractionEventSchema as BaseInteractionEventSchema,
+  DialogueDraftEventSchema,
+  NarrationDraftEventSchema,
+  PortraitSchema,
   type InteractionEvent
 } from "./story/types.js";
 
 // Re-export for convenience
 export type { InteractionEvent } from "./story/types.js";
+export {
+  PortraitSchema,
+  DialogueDraftEventSchema,
+  NarrationDraftEventSchema,
+} from "./story/types.js";
 
 export const InteractionEventSchema = BaseInteractionEventSchema.refine(
   (data) => {
@@ -108,24 +116,6 @@ export type StoryContextEvent =
       interaction_id: string;
       text: string;
     };
-
-export const PortraitSchema = z.object({
-  character: z.string().min(1),
-  expression: z.string().min(1),
-  position: z.enum(["left", "center", "right"]).default("center")
-});
-
-export const DialogueDraftEventSchema = z.object({
-  type: z.literal("dialogue"),
-  speaker: z.string().min(1),
-  text: z.string().min(1),
-  portrait: PortraitSchema.nullish()
-});
-
-export const NarrationDraftEventSchema = z.object({
-  type: z.literal("narration"),
-  text: z.string().min(1)
-});
 
 export const ChoiceOptionSchema = z.object({
   id: z.string().min(1),
