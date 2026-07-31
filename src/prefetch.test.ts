@@ -7,7 +7,11 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { BranchPrefetchGroup } from "./prefetch.js";
-import type { ChoiceEvent, ChoiceOption, RuntimePlayableEvent } from "./schema.js";
+import type {
+  ChoiceEvent,
+  ChoiceOption,
+  RuntimePlayableEvent,
+} from "./schema.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -18,7 +22,9 @@ function makeOption(id: string, text?: string): ChoiceOption {
 }
 
 function makeOptions(count: number): ChoiceOption[] {
-  return Array.from({ length: count }, (_, i) => makeOption(`opt_${i}`, `选项 ${i}`));
+  return Array.from({ length: count }, (_, i) =>
+    makeOption(`opt_${i}`, `选项 ${i}`),
+  );
 }
 
 function makeChoiceEvent(options: ChoiceOption[]): ChoiceEvent {
@@ -388,7 +394,10 @@ describe("BranchPrefetchGroup successful generation", () => {
     await tick();
 
     expect(onReady).toHaveBeenCalledTimes(1);
-    expect(onReady).toHaveBeenCalledWith({ id: "opt_0", text: "选项 0" }, events);
+    expect(onReady).toHaveBeenCalledWith(
+      { id: "opt_0", text: "选项 0" },
+      events,
+    );
   });
 
   it("should update branch status to 'ready' on completion", async () => {
@@ -537,15 +546,25 @@ describe("BranchPrefetchGroup take()", () => {
     let rejectGeneration!: (error: Error) => void;
     let signal!: AbortSignal;
     let emit!: (event: RuntimePlayableEvent) => void;
-    const generate = vi.fn((_option: ChoiceOption, requestSignal: AbortSignal, onEvent: (event: RuntimePlayableEvent) => void) => {
-      signal = requestSignal;
-      emit = onEvent;
-      return new Promise<RuntimePlayableEvent[]>((resolve, reject) => {
-        resolveGeneration = resolve;
-        rejectGeneration = reject;
-        requestSignal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-      });
-    });
+    const generate = vi.fn(
+      (
+        _option: ChoiceOption,
+        requestSignal: AbortSignal,
+        onEvent: (event: RuntimePlayableEvent) => void,
+      ) => {
+        signal = requestSignal;
+        emit = onEvent;
+        return new Promise<RuntimePlayableEvent[]>((resolve, reject) => {
+          resolveGeneration = resolve;
+          rejectGeneration = reject;
+          requestSignal.addEventListener(
+            "abort",
+            () => reject(new Error("aborted")),
+            { once: true },
+          );
+        });
+      },
+    );
     const group = new BranchPrefetchGroup({
       choice: makeChoiceEvent(makeOptions(1)),
       concurrency: 1,
@@ -608,7 +627,9 @@ describe("BranchPrefetchGroup take()", () => {
 
     group.start();
 
-    await expect(group.take("nonexistent")).rejects.toThrow("未知分支选项：nonexistent");
+    await expect(group.take("nonexistent")).rejects.toThrow(
+      "未知分支选项：nonexistent",
+    );
   });
 
   it("should reject when taking a branch that has already failed", async () => {
@@ -821,9 +842,11 @@ describe("BranchPrefetchGroup cancelAll()", () => {
 
 describe("BranchPrefetchGroup error handling", () => {
   it("should reject the deferred when generate() throws", async () => {
-    const failingGenerate = vi.fn(async (_option: ChoiceOption, _signal: AbortSignal) => {
-      throw new Error("LLM API failure");
-    });
+    const failingGenerate = vi.fn(
+      async (_option: ChoiceOption, _signal: AbortSignal) => {
+        throw new Error("LLM API failure");
+      },
+    );
 
     const group = new BranchPrefetchGroup({
       choice: makeChoiceEvent(makeOptions(1)),
@@ -921,9 +944,11 @@ describe("BranchPrefetchGroup error handling", () => {
   });
 
   it("should not crash the group when generate() throws", () => {
-    const failingGenerate = vi.fn(async (_option: ChoiceOption, _signal: AbortSignal) => {
-      throw new Error("boom");
-    });
+    const failingGenerate = vi.fn(
+      async (_option: ChoiceOption, _signal: AbortSignal) => {
+        throw new Error("boom");
+      },
+    );
 
     const group = new BranchPrefetchGroup({
       choice: makeChoiceEvent(makeOptions(2)),
@@ -955,7 +980,10 @@ describe("BranchPrefetchGroup AbortController", () => {
     group.start();
 
     expect(generate).toHaveBeenCalledTimes(1);
-    const [_option, signal] = generate.mock.calls[0] as [ChoiceOption, AbortSignal];
+    const [_option, signal] = generate.mock.calls[0] as [
+      ChoiceOption,
+      AbortSignal,
+    ];
     expect(signal).toBeInstanceOf(AbortSignal);
     expect(signal.aborted).toBe(false);
   });
@@ -1027,8 +1055,14 @@ describe("BranchPrefetchGroup AbortController", () => {
       generate,
     }).start();
 
-    const [_opt0, signal0] = generate.mock.calls[0] as [ChoiceOption, AbortSignal];
-    const [_opt1, signal1] = generate.mock.calls[1] as [ChoiceOption, AbortSignal];
+    const [_opt0, signal0] = generate.mock.calls[0] as [
+      ChoiceOption,
+      AbortSignal,
+    ];
+    const [_opt1, signal1] = generate.mock.calls[1] as [
+      ChoiceOption,
+      AbortSignal,
+    ];
     expect(signal0).not.toBe(signal1);
   });
 });
