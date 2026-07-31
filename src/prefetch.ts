@@ -44,12 +44,19 @@ export interface BranchPrefetchOptions {
 }
 
 export interface LiveBranchSelection {
+  branchId: string;
+  taskId: string;
+  controller: AbortController;
   events: RuntimePlayableEvent[];
   done: Promise<RuntimePlayableEvent[]>;
+  subscribe(listener: (event: RuntimePlayableEvent) => void): () => void;
 }
 
 export class BranchPrefetchGroup {
+  private static nextGroupId = 1;
+  private readonly groupId = BranchPrefetchGroup.nextGroupId++;
   private readonly entries = new Map<string, BranchEntry>();
+  private readonly listeners = new Map<string, Set<(event: RuntimePlayableEvent) => void>>();
   private readonly queue: string[] = [];
   private active = 0;
   private started = false;
@@ -65,6 +72,7 @@ export class BranchPrefetchGroup {
         error: null
       };
       this.entries.set(option.id, entry);
+      this.listeners.set(option.id, new Set());
       this.queue.push(option.id);
       this.syncStatus(entry);
     }
@@ -105,7 +113,22 @@ export class BranchPrefetchGroup {
       this.startEntry(selected, true);
     }
 
-    return { events: selected.events, done: selected.deferred.promise };
+    return this.createLiveSelection(selected);
+  }
+
+  private createLiveSelection(entry: BranchEntry): LiveBranchSelection {
+    const listeners = this.listeners.get(entry.option.id)!;
+    return {
+      branchId: entry.option.id,
+      taskId: `branch:${this.groupId}:${entry.option.id}`,
+      controller: entry.controller,
+      events: entry.events,
+      done: entry.deferred.promise,
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
   }
 
   cancelAll(): void {
@@ -133,17 +156,23 @@ export class BranchPrefetchGroup {
     );
     this.syncStatus(entry);
 
+    const appendEvent = (event: RuntimePlayableEvent): void => {
+      if (entry.controller.signal.aborted) return;
+      if (entry.events.some((existing) => existing.line_id === event.line_id)) return;
+      entry.events.push(event);
+      for (const listener of this.listeners.get(entry.option.id) ?? []) listener(event);
+      this.options.onEvent?.(entry.option, event);
+      this.syncStatus(entry);
+    };
+
     void this.options
-      .generate(entry.option, entry.controller.signal, (event) => {
-        if (entry.controller.signal.aborted) return;
-        entry.events.push(event);
-        this.options.onEvent?.(entry.option, event);
-        this.syncStatus(entry);
-      })
+      .generate(entry.option, entry.controller.signal, appendEvent)
       .then((events) => {
         if (entry.controller.signal.aborted) return;
         // A provider may return a complete batch without invoking onEvent.
-        if (entry.events.length === 0) entry.events.push(...events);
+        // Route fallback events through the same live listeners so a selected
+        // branch cannot lose its final batch at the handoff boundary.
+        for (const event of events) appendEvent(event);
         entry.state = "ready";
         entry.deferred.resolve(entry.events);
         this.options.onReady?.(entry.option, entry.events);

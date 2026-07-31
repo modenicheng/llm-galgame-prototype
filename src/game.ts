@@ -5,6 +5,7 @@ import { JsonlSessionStore } from "./jsonl.js";
 import type { StoryGenerator } from "./llm.js";
 import type { MediaPrefetchScheduler } from "./media.js";
 import { BranchManager } from "./runtime/branch-manager.js";
+import type { LiveBranchSelection } from "./prefetch.js";
 import { GenerationScheduler } from "./runtime/generation-scheduler.js";
 import { Metrics } from "./runtime/metrics.js";
 import type { MetricsSnapshot } from "./runtime/metrics.js";
@@ -72,11 +73,13 @@ class AsyncEventQueue<T> {
 
 interface ActiveSegment {
   turn: number;
+  taskId: string;
   events: RuntimeModelEvent[];
   queue: AsyncEventQueue<RuntimeModelEvent>;
   done: Promise<void>;
   branchManager: BranchManager | null;
   terminal: RuntimeModelEvent | null;
+  schedulerReleased: boolean;
 }
 
 type ActiveSegmentKind = "opening" | "continuation";
@@ -85,11 +88,10 @@ interface ChoiceOutcome {
   type: "choice";
   nextTurn: number;
   preview: RuntimePlayableEvent[];
-  previewDone?: Promise<RuntimePlayableEvent[]>;
-  previewSource?: RuntimePlayableEvent[];
+  liveSelection?: LiveBranchSelection;
 }
 
-type ChoiceSelection = Pick<ChoiceOutcome, "preview" | "previewDone" | "previewSource">;
+type ChoiceSelection = Pick<ChoiceOutcome, "preview" | "liveSelection">;
 
 interface EndOutcome {
   type: "end";
@@ -146,45 +148,89 @@ export class Game {
         ...currentOutcome.preview,
       ];
 
-      // Start the next request before displaying the selected branch. Its
-      // first JSONL events can therefore arrive while the player reads it.
+      // The selected branch is already the next active generation task. Its
+      // existing events enter the formal buffer now; later events are routed
+      // into the same buffer by the live task subscription. No new LLM
+      // request is created until this task naturally completes.
       this.playbackBuffer.enqueueMany(currentOutcome.preview);
       for (const event of currentOutcome.preview) this.registerBuffered([event]);
-      this.status.setPhase("后台续写", "已选分支立即播放，低水位时持续流式补充");
-      // A live-selected branch is itself the active generation task. Do not
-      // launch a second request until that task has finished; its late events
-      // are consumed directly by consumeLivePreview.
-      const previewReady = currentOutcome.previewDone ?? Promise.resolve();
-      const continuationPromise = Promise.all([segment.done, previewReady]).then(() =>
-        this.startActiveSegment(
-          "continuation",
-          currentOutcome.nextTurn,
-          historyBeforePreview,
-          currentOutcome.preview,
-        )
+      this.status.setPhase("后台续写", "已选分支接管正式路径，低水位时持续流式补充");
+
+      const continuationPromise = this.prepareContinuationAfterSelection(
+        segment,
+        currentOutcome,
+        historyBeforePreview,
       );
       void continuationPromise.catch(() => undefined);
 
-      if (currentOutcome.previewDone) {
-        await this.consumeLivePreview(
+      if (currentOutcome.liveSelection) {
+        await this.consumeLiveSelection(
           currentOutcome.preview,
-          currentOutcome.previewDone,
+          currentOutcome.liveSelection,
           currentOutcome.nextTurn,
-          currentOutcome.previewSource,
         );
       } else {
         await this.consumePlayableEvents(currentOutcome.preview, currentOutcome.nextTurn);
       }
       segment = await continuationPromise;
       void segment.done.catch(() => undefined);
+      const selectedContext = currentOutcome.liveSelection
+        ? [...historyBeforePreview, ...currentOutcome.liveSelection.events]
+        : speculativeContext;
       outcome = await this.consumeActiveSegment(
         segment,
         currentOutcome.nextTurn,
-        speculativeContext,
+        selectedContext,
       );
       this.status.removeJob(`continuation:${currentOutcome.nextTurn}`);
       await this.saveCurrentStateSnapshot();
     }
+  }
+
+  private prepareContinuationAfterSelection(
+    previousSegment: ActiveSegment,
+    outcome: ChoiceOutcome,
+    history: StoryContextEvent[],
+  ): Promise<ActiveSegment> {
+    const live = outcome.liveSelection;
+    const waitForPrevious = previousSegment.done.catch(() => undefined);
+
+    if (!live) {
+      return waitForPrevious.then(() =>
+        this.startActiveSegment(
+          "continuation",
+          outcome.nextTurn,
+          history,
+          outcome.preview,
+        ),
+      );
+    }
+
+    // The old active request may still be closing after emitting its terminal
+    // event. Once it releases the scheduler, promote the existing branch
+    // controller. The branch request itself is never restarted.
+    return waitForPrevious
+      .then(() => {
+        this.generationScheduler.adoptCandidateBranch(
+          live.taskId,
+          live.branchId,
+          live.controller,
+        );
+        void live.done.then(
+          () => this.generationScheduler.completeActivePath(live.taskId),
+          () => this.generationScheduler.completeActivePath(live.taskId),
+        );
+      })
+      .then(() => live.done.catch(() => undefined))
+      .then(() => {
+        const selectedEvents = [...live.events];
+        return this.startActiveSegment(
+          "continuation",
+          outcome.nextTurn,
+          history,
+          selectedEvents,
+        );
+      });
   }
 
   private startActiveSegment(
@@ -194,16 +240,19 @@ export class Game {
     prefetchedEvents: StoryContextEvent[],
   ): ActiveSegment {
     const queue = new AsyncEventQueue<RuntimeModelEvent>();
+    const taskId = `${kind}:${turn}:${Date.now()}`;
     const segment: ActiveSegment = {
       turn,
+      taskId,
       events: [],
       queue,
       done: Promise.resolve(),
       branchManager: null,
       terminal: null,
+      schedulerReleased: false,
     };
 
-    const controller = this.generationScheduler.startActivePath();
+    const controller = this.generationScheduler.startActivePath(taskId);
     const onEvent = (draft: ModelEvent): void => {
       const event = this.materializeEvents([draft])[0]!;
       segment.events.push(event);
@@ -252,7 +301,10 @@ export class Game {
       });
     }).finally(() => {
       queue.close();
-      this.generationScheduler.completeActivePath();
+      if (!segment.schedulerReleased) {
+        segment.schedulerReleased = true;
+        this.generationScheduler.completeActivePath(segment.taskId);
+      }
     });
 
     return segment;
@@ -494,18 +546,18 @@ export class Game {
     this.status.setPhase("切换分支", "取消未选分支，装载已选预取片段");
     const selectStart = Date.now();
     let preview: RuntimePlayableEvent[];
-    let previewDone: Promise<RuntimePlayableEvent[]> | undefined;
-    let previewSource: RuntimePlayableEvent[] | undefined;
+    let liveSelection: LiveBranchSelection | undefined;
     const selectedState = this.status.snapshot().branches[selected.id]?.state;
 
     try {
-      if (selectedState === "ready") {
+      if (selectedState === "ready" || selectedState === "failed" || selectedState === "cancelled") {
+        // A failed candidate must enter the existing retry path. Only a
+        // queued/running candidate can be adopted as a live active task.
         preview = await branchManager.selectCandidate(selected.id);
       } else {
         const live = branchManager.selectCandidateLive(selected.id);
         preview = [...live.events];
-        previewDone = live.done;
-        previewSource = live.events;
+        liveSelection = live;
       }
       console.log(`\x1b[2m[Prefetch] 选择"${selected.text}" → 取回 ${preview.length} 条已到达事件，耗时 ${Date.now() - selectStart}ms (预取状态=${selectedState})\x1b[0m`);
     } catch (error) {
@@ -533,8 +585,7 @@ export class Game {
     this.status.clearBranches();
     return {
       preview,
-      ...(previewDone ? { previewDone } : {}),
-      ...(previewSource ? { previewSource } : {}),
+      ...(liveSelection ? { liveSelection } : {}),
     };
   }
 
@@ -545,39 +596,66 @@ export class Game {
     for (const event of events) await this.consumePlayableEvent(event, turn);
   }
 
-  /** Consume already-arrived branch lines while the original branch request continues. */
-  private async consumeLivePreview(
-    events: RuntimePlayableEvent[],
-    done: Promise<RuntimePlayableEvent[]>,
+  /**
+   * Consume a selected branch while retaining its original generation task.
+   * Events that arrive after selection are pushed into the formal buffer by
+   * this method before they are rendered. The task may fail after producing
+   * usable events; in that case the continuation path still takes over.
+   */
+  private async consumeLiveSelection(
+    initialEvents: RuntimePlayableEvent[],
+    selection: LiveBranchSelection,
     turn: number,
-    source: RuntimePlayableEvent[] = events,
   ): Promise<void> {
-    let index = 0;
+    const seen = new Set(initialEvents.map((event) => event.line_id));
+    const queue = new AsyncEventQueue<RuntimePlayableEvent>();
     let completed = false;
     let failure: unknown;
-    void done.then(() => { completed = true; }).catch((error: unknown) => {
-      completed = true;
-      failure = error;
-    });
 
-    const initialCount = events.length;
-    while (!completed || index < source.length) {
-      while (index < source.length) {
-        const event = source[index]!;
-        const arrivedAfterSelection = index >= initialCount;
-        index += 1;
-        if (arrivedAfterSelection) {
-          this.playbackBuffer.enqueue(event);
-          this.registerBuffered([event]);
-          this.media.appendActive([event]);
-        }
+    const enqueueIfNew = (event: RuntimePlayableEvent): void => {
+      if (seen.has(event.line_id)) return;
+      seen.add(event.line_id);
+      // Publish late branch lines immediately. Playback may consume them
+      // later, but they must already count toward the formal low-water mark.
+      this.playbackBuffer.enqueue(event);
+      this.registerBuffered([event]);
+      this.media.appendActive([event]);
+      queue.push(event);
+    };
+    const unsubscribe = selection.subscribe(enqueueIfNew);
+    // Catch events emitted between selectLive() and subscribe(). JavaScript
+    // callbacks cannot interleave this synchronous snapshot, so this closes
+    // the only handoff gap without duplicating line IDs.
+    for (const event of selection.events) enqueueIfNew(event);
+
+    void selection.done
+      .catch((error: unknown) => {
+        failure = error;
+      })
+      .finally(() => {
+        completed = true;
+        unsubscribe();
+        queue.close();
+      });
+
+    await this.consumePlayableEvents(initialEvents, turn);
+
+    while (true) {
+      const next = await queue.next();
+      if (!next.done) {
+        const event = next.value;
         await this.consumePlayableEvent(event, turn);
+        continue;
       }
-      if (completed) break;
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      break;
     }
 
-    if (failure) throw failure;
+    // The branch request has ended. Its already generated lines remain valid;
+    // the caller starts a normal continuation using that committed prefix.
+    if (failure) {
+      const message = failure instanceof Error ? failure.message : String(failure);
+      this.status.setPhase("后台续写", `已保留分支前缀，分支流失败：${message}`);
+    }
   }
 
   private advanceBufferedEvent(event: RuntimeModelEvent): void {
@@ -929,19 +1007,17 @@ export class Game {
       console.log(`\n你选择了：${selected.text}`);
 
       let preview: RuntimePlayableEvent[];
-      let previewDone: Promise<RuntimePlayableEvent[]> | undefined;
-      let previewSource: RuntimePlayableEvent[] | undefined;
+      let liveSelection: LiveBranchSelection | undefined;
 
       if (branchManager) {
         try {
           const branchState = this.status.snapshot().branches[result.optionId]?.state;
-          if (branchState === "ready") {
+          if (branchState === "ready" || branchState === "failed" || branchState === "cancelled") {
             preview = await branchManager.selectCandidate(result.optionId);
           } else {
             const live = branchManager.selectCandidateLive(result.optionId);
             preview = [...live.events];
-            previewSource = live.events;
-            previewDone = live.done;
+            liveSelection = live;
           }
         } catch (error) {
           const message =
@@ -1021,8 +1097,7 @@ export class Game {
         type: "choice",
         nextTurn: turn + 1,
         preview,
-        ...(previewDone ? { previewDone } : {}),
-        ...(previewSource ? { previewSource } : {}),
+        ...(liveSelection ? { liveSelection } : {}),
       };
     }
 

@@ -93,4 +93,22 @@ describe("GenerationScheduler", () => {
     expect(scheduler.getActivePathStatus()).toBe("streaming");
     expect(scheduler.getSignal()).toBe(controller.signal);
   });
+
+  it("should adopt a candidate branch without creating a second controller", () => {
+    const scheduler = new GenerationScheduler();
+    const branchController = new AbortController();
+
+    scheduler.adoptCandidateBranch("branch-task-1", "opt-a", branchController);
+
+    expect(scheduler.hasActivePathTask()).toBe(true);
+    expect(scheduler.getTaskId()).toBe("branch-task-1");
+    expect(scheduler.getOwner()).toEqual({ type: "candidate_branch", branchId: "opt-a" });
+    expect(scheduler.getSignal()).toBe(branchController.signal);
+
+    scheduler.completeActivePath("different-task");
+    expect(scheduler.hasActivePathTask()).toBe(true);
+
+    scheduler.completeActivePath("branch-task-1");
+    expect(scheduler.hasActivePathTask()).toBe(false);
+  });
 });

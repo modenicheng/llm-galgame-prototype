@@ -439,11 +439,12 @@ export class StoryGenerator {
             if (events.length === 1) {
               console.log(`[LLM] ${type} 首句 ${Date.now() - callStart}ms → ${event.type}`);
             }
-          } catch {
-            // Bad line — abort stream immediately, retry from prefix
+          } catch (error) {
+            // Bad line — abort stream immediately. Keep the precise reason in
+            // diagnostics; callers need to distinguish malformed JSON from a
+            // schema violation when a live branch is being adopted.
             streamAborted = true;
-            lastError = String(events.length + 1);
-            // Abort the underlying request by breaking the async iterator
+            lastError = error instanceof Error ? error.message : String(error);
             controller.abort();
             break;
           }
