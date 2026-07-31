@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Game } from "./game.js";
 import { Metrics } from "./runtime/metrics.js";
 import type { MetricsSnapshot } from "./runtime/metrics.js";
+import { makeTestConfig } from "./test-helpers.js";
 import type { StoryGenerator } from "./llm.js";
 import type { MediaPrefetchScheduler } from "./media.js";
 import type { GameUI } from "./ui.js";
@@ -15,55 +16,6 @@ import type { AppConfig } from "./config.js";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function makeConfig(): AppConfig {
-  return {
-    api: {
-      model: "test-model",
-      api_key_env: "TEST_KEY",
-      timeout_ms: 5000,
-      token_limit_field: "max_completion_tokens",
-    },
-    generation: {
-      temperature: 1.0,
-      max_tokens: 500,
-      repair_attempts: 0,
-    },
-    text_buffer: {
-      refill_threshold_lines: 3,
-    },
-    prefetch: {
-      branch_dialogue_lines: 2,
-      branch_max_events: 4,
-      branch_concurrency: 2,
-    },
-    autocomplete: {
-      minimum_characters: 4,
-      debounce_ms: 350,
-      max_suffix_characters: 20,
-      confidence_threshold: 0.55,
-    },
-    media: {
-      audio: {
-        enabled: false,
-        provider: "disabled",
-        active_target_lines: 3,
-        refill_threshold_lines: 2,
-        branch_prefetch_lines: 2,
-        batch_size: 2,
-        max_concurrency: 2,
-        mock_latency_ms: 800,
-        output_dir: "assets/audio",
-      },
-    },
-    game: {
-      history_events: 20,
-      max_events_per_segment: 5,
-      sessions_dir: "sessions",
-      show_line_ids: false,
-    },
-  };
-}
 
 function makeMockGenerator(): StoryGenerator {
   return {
@@ -124,7 +76,7 @@ describe("Game Metrics integration", () => {
   let media: MediaPrefetchScheduler;
 
   beforeEach(() => {
-    config = makeConfig();
+    config = makeTestConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
     ui = makeMockUI();

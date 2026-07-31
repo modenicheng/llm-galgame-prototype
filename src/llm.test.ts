@@ -12,6 +12,7 @@ import { GenerationEnvelopeSchema, AutocompleteResultSchema } from "./story/type
 import type { AppConfig } from "./config.js";
 import type { PromptBundle } from "./prompts.js";
 import type { StoryContextEvent, InteractionEvent } from "./schema.js";
+import { makeTestConfig } from "./test-helpers.js";
 import type { StoryState, GenerationEnvelope } from "./story/types.js";
 import { createInitialState } from "./story/state.js";
 
@@ -20,57 +21,6 @@ import { createInitialState } from "./story/state.js";
 // ---------------------------------------------------------------------------
 
 const DUMMY_API_KEY = "sk-test-no-calls";
-
-function makeTestConfig(overrides?: Partial<AppConfig>): AppConfig {
-  return {
-    api: {
-      model: "test-model",
-      base_url: "https://api.test.example.com",
-      api_key_env: "OPENAI_API_KEY",
-      timeout_ms: 30_000,
-      token_limit_field: "max_tokens",
-    },
-    generation: {
-      temperature: 0.9,
-      max_tokens: 1400,
-      repair_attempts: 0,
-    },
-    prefetch: {
-      branch_dialogue_lines: 3,
-      branch_max_events: 8,
-      branch_concurrency: 3,
-    },
-    autocomplete: {
-      minimum_characters: 4,
-      debounce_ms: 350,
-      max_suffix_characters: 20,
-      confidence_threshold: 0.55,
-    },
-    media: {
-      audio: {
-        enabled: false,
-        provider: "disabled",
-        active_target_lines: 3,
-        refill_threshold_lines: 2,
-        branch_prefetch_lines: 2,
-        batch_size: 2,
-        max_concurrency: 2,
-        mock_latency_ms: 800,
-        output_dir: "assets/audio",
-      },
-    },
-    game: {
-      history_events: 80,
-      max_events_per_segment: 12,
-      sessions_dir: "sessions",
-      show_line_ids: true,
-    },
-    text_buffer: {
-      refill_threshold_lines: 3,
-    },
-    ...overrides,
-  };
-}
 
 function makeTestPrompts(): PromptBundle {
   return {

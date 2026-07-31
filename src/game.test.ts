@@ -11,6 +11,7 @@ import path from "node:path";
 import { Game } from "./game.js";
 import { Metrics } from "./runtime/metrics.js";
 import { createInitialState } from "./story/state.js";
+import { makeTestConfig } from "./test-helpers.js";
 import type { StoryGenerator } from "./llm.js";
 import type { MediaPrefetchScheduler } from "./media.js";
 import type { GameUI } from "./ui.js";
@@ -27,55 +28,6 @@ import type { GenerationEnvelope } from "./story/types.js";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function makeConfig(overrides?: Partial<AppConfig["game"]>): AppConfig {
-  return {
-    api: {
-      model: "test-model",
-      api_key_env: "TEST_KEY",
-      timeout_ms: 5000,
-      token_limit_field: "max_completion_tokens",
-    },
-    generation: {
-      temperature: 1.0,
-      max_tokens: 500,
-      repair_attempts: 0,
-    },
-    text_buffer: {
-      refill_threshold_lines: 3,
-    },
-    prefetch: {
-      branch_dialogue_lines: 2,
-      branch_max_events: 4,
-      branch_concurrency: 2,
-    },
-    autocomplete: {
-      minimum_characters: 4,
-      debounce_ms: 350,
-      max_suffix_characters: 20,
-      confidence_threshold: 0.55,
-    },
-    media: {
-      audio: {
-        enabled: false,
-        provider: "disabled",
-        active_target_lines: 3,
-        refill_threshold_lines: 2,
-        branch_prefetch_lines: 2,
-        batch_size: 2,
-        max_concurrency: 2,
-        mock_latency_ms: 800,
-        output_dir: "assets/audio",
-      },
-    },
-    game: {
-      history_events: 20,
-      max_events_per_segment: 5,
-      sessions_dir: overrides?.sessions_dir ?? "sessions",
-      show_line_ids: overrides?.show_line_ids ?? false,
-    },
-  };
-}
 
 function makeMockGenerator(): StoryGenerator {
   return {
@@ -152,7 +104,7 @@ describe("Game construction", () => {
   let media: MediaPrefetchScheduler;
 
   beforeEach(() => {
-    config = makeConfig();
+    config = makeTestConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
     ui = makeMockUI();
@@ -205,7 +157,7 @@ describe("Session ID", () => {
   let media: MediaPrefetchScheduler;
 
   beforeEach(() => {
-    config = makeConfig();
+    config = makeTestConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
     ui = makeMockUI();
@@ -248,7 +200,7 @@ describe("getAutocompleteContext", () => {
   let media: MediaPrefetchScheduler;
 
   beforeEach(() => {
-    config = makeConfig();
+    config = makeTestConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
     ui = makeMockUI();
@@ -296,7 +248,7 @@ describe("materializeEvents", () => {
 
   beforeEach(() => {
     game = new Game(
-      makeConfig(),
+      makeTestConfig(),
       makeMockGenerator(),
       makeMockStatus(),
       makeMockUI(),
@@ -381,7 +333,7 @@ describe("Line ID generation", () => {
 
   beforeEach(() => {
     game = new Game(
-      makeConfig(),
+      makeTestConfig(),
       makeMockGenerator(),
       makeMockStatus(),
       makeMockUI(),
@@ -439,7 +391,7 @@ describe("recordPlayerChoice", () => {
   beforeEach(() => {
     gen = makeMockGenerator();
     game = new Game(
-      makeConfig(),
+      makeTestConfig(),
       gen,
       makeMockStatus(),
       makeMockUI(),
@@ -487,7 +439,7 @@ describe("recordPlayerInput", () => {
 
   beforeEach(() => {
     game = new Game(
-      makeConfig(),
+      makeTestConfig(),
       makeMockGenerator(),
       makeMockStatus(),
       makeMockUI(),
@@ -544,7 +496,7 @@ describe("Sequence numbering", () => {
 
   beforeEach(() => {
     game = new Game(
-      makeConfig(),
+      makeTestConfig(),
       makeMockGenerator(),
       makeMockStatus(),
       makeMockUI(),
@@ -605,7 +557,7 @@ describe("registerBuffered", () => {
   beforeEach(() => {
     status = makeMockStatus();
     game = new Game(
-      makeConfig(),
+      makeTestConfig(),
       makeMockGenerator(),
       status,
       makeMockUI(),
@@ -666,7 +618,7 @@ describe("JSONL store initialization", () => {
 
   it("should create the sessions directory during run()", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeConfig({ sessions_dir: sessionsDir });
+    const config = makeTestConfig({ game: { ...makeTestConfig().game, sessions_dir: sessionsDir } });
     const generator = makeMockGenerator();
     const status = makeMockStatus();
     const ui = makeMockUI();
@@ -693,7 +645,7 @@ describe("JSONL store initialization", () => {
 
   it("should create a .jsonl file and write events to it during a successful run", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeConfig({ sessions_dir: sessionsDir });
+    const config = makeTestConfig({ game: { ...makeTestConfig().game, sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const ui = makeMockUI();
     const media = makeMockMedia();
@@ -733,7 +685,7 @@ describe("State patch rejection", () => {
 
   it("should record a state patch rejection when applyPatch throws", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeConfig({ sessions_dir: sessionsDir });
+    const config = makeTestConfig({ game: { ...makeTestConfig().game, sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const ui = makeMockUI();
     const media = makeMockMedia();
@@ -758,7 +710,7 @@ describe("State patch rejection", () => {
 
   it("should NOT record a rejection when the state patch is valid", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeConfig({ sessions_dir: sessionsDir });
+    const config = makeTestConfig({ game: { ...makeTestConfig().game, sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const ui = makeMockUI();
     const media = makeMockMedia();
@@ -781,7 +733,7 @@ describe("State patch rejection", () => {
 
   it("should continue running after a patch rejection (non-fatal)", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeConfig({ sessions_dir: sessionsDir });
+    const config = makeTestConfig({ game: { ...makeTestConfig().game, sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const ui = makeMockUI();
     const media = makeMockMedia();
@@ -818,7 +770,7 @@ describe("Metrics pass-through", () => {
   let media: MediaPrefetchScheduler;
 
   beforeEach(() => {
-    config = makeConfig();
+    config = makeTestConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
     ui = makeMockUI();
