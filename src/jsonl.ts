@@ -2,10 +2,13 @@ import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
   ModelEventSchema,
+  StatePatchLineSchema,
+  isStatePatchLine,
   type ModelEvent,
   type ModelPlayableEvent,
   type StoredEvent
 } from "./schema.js";
+import type { StoryStatePatch } from "./story/types.js";
 
 export function removeMarkdownFence(text: string): string {
   return text
@@ -15,7 +18,14 @@ export function removeMarkdownFence(text: string): string {
     .trim();
 }
 
-function parseLines(text: string): ModelEvent[] {
+/** Result of parsing a JSONL document: playable events plus state patches. */
+export interface ParsedJsonl {
+  events: ModelEvent[];
+  /** In-band state updates, in emission order. */
+  patches: StoryStatePatch[];
+}
+
+function parseLines(text: string): ParsedJsonl {
   const normalized = removeMarkdownFence(text);
   const lines = normalized
     .split(/\r?\n/)
@@ -26,23 +36,36 @@ function parseLines(text: string): ModelEvent[] {
     throw new Error("模型没有返回任何 JSONL 事件。");
   }
 
-  return lines.map((line, index) => {
+  const events: ModelEvent[] = [];
+  const patches: StoryStatePatch[] = [];
+
+  lines.forEach((line, index) => {
     let value: unknown;
     try {
       value = JSON.parse(line);
     } catch (error) {
       throw new Error(`第 ${index + 1} 行不是合法 JSON：${String(error)}\n${line}`);
     }
-    return ModelEventSchema.parse(value) as ModelEvent;
+
+    // In-band state update — validated here but never enters the event stream.
+    if (isStatePatchLine(value)) {
+      const parsed = StatePatchLineSchema.parse(value);
+      patches.push(parsed.patch as StoryStatePatch);
+      return;
+    }
+
+    events.push(ModelEventSchema.parse(value) as ModelEvent);
   });
+
+  return { events, patches };
 }
 
 function isTerminalEvent(event: ModelEvent): boolean {
   return event.type === "choice" || event.type === "end" || event.type === "interaction";
 }
 
-export function parseTerminalModelJsonl(text: string): ModelEvent[] {
-  const events = parseLines(text);
+export function parseTerminalModelJsonl(text: string): ParsedJsonl {
+  const { events, patches } = parseLines(text);
   const terminalIndexes = events
     .map((event, index) => (isTerminalEvent(event) ? index : -1))
     .filter((index) => index >= 0);
@@ -55,14 +78,14 @@ export function parseTerminalModelJsonl(text: string): ModelEvent[] {
     throw new Error("完整剧情段至少需要一条可播放文本和一个 choice/interaction/end 事件。");
   }
 
-  return events;
+  return { events, patches };
 }
 
 export function parsePrefetchModelJsonl(
   text: string,
   minDialogueLines: number
 ): ModelPlayableEvent[] {
-  const events = parseLines(text);
+  const { events } = parseLines(text);
 
   for (const event of events) {
     if (isTerminalEvent(event)) {

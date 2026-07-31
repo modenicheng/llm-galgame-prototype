@@ -20,7 +20,7 @@ describe("parseTerminalModelJsonl", () => {
       '{"type":"choice","prompt":"如何回答？","options":[{"id":"greet","text":"早上好"},{"id":"ignore","text":"无视她"}]}'
     ].join("\n");
 
-    const events = parseTerminalModelJsonl(text);
+    const { events } = parseTerminalModelJsonl(text);
     expect(events).toHaveLength(3);
     expect(events[2]!.type).toBe("choice");
   });
@@ -34,7 +34,7 @@ describe("parseTerminalModelJsonl", () => {
       '{"type":"end","ending_id":"ending_normal","text":"普通结局"}'
     ].join("\n");
 
-    const events = parseTerminalModelJsonl(text);
+    const { events } = parseTerminalModelJsonl(text);
     expect(events).toHaveLength(3);
     expect(events[2]!.type).toBe("end");
   });
@@ -48,7 +48,7 @@ describe("parseTerminalModelJsonl", () => {
       '{"type":"interaction","interaction_id":"int_001","prompt":"如何回应？","mode":"choice","options":[{"id":"a","text":"回应"},{"id":"b","text":"离开"}]}'
     ].join("\n");
 
-    const events = parseTerminalModelJsonl(text);
+    const { events } = parseTerminalModelJsonl(text);
     expect(events).toHaveLength(3);
     const terminal = events[2]!;
     expect(terminal.type).toBe("interaction");
@@ -67,7 +67,7 @@ describe("parseTerminalModelJsonl", () => {
       '{"type":"interaction","interaction_id":"int_002","prompt":"请写下你的回答：","mode":"input","input":{"kind":"free_text","placeholder":"输入你的想法...","max_length":200}}'
     ].join("\n");
 
-    const events = parseTerminalModelJsonl(text);
+    const { events } = parseTerminalModelJsonl(text);
     expect(events).toHaveLength(3);
     const terminal = events[2]!;
     expect(terminal.type).toBe("interaction");
@@ -85,7 +85,7 @@ describe("parseTerminalModelJsonl", () => {
       '{"type":"interaction","interaction_id":"int_003","prompt":"怎么做？","mode":"hybrid","options":[{"id":"a","text":"开门"},{"id":"b","text":"等待"}],"input":{"kind":"free_text","placeholder":"或自己做决定...","max_length":100}}'
     ].join("\n");
 
-    const events = parseTerminalModelJsonl(text);
+    const { events } = parseTerminalModelJsonl(text);
     expect(events).toHaveLength(2);
     const terminal = events[1]!;
     expect(terminal.type).toBe("interaction");
@@ -201,7 +201,7 @@ describe("parseTerminalModelJsonl", () => {
     );
     const text = eventsList.join("\n");
     // maxEvents is no longer enforced — truncation was removed
-    const events = parseTerminalModelJsonl(text);
+    const { events } = parseTerminalModelJsonl(text);
     expect(events).toHaveLength(13);
   });
 });

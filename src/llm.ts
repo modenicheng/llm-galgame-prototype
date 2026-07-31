@@ -5,25 +5,14 @@ import {
   buildUserPrompt,
   type ContextInput,
 } from "./story/context-builder.js";
-import { parsePrefetchModelJsonl, parseTerminalModelJsonl, removeMarkdownFence } from "./jsonl.js";
+import { parsePrefetchModelJsonl, parseTerminalModelJsonl, removeMarkdownFence, type ParsedJsonl } from "./jsonl.js";
 import type { InstructionSet, PromptBundle } from "./prompts.js";
 import type { LLMRequestCounts } from "./runtime/metrics.js";
 import { Metrics } from "./runtime/metrics.js";
-import {
-  ModelEventSchema,
-  type ChoiceEvent,
-  type ChoiceOption,
-  type InteractionEvent,
-  type ModelEvent,
-  type ModelPlayableEvent,
-  type StoryContextEvent,
-} from "./schema.js";
-import type {
-  AutocompleteResult,
-  GenerationEnvelope,
-  StoryState,
-} from "./story/types.js";
-import { AutocompleteResultSchema, GenerationEnvelopeSchema } from "./story/types.js";
+import { isStatePatchLine, ModelEventSchema, StatePatchLineSchema, type ChoiceEvent, type ChoiceOption, type InteractionEvent, type ModelEvent, type ModelPlayableEvent, type StoryContextEvent } from "./schema.js";
+import type { AutocompleteResult, GenerationEnvelope, StoryState, StoryStatePatch } from "./story/types.js";
+import { AutocompleteResultSchema } from "./story/types.js";
+import { mergePatches } from "./story/patch.js";
 
 // ---------------------------------------------------------------------------
 // Tiny template engine: replace {key} placeholders with values
@@ -142,11 +131,13 @@ export class StoryGenerator {
     return this.requestEnvelope(
       "branch_prefetch",
       buildUserPrompt(turn, ctx, extra),
-      (text) =>
-        parsePrefetchModelJsonl(
+      (text) => ({
+        events: parsePrefetchModelJsonl(
           text,
           this.config.prefetch.branch_dialogue_lines,
         ),
+        patches: [],
+      }),
       signal,
       options,
     );
@@ -170,8 +161,7 @@ export class StoryGenerator {
     return this.requestEnvelope(
       "continuation",
       buildUserPrompt(turn, ctx, extra),
-      (text) =>
-        parsePrefetchModelJsonl(text, 1),
+      (text) => ({ events: parsePrefetchModelJsonl(text, 1), patches: [] }),
       signal,
       options,
     );
@@ -308,32 +298,9 @@ export class StoryGenerator {
 
   private parseGenerationEnvelope(
     text: string,
-    fallbackParse: (text: string) => ModelEvent[],
-  ): GenerationEnvelope {
-    const cleaned = removeMarkdownFence(text);
-    try {
-      const parsed: unknown = JSON.parse(cleaned);
-      if (
-        parsed !== null &&
-        typeof parsed === "object" &&
-        !Array.isArray(parsed) &&
-        "events" in (parsed as Record<string, unknown>)
-      ) {
-        const envelope = GenerationEnvelopeSchema.parse(parsed) as GenerationEnvelope;
-        const terminalIndexes = envelope.events
-          .map((e, i) => (e.type === "choice" || e.type === "end" || e.type === "interaction" ? i : -1))
-          .filter((i) => i >= 0);
-        if (terminalIndexes.length > 0) {
-          const lastTerminal = terminalIndexes[terminalIndexes.length - 1]!;
-          if (lastTerminal !== envelope.events.length - 1 || terminalIndexes.length > 1) {
-            throw new Error("envelope 中 terminal 事件必须且只能出现在末尾。");
-          }
-        }
-        return envelope;
-      }
-    } catch { /* fall through */ }
-    const events = fallbackParse(text);
-    return { events, state_patch: {} };
+    fallbackParse: (text: string) => ParsedJsonl,
+  ): ParsedJsonl {
+    return fallbackParse(removeMarkdownFence(text));
   }
 
   /**
@@ -362,7 +329,7 @@ export class StoryGenerator {
   private async requestEnvelope(
     type: LLMRequestCounts extends Record<infer K, number> ? K : never,
     userPrompt: string,
-    fallbackParse: (text: string) => ModelEvent[],
+    fallbackParse: (text: string) => ParsedJsonl,
     signal?: AbortSignal,
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
@@ -385,7 +352,7 @@ export class StoryGenerator {
       let streamAborted = false;
       let usage = { input: 0, output: 0 };
 
-      const controller = new AbortController();
+        const controller = new AbortController();
       const signalCleanup = signal
         ? (() => {
             const onAbort = () => controller.abort();
@@ -393,6 +360,13 @@ export class StoryGenerator {
             return () => signal.removeEventListener("abort", onAbort);
           })()
         : () => {};
+
+      // Parsed JSONL events and in-band state patches.
+      const patches: StoryStatePatch[] = [];
+      // "jsonl" — parse line-by-line and publish immediately;
+      // "buffer" — line-by-line parsing failed before anything was published,
+      //            buffer the whole text and parse once at the end.
+      let mode: "jsonl" | "buffer" = "jsonl";
 
       try {
         const stream = await this.client.chat.completions.create(
@@ -415,15 +389,50 @@ export class StoryGenerator {
           if (firstLineMs === 0) firstLineMs = Date.now();
           rawLines.push(line);
 
-          // Detect envelope format: single JSON object with "events" key
-          if (events.length === 0 && rawLines.length === 1 && line.startsWith('{"events"')) {
-            // Envelope mode — buffer all lines, parse at end
+          // Tolerate markdown fence markers around the JSONL payload.
+          const trimmed = line.trim();
+          if (trimmed.startsWith("```") || trimmed.endsWith("```")) continue;
+
+          // Already buffering — wait for the end and parse the whole text.
+          if (mode === "buffer") continue;
+
+          // JSONL mode — parse each line immediately.
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(trimmed);
+          } catch (error) {
+            // Not valid JSON. If we have already published events or applied
+            // patches, the stream is corrupt — abort and preserve the prefix.
+            // Otherwise switch to buffered fallback (covers pretty-printed
+            // JSON and fence-wrapped payloads).
+            if (events.length > 0 || patches.length > 0) {
+              streamAborted = true;
+              lastError = `第 ${rawLines.length} 行不是合法 JSON：${error instanceof Error ? error.message : String(error)}`;
+              controller.abort();
+              break;
+            }
+            mode = "buffer";
             continue;
           }
 
-          // JSONL mode — parse each line immediately
+          // In-band state update — validated here, applied by the runtime
+          // after the request completes. Never enters the playback stream.
+          if (isStatePatchLine(parsed)) {
+            try {
+              patches.push(StatePatchLineSchema.parse(parsed).patch as StoryStatePatch);
+            } catch (error) {
+              if (events.length > 0 || patches.length > 0) {
+                streamAborted = true;
+                lastError = `第 ${rawLines.length} 行 state_patch 校验失败：${error instanceof Error ? error.message : String(error)}`;
+                controller.abort();
+                break;
+              }
+              mode = "buffer";
+            }
+            continue;
+          }
+
           try {
-            const parsed: unknown = JSON.parse(line);
             const event = ModelEventSchema.parse(parsed) as ModelEvent;
             events.push(event);
             options?.onEvent?.(event);
@@ -431,13 +440,15 @@ export class StoryGenerator {
               console.log(`[LLM] ${type} 首句 ${Date.now() - callStart}ms → ${event.type}`);
             }
           } catch (error) {
-            // Bad line — abort stream immediately. Keep the precise reason in
-            // diagnostics; callers need to distinguish malformed JSON from a
-            // schema violation when a live branch is being adopted.
-            streamAborted = true;
-            lastError = error instanceof Error ? error.message : String(error);
-            controller.abort();
-            break;
+            // Schema violation. Same policy as malformed JSON: abort and
+            // preserve published events, or fall back to whole-text parsing.
+            if (events.length > 0 || patches.length > 0) {
+              streamAborted = true;
+              lastError = `第 ${rawLines.length} 行事件校验失败：${error instanceof Error ? error.message : String(error)}`;
+              controller.abort();
+              break;
+            }
+            mode = "buffer";
           }
         }
 
@@ -459,8 +470,8 @@ export class StoryGenerator {
           // beginning would duplicate already assigned line IDs and corrupt
           // the active playback path. Keep the partial stream and fail it so
           // the runtime can preserve what is already playable.
-          if (options?.onEvent && events.length > 0) {
-            throw new Error(`JSONL 第 ${events.length + 1} 行校验失败：${lastError}`);
+          if (options?.onEvent && (events.length > 0 || patches.length > 0)) {
+            throw new Error(`JSONL 第 ${events.length + patches.length + 1} 行校验失败：${lastError}`);
           }
           continue;
         }
@@ -474,22 +485,28 @@ export class StoryGenerator {
 
         // Try to parse the result
         try {
-          // If we parsed events incrementally (JSONL mode), validate as a batch
-          if (events.length > 0) {
-            const result = fallbackParse(rawLines.join("\n"));
+          const fullText = rawLines.join("\n");
+          if (mode === "jsonl" && events.length > 0) {
+            // JSONL mode — validate the batch (terminal placement rules, etc.).
+            const result = fallbackParse(fullText);
             this.metrics?.recordLLMRequest(type, usage, latencyMs);
-            return { events: result, state_patch: {} };
+            return {
+              events: result.events,
+              state_patch: mergePatchesList([...result.patches, ...patches]),
+            };
           }
 
-          // Envelope mode — parse the full text
-          const fullText = rawLines.join("\n");
-          const envelope = this.parseGenerationEnvelope(fullText, fallbackParse);
+          // Buffered mode — whole-text parse with fence stripping.
+          const result = this.parseGenerationEnvelope(fullText, fallbackParse);
           this.metrics?.recordLLMRequest(type, usage, latencyMs);
-          return envelope;
+          return {
+            events: result.events,
+            state_patch: mergePatchesList([...result.patches, ...patches]),
+          };
         } catch (error) {
           this.metrics?.recordLLMRequest(type, usage, latencyMs);
           this.metrics?.recordSchemaValidationFailure();
-          if (options?.onEvent && events.length > 0) {
+          if (options?.onEvent && (events.length > 0 || patches.length > 0)) {
             throw error;
           }
           lastError = error instanceof Error ? error.message : String(error);
@@ -505,4 +522,10 @@ export class StoryGenerator {
 
     throw new Error(`模型输出连续校验失败：${lastError}`);
   }
+}
+
+function mergePatchesList(patches: StoryStatePatch[]): StoryStatePatch {
+  let merged: StoryStatePatch = {};
+  for (const patch of patches) merged = mergePatches(merged, patch);
+  return merged;
 }

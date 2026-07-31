@@ -19,6 +19,53 @@ export function validatePatch(value: unknown): StoryStatePatch {
   return StoryStatePatchSchema.parse(value) as StoryStatePatch;
 }
 
+/**
+ * Merge two partial patches into one, preserving the semantics of applying
+ * them in sequence. `b` wins over `a` at every level; open_threads are
+ * merged by id with `b` taking precedence.
+ */
+export function mergePatches(
+  a: StoryStatePatch,
+  b: StoryStatePatch,
+): StoryStatePatch {
+  const scene =
+    a.scene || b.scene
+      ? { ...(a.scene ?? {}), ...(b.scene ?? {}) }
+      : undefined;
+  const canon =
+    a.canon || b.canon
+      ? { ...(a.canon ?? {}), ...(b.canon ?? {}) }
+      : undefined;
+  const characters: NonNullable<StoryStatePatch["characters"]> = {};
+  let hasCharacters = false;
+  for (const [charId, charPatch] of Object.entries(a.characters ?? {})) {
+    characters[charId] = { ...(characters[charId] ?? {}), ...charPatch };
+    hasCharacters = true;
+  }
+  for (const [charId, charPatch] of Object.entries(b.characters ?? {})) {
+    characters[charId] = { ...(characters[charId] ?? {}), ...charPatch };
+    hasCharacters = true;
+  }
+
+  let open_threads = b.open_threads ?? a.open_threads;
+  if (a.open_threads && b.open_threads) {
+    const map = new Map(a.open_threads.map((t) => [t.id, t] as const));
+    for (const thread of b.open_threads) map.set(thread.id, thread);
+    open_threads = [...map.values()];
+  }
+
+  const result: StoryStatePatch = {};
+  if (scene !== undefined) result.scene = scene;
+  if (canon !== undefined) result.canon = canon;
+  if (hasCharacters) result.characters = characters;
+  if (open_threads !== undefined) result.open_threads = open_threads;
+  if (b.recent_summary !== undefined) result.recent_summary = b.recent_summary;
+  else if (a.recent_summary !== undefined) result.recent_summary = a.recent_summary;
+  if (b.player_profile !== undefined) result.player_profile = b.player_profile;
+  else if (a.player_profile !== undefined) result.player_profile = a.player_profile;
+  return result;
+}
+
 /** Status priority for thread merging (higher = further progressed). */
 const STATUS_PRIORITY: Record<StoryThread["status"], number> = {
   new: 0,

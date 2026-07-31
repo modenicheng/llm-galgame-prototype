@@ -6,15 +6,16 @@
  * real API calls. The OpenAI client is constructed but never invoked.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { StoryGenerator } from "./llm.js";
 import { GenerationEnvelopeSchema, AutocompleteResultSchema } from "./story/types.js";
 import type { AppConfig } from "./config.js";
 import type { PromptBundle } from "./prompts.js";
-import type { StoryContextEvent, InteractionEvent } from "./schema.js";
+import type { StoryContextEvent, InteractionEvent, ModelEvent } from "./schema.js";
 import { makeTestConfig } from "./test-helpers.js";
 import type { StoryState, GenerationEnvelope } from "./story/types.js";
 import { createInitialState } from "./story/state.js";
+import { parseTerminalModelJsonl } from "./jsonl.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers — reusable fixtures, no real network calls
@@ -145,222 +146,84 @@ describe("removeMarkdownFence", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseGenerationEnvelope", () => {
-  /**
-   * Simple fallback parser that mimics JSONL parsing but is lenient for testing.
-   * Returns narration/dialogue events for any JSON array text.
-   */
-  function makeFallback(text: string) {
-    return function fallbackParse(t: string) {
-      // Try JSONL first, then fall back
-      const lines = t.split(/\r?\n/).filter(Boolean);
-      return lines.map((line) => JSON.parse(line));
-    };
-  }
+  // --- single-track JSONL protocol (no envelope) ---
 
-  const fallbackNeverCalled = () => {
-    throw new Error("fallback should not have been called");
-  };
-
-  // --- envelope (new format) tests ---
-
-  it("parses valid JSON object with events + state_patch", () => {
+  it("strips markdown fence and delegates to the fallback parser", () => {
     const gen = makeTestGenerator();
-    const text = JSON.stringify({
-      events: [
-        { type: "narration", text: "雨停了。" },
-        { type: "dialogue", speaker: "老板", text: "再来一杯？" },
-        {
-          type: "interaction",
-          interaction_id: "int_1",
-          prompt: "点什么？",
-          mode: "choice",
-          options: [{ id: "a", text: "啤酒" }],
-        },
-      ],
-      state_patch: {
-        recent_summary: "冒险者与老板交谈了几句。",
-      },
-    });
+    const text = '```jsonl\n' + [
+      '{"type":"narration","text":"天亮了。"}',
+      '{"type":"end","ending_id":"good_end","text":"冒险结束。"}',
+    ].join("\n") + '\n```';
 
     const result = (gen as any).parseGenerationEnvelope(
       text,
-      fallbackNeverCalled,
-    ) as GenerationEnvelope;
-
-    expect(result.events).toHaveLength(3);
-    expect(result.events[0]!.type).toBe("narration");
-    expect(result.events[1]!.type).toBe("dialogue");
-    expect(result.events[2]!.type).toBe("interaction");
-    expect(result.state_patch.recent_summary).toBe("冒险者与老板交谈了几句。");
-  });
-
-  it("parses envelope with planning_notes included", () => {
-    const gen = makeTestGenerator();
-    const text = JSON.stringify({
-      events: [
-        { type: "narration", text: "窗外雷声滚滚。" },
-      ],
-      state_patch: {},
-      planning_notes: {
-        next_scene_plan: "老板会提供一个任务",
-        thread_hints: ["tavern_quest"],
-        character_directions: { innkeeper: "主动提供情报" },
-        anticipated_interactions: ["choice"],
-      },
-    });
-
-    const result = (gen as any).parseGenerationEnvelope(
-      text,
-      fallbackNeverCalled,
-    ) as GenerationEnvelope;
-
-    expect(result.events).toHaveLength(1);
-    expect(result.planning_notes).toBeDefined();
-    expect(result.planning_notes!.next_scene_plan).toBe("老板会提供一个任务");
-    expect(result.planning_notes!.thread_hints).toEqual(["tavern_quest"]);
-    expect(result.planning_notes!.character_directions).toEqual({
-      innkeeper: "主动提供情报",
-    });
-    expect(result.planning_notes!.anticipated_interactions).toEqual(["choice"]);
-  });
-
-  it("parses envelope when wrapped in markdown fence", () => {
-    const gen = makeTestGenerator();
-    const text = '```json\n' + JSON.stringify({
-      events: [
-        { type: "narration", text: "天亮了。" },
-        { type: "end", ending_id: "good_end", text: "冒险结束。" },
-      ],
-      state_patch: { recent_summary: "故事完结。" },
-    }) + '\n```';
-
-    const result = (gen as any).parseGenerationEnvelope(
-      text,
-      fallbackNeverCalled,
-    ) as GenerationEnvelope;
+      (t: string) => parseTerminalModelJsonl(t),
+    );
 
     expect(result.events).toHaveLength(2);
     expect(result.events[1]!.type).toBe("end");
   });
 
-  it("parses envelope with only narration/dialogue (no terminal event) in events", () => {
+  it("collects in-band state_patch lines into patches", () => {
     const gen = makeTestGenerator();
-    const text = JSON.stringify({
-      events: [
-        { type: "narration", text: "微风吹过。" },
-        { type: "dialogue", speaker: "A", text: "你好。" },
-      ],
-      state_patch: {},
-    });
-
-    // parseGenerationEnvelope does NOT validate terminal-event placement;
-    // that is done by the JSONL fallback parser. The envelope path just
-    // validates structural correctness.
-    const result = (gen as any).parseGenerationEnvelope(
-      text,
-      fallbackNeverCalled,
-    ) as GenerationEnvelope;
-
-    expect(result.events).toHaveLength(2);
-    expect(result.state_patch).toEqual({});
-  });
-
-  it("handles envelope with minimal empty state_patch", () => {
-    const gen = makeTestGenerator();
-    const text = JSON.stringify({
-      events: [{ type: "narration", text: "..." }],
-      state_patch: {},
-    });
+    const text = [
+      '{"type":"narration","text":"雨停了。"}',
+      '{"type":"state_patch","patch":{"recent_summary":"冒险者与老板交谈了几句。"}}',
+      '{"type":"dialogue","speaker":"老板","text":"再来一杯？"}',
+      '{"type":"interaction","interaction_id":"int_1","prompt":"点什么？","mode":"choice","options":[{"id":"a","text":"啤酒"}]}',
+    ].join("\n");
 
     const result = (gen as any).parseGenerationEnvelope(
       text,
-      fallbackNeverCalled,
-    ) as GenerationEnvelope;
+      (t: string) => parseTerminalModelJsonl(t),
+    );
 
-    expect(result.events).toHaveLength(1);
-    expect(result.state_patch).toEqual({});
+    expect(result.events).toHaveLength(3);
+    expect(result.events[0]!.type).toBe("narration");
+    expect(result.events[2]!.type).toBe("interaction");
+    expect(result.patches).toHaveLength(1);
+    expect(result.patches[0]!.recent_summary).toBe("冒险者与老板交谈了几句。");
   });
 
-  // --- fallback (legacy JSONL) tests ---
+  it("passes text through unchanged when there is no fence", () => {
+    const gen = makeTestGenerator();
+    const text = '{"type":"narration","text":"意外。"}';
 
-  it("falls back to JSONL when text is a JSON array (not object)", () => {
+    const fallback = vi.fn(() => ({ events: [], patches: [] }));
+    (gen as any).parseGenerationEnvelope(text, fallback);
+    expect(fallback).toHaveBeenCalledWith('{"type":"narration","text":"意外。"}');
+  });
+
+  // --- fallback delegation ---
+
+  it("delegates plain JSONL to the fallback parser", () => {
     const gen = makeTestGenerator();
     const jsonlLines = [
       '{"type":"narration","text":"夜幕降临。"}',
       '{"type":"dialogue","speaker":"小樱","text":"好美啊。"}',
       '{"type":"end","ending_id":"end_1","text":"THE END"}',
     ];
-    const text = jsonlLines.join("\n");
 
     const result = (gen as any).parseGenerationEnvelope(
-      text,
-      makeFallback(text),
-    ) as GenerationEnvelope;
+      jsonlLines.join("\n"),
+      (t: string) => parseTerminalModelJsonl(t),
+    );
 
     expect(result.events).toHaveLength(3);
-    expect(result.state_patch).toEqual({});
     expect(result.events[0]!.type).toBe("narration");
     expect(result.events[2]!.type).toBe("end");
+    expect(result.patches).toEqual([]);
   });
 
-  it("falls back when JSON object has no 'events' key", () => {
-    const gen = makeTestGenerator();
-    const text = JSON.stringify({ type: "narration", text: "意外。" });
-
-    let fallbackCalled = false;
-    const fallback = () => {
-      fallbackCalled = true;
-      return [{ type: "narration", text: "fallback used" }];
-    };
-
-    const result = (gen as any).parseGenerationEnvelope(text, fallback) as GenerationEnvelope;
-    expect(fallbackCalled).toBe(true);
-    expect(result.events).toHaveLength(1);
-    expect(result.state_patch).toEqual({});
-  });
-
-  it("falls back when JSON parsing of envelope fails (malformed JSON object)", () => {
-    const gen = makeTestGenerator();
-    // The text is not valid JSON
-    const text = '{events: [{type: "narration"}]}'; // invalid JSON (unquoted keys)
-
-    let fallbackCalled = false;
-    const fallback = () => {
-      fallbackCalled = true;
-      return [{ type: "narration", text: "fallback" }];
-    };
-
-    const result = (gen as any).parseGenerationEnvelope(text, fallback) as GenerationEnvelope;
-    expect(fallbackCalled).toBe(true);
-    expect(result.events).toHaveLength(1);
-  });
-
-  it("falls back when envelope Zod validation fails (missing required fields)", () => {
-    const gen = makeTestGenerator();
-    // Valid JSON but events contains an unknown type
-    const text = JSON.stringify({
-      events: [{ type: "unknown_type", text: "???" }],
-      state_patch: {},
-    });
-
-    let fallbackCalled = false;
-    const fallback = () => {
-      fallbackCalled = true;
-      return [{ type: "narration", text: "fallback" }];
-    };
-
-    const result = (gen as any).parseGenerationEnvelope(text, fallback) as GenerationEnvelope;
-    expect(fallbackCalled).toBe(true);
-  });
-
-  // --- error propagation ---
-
-  it("throws when both envelope parsing AND fallback fail", () => {
+  it("propagates fallback parser errors", () => {
     const gen = makeTestGenerator();
     const text = "not json at all!!!!";
 
     expect(() => {
-      (gen as any).parseGenerationEnvelope(text, makeFallback(text));
+      (gen as any).parseGenerationEnvelope(
+        text,
+        (t: string) => parseTerminalModelJsonl(t),
+      );
     }).toThrow();
   });
 });
@@ -692,6 +555,127 @@ describe("AutocompleteResultSchema", () => {
       confidence: 0.5,
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requestEnvelope streaming — single-track JSONL protocol
+// ---------------------------------------------------------------------------
+
+describe("requestEnvelope streaming", () => {
+  function makeStream(lines: string[]): AsyncGenerator<unknown> {
+    return (async function* () {
+      for (const line of lines) {
+        yield { choices: [{ delta: { content: `${line}\n` } }] };
+      }
+    })();
+  }
+
+  function mockClient(gen: StoryGenerator, stream: AsyncGenerator<unknown>): void {
+    (gen as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn(async () => stream),
+        },
+      },
+    };
+  }
+
+  it("publishes events as lines arrive; state_patch lines never enter the event stream", async () => {
+    const gen = makeTestGenerator();
+    mockClient(gen, makeStream([
+      '{"type":"narration","text":"雨停了。"}',
+      '{"type":"state_patch","patch":{"recent_summary":"雨中相遇。"}}',
+      '{"type":"dialogue","speaker":"老板","text":"再来一杯？"}',
+      '{"type":"choice","prompt":"怎么答？","options":[{"id":"a","text":"好"},{"id":"b","text":"不"}]}',
+    ]));
+
+    const received: ModelEvent[] = [];
+    const envelope = await (gen as any).generateOpening(
+      1,
+      createInitialState(),
+      undefined,
+      { onEvent: (e: ModelEvent) => received.push(e) },
+    );
+
+    expect(received).toHaveLength(3);
+    expect(received[0]!.type).toBe("narration");
+    expect(received[1]!.type).toBe("dialogue");
+    expect(envelope.events).toHaveLength(3);
+    expect(envelope.events[2]!.type).toBe("choice");
+    expect(envelope.state_patch.recent_summary).toBe("雨中相遇。");
+  });
+
+  it("tolerates markdown fence markers around the JSONL payload", async () => {
+    const gen = makeTestGenerator();
+    mockClient(gen, makeStream([
+      '```jsonl',
+      '{"type":"narration","text":"天亮了。"}',
+      '{"type":"end","ending_id":"good_end","text":"冒险结束。"}',
+      '```',
+    ]));
+
+    const received: ModelEvent[] = [];
+    const envelope = await (gen as any).generateOpening(
+      1,
+      createInitialState(),
+      undefined,
+      { onEvent: (e: ModelEvent) => received.push(e) },
+    );
+
+    expect(received).toHaveLength(2);
+    expect(envelope.events).toHaveLength(2);
+    expect(envelope.events[1]!.type).toBe("end");
+  });
+
+  it("buffers and falls back when the first line is not line-parsable (fence-wrapped block)", async () => {
+    const gen = makeTestGenerator();
+    // Whole text is one JSONL block; first chunk cannot be parsed standalone.
+    mockClient(gen, makeStream([
+      '```jsonl\n{"type":"narration","text":"夜深。"}\n{"type":"dialogue","speaker":"A","text":"Hi。"}\n{"type":"end","ending_id":"e","text":"终"}\n```',
+    ]));
+
+    const envelope = await (gen as any).generateOpening(1, createInitialState());
+    expect(envelope.events).toHaveLength(3);
+    expect(envelope.events[2]!.type).toBe("end");
+  });
+
+  it("aborts and preserves published events when a later line is malformed", async () => {
+    const gen = makeTestGenerator();
+    mockClient(gen, makeStream([
+      '{"type":"narration","text":"第一句。"}',
+      '{"type":"dialogue","speaker":"A","text":"第二句。"}',
+      'this is not json',
+    ]));
+
+    const received: ModelEvent[] = [];
+    const promise = (gen as any).generateOpening(
+      1,
+      createInitialState(),
+      undefined,
+      { onEvent: (e: ModelEvent) => received.push(e) },
+    );
+
+    await expect(promise).rejects.toThrow(/校验失败/);
+    expect(received).toHaveLength(2);
+  });
+
+  it("retries from scratch when a malformed line precedes any published event", async () => {
+    const gen = makeTestGenerator({ generation: { repair_attempts: 1 } });
+    const bad = makeStream(['not json at all']);
+    const good = makeStream([
+      '{"type":"narration","text":"修复后的开场。"}',
+      '{"type":"end","ending_id":"e","text":"终"}',
+    ]);
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(bad)
+      .mockResolvedValueOnce(good);
+    (gen as any).client = { chat: { completions: { create } } };
+
+    const envelope = await (gen as any).generateOpening(1, createInitialState());
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(envelope.events).toHaveLength(2);
   });
 });
 

@@ -4,7 +4,9 @@ import {
   DialogueDraftEventSchema,
   NarrationDraftEventSchema,
   PortraitSchema,
-  type InteractionEvent
+  StoryStatePatchSchema,
+  type InteractionEvent,
+  type StoryStatePatch,
 } from "./story/types.js";
 
 // Re-export for convenience
@@ -133,6 +135,31 @@ export const EndEventSchema = z.object({
   ending_id: z.string().min(1),
   text: z.string().min(1)
 });
+
+/**
+ * Optional in-band state-update line in the JSONL stream.
+ *
+ * The model may emit `{"type":"state_patch","patch":{...}}` at any point
+ * between event lines. The runtime validates the patch and applies it after
+ * the request completes (state_patch lines never enter the playback path).
+ */
+export const StatePatchLineSchema = z.object({
+  type: z.literal("state_patch"),
+  patch: StoryStatePatchSchema,
+});
+
+export interface StatePatchLine {
+  type: "state_patch";
+  patch: StoryStatePatch;
+}
+
+export function isStatePatchLine(value: unknown): value is StatePatchLine {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as Record<string, unknown>).type === "state_patch"
+  );
+}
 
 export const ModelEventSchema = z.discriminatedUnion("type", [
   DialogueDraftEventSchema,
