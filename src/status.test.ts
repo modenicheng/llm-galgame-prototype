@@ -84,13 +84,13 @@ describe("RuntimeStatus", () => {
     // Update to ready
     rs.setJob("job-1", "branch-b", "ready");
     s = rs.snapshot();
-    expect(s.jobs["job-1"].state).toBe("ready");
+    expect(s.jobs["job-1"]!. state).toBe("ready");
 
     // Update to failed with error
     rs.setJob("job-1", "branch-b", "failed", "API timeout");
     s = rs.snapshot();
-    expect(s.jobs["job-1"].state).toBe("failed");
-    expect(s.jobs["job-1"].error).toBe("API timeout");
+    expect(s.jobs["job-1"]!. state).toBe("failed");
+    expect(s.jobs["job-1"]!. error).toBe("API timeout");
   });
 
   // 5. removeJob ---------------------------------------------------------
@@ -127,15 +127,15 @@ describe("RuntimeStatus", () => {
 
     rs.setBranch("b1", "Branch Alpha", "running", 3, 7);
     s = rs.snapshot();
-    expect(s.branches["b1"].state).toBe("running");
-    expect(s.branches["b1"].eventCount).toBe(3);
-    expect(s.branches["b1"].dialogueCount).toBe(7);
+    expect(s.branches["b1"]!. state).toBe("running");
+    expect(s.branches["b1"]!. eventCount).toBe(3);
+    expect(s.branches["b1"]!. dialogueCount).toBe(7);
 
     rs.setBranch("b1", "Branch Alpha", "ready", 10, 25);
     s = rs.snapshot();
-    expect(s.branches["b1"].state).toBe("ready");
-    expect(s.branches["b1"].eventCount).toBe(10);
-    expect(s.branches["b1"].dialogueCount).toBe(25);
+    expect(s.branches["b1"]!. state).toBe("ready");
+    expect(s.branches["b1"]!. eventCount).toBe(10);
+    expect(s.branches["b1"]!. dialogueCount).toBe(25);
   });
 
   // 7. clearBranches -----------------------------------------------------

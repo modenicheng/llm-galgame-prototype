@@ -15,8 +15,6 @@ export interface AudioConfig {
   active_target_lines: number;
   refill_threshold_lines: number;
   branch_prefetch_lines: number;
-  choice_prefetch_lines: number;
-  input_preview_lines: number;
   batch_size: number;
   max_concurrency: number;
   mock_latency_ms: number;
@@ -34,21 +32,11 @@ interface PrefetchConfig {
 }
 
 export interface TextBufferConfig {
-  start_threshold_lines: number;
-  target_lines: number;
   refill_threshold_lines: number;
-}
-
-export interface MemoryConfig {
-  max_open_threads: number;
-  max_known_facts_per_character: number;
-  summary_max_chars: number;
-  state_snapshot_interval_turns: number;
 }
 
 export interface AppConfig {
   api: {
-    provider: "openai_compatible";
     model: string;
     base_url?: string;
     api_key_env: string;
@@ -65,10 +53,8 @@ export interface AppConfig {
     branch_dialogue_lines: number;
     branch_max_events: number;
     branch_concurrency: number;
-    choice: ChoicePrefetchConfig;
   };
   autocomplete: AutocompleteConfig;
-  speculative_input: SpeculativeInputConfig;
   media: {
     audio: AudioConfig;
   };
@@ -78,36 +64,17 @@ export interface AppConfig {
     sessions_dir: string;
     show_line_ids: boolean;
   };
-  memory: MemoryConfig;
 }
 
 // ---------------------------------------------------------------------------
-// New Phase B configuration sections
+// Configuration sections
 // ---------------------------------------------------------------------------
-
-export interface ChoicePrefetchConfig {
-  enabled: boolean;
-  max_branches: number;
-  dialogue_lines: number;
-  max_events: number;
-  concurrency: number;
-}
 
 export interface AutocompleteConfig {
-  enabled: boolean;
   minimum_characters: number;
   debounce_ms: number;
   max_suffix_characters: number;
   confidence_threshold: number;
-}
-
-export interface SpeculativeInputConfig {
-  enabled: boolean;
-  stable_for_ms: number;
-  minimum_confidence: number;
-  max_branches: number;
-  text_lines: number;
-  audio_lines: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,8 +107,6 @@ const AudioConfigSchema = z
     active_target_lines: z.number().int().min(1).max(50).default(3),
     refill_threshold_lines: z.number().int().min(0).max(49).default(2),
     branch_prefetch_lines: z.number().int().min(0).max(20).default(2),
-    choice_prefetch_lines: z.number().int().min(0).max(20).default(2),
-    input_preview_lines: z.number().int().min(0).max(20).default(1),
     batch_size: z.number().int().min(1).max(20).default(2),
     max_concurrency: z.number().int().min(1).max(10).default(2),
     mock_latency_ms: z.number().int().min(0).max(60_000).default(800),
@@ -166,7 +131,6 @@ const AudioConfigSchema = z
 
 const ConfigSchema = z.object({
   api: z.object({
-    provider: z.literal("openai_compatible"),
     model: z.string().min(1),
     base_url: z.string().url().optional(),
     api_key_env: z.string().min(1).default("OPENAI_API_KEY"),
@@ -182,36 +146,14 @@ const ConfigSchema = z.object({
   }),
   text_buffer: z
     .object({
-      start_threshold_lines: z.number().int().min(1).max(20).default(2),
-      target_lines: z.number().int().min(2).max(30).default(6),
       refill_threshold_lines: z.number().int().min(1).max(20).default(3),
     })
-    .superRefine((value: TextBufferConfig, context: RefinementContext) => {
-      if (value.refill_threshold_lines >= value.target_lines) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["refill_threshold_lines"],
-          message: "refill_threshold_lines 必须小于 target_lines。",
-        });
-      }
-    })
-    .default({
-      start_threshold_lines: 2,
-      target_lines: 6,
-      refill_threshold_lines: 3,
-    }),
+    .default({ refill_threshold_lines: 3 }),
   prefetch: z
     .object({
       branch_dialogue_lines: z.number().int().min(1).max(20).default(3),
       branch_max_events: z.number().int().min(1).max(50).default(8),
       branch_concurrency: z.number().int().min(1).max(10).default(3),
-      choice: z.object({
-        enabled: z.boolean().default(true),
-        max_branches: z.number().int().min(1).max(10).default(3),
-        dialogue_lines: z.number().int().min(1).max(20).default(3),
-        max_events: z.number().int().min(1).max(50).default(8),
-        concurrency: z.number().int().min(1).max(10).default(3),
-      }).default({ enabled: true, max_branches: 3, dialogue_lines: 3, max_events: 8, concurrency: 3 }),
     })
     .superRefine((value: PrefetchConfig, context: RefinementContext) => {
       if (value.branch_max_events < value.branch_dialogue_lines) {
@@ -223,20 +165,11 @@ const ConfigSchema = z.object({
       }
     }),
   autocomplete: z.object({
-    enabled: z.boolean().default(true),
     minimum_characters: z.number().int().min(1).default(4),
     debounce_ms: z.number().int().min(0).max(5_000).default(350),
     max_suffix_characters: z.number().int().min(1).max(200).default(20),
     confidence_threshold: z.number().min(0).max(1).default(0.55),
-  }).default({ enabled: true, minimum_characters: 4, debounce_ms: 350, max_suffix_characters: 20, confidence_threshold: 0.55 }),
-  speculative_input: z.object({
-    enabled: z.boolean().default(true),
-    stable_for_ms: z.number().int().min(0).max(10_000).default(700),
-    minimum_confidence: z.number().min(0).max(1).default(0.72),
-    max_branches: z.number().int().min(1).max(5).default(1),
-    text_lines: z.number().int().min(0).max(20).default(1),
-    audio_lines: z.number().int().min(0).max(10).default(0),
-  }).default({ enabled: true, stable_for_ms: 700, minimum_confidence: 0.72, max_branches: 1, text_lines: 1, audio_lines: 0 }),
+  }).default({ minimum_characters: 4, debounce_ms: 350, max_suffix_characters: 20, confidence_threshold: 0.55 }),
   media: z.object({
     audio: AudioConfigSchema
   }),
@@ -245,17 +178,6 @@ const ConfigSchema = z.object({
     max_events_per_segment: z.number().int().min(2).max(50).default(12),
     sessions_dir: z.string().min(1).default("sessions"),
     show_line_ids: z.boolean().default(true)
-  }),
-  memory: z.object({
-    max_open_threads: z.number().int().positive().default(10),
-    max_known_facts_per_character: z.number().int().positive().default(20),
-    summary_max_chars: z.number().int().positive().default(500),
-    state_snapshot_interval_turns: z.number().int().positive().default(3),
-  }).default({
-    max_open_threads: 10,
-    max_known_facts_per_character: 20,
-    summary_max_chars: 500,
-    state_snapshot_interval_turns: 3,
   })
 });
 

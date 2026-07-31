@@ -13,7 +13,6 @@ import type { StoryContextEvent } from "../../schema.js";
 
 function makeConfig(overrides: Partial<AutocompleteConfig> = {}): AutocompleteConfig {
   return {
-    enabled: true,
     minimum_characters: 4,
     debounce_ms: 50,
     max_suffix_characters: 20,

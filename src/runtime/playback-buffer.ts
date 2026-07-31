@@ -1,4 +1,4 @@
-import type { RuntimeModelEvent, RuntimePlayableEvent } from "../schema.js";
+import type { RuntimeModelEvent } from "../schema.js";
 import { isPlayableEvent } from "../schema.js";
 
 /**

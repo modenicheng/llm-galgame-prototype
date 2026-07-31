@@ -2,7 +2,7 @@
  * Latency and cost metrics collector for the GalGame runtime.
  *
  * Tracks LLM request counts, token usage, generation latency, autocomplete
- * acceptance, prefetch hit rates, speculative & media waste, and player
+ * acceptance, prefetch hit rates, and player interaction timings.
  * interaction timings. The Game and UI classes import this module to
  * record observability data; a snapshot can be rendered in the TUI or
  * exported for analysis.

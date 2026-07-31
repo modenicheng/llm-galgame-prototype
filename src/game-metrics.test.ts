@@ -19,7 +19,6 @@ import type { AppConfig } from "./config.js";
 function makeConfig(): AppConfig {
   return {
     api: {
-      provider: "openai_compatible",
       model: "test-model",
       api_key_env: "TEST_KEY",
       timeout_ms: 5000,
@@ -31,36 +30,18 @@ function makeConfig(): AppConfig {
       repair_attempts: 0,
     },
     text_buffer: {
-      start_threshold_lines: 2,
-      target_lines: 6,
       refill_threshold_lines: 3,
     },
     prefetch: {
       branch_dialogue_lines: 2,
       branch_max_events: 4,
       branch_concurrency: 2,
-      choice: {
-        enabled: false,
-        max_branches: 0,
-        dialogue_lines: 0,
-        max_events: 0,
-        concurrency: 0,
-      },
     },
     autocomplete: {
-      enabled: false,
       minimum_characters: 4,
       debounce_ms: 350,
       max_suffix_characters: 20,
       confidence_threshold: 0.55,
-    },
-    speculative_input: {
-      enabled: false,
-      stable_for_ms: 700,
-      minimum_confidence: 0.72,
-      max_branches: 1,
-      text_lines: 1,
-      audio_lines: 0,
     },
     media: {
       audio: {
@@ -69,8 +50,6 @@ function makeConfig(): AppConfig {
         active_target_lines: 3,
         refill_threshold_lines: 2,
         branch_prefetch_lines: 2,
-        choice_prefetch_lines: 2,
-        input_preview_lines: 1,
         batch_size: 2,
         max_concurrency: 2,
         mock_latency_ms: 800,
@@ -82,12 +61,6 @@ function makeConfig(): AppConfig {
       max_events_per_segment: 5,
       sessions_dir: "sessions",
       show_line_ids: false,
-    },
-    memory: {
-      max_open_threads: 10,
-      max_known_facts_per_character: 20,
-      summary_max_chars: 500,
-      state_snapshot_interval_turns: 3,
     },
   };
 }

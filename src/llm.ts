@@ -5,7 +5,7 @@ import {
   buildUserPrompt,
   type ContextInput,
 } from "./story/context-builder.js";
-import { parsePrefetchModelJsonl, parseTerminalModelJsonl } from "./jsonl.js";
+import { parsePrefetchModelJsonl, parseTerminalModelJsonl, removeMarkdownFence } from "./jsonl.js";
 import type { InstructionSet, PromptBundle } from "./prompts.js";
 import type { LLMRequestCounts } from "./runtime/metrics.js";
 import { Metrics } from "./runtime/metrics.js";
@@ -40,14 +40,6 @@ function fill(template: string, vars: Record<string, string | number>): string {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function removeMarkdownFence(text: string): string {
-  return text
-    .trim()
-    .replace(/^```(?:jsonl|json)?\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-}
 
 function isAbortError(error: unknown): boolean {
   return (
@@ -125,7 +117,7 @@ export class StoryGenerator {
     return this.requestEnvelope(
       "opening",
       buildUserPrompt(turn, ctx, this.instructions.opening),
-      (text) => parseTerminalModelJsonl(text, this.config.game.max_events_per_segment),
+      (text) => parseTerminalModelJsonl(text),
       signal,
       options,
     );
@@ -153,7 +145,6 @@ export class StoryGenerator {
       (text) =>
         parsePrefetchModelJsonl(
           text,
-          this.config.prefetch.branch_max_events,
           this.config.prefetch.branch_dialogue_lines,
         ),
       signal,
@@ -180,7 +171,7 @@ export class StoryGenerator {
       "continuation",
       buildUserPrompt(turn, ctx, extra),
       (text) =>
-        parsePrefetchModelJsonl(text, this.config.prefetch.branch_max_events, 1),
+        parsePrefetchModelJsonl(text, 1),
       signal,
       options,
     );
@@ -202,7 +193,7 @@ export class StoryGenerator {
     return this.requestEnvelope(
       "continuation",
       buildUserPrompt(turn, ctx, extra),
-      (text) => parseTerminalModelJsonl(text, this.config.game.max_events_per_segment),
+      (text) => parseTerminalModelJsonl(text),
       signal,
       options,
     );

@@ -49,8 +49,6 @@ function makeConfig(overrides: Partial<AudioConfig> = {}): AudioConfig {
     active_target_lines: 3,
     refill_threshold_lines: 2,
     branch_prefetch_lines: 2,
-    choice_prefetch_lines: 2,
-    input_preview_lines: 1,
     batch_size: 2,
     max_concurrency: 2,
     mock_latency_ms: 0,

@@ -61,7 +61,6 @@ function printMetrics(game: Game): void {
   console.log(`  分支预取：     ${snap.llm.requests.branch_prefetch}`);
   console.log(`  剧情续写：     ${snap.llm.requests.continuation}`);
   console.log(`  自动补全：     ${snap.llm.requests.autocomplete}`);
-  console.log(`  推测生成：     ${snap.llm.requests.speculative}`);
 
   console.log("\n── Token 用量 ──");
   console.log(`  输入 token：   ${snap.llm.tokens.input}`);
@@ -87,10 +86,6 @@ function printMetrics(game: Game): void {
   console.log(`  接受：         ${snap.autocomplete.accepted}`);
   console.log(`  忽略：         ${snap.autocomplete.ignored}`);
   console.log(`  接受率：       ${(snap.autocomplete.acceptance_rate * 100).toFixed(1)}%`);
-
-  console.log("\n── 资源浪费 ──");
-  console.log(`  浪费文本(bytes)：${snap.waste.text_bytes}`);
-  console.log(`  浪费音频(文件)： ${snap.waste.audio_files}`);
 
   console.log("\n── 错误 ──");
   console.log(`  Schema 校验失败：${snap.errors.schema_validation_failures}`);

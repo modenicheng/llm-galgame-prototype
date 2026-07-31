@@ -324,6 +324,7 @@ describe("BranchPrefetchGroup queuing", () => {
     expect(branchCalls.length).toBe(5);
     // Last setBranch call should be for opt_0 with "running".
     const lastCall = branchCalls[4];
+    if (!lastCall) throw new Error("missing call");
     expect(lastCall[0]).toBe("opt_0");
     expect(lastCall[2]).toBe("running");
   });
@@ -418,7 +419,8 @@ describe("BranchPrefetchGroup successful generation", () => {
     // Check setBranch called with "ready" state, correct event counts.
     const branchCalls = status.setBranch.mock.calls;
     const readyCall = branchCalls.find((c: any[]) => c[2] === "ready");
-    expect(readyCall).toBeDefined();
+    if (!readyCall) throw new Error("missing ready call");
+
     expect(readyCall[0]).toBe("opt_0");
     expect(readyCall[3]).toBe(3); // eventCount
     expect(readyCall[4]).toBe(0); // dialogueCount (narration events)
@@ -442,7 +444,8 @@ describe("BranchPrefetchGroup successful generation", () => {
 
     const branchCalls = status.setBranch.mock.calls;
     const readyCall = branchCalls.find((c: any[]) => c[2] === "ready");
-    expect(readyCall[4]).toBe(2); // dialogueCount
+if (!readyCall) throw new Error("missing ready call");
+    expect(readyCall![4]).toBe(2); // dialogueCount
   });
 
   it("should set job status to 'ready' on completion", async () => {
@@ -732,7 +735,7 @@ describe("BranchPrefetchGroup take() prioritization", () => {
     const priorityCall = jobCalls.find(
       (c: any[]) => c[0] === "branch:opt_1" && c[1].includes("已选分支"),
     );
-    expect(priorityCall).toBeDefined();
+    if (!priorityCall) throw new Error("missing priority call");
     expect(priorityCall[2]).toBe("running");
   });
 });
@@ -877,7 +880,8 @@ describe("BranchPrefetchGroup error handling", () => {
 
     const branchCalls = status.setBranch.mock.calls;
     const failedCall = branchCalls.find((c: any[]) => c[2] === "failed");
-    expect(failedCall).toBeDefined();
+    if (!failedCall) throw new Error("missing failed call");
+
     expect(failedCall[0]).toBe("opt_0");
     expect(failedCall[5]).toBe("network error"); // error message
   });
@@ -1208,7 +1212,8 @@ describe("BranchPrefetchGroup status sync", () => {
 
     const branchCalls = status.setBranch.mock.calls;
     const readyCall = branchCalls.find((c: any[]) => c[2] === "ready");
-    expect(readyCall).toBeDefined();
+    if (!readyCall) throw new Error("missing ready call");
+
     // 3 events total, 2 dialogues
     expect(readyCall[3]).toBe(3);
     expect(readyCall[4]).toBe(2);
@@ -1231,7 +1236,8 @@ describe("BranchPrefetchGroup status sync", () => {
 
     const branchCalls = status.setBranch.mock.calls;
     const readyCall = branchCalls.find((c: any[]) => c[2] === "ready");
-    expect(readyCall[5]).toBeNull(); // error is null
+if (!readyCall) throw new Error("missing ready call");
+    expect(readyCall![5]).toBeNull(); // error is null
   });
 
   it("should set error message in setBranch and setJob for failed branches", async () => {
@@ -1251,11 +1257,13 @@ describe("BranchPrefetchGroup status sync", () => {
 
     const branchCalls = status.setBranch.mock.calls;
     const failedCall = branchCalls.find((c: any[]) => c[2] === "failed");
-    expect(failedCall[5]).toBe("specific error");
+if (!failedCall) throw new Error("missing failed call");
+    expect(failedCall![5]).toBe("specific error");
 
     const jobCalls = status.setJob.mock.calls;
     const failedJob = jobCalls.find((c: any[]) => c[2] === "failed");
-    expect(failedJob[3]).toBe("specific error");
+if (!failedJob) throw new Error("missing failed job");
+    expect(failedJob![3]).toBe("specific error");
   });
 });
 

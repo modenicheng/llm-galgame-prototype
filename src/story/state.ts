@@ -6,11 +6,10 @@
  * suitable for inclusion in the LLM's context window.
  *
  * `serializeState` / `deserializeState` handle JSON round-tripping with
- * Zod validation. `saveStateSnapshot` / `loadStateSnapshot` are async
- * filesystem wrappers.
+ * Zod validation. `saveStateSnapshot` is an async filesystem wrapper.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import type { StoryState } from "./types.js";
 import { StoryStateSchema } from "./types.js";
 
@@ -160,14 +159,4 @@ export async function saveStateSnapshot(
 ): Promise<void> {
   const json = serializeState(state);
   await writeFile(filePath, json, "utf8");
-}
-
-/**
- * Load a `StoryState` snapshot from a JSON file on disk.
- */
-export async function loadStateSnapshot(
-  filePath: string,
-): Promise<StoryState> {
-  const json = await readFile(filePath, "utf8");
-  return deserializeState(json);
 }

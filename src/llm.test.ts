@@ -24,7 +24,6 @@ const DUMMY_API_KEY = "sk-test-no-calls";
 function makeTestConfig(overrides?: Partial<AppConfig>): AppConfig {
   return {
     api: {
-      provider: "openai_compatible",
       model: "test-model",
       base_url: "https://api.test.example.com",
       api_key_env: "OPENAI_API_KEY",
@@ -40,28 +39,12 @@ function makeTestConfig(overrides?: Partial<AppConfig>): AppConfig {
       branch_dialogue_lines: 3,
       branch_max_events: 8,
       branch_concurrency: 3,
-      choice: {
-        enabled: true,
-        max_branches: 3,
-        dialogue_lines: 3,
-        max_events: 8,
-        concurrency: 3,
-      },
     },
     autocomplete: {
-      enabled: true,
       minimum_characters: 4,
       debounce_ms: 350,
       max_suffix_characters: 20,
       confidence_threshold: 0.55,
-    },
-    speculative_input: {
-      enabled: true,
-      stable_for_ms: 700,
-      minimum_confidence: 0.72,
-      max_branches: 1,
-      text_lines: 1,
-      audio_lines: 0,
     },
     media: {
       audio: {
@@ -70,8 +53,6 @@ function makeTestConfig(overrides?: Partial<AppConfig>): AppConfig {
         active_target_lines: 3,
         refill_threshold_lines: 2,
         branch_prefetch_lines: 2,
-        choice_prefetch_lines: 2,
-        input_preview_lines: 1,
         batch_size: 2,
         max_concurrency: 2,
         mock_latency_ms: 800,
@@ -84,15 +65,7 @@ function makeTestConfig(overrides?: Partial<AppConfig>): AppConfig {
       sessions_dir: "sessions",
       show_line_ids: true,
     },
-    memory: {
-      max_open_threads: 10,
-      max_known_facts_per_character: 20,
-      summary_max_chars: 500,
-      state_snapshot_interval_turns: 3,
-    },
     text_buffer: {
-      start_threshold_lines: 2,
-      target_lines: 6,
       refill_threshold_lines: 3,
     },
     ...overrides,
@@ -863,7 +836,6 @@ describe("generateAutocomplete minimum_characters logic", () => {
   it("should return null before making API call when prefix too short", async () => {
     const gen = makeTestGenerator({
       autocomplete: {
-        enabled: true,
         minimum_characters: 5,
         debounce_ms: 350,
         max_suffix_characters: 20,
@@ -903,7 +875,6 @@ describe("generateAutocomplete minimum_characters logic", () => {
   it("passes min-char check when prefix is long enough (prefix check is synchronous)", () => {
     const gen = makeTestGenerator({
       autocomplete: {
-        enabled: true,
         minimum_characters: 4,
         debounce_ms: 350,
         max_suffix_characters: 20,

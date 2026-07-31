@@ -63,7 +63,6 @@ describe("loadConfig defaults", () => {
 
     const config = await loadConfig(filePath);
 
-    expect(config.api.provider).toBe("openai_compatible");
     expect(config.api.model).toBe("test-model");
     expect(config.api.base_url).toBe("https://api.example.com");
     expect(config.api.api_key_env).toBe("OPENAI_API_KEY"); // default
@@ -77,27 +76,12 @@ describe("loadConfig defaults", () => {
     expect(config.prefetch.branch_dialogue_lines).toBe(3); // explicit
     expect(config.prefetch.branch_max_events).toBe(8); // default
     expect(config.prefetch.branch_concurrency).toBe(3); // default
-    // Prefetch choice defaults
-    expect(config.prefetch.choice.enabled).toBe(true);
-    expect(config.prefetch.choice.max_branches).toBe(3);
-    expect(config.prefetch.choice.dialogue_lines).toBe(3);
-    expect(config.prefetch.choice.max_events).toBe(8);
-    expect(config.prefetch.choice.concurrency).toBe(3);
 
     // Autocomplete defaults
-    expect(config.autocomplete.enabled).toBe(true);
     expect(config.autocomplete.minimum_characters).toBe(4);
     expect(config.autocomplete.debounce_ms).toBe(350);
     expect(config.autocomplete.max_suffix_characters).toBe(20);
     expect(config.autocomplete.confidence_threshold).toBe(0.55);
-
-    // Speculative input defaults
-    expect(config.speculative_input.enabled).toBe(true);
-    expect(config.speculative_input.stable_for_ms).toBe(700);
-    expect(config.speculative_input.minimum_confidence).toBe(0.72);
-    expect(config.speculative_input.max_branches).toBe(1);
-    expect(config.speculative_input.text_lines).toBe(1);
-    expect(config.speculative_input.audio_lines).toBe(0);
 
     // Media defaults
     expect(config.media.audio.enabled).toBe(false);
@@ -105,8 +89,6 @@ describe("loadConfig defaults", () => {
     expect(config.media.audio.active_target_lines).toBe(3);
     expect(config.media.audio.refill_threshold_lines).toBe(2);
     expect(config.media.audio.branch_prefetch_lines).toBe(2);
-    expect(config.media.audio.choice_prefetch_lines).toBe(2);
-    expect(config.media.audio.input_preview_lines).toBe(1);
     expect(config.media.audio.batch_size).toBe(2);
     expect(config.media.audio.max_concurrency).toBe(2);
     expect(config.media.audio.mock_latency_ms).toBe(800);
@@ -119,8 +101,6 @@ describe("loadConfig defaults", () => {
     expect(config.game.show_line_ids).toBe(true);
 
     // Text buffer defaults
-    expect(config.text_buffer.start_threshold_lines).toBe(2);
-    expect(config.text_buffer.target_lines).toBe(6);
     expect(config.text_buffer.refill_threshold_lines).toBe(3);
   });
 });
@@ -201,7 +181,6 @@ describe("loadConfig with all fields", () => {
     const config = await loadConfig(filePath);
 
     // API
-    expect(config.api.provider).toBe("openai_compatible");
     expect(config.api.model).toBe("gpt-4o");
     expect(config.api.api_key_env).toBe("CUSTOM_API_KEY");
     expect(config.api.timeout_ms).toBe(30000);
@@ -212,32 +191,16 @@ describe("loadConfig with all fields", () => {
     expect(config.generation.max_tokens).toBe(2000);
     expect(config.generation.repair_attempts).toBe(3);
 
-    // Prefetch (legacy)
+    // Prefetch
     expect(config.prefetch.branch_dialogue_lines).toBe(5);
     expect(config.prefetch.branch_max_events).toBe(15);
     expect(config.prefetch.branch_concurrency).toBe(4);
 
-    // Prefetch choice
-    expect(config.prefetch.choice.enabled).toBe(false);
-    expect(config.prefetch.choice.max_branches).toBe(5);
-    expect(config.prefetch.choice.dialogue_lines).toBe(4);
-    expect(config.prefetch.choice.max_events).toBe(12);
-    expect(config.prefetch.choice.concurrency).toBe(2);
-
     // Autocomplete
-    expect(config.autocomplete.enabled).toBe(false);
     expect(config.autocomplete.minimum_characters).toBe(6);
     expect(config.autocomplete.debounce_ms).toBe(500);
     expect(config.autocomplete.max_suffix_characters).toBe(40);
     expect(config.autocomplete.confidence_threshold).toBe(0.75);
-
-    // Speculative
-    expect(config.speculative_input.enabled).toBe(false);
-    expect(config.speculative_input.stable_for_ms).toBe(1000);
-    expect(config.speculative_input.minimum_confidence).toBe(0.85);
-    expect(config.speculative_input.max_branches).toBe(2);
-    expect(config.speculative_input.text_lines).toBe(3);
-    expect(config.speculative_input.audio_lines).toBe(1);
 
     // Media
     expect(config.media.audio.enabled).toBe(true);
@@ -245,8 +208,6 @@ describe("loadConfig with all fields", () => {
     expect(config.media.audio.active_target_lines).toBe(5);
     expect(config.media.audio.refill_threshold_lines).toBe(3);
     expect(config.media.audio.branch_prefetch_lines).toBe(3);
-    expect(config.media.audio.choice_prefetch_lines).toBe(4);
-    expect(config.media.audio.input_preview_lines).toBe(2);
     expect(config.media.audio.batch_size).toBe(4);
     expect(config.media.audio.max_concurrency).toBe(3);
     expect(config.media.audio.mock_latency_ms).toBe(1200);
@@ -259,8 +220,6 @@ describe("loadConfig with all fields", () => {
     expect(config.game.show_line_ids).toBe(false);
 
     // Text buffer
-    expect(config.text_buffer.start_threshold_lines).toBe(3);
-    expect(config.text_buffer.target_lines).toBe(8);
     expect(config.text_buffer.refill_threshold_lines).toBe(4);
   });
 });
@@ -401,7 +360,7 @@ describe("loadAuthorConfig validation errors", () => {
   });
 
   it("should load the real project author.yaml", async () => {
-    const config = await loadAuthorConfig("author.yaml");
+    const config = await loadAuthorConfig("prompts/author.yaml");
 
     expect(config.control.world.mode).toBe("preferred");
     expect(config.control.characters.mode).toBe("preferred");
@@ -421,20 +380,6 @@ describe("loadAuthorConfig validation errors", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadConfig validation errors", () => {
-  it("should reject invalid provider", async () => {
-    const filePath = await writeTempYaml(
-      "bad-provider",
-      [
-        "api:",
-        "  provider: openai",
-        "  model: test",
-        "  base_url: https://api.example.com",
-      ].join("\n"),
-    );
-
-    await expect(loadConfig(filePath)).rejects.toThrow();
-  });
-
   it("should reject missing model", async () => {
     const filePath = await writeTempYaml(
       "missing-model",
@@ -546,23 +491,6 @@ describe("loadConfig validation errors", () => {
         "",
         "autocomplete:",
         "  confidence_threshold: 1.5",
-      ].join("\n"),
-    );
-
-    await expect(loadConfig(filePath)).rejects.toThrow();
-  });
-
-  it("should reject invalid speculative_input minimum_confidence", async () => {
-    const filePath = await writeTempYaml(
-      "bad-speculative-confidence",
-      [
-        "api:",
-        "  provider: openai_compatible",
-        "  model: test",
-        "  base_url: https://api.example.com",
-        "",
-        "speculative_input:",
-        "  minimum_confidence: -0.5",
       ].join("\n"),
     );
 

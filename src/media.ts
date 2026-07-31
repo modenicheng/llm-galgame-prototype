@@ -246,25 +246,6 @@ export class MediaPrefetchScheduler {
     this.updateStatus();
   }
 
-  /**
-   * Count contiguous ready audio lines starting from the current
-   * playback position. A non-ready line breaks the streak.
-   */
-  countContiguousReadyAudio(): number {
-    if (!this.config.enabled || !this.synthesizer) return Infinity;
-
-    const future = this.activeTimeline.slice(this.currentIndex + 1);
-    let count = 0;
-    for (const line of future) {
-      if (this.states.get(line.line_id) === "ready") {
-        count += 1;
-      } else {
-        break;
-      }
-    }
-    return count;
-  }
-
   private pumpActive(): void {
     if (!this.config.enabled || !this.synthesizer) return;
 

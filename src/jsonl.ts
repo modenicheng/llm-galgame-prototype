@@ -7,7 +7,7 @@ import {
   type StoredEvent
 } from "./schema.js";
 
-function removeMarkdownFence(text: string): string {
+export function removeMarkdownFence(text: string): string {
   return text
     .trim()
     .replace(/^```(?:jsonl|json)?\s*/i, "")
@@ -41,26 +41,7 @@ function isTerminalEvent(event: ModelEvent): boolean {
   return event.type === "choice" || event.type === "end" || event.type === "interaction";
 }
 
-function validateInteractionEvent(event: ModelEvent & { type: "interaction" }): void {
-  if (
-    (event.mode === "choice" || event.mode === "hybrid") &&
-    (!event.options || event.options.length === 0)
-  ) {
-    throw new Error(
-      `interaction 事件 mode="${event.mode}" 必须提供非空的 options 数组。`
-    );
-  }
-  if (
-    (event.mode === "input" || event.mode === "hybrid") &&
-    !event.input
-  ) {
-    throw new Error(
-      `interaction 事件 mode="${event.mode}" 必须提供 input 字段。`
-    );
-  }
-}
-
-export function parseTerminalModelJsonl(text: string, _maxEvents: number): ModelEvent[] {
+export function parseTerminalModelJsonl(text: string): ModelEvent[] {
   const events = parseLines(text);
   const terminalIndexes = events
     .map((event, index) => (isTerminalEvent(event) ? index : -1))
@@ -74,17 +55,11 @@ export function parseTerminalModelJsonl(text: string, _maxEvents: number): Model
     throw new Error("完整剧情段至少需要一条可播放文本和一个 choice/interaction/end 事件。");
   }
 
-  const terminal = events[events.length - 1]!;
-  if (terminal.type === "interaction") {
-    validateInteractionEvent(terminal);
-  }
-
   return events;
 }
 
 export function parsePrefetchModelJsonl(
   text: string,
-  _maxEvents: number,
   minDialogueLines: number
 ): ModelPlayableEvent[] {
   const events = parseLines(text);
