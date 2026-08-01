@@ -1,5 +1,5 @@
 import type { AppConfig } from "./config.js";
-import type { GamePorts } from "./game.js";
+import type { Game, GamePorts } from "./game.js";
 import type { ClockPort } from "./core/ports/clock-port.js";
 import { silentDiagnosticSink } from "./core/ports/diagnostic-sink.js";
 import type { IdGeneratorPort } from "./core/ports/id-generator-port.js";
@@ -8,7 +8,10 @@ import type {
   SessionMetadata,
   SessionStorePort,
 } from "./core/ports/session-store-port.js";
+import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
+import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
 import type { StoredEvent } from "./schema.js";
+import type { RuntimePlayableEvent } from "./schema.js";
 import type { StoryState } from "./story/types.js";
 
 type DeepPartial<T> = {
@@ -18,7 +21,7 @@ type DeepPartial<T> = {
 /**
  * Shared test fixture for a fully-populated AppConfig.
  *
- * Every test file that needs a Game / StoryGenerator / GameUI should
+ * Every test file that needs a Game / StoryGenerator / ports should
  * use this instead of inlining its own copy. Override individual sections
  * via `overrides` (deep partial, e.g. `{ game: { sessions_dir } }`).
  */
@@ -140,4 +143,137 @@ export function makeTestPorts(
     diagnostics: silentDiagnosticSink,
     ...overrides,
   };
+}
+
+// ---------------------------------------------------------------------------
+// In-memory runtime controller
+// ---------------------------------------------------------------------------
+
+export type InteractionOpenedOutput = Extract<
+  RuntimeOutput,
+  { type: "interaction_opened" }
+>;
+export type InputPreviewOpenedOutput = Extract<
+  RuntimeOutput,
+  { type: "input_preview_opened" }
+>;
+
+/**
+ * Default behaviors when no handler is given:
+ * - playback_ready → dispatch `advance`
+ * - input_preview_opened → dispatch `confirm_input`
+ * - interaction_opened → nothing (the test drives selection/input)
+ */
+export interface MemoryControllerHandlers {
+  onPlaybackReady?: (
+    event: RuntimePlayableEvent,
+    controller: MemoryController,
+  ) => void | Promise<void>;
+  onInteractionOpened?: (
+    output: InteractionOpenedOutput,
+    controller: MemoryController,
+  ) => void | Promise<void>;
+  onInputPreviewOpened?: (
+    output: InputPreviewOpenedOutput,
+    controller: MemoryController,
+  ) => void | Promise<void>;
+}
+
+/**
+ * In-memory driver for the runtime: records RuntimeOutputs and can
+ * auto-respond with commands, letting tests drive full sessions without
+ * any terminal UI.
+ */
+export class MemoryController {
+  readonly outputs: RuntimeOutput[] = [];
+  private game: Game | null = null;
+
+  constructor(private readonly handlers: MemoryControllerHandlers = {}) {}
+
+  attach(game: Game): void {
+    this.game = game;
+    game.subscribe((output) => {
+      this.outputs.push(output);
+      void this.handle(output);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Assertion helpers
+  // ------------------------------------------------------------------
+
+  count(type: RuntimeOutput["type"]): number {
+    return this.outputs.filter((output) => output.type === type).length;
+  }
+
+  countPlayback(type: "narration" | "dialogue"): number {
+    return this.outputs.filter(
+      (output) => output.type === "playback_ready" && output.event.type === type,
+    ).length;
+  }
+
+  playbackEvents(): Array<RuntimeOutput & { type: "playback_ready" }> {
+    return this.outputs.filter(
+      (output): output is RuntimeOutput & { type: "playback_ready" } =>
+        output.type === "playback_ready",
+    );
+  }
+
+  ended(): boolean {
+    return this.outputs.some((output) => output.type === "session_ended");
+  }
+
+  // ------------------------------------------------------------------
+  // Command helpers
+  // ------------------------------------------------------------------
+
+  dispatch(command: RuntimeCommand): void {
+    this.game?.dispatch(command);
+  }
+
+  advance(): void {
+    this.dispatch({ type: "advance" });
+  }
+
+  select(interactionId: string, optionId: string): void {
+    this.dispatch({ type: "select_choice", interactionId, optionId });
+  }
+
+  submitInput(interactionId: string, text: string): void {
+    this.dispatch({ type: "preview_input", interactionId, text });
+  }
+
+  confirm(previewId: string): void {
+    this.dispatch({ type: "confirm_input", previewId });
+  }
+
+  cancel(previewId: string): void {
+    this.dispatch({ type: "cancel_input", previewId });
+  }
+
+  private async handle(output: RuntimeOutput): Promise<void> {
+    switch (output.type) {
+      case "playback_ready":
+        if (this.handlers.onPlaybackReady) {
+          await this.handlers.onPlaybackReady(output.event, this);
+        } else {
+          this.dispatch({ type: "advance" });
+        }
+        break;
+      case "interaction_opened":
+        if (this.handlers.onInteractionOpened) {
+          await this.handlers.onInteractionOpened(output, this);
+        }
+        break;
+      case "input_preview_opened":
+        if (this.handlers.onInputPreviewOpened) {
+          await this.handlers.onInputPreviewOpened(output, this);
+        } else {
+          this.dispatch({ type: "confirm_input", previewId: output.previewId });
+        }
+        break;
+      default:
+        break;
+    }
+  }
 }

@@ -10,7 +10,9 @@ import { MediaPrefetchScheduler } from "./media.js";
 import { loadPrompts } from "./prompts.js";
 import { Metrics } from "./runtime/metrics.js";
 import { RuntimeStatus } from "./status.js";
+import { CliController } from "./apps/cli/cli-controller.js";
 import { TerminalUI, UserExitError } from "./apps/cli/terminal-ui.js";
+import { RuntimeShutdownError } from "./game.js";
 
 function parseArgs(argv: string[]): { configPath: string } {
   let configPath = "config.yaml";
@@ -36,14 +38,16 @@ async function main(): Promise<void> {
   const media = new MediaPrefetchScheduler(config.media.audio, status);
 
   const ui = new TerminalUI(config.game.show_line_ids);
-  const game = new Game(config, generator, status, ui, media, metrics, {
+  const game = new Game(config, generator, status, media, metrics, {
     store: new NodeJsonlSessionStore(config.game.sessions_dir),
     clock: new SystemClock(),
     ids: new SessionIdGenerator(),
     diagnostics: new ConsoleDiagnosticSink(),
   });
+  const controller = new CliController(ui);
+  controller.attach(game);
 
-  await game.run();
+  await controller.run();
   printMetrics(game);
 }
 
@@ -94,7 +98,7 @@ function printMetrics(game: Game): void {
 
 main().catch((error: unknown) => {
   process.stdout.write("\x1b[?25h");
-  if (error instanceof UserExitError) {
+  if (error instanceof UserExitError || error instanceof RuntimeShutdownError) {
     console.log("\n游戏已退出。");
     process.exitCode = 130;
     return;

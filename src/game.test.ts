@@ -11,12 +11,15 @@ import path from "node:path";
 import { Game } from "./game.js";
 import { Metrics } from "./runtime/metrics.js";
 import { createInitialState } from "./story/state.js";
-import { makeTestConfig, makeTestPorts } from "./test-helpers.js";
+import {
+  makeTestConfig,
+  makeTestPorts,
+  MemoryController,
+} from "./test-helpers.js";
 import { NodeJsonlSessionStore } from "./adapters/storage/node-jsonl-session-store.js";
 import { SessionIdGenerator } from "./adapters/platform/session-id-generator.js";
 import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
 import type { MediaPrefetchScheduler } from "./media.js";
-import type { GameUI } from "./apps/cli/terminal-ui.js";
 import type { RuntimeStatus } from "./status.js";
 import type { AppConfig } from "./config.js";
 import type {
@@ -51,20 +54,6 @@ function makeMockMedia(): MediaPrefetchScheduler {
   } as unknown as MediaPrefetchScheduler;
 }
 
-function makeMockUI(): GameUI {
-  return {
-    printSession: vi.fn(),
-    renderNarration: vi.fn().mockResolvedValue(undefined),
-    renderDialogue: vi.fn().mockResolvedValue(undefined),
-    renderEnd: vi.fn(),
-    choose: vi.fn(),
-    inputEditor: vi.fn(),
-    inputPreview: vi.fn(),
-    renderHybridInteraction: vi.fn(),
-    waitForTask: vi.fn().mockImplementation((promise: Promise<unknown>) => promise),
-  } as unknown as GameUI;
-}
-
 function makeMockStatus(): RuntimeStatus {
   return {
     setPhase: vi.fn(),
@@ -73,6 +62,7 @@ function makeMockStatus(): RuntimeStatus {
     setBuffer: vi.fn(),
     setBranch: vi.fn(),
     clearBranches: vi.fn(),
+    subscribe: vi.fn().mockReturnValue(() => undefined),
     snapshot: vi.fn().mockReturnValue({ branches: {} }),
   } as unknown as RuntimeStatus;
 }
@@ -101,37 +91,35 @@ describe("Game construction", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
-  let ui: GameUI;
   let media: MediaPrefetchScheduler;
 
   beforeEach(() => {
     config = makeTestConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
-    ui = makeMockUI();
     media = makeMockMedia();
   });
 
   it("should create a Game instance with all expected infrastructure", () => {
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     expect(game).toBeDefined();
     expect(game.getMetrics).toBeInstanceOf(Function);
   });
 
   it("should initialise with an empty events array", () => {
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const events = (game as any).events;
     expect(events).toEqual([]);
   });
 
   it("should initialise with the default StoryState", () => {
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const state = (game as any).storyState;
     expect(state).toEqual(createInitialState());
   });
 
   it("should auto-create a Metrics instance when none is provided", () => {
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const snap = game.getMetrics();
     expect(snap).toBeDefined();
     expect(snap.llm.requests.opening).toBe(0);
@@ -140,7 +128,7 @@ describe("Game construction", () => {
   it("should accept and use an external Metrics instance", () => {
     const metrics = new Metrics();
     metrics.recordBranchRequested(7);
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts());
     expect(game.getMetrics().prefetch.branches_requested).toBe(7);
   });
 });
@@ -153,35 +141,33 @@ describe("Session ID", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
-  let ui: GameUI;
   let media: MediaPrefetchScheduler;
 
   beforeEach(() => {
     config = makeTestConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
-    ui = makeMockUI();
     media = makeMockMedia();
   });
 
   it("should produce a session ID with only safe filename characters", () => {
     // The SessionIdGenerator replaces : and . with -, so only alphanum, T, Z, and -
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
     const sid = (game as any).sessionId as string;
     expect(sid).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/);
   });
 
   it("should not contain colons or dots", () => {
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
     const sid = (game as any).sessionId as string;
     expect(sid).not.toContain(":");
     expect(sid).not.toContain(".");
   });
 
   it("should produce different IDs for different instances at different times", async () => {
-    const game1 = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
+    const game1 = new Game(config, generator, status, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
     await new Promise((r) => setTimeout(r, 2));
-    const game2 = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
+    const game2 = new Game(config, generator, status, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
     const sid1 = (game1 as any).sessionId as string;
     const sid2 = (game2 as any).sessionId as string;
     expect(sid1).not.toBe(sid2);
@@ -196,26 +182,24 @@ describe("internal state access", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
-  let ui: GameUI;
   let media: MediaPrefetchScheduler;
 
   beforeEach(() => {
     config = makeTestConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
-    ui = makeMockUI();
     media = makeMockMedia();
   });
 
   it("should expose the current story state", () => {
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const state = (game as any).storyState;
     expect(state).toBeDefined();
     expect(state.scene.id).toBe("prologue");
   });
 
   it("should reflect events after a player choice is recorded", () => {
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const g = game as any;
     g.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 1);
 
@@ -243,7 +227,6 @@ describe("materializeEvents", () => {
       makeTestConfig(),
       makeMockGenerator(),
       makeMockStatus(),
-      makeMockUI(),
       makeMockMedia(),
       undefined,
       makeTestPorts(),
@@ -330,7 +313,6 @@ describe("Line ID generation", () => {
       makeTestConfig(),
       makeMockGenerator(),
       makeMockStatus(),
-      makeMockUI(),
       makeMockMedia(),
       undefined,
       makeTestPorts(),
@@ -390,7 +372,6 @@ describe("recordPlayerChoice", () => {
       makeTestConfig(),
       gen,
       makeMockStatus(),
-      makeMockUI(),
       makeMockMedia(),
       undefined,
       makeTestPorts(),
@@ -440,7 +421,6 @@ describe("recordPlayerInput", () => {
       makeTestConfig(),
       makeMockGenerator(),
       makeMockStatus(),
-      makeMockUI(),
       makeMockMedia(),
       undefined,
       makeTestPorts(),
@@ -499,7 +479,6 @@ describe("Sequence numbering", () => {
       makeTestConfig(),
       makeMockGenerator(),
       makeMockStatus(),
-      makeMockUI(),
       makeMockMedia(),
       undefined,
       makeTestPorts(),
@@ -562,7 +541,6 @@ describe("registerBuffered", () => {
       makeTestConfig(),
       makeMockGenerator(),
       status,
-      makeMockUI(),
       makeMockMedia(),
       undefined,
       makeTestPorts(),
@@ -625,7 +603,6 @@ describe("JSONL store initialization", () => {
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const generator = makeMockGenerator();
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
 
     // Mock the generator to throw after init so run() doesn't loop forever
@@ -633,7 +610,8 @@ describe("JSONL store initialization", () => {
       new Error("stop"),
     );
 
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    new MemoryController().attach(game);
 
     try {
       await game.run();
@@ -651,7 +629,6 @@ describe("JSONL store initialization", () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
@@ -660,7 +637,8 @@ describe("JSONL store initialization", () => {
       envelope([narrationEvent("It begins."), endEvent("end_1", "Fin.")]),
     );
 
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    new MemoryController().attach(game);
     await game.run();
 
     // Verify the jsonl file exists and has content
@@ -675,7 +653,6 @@ describe("JSONL store initialization", () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
@@ -704,21 +681,22 @@ describe("JSONL store initialization", () => {
       },
     );
 
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const controller = new MemoryController();
+    controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
     expect(openingCalls).toBe(1);
     // 第一句旁白 + 修复段旁白；第二句对话；结局一次。
-    expect(ui.renderNarration).toHaveBeenCalledTimes(2);
-    expect(ui.renderDialogue).toHaveBeenCalledTimes(1);
-    expect(ui.renderEnd).toHaveBeenCalledTimes(1);
+    expect(controller.countPlayback("narration")).toBe(2);
+    expect(controller.countPlayback("dialogue")).toBe(1);
+    expect(controller.ended()).toBe(true);
   });
 
   it("throws when segment repairs are exhausted", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
@@ -737,7 +715,8 @@ describe("JSONL store initialization", () => {
       },
     );
 
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    new MemoryController().attach(game);
     await expect(game.run()).rejects.toThrow(/剧情段连续失败/);
   });
 
@@ -745,9 +724,7 @@ describe("JSONL store initialization", () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
-    (ui.choose as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "a", text: "选项A" });
 
     const generator = makeMockGenerator();
     let openingCalls = 0;
@@ -783,41 +760,46 @@ describe("JSONL store initialization", () => {
       envelope([narrationEvent("分支内容。")]),
     );
 
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.select(output.interactionId, "a");
+      },
+    });
+    controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
     // 开场半句 + 修复段 + 分支 + 续写结尾 = 4 段旁白；结局 1 次。
-    expect(ui.renderNarration).toHaveBeenCalledTimes(4);
-    expect(ui.renderEnd).toHaveBeenCalledTimes(1);
-    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(controller.countPlayback("narration")).toBe(4);
+    expect(controller.ended()).toBe(true);
+    expect(controller.count("interaction_opened")).toBe(1);
   });
 
   it("does not crash when the continuation segment fails while the preview is still playing", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
-    (ui.choose as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: "a",
-      text: "选项A",
-    });
 
-    // Gate the preview narration render (2nd narration) so the run loop is
-    // blocked in preview playback while the background continuation segment
-    // fails — the exact window that used to produce an unhandled rejection
-    // and crash the process.
+    // Gate the second playback_ready so the run loop is blocked in preview
+    // playback while the background continuation segment fails — the exact
+    // window that used to produce an unhandled rejection and crash the
+    // process.
     let releasePreview!: () => void;
     const previewGate = new Promise<void>((resolve) => {
       releasePreview = resolve;
     });
-    let renderCalls = 0;
-    (ui.renderNarration as ReturnType<typeof vi.fn>).mockImplementation(
-      async () => {
-        renderCalls += 1;
-        if (renderCalls === 2) await previewGate;
+    let playbackCount = 0;
+    const controller = new MemoryController({
+      onPlaybackReady: async () => {
+        playbackCount += 1;
+        if (playbackCount === 2) await previewGate;
+        controller.dispatch({ type: "advance" });
       },
-    );
+      onInteractionOpened: (output) => {
+        controller.select(output.interactionId, "a");
+      },
+    });
 
     const generator = makeMockGenerator();
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
@@ -850,13 +832,14 @@ describe("JSONL store initialization", () => {
         envelope([narrationEvent("修复续写。"), endEvent("end_1", "Fin.")]),
       );
 
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    controller.attach(game);
     const runPromise = game.run();
 
-    // Let the run loop reach the gated preview render, then give the
+    // Let the run loop reach the gated preview line, then give the
     // continuation segment's rejection time to propagate.
     await vi.waitFor(() => {
-      expect(renderCalls).toBe(2);
+      expect(playbackCount).toBe(2);
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
     releasePreview();
@@ -866,9 +849,9 @@ describe("JSONL store initialization", () => {
     // game finishes normally.
     await expect(runPromise).resolves.toBeUndefined();
     // 开场 + 分支内容 + 续写半句 + 修复续写 = 4 段旁白；结局 1 次。
-    expect(ui.renderNarration).toHaveBeenCalledTimes(4);
-    expect(ui.renderEnd).toHaveBeenCalledTimes(1);
-    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(controller.countPlayback("narration")).toBe(4);
+    expect(controller.ended()).toBe(true);
+    expect(controller.count("interaction_opened")).toBe(1);
     expect(generator.generateContinuation).toHaveBeenCalledTimes(2);
   });
 });
@@ -892,18 +875,7 @@ describe("Input preview cancellation", () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
-
-    // Editor: first confirm "你好", then (after preview cancel) "你好吗".
-    const editor = ui.inputEditor as ReturnType<typeof vi.fn>;
-    editor
-      .mockResolvedValueOnce({ action: "confirm", text: "你好" })
-      .mockResolvedValueOnce({ action: "confirm", text: "你好吗" });
-    const preview = ui.inputPreview as ReturnType<typeof vi.fn>;
-    preview
-      .mockResolvedValueOnce({ action: "cancel" })
-      .mockResolvedValueOnce({ action: "confirm" });
 
     const generator = makeMockGenerator();
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
@@ -933,20 +905,40 @@ describe("Input preview cancellation", () => {
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    // Editor round 1: submit "你好", preview cancels. Round 2: submit
+    // "你好吗", preview confirms.
+    let previewIndex = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.submitInput(
+          output.interactionId,
+          previewIndex === 0 ? "你好" : "你好吗",
+        );
+      },
+      onInputPreviewOpened: (output) => {
+        if (previewIndex === 0) controller.cancel(output.previewId);
+        else controller.confirm(output.previewId);
+        previewIndex += 1;
+      },
+    });
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
     // At this point only the committed response (and opening/continuation)
     // have rendered: 开场 + 回应 + 结尾 = 3.
-    expect(ui.renderNarration).toHaveBeenCalledTimes(3);
-    expect(ui.inputEditor).toHaveBeenCalledTimes(2);
-    expect(ui.inputPreview).toHaveBeenCalledTimes(2);
+    expect(controller.countPlayback("narration")).toBe(3);
+    expect(controller.count("interaction_opened")).toBe(2);
+    expect(controller.count("input_preview_opened")).toBe(2);
+    expect(controller.count("input_preview_canceled")).toBe(1);
+    expect(controller.count("input_committed")).toBe(1);
     expect(generateInputResponse).toHaveBeenCalledTimes(2);
 
     // Now the stale response finally arrives — it must be discarded.
     resolveStale(envelope([narrationEvent("过期回应。")]));
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(ui.renderNarration).toHaveBeenCalledTimes(3);
+    expect(controller.countPlayback("narration")).toBe(3);
     expect(game.getMetrics().input.preview_count).toBe(2);
   });
 
@@ -954,17 +946,7 @@ describe("Input preview cancellation", () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
-
-    const editor = ui.inputEditor as ReturnType<typeof vi.fn>;
-    editor
-      .mockResolvedValueOnce({ action: "confirm", text: "第一次" })
-      .mockResolvedValueOnce({ action: "confirm", text: "第二次" });
-    const preview = ui.inputPreview as ReturnType<typeof vi.fn>;
-    preview
-      .mockResolvedValueOnce({ action: "cancel" })
-      .mockResolvedValueOnce({ action: "confirm" });
 
     const generator = makeMockGenerator();
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
@@ -989,7 +971,23 @@ describe("Input preview cancellation", () => {
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    let previewIndex = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.submitInput(
+          output.interactionId,
+          previewIndex === 0 ? "第一次" : "第二次",
+        );
+      },
+      onInputPreviewOpened: (output) => {
+        if (previewIndex === 0) controller.cancel(output.previewId);
+        else controller.confirm(output.previewId);
+        previewIndex += 1;
+      },
+    });
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
     // Only the second (committed) response may reach the media timeline;
@@ -1006,7 +1004,7 @@ describe("Input preview cancellation", () => {
     // must leave no residue behind.
     expect([...buffered.values()]).toEqual([]);
     // 开场 + 第二次回应 + 结尾 = 3 段旁白；第一次的回应从未渲染。
-    expect(ui.renderNarration).toHaveBeenCalledTimes(3);
+    expect(controller.countPlayback("narration")).toBe(3);
   });
 });
 
@@ -1029,7 +1027,6 @@ describe("State patch rejection", () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
     const metrics = new Metrics();
 
@@ -1043,7 +1040,8 @@ describe("State patch rejection", () => {
       ),
     );
 
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    new MemoryController().attach(game);
     await game.run();
 
     const snap = game.getMetrics();
@@ -1054,7 +1052,6 @@ describe("State patch rejection", () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
     const metrics = new Metrics();
 
@@ -1066,7 +1063,8 @@ describe("State patch rejection", () => {
       ),
     );
 
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    new MemoryController().attach(game);
     await game.run();
 
     const snap = game.getMetrics();
@@ -1077,7 +1075,6 @@ describe("State patch rejection", () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
     const metrics = new Metrics();
 
@@ -1089,7 +1086,8 @@ describe("State patch rejection", () => {
       ),
     );
 
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    new MemoryController().attach(game);
     // Should not throw — patch rejection is non-fatal
     await expect(game.run()).resolves.toBeUndefined();
 
@@ -1108,20 +1106,18 @@ describe("Metrics pass-through", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
-  let ui: GameUI;
   let media: MediaPrefetchScheduler;
 
   beforeEach(() => {
     config = makeTestConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
-    ui = makeMockUI();
     media = makeMockMedia();
   });
 
   it("getMetrics snapshot should reflect mutations on the shared Metrics", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts());
 
     metrics.recordSchemaValidationFailure();
     metrics.recordSchemaValidationFailure();
@@ -1134,7 +1130,7 @@ describe("Metrics pass-through", () => {
 
   it("getMetrics returns a fresh snapshot each call", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts());
 
     const snap1 = game.getMetrics();
     metrics.recordBranchRequested(3);
@@ -1147,8 +1143,8 @@ describe("Metrics pass-through", () => {
   it("should keep independent Games with separate Metrics isolated", () => {
     const m1 = new Metrics();
     const m2 = new Metrics();
-    const game1 = new Game(config, generator, status, ui, media, m1, makeTestPorts());
-    const game2 = new Game(config, generator, status, ui, media, m2, makeTestPorts());
+    const game1 = new Game(config, generator, status, media, m1, makeTestPorts());
+    const game2 = new Game(config, generator, status, media, m2, makeTestPorts());
 
     m1.recordBranchRequested(1);
     m2.recordBranchRequested(9);
@@ -1162,7 +1158,7 @@ describe("Metrics pass-through", () => {
 // Hybrid interaction cancel loop / narration-only branch handoff
 // ---------------------------------------------------------------------------
 
-describe("Hybrid cancel loop", () => {
+describe("Hybrid interaction commands", () => {
   let tempDir: string;
 
   beforeEach(async () => {
@@ -1173,17 +1169,11 @@ describe("Hybrid cancel loop", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it("re-enters the same interaction on cancel instead of recursing", async () => {
+  it("selects a preset option from a hybrid interaction via commands", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
-
-    const renderHybrid = ui.renderHybridInteraction as ReturnType<typeof vi.fn>;
-    renderHybrid
-      .mockResolvedValueOnce({ type: "cancel" })
-      .mockResolvedValueOnce({ type: "choice", optionId: "a" });
 
     const generator = makeMockGenerator();
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
@@ -1209,14 +1199,22 @@ describe("Hybrid cancel loop", () => {
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    // The runtime opens the interaction once and waits for a command; a
+    // client-side cancel loop (re-prompting) never touches the runtime.
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.select(output.interactionId, "a");
+      },
+    });
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
-    // cancel → re-render → choice: two render calls, one branch flow.
-    // (hybrid choices are picked inside renderHybridInteraction; ui.choose
-    // is only used by plain choice events.)
-    expect(renderHybrid).toHaveBeenCalledTimes(2);
-    expect(ui.renderEnd).toHaveBeenCalledTimes(1);
+    // 开场 + 分支内容 + 结尾 = 3 段旁白；结局一次。
+    expect(controller.count("interaction_opened")).toBe(1);
+    expect(controller.countPlayback("narration")).toBe(3);
+    expect(controller.ended()).toBe(true);
   });
 });
 
@@ -1235,7 +1233,6 @@ describe("Narration-only branch handoff", () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
-    const ui = makeMockUI();
     const media = makeMockMedia();
 
     // The selected branch stays "generating" at selection time: it has
@@ -1276,16 +1273,19 @@ describe("Narration-only branch handoff", () => {
     // Emit the second line right when the player picks an option: the live
     // selection observes it and hands off once playable lines hit the
     // threshold (branch_dialogue_lines = 2).
-    (ui.choose as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      emitters.get("a")?.();
-      return { id: "a", text: "选项A" };
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        emitters.get("a")?.();
+        controller.select(output.interactionId, "a");
+      },
     });
 
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
     // 开场 + 分支两句 + 续写 = 4 段旁白;结局一次。
-    expect(ui.renderNarration).toHaveBeenCalledTimes(4);
-    expect(ui.renderEnd).toHaveBeenCalledTimes(1);
+    expect(controller.countPlayback("narration")).toBe(4);
+    expect(controller.ended()).toBe(true);
   });
 });

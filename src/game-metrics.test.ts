@@ -9,7 +9,6 @@ import type { MetricsSnapshot } from "./runtime/metrics.js";
 import { makeTestConfig, makeTestPorts } from "./test-helpers.js";
 import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
 import type { MediaPrefetchScheduler } from "./media.js";
-import type { GameUI } from "./apps/cli/terminal-ui.js";
 import type { RuntimeStatus } from "./status.js";
 import type { AppConfig } from "./config.js";
 
@@ -37,20 +36,6 @@ function makeMockMedia(): MediaPrefetchScheduler {
   } as unknown as MediaPrefetchScheduler;
 }
 
-function makeMockUI(): GameUI {
-  return {
-    printSession: vi.fn(),
-    renderNarration: vi.fn().mockResolvedValue(undefined),
-    renderDialogue: vi.fn().mockResolvedValue(undefined),
-    renderEnd: vi.fn(),
-    choose: vi.fn(),
-    inputEditor: vi.fn(),
-    inputPreview: vi.fn(),
-    renderHybridInteraction: vi.fn(),
-    waitForTask: vi.fn(),
-  } as unknown as GameUI;
-}
-
 function makeMockStatus(): RuntimeStatus {
   return {
     setPhase: vi.fn(),
@@ -59,6 +44,7 @@ function makeMockStatus(): RuntimeStatus {
     setBuffer: vi.fn(),
     setBranch: vi.fn(),
     clearBranches: vi.fn(),
+    subscribe: vi.fn().mockReturnValue(() => undefined),
     snapshot: vi.fn().mockReturnValue({ branches: {} }),
   } as unknown as RuntimeStatus;
 }
@@ -71,14 +57,12 @@ describe("Game Metrics integration", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
-  let ui: GameUI;
   let media: MediaPrefetchScheduler;
 
   beforeEach(() => {
     config = makeTestConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
-    ui = makeMockUI();
     media = makeMockMedia();
   });
 
@@ -87,7 +71,7 @@ describe("Game Metrics integration", () => {
   // ------------------------------------------------------------------
 
   it("should auto-create a Metrics instance when none is provided", () => {
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const snap = game.getMetrics();
     expect(snap).toBeDefined();
     expect(snap.llm.requests.opening).toBe(0);
@@ -97,14 +81,14 @@ describe("Game Metrics integration", () => {
   it("should use the provided Metrics instance", () => {
     const metrics = new Metrics();
     metrics.recordBranchRequested(5);
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts());
     const snap = game.getMetrics();
     expect(snap.prefetch.branches_requested).toBe(5);
   });
 
   it("should return the same Metrics instance via getMetrics each call", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts());
     const snap1 = game.getMetrics();
     metrics.recordBranchRequested(2);
     const snap2 = game.getMetrics();
@@ -117,7 +101,7 @@ describe("Game Metrics integration", () => {
   // ------------------------------------------------------------------
 
   it("should return a complete MetricsSnapshot with all expected fields", () => {
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const snap = game.getMetrics();
 
     // LLM
@@ -160,7 +144,7 @@ describe("Game Metrics integration", () => {
 
   it("should reflect branch requests recorded on the shared Metrics", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts());
 
     metrics.recordBranchRequested(3);
     metrics.recordPrefetchHit();
@@ -176,7 +160,7 @@ describe("Game Metrics integration", () => {
 
   it("should reflect LLM requests recorded on the shared Metrics", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts());
 
     metrics.recordLLMRequest("opening", { input: 100, output: 200 }, 1000);
     metrics.recordLLMRequest("branch_prefetch", { input: 50, output: 80 }, 500);
@@ -191,7 +175,7 @@ describe("Game Metrics integration", () => {
 
   it("should reflect input preview and choice-to-next-line on shared Metrics", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts());
 
     metrics.recordInputPreview(400);
     metrics.recordInputPreview(600);
@@ -205,7 +189,7 @@ describe("Game Metrics integration", () => {
 
   it("should reflect error counters on shared Metrics", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
+    const game = new Game(config, generator, status, media, metrics, makeTestPorts());
 
     metrics.recordSchemaValidationFailure();
     metrics.recordSchemaValidationFailure();
@@ -221,7 +205,7 @@ describe("Game Metrics integration", () => {
   // ------------------------------------------------------------------
 
   it("getMetrics snapshot should not be mutated by subsequent recordings", () => {
-    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const snap = game.getMetrics();
 
     // Record more after snapshot
@@ -239,8 +223,8 @@ describe("Game Metrics integration", () => {
     const metrics1 = new Metrics();
     const metrics2 = new Metrics();
 
-    const game1 = new Game(config, generator, status, ui, media, metrics1, makeTestPorts());
-    const game2 = new Game(config, generator, status, ui, media, metrics2, makeTestPorts());
+    const game1 = new Game(config, generator, status, media, metrics1, makeTestPorts());
+    const game2 = new Game(config, generator, status, media, metrics2, makeTestPorts());
 
     metrics1.recordBranchRequested(2);
     metrics2.recordBranchRequested(5);

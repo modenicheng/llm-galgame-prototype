@@ -5,53 +5,9 @@ import type {
   InteractionEvent,
   RuntimeDialogueEvent,
   RuntimeNarrationEvent,
-  EndEvent
+  EndEvent,
 } from "../../schema.js";
 import type { RuntimeStatusSnapshot } from "../../status.js";
-import type { RuntimeStatus } from "../../status.js";
-
-// ---------------------------------------------------------------------------
-// GameUI interface — shared contract for the CLI terminal UI
-//
-// @deprecated Migration layer: a later phase replaces this blocking callback
-// interface with RuntimeCommand / RuntimeOutput, after which only
-// CliController talks to the runtime and TerminalUI stays pure I/O.
-// ---------------------------------------------------------------------------
-
-export interface GameUI {
-  printSession(sessionId: string, filePath: string): void;
-  renderNarration(event: RuntimeNarrationEvent, status: RuntimeStatus): Promise<void>;
-  renderDialogue(event: RuntimeDialogueEvent, status: RuntimeStatus): Promise<void>;
-  renderEnd(event: EndEvent): void;
-  choose(event: ChoiceEvent, status: RuntimeStatus): Promise<ChoiceOption>;
-  inputEditor(
-    interaction: InteractionEvent,
-    initialText: string,
-    status: RuntimeStatus
-  ): Promise<{ action: "confirm" | "cancel"; text: string }>;
-  inputPreview(
-    text: string,
-    interaction: InteractionEvent,
-    status: RuntimeStatus,
-    generatingResponse: boolean
-  ): Promise<{ action: "confirm" | "cancel" }>;
-  renderHybridInteraction(
-    event: InteractionEvent & {
-      options: NonNullable<InteractionEvent["options"]>;
-      input: NonNullable<InteractionEvent["input"]>;
-    },
-    status: RuntimeStatus
-  ): Promise<
-    | { type: "choice"; optionId: string }
-    | { type: "input"; text: string }
-    | { type: "cancel" }
-  >;
-  waitForTask<T>(
-    promise: Promise<T>,
-    label: string,
-    status: RuntimeStatus
-  ): Promise<T>;
-}
 
 export class UserExitError extends Error {
   constructor() {
@@ -105,7 +61,8 @@ function stateLabel(state: string): string {
   }
 }
 
-function compactStatus(snapshot: RuntimeStatusSnapshot): string[] {
+function compactStatus(snapshot: RuntimeStatusSnapshot | null): string[] {
+  if (!snapshot) return [];
   const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
   const activeJobs = Object.values(snapshot.jobs).filter(
     (job) => job.state === "running" || job.state === "queued" || job.state === "failed"
@@ -129,9 +86,9 @@ function compactStatus(snapshot: RuntimeStatusSnapshot): string[] {
   ].map(dim);
 }
 
-function branchBadge(snapshot: RuntimeStatusSnapshot, optionId: string): string {
+function branchBadge(snapshot: RuntimeStatusSnapshot | null, optionId: string): string {
   const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
-  const branch = snapshot.branches[optionId];
+  const branch = snapshot?.branches[optionId];
   if (!branch) return dim("未调度");
   if (branch.state === "ready") {
     return `\x1b[32m已就绪\x1b[0m ${branch.eventCount} 条/${branch.dialogueCount} 对白`;
@@ -140,33 +97,60 @@ function branchBadge(snapshot: RuntimeStatusSnapshot, optionId: string): string 
   return dim(stateLabel(branch.state));
 }
 
+/**
+ * Pure I/O terminal UI.
+ *
+ * Owns no runtime state and never calls the generator, store, or
+ * scheduler. The CliController feeds status snapshots via `setStatus`
+ * and converts key/line input into RuntimeCommands.
+ */
 export class TerminalUI {
+  private latestStatus: RuntimeStatusSnapshot | null = null;
+  private readonly statusListeners = new Set<(snapshot: RuntimeStatusSnapshot) => void>();
+
   constructor(private readonly showLineIds: boolean) {
     readline.emitKeypressEvents(process.stdin);
   }
 
-  printSession(sessionId: string, filePath: string): void {
-    console.log(`\x1b[2m会话已创建：${sessionId}\x1b[0m`);
-    console.log(`\x1b[2m记录文件：${filePath}\x1b[0m`);
+  /** Feed the latest runtime status snapshot (from status_changed outputs). */
+  setStatus(snapshot: RuntimeStatusSnapshot): void {
+    this.latestStatus = snapshot;
+    for (const listener of this.statusListeners) listener(snapshot);
   }
 
-  async renderNarration(event: RuntimeNarrationEvent, status: RuntimeStatus): Promise<void> {
+  getStatus(): RuntimeStatusSnapshot | null {
+    return this.latestStatus;
+  }
+
+  onStatusChange(listener: (snapshot: RuntimeStatusSnapshot) => void): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  printSession(sessionId: string, location: string): void {
+    console.log(`\x1b[2m会话已创建：${sessionId}\x1b[0m`);
+    console.log(`\x1b[2m记录文件：${location}\x1b[0m`);
+  }
+
+  renderNarration(event: RuntimeNarrationEvent): void {
     const id = this.showLineIds ? `\x1b[2m[${event.line_id}]\x1b[0m ` : "";
     console.log(`\n${id}${event.text}`);
-    await this.waitForAdvance(status);
   }
 
-  async renderDialogue(event: RuntimeDialogueEvent, status: RuntimeStatus): Promise<void> {
+  renderDialogue(event: RuntimeDialogueEvent): void {
     const portrait = event.portrait
       ? `\x1b[2m [${event.portrait.character}/${event.portrait.expression}@${event.portrait.position}]\x1b[0m`
       : "";
     const id = this.showLineIds ? `\x1b[2m [${event.line_id}]\x1b[0m` : "";
     console.log(`\n\x1b[1m${event.speaker}\x1b[0m${portrait}${id}\n  ${event.text}`);
-    await this.waitForAdvance(status);
   }
 
   renderEnd(event: EndEvent): void {
     console.log(`\n\x1b[2m=== ${event.ending_id} ===\x1b[0m\n${event.text}\n`);
+  }
+
+  renderError(message: string): void {
+    console.error(`\n\x1b[31m[错误] ${message}\x1b[0m`);
   }
 
   /**
@@ -204,16 +188,12 @@ export class TerminalUI {
   }
 
   /**
-   * Phase 1: Line-based text editing with IME support.
-   *
-   * Enter confirms; typing "/cancel" or submitting an empty line
-   * returns to the prompting stage. The simplified TUI editor does NOT
-   * support inline cursor movement — use the Web UI for rich editing.
+   * Line-based text editing with IME support. Enter confirms; an empty
+   * line returns to the prompting stage. The simplified editor does NOT
+   * support inline cursor movement.
    */
   async inputEditor(
     interaction: InteractionEvent,
-    initialText: string,
-    status: RuntimeStatus
   ): Promise<{ action: "confirm" | "cancel"; text: string }> {
     this.ensureInteractive();
 
@@ -224,15 +204,13 @@ export class TerminalUI {
     const promptLines = interaction.prompt.split("\n");
     console.log("");
     for (const line of promptLines) console.log(line);
+    for (const s of compactStatus(this.latestStatus)) console.log(s);
 
-    const latest = status.snapshot();
-    for (const s of compactStatus(latest)) console.log(s);
-
-    const placeholder = initialText || `\x1b[2m${inputSpec.placeholder}\x1b[0m`;
+    const placeholder = `\x1b[2m${inputSpec.placeholder}\x1b[0m`;
     const prompt = `\x1b[36m▸ \x1b[0m`;
     console.log(`\x1b[2m最多 ${maxLength} 字，Enter 确认，留空取消\x1b[0m`);
 
-    const raw = await this.readLineWithIME(prompt);
+    const raw = await this.readLineWithIME(`${placeholder}\n${prompt}`);
     const text = raw.slice(0, maxLength).trim();
 
     if (text.length === 0) {
@@ -243,24 +221,20 @@ export class TerminalUI {
   }
 
   /**
-   * Phase 2: Preview confirmation.
-   *
-   * Shows the frozen text and waits for the player to either commit
-   * (Enter) or go back to editing (Esc). Displays a spinner if the
-   * NPC response is still being generated.
+   * Preview confirmation: shows the frozen text and waits for Enter
+   * (commit) or Esc (back to editing). A spinner runs while the NPC
+   * response is still being generated.
    */
   async inputPreview(
     text: string,
-    interaction: InteractionEvent,
-    status: RuntimeStatus,
-    generatingResponse: boolean
+    generatingResponse: boolean,
   ): Promise<{ action: "confirm" | "cancel" }> {
     this.ensureInteractive();
 
     const region = new LiveRegion();
     const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let frame = 0;
-    let latest = status.snapshot();
+    let latest = this.latestStatus;
 
     const draw = (): void => {
       const genStatus = generatingResponse
@@ -279,7 +253,7 @@ export class TerminalUI {
       ]);
     };
 
-    const unsubscribe = status.subscribe((snapshot) => {
+    const unsubscribe = this.onStatusChange((snapshot) => {
       latest = snapshot;
       draw();
     });
@@ -319,7 +293,6 @@ export class TerminalUI {
    */
   async renderHybridInteraction(
     event: InteractionEvent & { options: NonNullable<InteractionEvent["options"]>; input: NonNullable<InteractionEvent["input"]> },
-    status: RuntimeStatus
   ): Promise<
     | { type: "choice"; optionId: string }
     | { type: "input"; text: string }
@@ -337,15 +310,14 @@ export class TerminalUI {
     for (const line of promptLines) console.log(line);
 
     // Print numbered options with prefetch badges
-    const latest = status.snapshot();
     for (let i = 0; i < Math.min(9, options.length); i++) {
       const opt = options[i]!;
-      const badge = branchBadge(latest, opt.id);
+      const badge = branchBadge(this.latestStatus, opt.id);
       console.log(`  \x1b[1m[${i + 1}]\x1b[0m ${opt.text}  \x1b[2m[${badge}]\x1b[0m`);
     }
 
     // Status
-    for (const s of compactStatus(latest)) console.log(s);
+    for (const s of compactStatus(this.latestStatus)) console.log(s);
     console.log(
       `\x1b[2m[1-${Math.min(9, options.length)}] 选择选项  |  其他任意文字 Enter 发送  |  留空取消\x1b[0m`
     );
@@ -369,11 +341,11 @@ export class TerminalUI {
     return { type: "input", text: text.slice(0, maxLength) };
   }
 
-  async choose(event: ChoiceEvent, status: RuntimeStatus): Promise<ChoiceOption> {
+  async choose(event: ChoiceEvent): Promise<ChoiceOption> {
     this.ensureInteractive();
     const region = new LiveRegion();
     let selectedIndex = 0;
-    let latest = status.snapshot();
+    let latest = this.latestStatus;
 
     const draw = (): void => {
       const optionLines = event.options.map((option, index) => {
@@ -389,7 +361,7 @@ export class TerminalUI {
       ]);
     };
 
-    const unsubscribe = status.subscribe((snapshot) => {
+    const unsubscribe = this.onStatusChange((snapshot) => {
       latest = snapshot;
       draw();
     });
@@ -421,47 +393,18 @@ export class TerminalUI {
     }
   }
 
-  async waitForTask<T>(
-    promise: Promise<T>,
-    label: string,
-    status: RuntimeStatus
-  ): Promise<T> {
-    const region = new LiveRegion();
-    const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let frame = 0;
-    let latest = status.snapshot();
-
-    const draw = (): void => {
-      region.render([`\x1b[2m${frames[frame % frames.length]} ${label}\x1b[0m`, ...compactStatus(latest)]);
-    };
-
-    const unsubscribe = status.subscribe((snapshot) => {
-      latest = snapshot;
-      draw();
-    });
-    const timer = setInterval(() => {
-      frame += 1;
-      draw();
-    }, 90);
-    draw();
-
-    try {
-      return await promise;
-    } finally {
-      clearInterval(timer);
-      unsubscribe();
-      region.clear();
-    }
-  }
-
-  private async waitForAdvance(status: RuntimeStatus): Promise<void> {
+  /**
+   * Wait for the player to press Enter/Space to continue playback.
+   * The status region stays live via setStatus feeds.
+   */
+  async waitForAdvance(): Promise<void> {
     this.ensureInteractive();
     const region = new LiveRegion();
-    let latest = status.snapshot();
+    let latest = this.latestStatus;
     const draw = (): void => {
       region.render([...compactStatus(latest), "\x1b[2mEnter/Space 下一句，Ctrl+C 退出\x1b[0m"]);
     };
-    const unsubscribe = status.subscribe((snapshot) => {
+    const unsubscribe = this.onStatusChange((snapshot) => {
       latest = snapshot;
       draw();
     });

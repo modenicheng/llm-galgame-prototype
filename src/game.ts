@@ -1,6 +1,11 @@
 import type { AppConfig } from "./config.js";
 import { InputEngine } from "./interaction/input-engine.js";
 import { AsyncEventQueue } from "./core/runtime/async-event-queue.js";
+import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
+import type {
+  RuntimeInteractionEvent,
+  RuntimeOutput,
+} from "./core/runtime/runtime-output.js";
 import type { ClockPort } from "./core/ports/clock-port.js";
 import {
   silentDiagnosticSink,
@@ -37,7 +42,6 @@ import { applyPatch } from "./story/patch.js";
 import { createInitialState } from "./story/state.js";
 import type { GeneratedEvent, StoryState, StoryStatePatch } from "./story/types.js";
 import type { RuntimeStatus } from "./status.js";
-import type { GameUI } from "./apps/cli/terminal-ui.js";
 
 interface ActiveSegment {
   turn: number;
@@ -78,6 +82,14 @@ export interface GamePorts {
   diagnostics?: DiagnosticSink;
 }
 
+/** Raised when the driver sends `shutdown`. */
+export class RuntimeShutdownError extends Error {
+  constructor() {
+    super("运行时已收到关闭指令");
+    this.name = "RuntimeShutdownError";
+  }
+}
+
 export class Game {
   private readonly events: StoredEvent[] = [];
   private readonly buffered = new Map<string, RuntimePlayableEvent>();
@@ -93,12 +105,14 @@ export class Game {
   private choiceTimestamp: number | null = null;
   private readonly playbackBuffer = new PlaybackBuffer();
   private readonly generationScheduler = new GenerationScheduler();
+  private readonly commands = new AsyncEventQueue<RuntimeCommand>();
+  private readonly deferredCommands: RuntimeCommand[] = [];
+  private readonly listeners = new Set<(output: RuntimeOutput) => void>();
 
   constructor(
     private readonly config: AppConfig,
     private readonly generator: StoryGenerator,
     private readonly status: RuntimeStatus,
-    private readonly ui: GameUI,
     private readonly media: MediaPrefetchScheduler,
     metrics: Metrics | undefined,
     ports: GamePorts,
@@ -110,6 +124,20 @@ export class Game {
     this.diagnostics = ports.diagnostics ?? silentDiagnosticSink;
     this.sessionId = this.ids.nextSessionId();
     this.storyState = createInitialState();
+    this.status.subscribe((snapshot) => {
+      this.emit({ type: "status_changed", status: snapshot });
+    });
+  }
+
+  /** Register an output listener; returns an unsubscribe function. */
+  subscribe(listener: (output: RuntimeOutput) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Send a command to the runtime. Safe to call from output listeners. */
+  dispatch(command: RuntimeCommand): void {
+    this.commands.push(command);
   }
 
   /** Return an immutable snapshot of all collected runtime metrics. */
@@ -119,7 +147,11 @@ export class Game {
 
   async run(): Promise<void> {
     await this.store.initialize({ sessionId: this.sessionId });
-    this.ui.printSession(this.sessionId, this.store.location);
+    this.emit({
+      type: "session_started",
+      sessionId: this.sessionId,
+      location: this.store.location,
+    });
 
     this.status.setPhase("开场生成", "首条完整事件到达后立即进入播放缓冲");
     let segment = this.startActiveSegment("opening", 1, [], []);
@@ -325,11 +357,22 @@ export class Game {
             reason instanceof Error ? reason : new Error(String(reason))
           );
         const playable = segment.events.filter(isPlayableEvent);
-        if (playable.length === 0) throw failure;
+        if (playable.length === 0) {
+          this.emit({
+            type: "runtime_error",
+            code: "segment_failed",
+            message: failure.message,
+          });
+          throw failure;
+        }
         if (repairBudget <= 0) {
-          throw new Error(
-            `剧情段连续失败（已保留 ${playable.length} 条事件）：${failure.message}`,
-          );
+          const message = `剧情段连续失败（已保留 ${playable.length} 条事件）：${failure.message}`;
+          this.emit({
+            type: "runtime_error",
+            code: "segment_failed",
+            message,
+          });
+          throw new Error(message);
         }
 
         // The failed segment may already have published a terminal event
@@ -403,7 +446,7 @@ export class Game {
         segment.branchManager?.discardAll();
         this.status.removeJob(`continuation:${turn}`);
         this.status.setPhase("结束", "剧情已经结束");
-        this.ui.renderEnd(event);
+        this.emit({ type: "session_ended", ending: event });
         return { type: "end" };
       }
 
@@ -442,6 +485,32 @@ export class Game {
 
       const preview = await this.handleInteractionInput(event, turn, segment.branchManager);
       return { type: "choice", nextTurn: turn + 1, preview };
+    }
+  }
+
+  private emit(output: RuntimeOutput): void {
+    for (const listener of this.listeners) listener(output);
+  }
+
+  /**
+   * Await the next command matching `predicate`. Commands that do not
+   * match (e.g. a stale preview command for an older preview id) are
+   * deferred and re-checked by later waiters.
+   */
+  private async waitForCommand(
+    predicate: (command: RuntimeCommand) => boolean,
+  ): Promise<RuntimeCommand> {
+    const deferredIndex = this.deferredCommands.findIndex(predicate);
+    if (deferredIndex >= 0) {
+      return this.deferredCommands.splice(deferredIndex, 1)[0]!;
+    }
+    while (true) {
+      const next = await this.commands.next();
+      if (next.done) throw new RuntimeShutdownError();
+      const command = next.value;
+      if (command.type === "shutdown") throw new RuntimeShutdownError();
+      if (predicate(command)) return command;
+      this.deferredCommands.push(command);
     }
   }
 
@@ -506,11 +575,7 @@ export class Game {
       const retryPromise = this.generator
         .generateBranchPrefetch(turn + 1, this.storyState, prefetchContext, choice, selected)
         .then((envelope) => this.materializePlayableEvents(this.filterPlayableEvents(envelope.events)));
-      preview = await this.ui.waitForTask(
-        retryPromise,
-        `分支预取失败，正在重试：${message}`,
-        this.status
-      );
+      preview = await retryPromise;
       this.media.prefetchBranch(selected.id, preview);
       this.status.removeJob("selected-branch-retry");
     }
@@ -534,7 +599,18 @@ export class Game {
     if (!branchManager) throw new Error("内部错误：choice 缺少分支预取组。 ");
 
     this.status.setPhase("等待选择", "各分支正在并行预取；可随时选择");
-    const selected = await this.ui.choose(choice, this.status);
+    const interactionId = `choice_${turn}`;
+    this.emit({
+      type: "interaction_opened",
+      interactionId,
+      interaction: choice,
+    });
+    const command = await this.waitForCommand(
+      (c) => c.type === "select_choice" && c.interactionId === interactionId,
+    );
+    if (command.type !== "select_choice") throw new RuntimeShutdownError();
+    const selected = choice.options.find((option) => option.id === command.optionId);
+    if (!selected) throw new Error(`未找到选项：${command.optionId}`);
     this.choiceTimestamp = this.clock.nowMs();
     await this.recordPlayerChoice(selected, turn);
     this.diagnostics.info("player", `你选择了：${selected.text}`);
@@ -663,22 +739,22 @@ export class Game {
     await this.recordModelEvent(event, turn);
 
     if (!this.media.isReady(event.line_id)) {
-      await this.ui.waitForTask(
-        this.media.waitUntilReady(event.line_id),
-        `等待媒体资源：${event.line_id}`,
-        this.status
-      );
+      await this.media.waitUntilReady(event.line_id);
     }
 
     this.buffered.delete(event.line_id);
     this.updateBufferStatus();
     this.media.markPresented(event.line_id);
 
-    if (event.type === "narration") {
-      await this.ui.renderNarration(event, this.status);
-    } else {
-      await this.ui.renderDialogue(event, this.status);
-    }
+    this.emit({ type: "playback_ready", event });
+    await this.waitForAdvance();
+  }
+
+  private async waitForAdvance(): Promise<void> {
+    const command = await this.waitForCommand(
+      (c) => c.type === "advance",
+    );
+    if (command.type !== "advance") throw new RuntimeShutdownError();
   }
 
   private materializeEvents(drafts: ModelEvent[]): RuntimeModelEvent[] {
@@ -789,10 +865,15 @@ export class Game {
   }
 
   /**
-   * Two-phase free-text input commit.
+   * Two-phase free-text input commit, driven by commands.
    *
-   * When `initialText` is provided (e.g. from hybrid interaction),
-   * the editor loop is skipped and we go directly to preview.
+   * - `interaction_opened` (input mode) → await `preview_input`
+   * - `input_preview_opened` → await `confirm_input` / `cancel_input`
+   * - cancel → `input_preview_canceled`, reopen the same interaction
+   * - confirm → `input_committed`, return the committed response events
+   *
+   * When `initialText` is provided (e.g. from a hybrid interaction) the
+   * editor step is skipped and the flow goes directly to preview.
    */
   private async handleInteractionInput(
     interaction: InteractionEvent,
@@ -802,170 +883,162 @@ export class Game {
   ): Promise<RuntimePlayableEvent[]> {
     branchManager?.discardAll();
     this.status.clearBranches();
+    const interactionId = interaction.interaction_id;
 
     while (true) {
-    const session = this.inputEngine.startEditing(interaction);
-    let editResult: { action: "confirm" | "cancel"; text: string };
-
-    if (initialText !== undefined && initialText.trim().length > 0) {
-      // Text already provided — skip editor, jump to preview
-      editResult = { action: "confirm", text: initialText };
-    } else {
-      // Editor loop — player types and can cancel
-      while (true) {
+      let text: string;
+      if (initialText !== undefined && initialText.trim().length > 0) {
+        // Text already provided — skip editor, jump to preview
+        text = initialText.trim();
+        initialText = undefined;
+      } else {
         this.status.setPhase("等待输入", "等待玩家自由输入");
         this.status.setBuffer(this.buffered.size, this.countBufferedDialogues());
+        this.emit({ type: "interaction_opened", interactionId, interaction });
+        const command = await this.waitForCommand(
+          (c) => c.type === "preview_input" && c.interactionId === interactionId,
+        );
+        if (command.type !== "preview_input") throw new RuntimeShutdownError();
+        text = command.text.trim().slice(0, interaction.input?.max_length ?? 200);
+      }
 
-        const result = await this.ui.inputEditor(
+      // Freeze the text and enter preview.
+      const session = this.inputEngine.startEditing(interaction);
+      this.inputEngine.updateDraft(session, text);
+      this.inputEngine.requestPreview(session);
+
+      const previewId = this.ids.nextPreviewId(interactionId);
+      this.status.setPhase("输入预览", `玩家输入：${text.slice(0, 50)}`);
+      const previewStartTime = this.clock.nowMs();
+
+      // Fire NPC response generation in background
+      const responseState = { ready: false, error: null as Error | null };
+      let pendingStatePatch: StoryStatePatch | null = null;
+
+      this.status.setJob(
+        "input-response",
+        `NPC 回应：${text.slice(0, 30)}`,
+        "running"
+      );
+
+      // Cancelling the preview must abort the in-flight response request so a
+      // stale NPC reply can never pollute the buffer / media timeline after the
+      // player has already moved on to a new edit session.
+      const responseController = new AbortController();
+
+      const responsePromise: Promise<RuntimePlayableEvent[]> = this.generator
+        .generateInputResponse(
+          turn + 1,
+          this.storyState,
+          [...this.events],
           interaction,
-          session.draft,
-          this.status
-        );
+          text,
+          responseController.signal,
+        )
+        .then((envelope) => {
+          if (responseController.signal.aborted) return [];
+          // Defer state patch until player confirms with second Enter.
+          pendingStatePatch = envelope.state_patch;
+          const events = this.filterPlayableEvents(envelope.events);
+          const materialized = this.materializePlayableEvents(events);
+          // Note: events are NOT registered into the formal buffer / media
+          // timeline here. Registration happens only after the player confirms
+          // (see below), so cancelling the preview can never leave stale state
+          // behind, even if the response completed before the cancel.
+          this.inputEngine.setResponseEvents(session, materialized);
+          this.status.setJob(
+            "input-response",
+            `NPC 回应：${text.slice(0, 30)}`,
+            "ready"
+          );
+          return materialized;
+        })
+        .catch((error) => {
+          if (responseController.signal.aborted) return [];
+          const err = error instanceof Error ? error : new Error(String(error));
+          responseState.error = err;
+          this.status.setJob(
+            "input-response",
+            `NPC 回应：${text.slice(0, 30)}`,
+            "failed",
+            err.message
+          );
+          return [];
+        })
+        .finally(() => {
+          responseState.ready = true;
+        });
 
-        if (result.action === "cancel") {
-          continue;
+      // Don't await — the driver shows the preview while generating.
+      void responsePromise.catch(() => undefined);
+
+      // Show preview and await confirmation.
+      this.emit({ type: "input_preview_opened", previewId, text });
+      const previewCommand = await this.waitForCommand(
+        (c) =>
+          (c.type === "confirm_input" || c.type === "cancel_input") &&
+          c.previewId === previewId,
+      );
+      const previewDwellMs = this.clock.nowMs() - previewStartTime;
+      this.metrics.recordInputPreview(previewDwellMs);
+
+      if (previewCommand.type === "cancel_input") {
+        // Return to editing — abort the stale response request so its events
+        // can never be buffered or rendered for the previous edit session.
+        responseController.abort();
+        this.inputEngine.cancel(session);
+        this.status.removeJob("input-response");
+        this.status.clearBranches();
+        this.emit({ type: "input_preview_canceled", previewId });
+        continue;
+      }
+
+      // Confirm — commit the session
+      this.inputEngine.commit(session);
+      this.emit({ type: "input_committed", previewId });
+
+      // Apply deferred state patch now that player has confirmed
+      if (pendingStatePatch) {
+        try {
+          this.storyState = applyPatch(this.storyState, pendingStatePatch);
+        } catch {
+          this.metrics.recordStatePatchRejection();
         }
-        editResult = result;
-        break;
+        pendingStatePatch = null;
       }
-    }
 
-    // Text confirmed — freeze and enter preview
-    this.inputEngine.updateDraft(session, editResult.text);
-    this.inputEngine.requestPreview(session);
+      // Record the player input
+      await this.recordPlayerInput(interactionId, text, turn);
 
-    this.status.setPhase("输入预览", `玩家输入：${editResult.text.slice(0, 50)}`);
-    const previewStartTime = this.clock.nowMs();
+      this.status.setPhase(
+        "输入已提交",
+        `玩家输入：${text.slice(0, 50)}`
+      );
 
-    // Fire NPC response generation in background
-    const responseState = { ready: false, error: null as Error | null };
-    let pendingStatePatch: StoryStatePatch | null = null;
+      // Wait for response generation to complete
+      const responseEvents = await responsePromise;
 
-    this.status.setJob(
-      "input-response",
-      `NPC 回应：${editResult.text.slice(0, 30)}`,
-      "running"
-    );
+      if (responseState.error) {
+        this.diagnostics.warn("input", `NPC 回应生成失败 — ${responseState.error.message}`);
+      }
 
-    // Cancelling the preview must abort the in-flight response request so a
-    // stale NPC reply can never pollute the buffer / media timeline after the
-    // player has already moved on to a new edit session.
-    const responseController = new AbortController();
+      // Register the confirmed response into the formal buffer and media
+      // timeline only now — anything registered earlier could never be
+      // un-registered if the player cancelled the preview.
+      if (responseEvents.length > 0) {
+        this.registerBuffered(responseEvents);
+        this.media.appendActive(responseEvents);
+      }
 
-    const responsePromise: Promise<RuntimePlayableEvent[]> = this.generator
-      .generateInputResponse(
-        turn + 1,
-        this.storyState,
-        [...this.events],
-        interaction,
-        editResult.text,
-        responseController.signal,
-      )
-      .then((envelope) => {
-        if (responseController.signal.aborted) return [];
-        // Defer state patch until player confirms with second Enter.
-        pendingStatePatch = envelope.state_patch;
-        const events = this.filterPlayableEvents(envelope.events);
-        const materialized = this.materializePlayableEvents(events);
-        // Note: events are NOT registered into the formal buffer / media
-        // timeline here. Registration happens only after the player confirms
-        // (see below), so cancelling the preview can never leave stale state
-        // behind, even if the response completed before the cancel.
-        this.inputEngine.setResponseEvents(session, materialized);
-        this.status.setJob(
-          "input-response",
-          `NPC 回应：${editResult.text.slice(0, 30)}`,
-          "ready"
-        );
-        return materialized;
-      })
-      .catch((error) => {
-        if (responseController.signal.aborted) return [];
-        const err = error instanceof Error ? error : new Error(String(error));
-        responseState.error = err;
-        this.status.setJob(
-          "input-response",
-          `NPC 回应：${editResult.text.slice(0, 30)}`,
-          "failed",
-          err.message
-        );
-        return [];
-      })
-      .finally(() => {
-        responseState.ready = true;
-      });
-
-    // Don't await — we want to show the preview UI while generating
-    void responsePromise.catch(() => undefined);
-
-    // Show preview UI
-    const previewResult = await this.ui.inputPreview(
-      editResult.text,
-      interaction,
-      this.status,
-      !responseState.ready
-    );
-    const previewDwellMs = this.clock.nowMs() - previewStartTime;
-    this.metrics.recordInputPreview(previewDwellMs);
-
-    if (previewResult.action === "cancel") {
-      // Return to editing — abort the stale response request so its events
-      // can never be buffered or rendered for the previous edit session.
-      responseController.abort();
-      this.inputEngine.cancel(session);
       this.status.removeJob("input-response");
-      this.status.clearBranches();
-      initialText = undefined;
-      continue;
-    }
-
-    // Confirm — commit the session
-    this.inputEngine.commit(session);
-
-    // Apply deferred state patch now that player has confirmed
-    if (pendingStatePatch) {
-      try {
-        this.storyState = applyPatch(this.storyState, pendingStatePatch);
-      } catch {
-        this.metrics.recordStatePatchRejection();
-      }
-      pendingStatePatch = null;
-    }
-
-    // Record the player input
-    await this.recordPlayerInput(
-      interaction.interaction_id,
-      editResult.text,
-      turn
-    );
-
-    this.status.setPhase(
-      "输入已提交",
-      `玩家输入：${editResult.text.slice(0, 50)}`
-    );
-
-    // Wait for response generation to complete
-    const responseEvents = await responsePromise;
-
-    if (responseState.error) {
-      this.diagnostics.warn("input", `NPC 回应生成失败 — ${responseState.error.message}`);
-    }
-
-    // Register the confirmed response into the formal buffer and media
-    // timeline only now — anything registered earlier could never be
-    // un-registered if the player cancelled the preview.
-    if (responseEvents.length > 0) {
-      this.registerBuffered(responseEvents);
-      this.media.appendActive(responseEvents);
-    }
-
-    this.status.removeJob("input-response");
-    return responseEvents;
+      return responseEvents;
     }
   }
 
   /**
    * Hybrid interaction: player can select a preset option OR type free text.
+   * The runtime opens the interaction once and awaits `select_choice` or
+   * `preview_input`; client-side cancels simply re-prompt without commands.
    */
   private async handleHybridInteraction(
     interaction: InteractionEvent & {
@@ -977,117 +1050,108 @@ export class Game {
     prefetchContext: StoryContextEvent[]
   ): Promise<SegmentOutcome> {
     this.status.setPhase("等待选择", "可选择预设选项，或自由输入");
+    const interactionId = interaction.interaction_id;
 
-    // Loop until the player picks an option or submits free text; cancels
-    // simply re-enter the same interaction (no recursion).
-    let result: Awaited<ReturnType<GameUI["renderHybridInteraction"]>>;
-    while (true) {
-      result = await this.ui.renderHybridInteraction(
+    this.emit({ type: "interaction_opened", interactionId, interaction });
+    const command = await this.waitForCommand(
+      (c) =>
+        (c.type === "select_choice" || c.type === "preview_input") &&
+        c.interactionId === interactionId,
+    );
+
+    if (command.type === "preview_input") {
+      branchManager?.discardAll();
+      this.status.clearBranches();
+
+      const preview = await this.handleInteractionInput(
         interaction,
-        this.status
+        turn,
+        null,
+        command.text,
       );
-      if (result.type === "cancel") {
-        this.status.setPhase("等待选择", "可选择预设选项，或自由输入");
-        continue;
-      }
-      break;
-    }
-
-    if (result.type === "choice") {
-      const selected = interaction.options.find(
-        (o) => o.id === result.optionId
-      );
-      if (!selected) {
-        throw new Error(`未找到选项：${result.optionId}`);
-      }
-
-      await this.recordPlayerChoice(
-        { id: selected.id, text: selected.text },
-        turn
-      );
-      this.choiceTimestamp = this.clock.nowMs();
-      this.diagnostics.info("player", `你选择了：${selected.text}`);
-
-      let preview: RuntimePlayableEvent[];
-      let liveSelection: LiveBranchSelection | undefined;
-
-      if (branchManager) {
-        const syntheticChoice: ChoiceEvent = {
-          type: "choice",
-          prompt: interaction.prompt,
-          options: interaction.options.map((o) => ({
-            id: o.id,
-            text: o.text,
-          })),
-        };
-        const adopted = await this.adoptSelectedBranch(
-          selected,
-          syntheticChoice,
-          turn,
-          branchManager,
-          prefetchContext,
-        );
-        preview = adopted.preview;
-        liveSelection = adopted.liveSelection;
-
-        for (const option of interaction.options) {
-          this.status.removeJob(`branch:${option.id}`);
-        }
-        this.status.clearBranches();
-      } else {
-        this.status.setJob(
-          "on-demand-branch",
-          `生成分支：${selected.text}`,
-          "running"
-        );
-        const syntheticChoice: ChoiceEvent = {
-          type: "choice",
-          prompt: interaction.prompt,
-          options: interaction.options.map((o) => ({
-            id: o.id,
-            text: o.text,
-          })),
-        };
-        const genPromise = this.generator
-          .generateBranchPrefetch(
-            turn + 1,
-            this.storyState,
-            prefetchContext,
-            syntheticChoice,
-            { id: selected.id, text: selected.text }
-          )
-          .then((envelope) => this.materializePlayableEvents(this.filterPlayableEvents(envelope.events)));
-        preview = await this.ui.waitForTask(
-          genPromise,
-          `按需生成分支：${selected.text}`,
-          this.status
-        );
-        this.registerBuffered(preview);
-        this.status.removeJob("on-demand-branch");
-      }
 
       return {
         type: "choice",
         nextTurn: turn + 1,
         preview,
-        ...(liveSelection ? { liveSelection } : {}),
       };
     }
 
-    branchManager?.discardAll();
-    this.status.clearBranches();
+    if (command.type !== "select_choice") throw new RuntimeShutdownError();
 
-    const preview = await this.handleInteractionInput(
-      interaction,
-      turn,
-      null,
-      result.text,
+    const selected = interaction.options.find(
+      (o) => o.id === command.optionId
     );
+    if (!selected) {
+      throw new Error(`未找到选项：${command.optionId}`);
+    }
+
+    await this.recordPlayerChoice(
+      { id: selected.id, text: selected.text },
+      turn
+    );
+    this.choiceTimestamp = this.clock.nowMs();
+    this.diagnostics.info("player", `你选择了：${selected.text}`);
+
+    let preview: RuntimePlayableEvent[];
+    let liveSelection: LiveBranchSelection | undefined;
+
+    if (branchManager) {
+      const syntheticChoice: ChoiceEvent = {
+        type: "choice",
+        prompt: interaction.prompt,
+        options: interaction.options.map((o) => ({
+          id: o.id,
+          text: o.text,
+        })),
+      };
+      const adopted = await this.adoptSelectedBranch(
+        selected,
+        syntheticChoice,
+        turn,
+        branchManager,
+        prefetchContext,
+      );
+      preview = adopted.preview;
+      liveSelection = adopted.liveSelection;
+
+      for (const option of interaction.options) {
+        this.status.removeJob(`branch:${option.id}`);
+      }
+      this.status.clearBranches();
+    } else {
+      this.status.setJob(
+        "on-demand-branch",
+        `生成分支：${selected.text}`,
+        "running"
+      );
+      const syntheticChoice: ChoiceEvent = {
+        type: "choice",
+        prompt: interaction.prompt,
+        options: interaction.options.map((o) => ({
+          id: o.id,
+          text: o.text,
+        })),
+      };
+      const genPromise = this.generator
+        .generateBranchPrefetch(
+          turn + 1,
+          this.storyState,
+          prefetchContext,
+          syntheticChoice,
+          { id: selected.id, text: selected.text }
+        )
+        .then((envelope) => this.materializePlayableEvents(this.filterPlayableEvents(envelope.events)));
+      preview = await genPromise;
+      this.registerBuffered(preview);
+      this.status.removeJob("on-demand-branch");
+    }
 
     return {
       type: "choice",
       nextTurn: turn + 1,
       preview,
+      ...(liveSelection ? { liveSelection } : {}),
     };
   }
 
