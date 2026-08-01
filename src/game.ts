@@ -1,8 +1,16 @@
-import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { InputEngine } from "./interaction/input-engine.js";
-import { JsonlSessionStore } from "./jsonl.js";
-import type { StoryGenerator } from "./llm.js";
+import { AsyncEventQueue } from "./core/runtime/async-event-queue.js";
+import type { ClockPort } from "./core/ports/clock-port.js";
+import {
+  silentDiagnosticSink,
+  type DiagnosticSink,
+} from "./core/ports/diagnostic-sink.js";
+import type { IdGeneratorPort } from "./core/ports/id-generator-port.js";
+import type {
+  SessionStorePort,
+} from "./core/ports/session-store-port.js";
+import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
 import type { MediaPrefetchScheduler } from "./media.js";
 import { BranchManager } from "./runtime/branch-manager.js";
 import type { LiveBranchSelection } from "./prefetch.js";
@@ -26,43 +34,10 @@ import type {
 } from "./schema.js";
 import { isPlayableEvent } from "./schema.js";
 import { applyPatch } from "./story/patch.js";
-import { createInitialState, saveStateSnapshot } from "./story/state.js";
+import { createInitialState } from "./story/state.js";
 import type { GeneratedEvent, StoryState, StoryStatePatch } from "./story/types.js";
 import type { RuntimeStatus } from "./status.js";
-import type { GameUI, TerminalUI } from "./ui.js";
-
-function createSessionId(): string {
-  return new Date().toISOString().replace(/[:.]/g, "-");
-}
-
-class AsyncEventQueue<T> {
-  private readonly values: T[] = [];
-  private readonly waiters: Array<(result: IteratorResult<T>) => void> = [];
-  private closed = false;
-
-  push(value: T): void {
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter({ value, done: false });
-      return;
-    }
-    this.values.push(value);
-  }
-
-  close(): void {
-    this.closed = true;
-    while (this.waiters.length > 0) {
-      this.waiters.shift()!({ value: undefined as T, done: true });
-    }
-  }
-
-  next(): Promise<IteratorResult<T>> {
-    const value = this.values.shift();
-    if (value !== undefined) return Promise.resolve({ value, done: false });
-    if (this.closed) return Promise.resolve({ value: undefined as T, done: true });
-    return new Promise((resolve) => this.waiters.push(resolve));
-  }
-}
+import type { GameUI } from "./apps/cli/terminal-ui.js";
 
 interface ActiveSegment {
   turn: number;
@@ -92,13 +67,26 @@ interface EndOutcome {
 
 type SegmentOutcome = ChoiceOutcome | EndOutcome;
 
+/**
+ * Host-provided ports. The Game receives concrete adapters (Node CLI
+ * wires file store / system clock; tests wire in-memory fakes).
+ */
+export interface GamePorts {
+  store: SessionStorePort;
+  clock: ClockPort;
+  ids: IdGeneratorPort;
+  diagnostics?: DiagnosticSink;
+}
+
 export class Game {
   private readonly events: StoredEvent[] = [];
   private readonly buffered = new Map<string, RuntimePlayableEvent>();
   private seq = 1;
-  private lineSeq = 1;
-  private readonly sessionId = createSessionId();
-  private readonly store: JsonlSessionStore;
+  private readonly sessionId: string;
+  private readonly store: SessionStorePort;
+  private readonly clock: ClockPort;
+  private readonly ids: IdGeneratorPort;
+  private readonly diagnostics: DiagnosticSink;
   private readonly inputEngine = new InputEngine();
   private storyState: StoryState;
   private readonly metrics: Metrics;
@@ -112,10 +100,15 @@ export class Game {
     private readonly status: RuntimeStatus,
     private readonly ui: GameUI,
     private readonly media: MediaPrefetchScheduler,
-    metrics?: Metrics,
+    metrics: Metrics | undefined,
+    ports: GamePorts,
   ) {
     this.metrics = metrics ?? new Metrics();
-    this.store = new JsonlSessionStore(config.game.sessions_dir, this.sessionId);
+    this.store = ports.store;
+    this.clock = ports.clock;
+    this.ids = ports.ids;
+    this.diagnostics = ports.diagnostics ?? silentDiagnosticSink;
+    this.sessionId = this.ids.nextSessionId();
     this.storyState = createInitialState();
   }
 
@@ -125,8 +118,8 @@ export class Game {
   }
 
   async run(): Promise<void> {
-    await this.store.initialize();
-    this.ui.printSession(this.sessionId, this.store.filePath);
+    await this.store.initialize({ sessionId: this.sessionId });
+    this.ui.printSession(this.sessionId, this.store.location);
 
     this.status.setPhase("开场生成", "首条完整事件到达后立即进入播放缓冲");
     let segment = this.startActiveSegment("opening", 1, [], []);
@@ -231,7 +224,7 @@ export class Game {
     prefetchedEvents: StoryContextEvent[],
   ): ActiveSegment {
     const queue = new AsyncEventQueue<RuntimeModelEvent>();
-    const taskId = `${kind}:${turn}:${Date.now()}`;
+    const taskId = this.ids.nextGenerationId(kind === "opening" ? "opening" : `continuation:${turn}`);
     const segment: ActiveSegment = {
       turn,
       taskId,
@@ -368,8 +361,9 @@ export class Game {
               ...segment.events.filter((event) => event !== terminal),
             ]
           : [...priorContext, ...segment.events];
-        console.log(
-          `\x1b[2m[Repair] 生成段失败，保留 ${playable.length} 条事件，启动修复续写（剩余 ${repairBudget - 1} 次）\x1b[0m`,
+        this.diagnostics.info(
+          "Repair",
+          `生成段失败，保留 ${playable.length} 条事件，启动修复续写（剩余 ${repairBudget - 1} 次）`,
         );
         this.status.setJob(`repair:${segment.taskId}`, "段失败修复续写", "running");
         try {
@@ -483,7 +477,7 @@ export class Game {
     prefetchContext: StoryContextEvent[],
   ): Promise<{ preview: RuntimePlayableEvent[]; liveSelection?: LiveBranchSelection }> {
     this.status.setPhase("切换分支", "取消未选分支，装载已选预取片段");
-    const selectStart = Date.now();
+    const selectStart = this.clock.nowMs();
     let preview: RuntimePlayableEvent[];
     let liveSelection: LiveBranchSelection | undefined;
     // Decide from the BranchCandidate semantic layer (source of truth);
@@ -502,7 +496,10 @@ export class Game {
         preview = [...live.events];
         liveSelection = live;
       }
-      console.log(`\x1b[2m[Prefetch] 选择"${selected.text}" → 取回 ${preview.length} 条已到达事件，耗时 ${Date.now() - selectStart}ms (预取状态=${selectedState})\x1b[0m`);
+      this.diagnostics.info(
+        "Prefetch",
+        `选择"${selected.text}" → 取回 ${preview.length} 条已到达事件，耗时 ${this.clock.nowMs() - selectStart}ms (预取状态=${selectedState})`,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.status.setJob("selected-branch-retry", "已选分支重试", "running");
@@ -538,9 +535,9 @@ export class Game {
 
     this.status.setPhase("等待选择", "各分支正在并行预取；可随时选择");
     const selected = await this.ui.choose(choice, this.status);
-    this.choiceTimestamp = Date.now();
+    this.choiceTimestamp = this.clock.nowMs();
     await this.recordPlayerChoice(selected, turn);
-    console.log(`\n你选择了：${selected.text}`);
+    this.diagnostics.info("player", `你选择了：${selected.text}`);
 
     const { preview, liveSelection } = await this.adoptSelectedBranch(
       selected,
@@ -589,8 +586,9 @@ export class Game {
       // request instead of running until the model stops on its own.
       const playableCount = selection.events.filter(isPlayableEvent).length;
       if (playableCount >= this.config.prefetch.branch_dialogue_lines) {
-        console.log(
-          `\x1b[2m[Prefetch] 已选分支达到 ${playableCount} 条可播放行，立即交接正式续写\x1b[0m`,
+        this.diagnostics.info(
+          "Prefetch",
+          `已选分支达到 ${playableCount} 条可播放行，立即交接正式续写`,
         );
         selection.handoff();
       }
@@ -658,7 +656,7 @@ export class Game {
     this.advanceBufferedEvent(event);
 
     if (this.choiceTimestamp !== null) {
-      this.metrics.recordChoiceToNextLine(Date.now() - this.choiceTimestamp);
+      this.metrics.recordChoiceToNextLine(this.clock.nowMs() - this.choiceTimestamp);
       this.choiceTimestamp = null;
     }
 
@@ -698,7 +696,7 @@ export class Game {
       if (event.type === "dialogue" || event.type === "narration") {
         playable.push(event);
       } else {
-        console.warn(`[Game] 过滤非可播放事件: ${event.type}（应由 parser 预先拦截）`);
+        this.diagnostics.warn("Game", `过滤非可播放事件: ${event.type}（应由 parser 预先拦截）`);
       }
     }
     return playable;
@@ -711,9 +709,7 @@ export class Game {
   }
 
   private nextLineId(): string {
-    const id = `line_${this.sessionId}_${this.lineSeq.toString().padStart(6, "0")}`;
-    this.lineSeq += 1;
-    return id;
+    return this.ids.nextLineId(this.sessionId);
   }
 
   private registerBuffered(events: RuntimePlayableEvent[]): void {
@@ -732,7 +728,7 @@ export class Game {
       ...event,
       seq: this.seq,
       turn,
-      timestamp: new Date().toISOString(),
+      timestamp: this.clock.nowIso(),
       source: "model"
     };
     this.seq += 1;
@@ -839,7 +835,7 @@ export class Game {
     this.inputEngine.requestPreview(session);
 
     this.status.setPhase("输入预览", `玩家输入：${editResult.text.slice(0, 50)}`);
-    const previewStartTime = Date.now();
+    const previewStartTime = this.clock.nowMs();
 
     // Fire NPC response generation in background
     const responseState = { ready: false, error: null as Error | null };
@@ -909,7 +905,7 @@ export class Game {
       this.status,
       !responseState.ready
     );
-    const previewDwellMs = Date.now() - previewStartTime;
+    const previewDwellMs = this.clock.nowMs() - previewStartTime;
     this.metrics.recordInputPreview(previewDwellMs);
 
     if (previewResult.action === "cancel") {
@@ -952,7 +948,7 @@ export class Game {
     const responseEvents = await responsePromise;
 
     if (responseState.error) {
-      console.log(`\n\x1b[2m\x1b[33m警告：NPC 回应生成失败 — ${responseState.error.message}\x1b[0m\x1b[0m`);
+      this.diagnostics.warn("input", `NPC 回应生成失败 — ${responseState.error.message}`);
     }
 
     // Register the confirmed response into the formal buffer and media
@@ -1009,8 +1005,8 @@ export class Game {
         { id: selected.id, text: selected.text },
         turn
       );
-      this.choiceTimestamp = Date.now();
-      console.log(`\n你选择了：${selected.text}`);
+      this.choiceTimestamp = this.clock.nowMs();
+      this.diagnostics.info("player", `你选择了：${selected.text}`);
 
       let preview: RuntimePlayableEvent[];
       let liveSelection: LiveBranchSelection | undefined;
@@ -1108,7 +1104,7 @@ export class Game {
       text: option.text,
       seq: this.seq,
       turn,
-      timestamp: new Date().toISOString(),
+      timestamp: this.clock.nowIso(),
       source: "player"
     };
     this.seq += 1;
@@ -1126,7 +1122,7 @@ export class Game {
       text,
       seq: this.seq,
       turn,
-      timestamp: new Date().toISOString(),
+      timestamp: this.clock.nowIso(),
       source: "player"
     };
     this.seq += 1;
@@ -1139,9 +1135,7 @@ export class Game {
   }
 
   private async saveCurrentStateSnapshot(): Promise<void> {
-    const dir = path.dirname(this.store.filePath);
-    const statePath = path.join(dir, "state.json");
-    await saveStateSnapshot(this.storyState, statePath);
+    await this.store.saveSnapshot({ state: this.storyState });
   }
 
   /**

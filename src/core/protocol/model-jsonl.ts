@@ -1,14 +1,17 @@
-import { appendFile, mkdir } from "node:fs/promises";
-import path from "node:path";
+/**
+ * Pure JSONL model protocol parsing.
+ *
+ * No Node.js APIs here — this module only turns model output text into
+ * validated events and state patches, so it can run in any host.
+ */
 import {
   ModelEventSchema,
   StatePatchLineSchema,
   isStatePatchLine,
   type ModelEvent,
   type ModelPlayableEvent,
-  type StoredEvent
-} from "./schema.js";
-import type { StoryStatePatch } from "./story/types.js";
+} from "../../schema.js";
+import type { StoryStatePatch } from "../../story/types.js";
 
 export function removeMarkdownFence(text: string): string {
   return text
@@ -104,20 +107,4 @@ export function parsePrefetchModelJsonl(
   }
 
   return playable;
-}
-
-export class JsonlSessionStore {
-  readonly filePath: string;
-
-  constructor(sessionsDir: string, sessionId: string) {
-    this.filePath = path.resolve(sessionsDir, `${sessionId}.jsonl`);
-  }
-
-  async initialize(): Promise<void> {
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-  }
-
-  async append(event: StoredEvent): Promise<void> {
-    await appendFile(this.filePath, `${JSON.stringify(event)}\n`, "utf8");
-  }
 }

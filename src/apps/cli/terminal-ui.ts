@@ -6,12 +6,16 @@ import type {
   RuntimeDialogueEvent,
   RuntimeNarrationEvent,
   EndEvent
-} from "./schema.js";
-import type { RuntimeStatusSnapshot } from "./status.js";
-import type { RuntimeStatus } from "./status.js";
+} from "../../schema.js";
+import type { RuntimeStatusSnapshot } from "../../status.js";
+import type { RuntimeStatus } from "../../status.js";
 
 // ---------------------------------------------------------------------------
 // GameUI interface — shared contract for the CLI terminal UI
+//
+// @deprecated Migration layer: a later phase replaces this blocking callback
+// interface with RuntimeCommand / RuntimeOutput, after which only
+// CliController talks to the runtime and TerminalUI stays pure I/O.
 // ---------------------------------------------------------------------------
 
 export interface GameUI {

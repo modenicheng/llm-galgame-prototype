@@ -11,10 +11,12 @@ import path from "node:path";
 import { Game } from "./game.js";
 import { Metrics } from "./runtime/metrics.js";
 import { createInitialState } from "./story/state.js";
-import { makeTestConfig } from "./test-helpers.js";
-import type { StoryGenerator } from "./llm.js";
+import { makeTestConfig, makeTestPorts } from "./test-helpers.js";
+import { NodeJsonlSessionStore } from "./adapters/storage/node-jsonl-session-store.js";
+import { SessionIdGenerator } from "./adapters/platform/session-id-generator.js";
+import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
 import type { MediaPrefetchScheduler } from "./media.js";
-import type { GameUI } from "./ui.js";
+import type { GameUI } from "./apps/cli/terminal-ui.js";
 import type { RuntimeStatus } from "./status.js";
 import type { AppConfig } from "./config.js";
 import type {
@@ -35,7 +37,6 @@ function makeMockGenerator(): StoryGenerator {
     generateBranchPrefetch: vi.fn(),
     generateInputResponse: vi.fn(),
     generateContinuation: vi.fn(),
-    generateAutocomplete: vi.fn(),
   } as unknown as StoryGenerator;
 }
 
@@ -112,25 +113,25 @@ describe("Game construction", () => {
   });
 
   it("should create a Game instance with all expected infrastructure", () => {
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
     expect(game).toBeDefined();
     expect(game.getMetrics).toBeInstanceOf(Function);
   });
 
   it("should initialise with an empty events array", () => {
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
     const events = (game as any).events;
     expect(events).toEqual([]);
   });
 
   it("should initialise with the default StoryState", () => {
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
     const state = (game as any).storyState;
     expect(state).toEqual(createInitialState());
   });
 
   it("should auto-create a Metrics instance when none is provided", () => {
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
     const snap = game.getMetrics();
     expect(snap).toBeDefined();
     expect(snap.llm.requests.opening).toBe(0);
@@ -139,7 +140,7 @@ describe("Game construction", () => {
   it("should accept and use an external Metrics instance", () => {
     const metrics = new Metrics();
     metrics.recordBranchRequested(7);
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
     expect(game.getMetrics().prefetch.branches_requested).toBe(7);
   });
 });
@@ -164,23 +165,23 @@ describe("Session ID", () => {
   });
 
   it("should produce a session ID with only safe filename characters", () => {
-    // The createSessionId replaces : and . with -, so only alphanum, T, Z, and -
-    const game = new Game(config, generator, status, ui, media);
+    // The SessionIdGenerator replaces : and . with -, so only alphanum, T, Z, and -
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
     const sid = (game as any).sessionId as string;
     expect(sid).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/);
   });
 
   it("should not contain colons or dots", () => {
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
     const sid = (game as any).sessionId as string;
     expect(sid).not.toContain(":");
     expect(sid).not.toContain(".");
   });
 
   it("should produce different IDs for different instances at different times", async () => {
-    const game1 = new Game(config, generator, status, ui, media);
+    const game1 = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
     await new Promise((r) => setTimeout(r, 2));
-    const game2 = new Game(config, generator, status, ui, media);
+    const game2 = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ ids: new SessionIdGenerator() }));
     const sid1 = (game1 as any).sessionId as string;
     const sid2 = (game2 as any).sessionId as string;
     expect(sid1).not.toBe(sid2);
@@ -207,14 +208,14 @@ describe("internal state access", () => {
   });
 
   it("should expose the current story state", () => {
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
     const state = (game as any).storyState;
     expect(state).toBeDefined();
     expect(state.scene.id).toBe("prologue");
   });
 
   it("should reflect events after a player choice is recorded", () => {
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
     const g = game as any;
     g.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 1);
 
@@ -244,6 +245,8 @@ describe("materializeEvents", () => {
       makeMockStatus(),
       makeMockUI(),
       makeMockMedia(),
+      undefined,
+      makeTestPorts(),
     );
   });
 
@@ -329,6 +332,8 @@ describe("Line ID generation", () => {
       makeMockStatus(),
       makeMockUI(),
       makeMockMedia(),
+      undefined,
+      makeTestPorts(),
     );
   });
 
@@ -387,6 +392,8 @@ describe("recordPlayerChoice", () => {
       makeMockStatus(),
       makeMockUI(),
       makeMockMedia(),
+      undefined,
+      makeTestPorts(),
     );
   });
 
@@ -435,6 +442,8 @@ describe("recordPlayerInput", () => {
       makeMockStatus(),
       makeMockUI(),
       makeMockMedia(),
+      undefined,
+      makeTestPorts(),
     );
   });
 
@@ -492,6 +501,8 @@ describe("Sequence numbering", () => {
       makeMockStatus(),
       makeMockUI(),
       makeMockMedia(),
+      undefined,
+      makeTestPorts(),
     );
   });
 
@@ -553,6 +564,8 @@ describe("registerBuffered", () => {
       status,
       makeMockUI(),
       makeMockMedia(),
+      undefined,
+      makeTestPorts(),
     );
   });
 
@@ -620,7 +633,7 @@ describe("JSONL store initialization", () => {
       new Error("stop"),
     );
 
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
 
     try {
       await game.run();
@@ -647,13 +660,13 @@ describe("JSONL store initialization", () => {
       envelope([narrationEvent("It begins."), endEvent("end_1", "Fin.")]),
     );
 
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     await game.run();
 
     // Verify the jsonl file exists and has content
     const { readFile } = await import("node:fs/promises");
     const store = (game as any).store;
-    const content = await readFile(store.filePath, "utf8");
+    const content = await readFile(store.location, "utf8");
     expect(content).toContain('"type":"narration"');
     expect(content).toContain('"type":"end"');
   });
@@ -691,7 +704,7 @@ describe("JSONL store initialization", () => {
       },
     );
 
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     await expect(game.run()).resolves.toBeUndefined();
 
     expect(openingCalls).toBe(1);
@@ -724,7 +737,7 @@ describe("JSONL store initialization", () => {
       },
     );
 
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     await expect(game.run()).rejects.toThrow(/剧情段连续失败/);
   });
 
@@ -770,7 +783,7 @@ describe("JSONL store initialization", () => {
       envelope([narrationEvent("分支内容。")]),
     );
 
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     await expect(game.run()).resolves.toBeUndefined();
 
     // 开场半句 + 修复段 + 分支 + 续写结尾 = 4 段旁白；结局 1 次。
@@ -837,7 +850,7 @@ describe("JSONL store initialization", () => {
         envelope([narrationEvent("修复续写。"), endEvent("end_1", "Fin.")]),
       );
 
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     const runPromise = game.run();
 
     // Let the run loop reach the gated preview render, then give the
@@ -920,7 +933,7 @@ describe("Input preview cancellation", () => {
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     await expect(game.run()).resolves.toBeUndefined();
 
     // At this point only the committed response (and opening/continuation)
@@ -976,7 +989,7 @@ describe("Input preview cancellation", () => {
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     await expect(game.run()).resolves.toBeUndefined();
 
     // Only the second (committed) response may reach the media timeline;
@@ -1030,7 +1043,7 @@ describe("State patch rejection", () => {
       ),
     );
 
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     await game.run();
 
     const snap = game.getMetrics();
@@ -1053,7 +1066,7 @@ describe("State patch rejection", () => {
       ),
     );
 
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     await game.run();
 
     const snap = game.getMetrics();
@@ -1076,7 +1089,7 @@ describe("State patch rejection", () => {
       ),
     );
 
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     // Should not throw — patch rejection is non-fatal
     await expect(game.run()).resolves.toBeUndefined();
 
@@ -1108,7 +1121,7 @@ describe("Metrics pass-through", () => {
 
   it("getMetrics snapshot should reflect mutations on the shared Metrics", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
 
     metrics.recordSchemaValidationFailure();
     metrics.recordSchemaValidationFailure();
@@ -1121,7 +1134,7 @@ describe("Metrics pass-through", () => {
 
   it("getMetrics returns a fresh snapshot each call", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
 
     const snap1 = game.getMetrics();
     metrics.recordBranchRequested(3);
@@ -1134,8 +1147,8 @@ describe("Metrics pass-through", () => {
   it("should keep independent Games with separate Metrics isolated", () => {
     const m1 = new Metrics();
     const m2 = new Metrics();
-    const game1 = new Game(config, generator, status, ui, media, m1);
-    const game2 = new Game(config, generator, status, ui, media, m2);
+    const game1 = new Game(config, generator, status, ui, media, m1, makeTestPorts());
+    const game2 = new Game(config, generator, status, ui, media, m2, makeTestPorts());
 
     m1.recordBranchRequested(1);
     m2.recordBranchRequested(9);
@@ -1196,7 +1209,7 @@ describe("Hybrid cancel loop", () => {
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     await expect(game.run()).resolves.toBeUndefined();
 
     // cancel → re-render → choice: two render calls, one branch flow.
@@ -1268,7 +1281,7 @@ describe("Narration-only branch handoff", () => {
       return { id: "a", text: "选项A" };
     });
 
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     await expect(game.run()).resolves.toBeUndefined();
 
     // 开场 + 分支两句 + 续写 = 4 段旁白;结局一次。

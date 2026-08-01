@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseTerminalModelJsonl,
   parsePrefetchModelJsonl
-} from "./jsonl.js";
+} from "./core/protocol/model-jsonl.js";
 
 // ---------------------------------------------------------------------------
 // parseTerminalModelJsonl

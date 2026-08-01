@@ -1,4 +1,15 @@
 import type { AppConfig } from "./config.js";
+import type { GamePorts } from "./game.js";
+import type { ClockPort } from "./core/ports/clock-port.js";
+import { silentDiagnosticSink } from "./core/ports/diagnostic-sink.js";
+import type { IdGeneratorPort } from "./core/ports/id-generator-port.js";
+import type {
+  RuntimeSnapshot,
+  SessionMetadata,
+  SessionStorePort,
+} from "./core/ports/session-store-port.js";
+import type { StoredEvent } from "./schema.js";
+import type { StoryState } from "./story/types.js";
 
 type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
@@ -49,4 +60,84 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
     },
     ...overrides,
   } as AppConfig;
+}
+
+// ---------------------------------------------------------------------------
+// In-memory ports for core tests
+// ---------------------------------------------------------------------------
+
+/** Session store that keeps everything in memory; no filesystem access. */
+export class MemorySessionStore implements SessionStorePort {
+  readonly location = "memory";
+  readonly events: StoredEvent[] = [];
+  readonly snapshots: StoryState[] = [];
+
+  async initialize(_metadata: SessionMetadata): Promise<void> {}
+
+  async append(event: StoredEvent): Promise<void> {
+    this.events.push(event);
+  }
+
+  async saveSnapshot(snapshot: RuntimeSnapshot): Promise<void> {
+    this.snapshots.push(snapshot.state);
+  }
+}
+
+/** Deterministic clock: fixed start time, +1ms per read. */
+export class FakeClock implements ClockPort {
+  private now = 1700000000000;
+
+  nowMs(): number {
+    this.now += 1;
+    return this.now - 1;
+  }
+
+  nowIso(): string {
+    return new Date(this.nowMs()).toISOString();
+  }
+}
+
+/** Deterministic ID generator with per-instance counters. */
+export class FakeIdGenerator implements IdGeneratorPort {
+  private sessionCounter = 0;
+  private lineCounter = 0;
+  private generationCounter = 0;
+  private previewCounter = 0;
+
+  nextSessionId(): string {
+    this.sessionCounter += 1;
+    return `session_${this.sessionCounter}`;
+  }
+
+  nextLineId(sessionId: string): string {
+    this.lineCounter += 1;
+    return `line_${sessionId}_${this.lineCounter.toString().padStart(6, "0")}`;
+  }
+
+  nextGenerationId(kind: string): string {
+    this.generationCounter += 1;
+    return `${kind}:${this.generationCounter}`;
+  }
+
+  nextPreviewId(interactionId: string): string {
+    this.previewCounter += 1;
+    return `preview_${interactionId}_${this.previewCounter}`;
+  }
+}
+
+/**
+ * Default port set for tests: memory store, fake clock, fake IDs, and a
+ * silent diagnostic sink. Override individual ports when a test needs a
+ * real adapter (e.g. `{ store: new NodeJsonlSessionStore(dir) }`).
+ */
+export function makeTestPorts(
+  overrides?: Partial<Pick<GamePorts, "store" | "clock" | "ids">>,
+): GamePorts {
+  return {
+    store: new MemorySessionStore(),
+    clock: new FakeClock(),
+    ids: new FakeIdGenerator(),
+    diagnostics: silentDiagnosticSink,
+    ...overrides,
+  };
 }

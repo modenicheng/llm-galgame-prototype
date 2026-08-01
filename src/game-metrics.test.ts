@@ -6,10 +6,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Game } from "./game.js";
 import { Metrics } from "./runtime/metrics.js";
 import type { MetricsSnapshot } from "./runtime/metrics.js";
-import { makeTestConfig } from "./test-helpers.js";
-import type { StoryGenerator } from "./llm.js";
+import { makeTestConfig, makeTestPorts } from "./test-helpers.js";
+import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
 import type { MediaPrefetchScheduler } from "./media.js";
-import type { GameUI } from "./ui.js";
+import type { GameUI } from "./apps/cli/terminal-ui.js";
 import type { RuntimeStatus } from "./status.js";
 import type { AppConfig } from "./config.js";
 
@@ -23,7 +23,6 @@ function makeMockGenerator(): StoryGenerator {
     generateBranchPrefetch: vi.fn(),
     generateInputResponse: vi.fn(),
     generateContinuation: vi.fn(),
-    generateAutocomplete: vi.fn(),
   } as unknown as StoryGenerator;
 }
 
@@ -88,7 +87,7 @@ describe("Game Metrics integration", () => {
   // ------------------------------------------------------------------
 
   it("should auto-create a Metrics instance when none is provided", () => {
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
     const snap = game.getMetrics();
     expect(snap).toBeDefined();
     expect(snap.llm.requests.opening).toBe(0);
@@ -98,14 +97,14 @@ describe("Game Metrics integration", () => {
   it("should use the provided Metrics instance", () => {
     const metrics = new Metrics();
     metrics.recordBranchRequested(5);
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
     const snap = game.getMetrics();
     expect(snap.prefetch.branches_requested).toBe(5);
   });
 
   it("should return the same Metrics instance via getMetrics each call", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
     const snap1 = game.getMetrics();
     metrics.recordBranchRequested(2);
     const snap2 = game.getMetrics();
@@ -118,7 +117,7 @@ describe("Game Metrics integration", () => {
   // ------------------------------------------------------------------
 
   it("should return a complete MetricsSnapshot with all expected fields", () => {
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
     const snap = game.getMetrics();
 
     // LLM
@@ -161,7 +160,7 @@ describe("Game Metrics integration", () => {
 
   it("should reflect branch requests recorded on the shared Metrics", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
 
     metrics.recordBranchRequested(3);
     metrics.recordPrefetchHit();
@@ -177,7 +176,7 @@ describe("Game Metrics integration", () => {
 
   it("should reflect LLM requests recorded on the shared Metrics", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
 
     metrics.recordLLMRequest("opening", { input: 100, output: 200 }, 1000);
     metrics.recordLLMRequest("branch_prefetch", { input: 50, output: 80 }, 500);
@@ -192,7 +191,7 @@ describe("Game Metrics integration", () => {
 
   it("should reflect input preview and choice-to-next-line on shared Metrics", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
 
     metrics.recordInputPreview(400);
     metrics.recordInputPreview(600);
@@ -206,7 +205,7 @@ describe("Game Metrics integration", () => {
 
   it("should reflect error counters on shared Metrics", () => {
     const metrics = new Metrics();
-    const game = new Game(config, generator, status, ui, media, metrics);
+    const game = new Game(config, generator, status, ui, media, metrics, makeTestPorts());
 
     metrics.recordSchemaValidationFailure();
     metrics.recordSchemaValidationFailure();
@@ -222,7 +221,7 @@ describe("Game Metrics integration", () => {
   // ------------------------------------------------------------------
 
   it("getMetrics snapshot should not be mutated by subsequent recordings", () => {
-    const game = new Game(config, generator, status, ui, media);
+    const game = new Game(config, generator, status, ui, media, undefined, makeTestPorts());
     const snap = game.getMetrics();
 
     // Record more after snapshot
@@ -240,8 +239,8 @@ describe("Game Metrics integration", () => {
     const metrics1 = new Metrics();
     const metrics2 = new Metrics();
 
-    const game1 = new Game(config, generator, status, ui, media, metrics1);
-    const game2 = new Game(config, generator, status, ui, media, metrics2);
+    const game1 = new Game(config, generator, status, ui, media, metrics1, makeTestPorts());
+    const game2 = new Game(config, generator, status, ui, media, metrics2, makeTestPorts());
 
     metrics1.recordBranchRequested(2);
     metrics2.recordBranchRequested(5);

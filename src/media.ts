@@ -3,17 +3,12 @@ import path from "node:path";
 import type { AudioConfig } from "./config.js";
 import type { RuntimePlayableEvent } from "./schema.js";
 import type { RuntimeStatus } from "./status.js";
+import type {
+  MediaAsset,
+  MediaProviderPort,
+} from "./core/ports/media-provider-port.js";
 
 export type AssetState = "idle" | "queued" | "generating" | "ready" | "failed" | "cancelled";
-
-export interface AudioAsset {
-  lineId: string;
-  path: string;
-}
-
-export interface AudioSynthesizer {
-  synthesize(lines: RuntimePlayableEvent[], signal: AbortSignal): Promise<AudioAsset[]>;
-}
 
 export interface MediaMetrics {
   totalSynthesisRequests: number;
@@ -55,18 +50,18 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-export class MockAudioSynthesizer implements AudioSynthesizer {
+export class MockAudioSynthesizer implements MediaProviderPort {
   constructor(
     private readonly outputDir: string,
     private readonly latencyMs: number
   ) {}
 
-  async synthesize(lines: RuntimePlayableEvent[], signal: AbortSignal): Promise<AudioAsset[]> {
+  async synthesize(lines: RuntimePlayableEvent[], signal: AbortSignal): Promise<MediaAsset[]> {
     await wait(this.latencyMs, signal);
     const root = path.resolve(this.outputDir);
     await mkdir(root, { recursive: true });
 
-    const assets: AudioAsset[] = [];
+    const assets: MediaAsset[] = [];
     for (const line of lines) {
       if (signal.aborted) {
         const error = new Error("Audio synthesis aborted");
@@ -98,7 +93,7 @@ export class MockAudioSynthesizer implements AudioSynthesizer {
 
 export class MediaPrefetchScheduler {
   private readonly states = new Map<string, AssetState>();
-  private readonly assets = new Map<string, AudioAsset>();
+  private readonly assets = new Map<string, MediaAsset>();
   private readonly lineById = new Map<string, RuntimePlayableEvent>();
   private readonly activeTimeline: RuntimePlayableEvent[] = [];
   private readonly branchLines = new Map<string, RuntimePlayableEvent[]>();
@@ -106,7 +101,7 @@ export class MediaPrefetchScheduler {
   private readonly queue: QueueJob[] = [];
   private activeJobs = 0;
   private currentIndex = -1;
-  private readonly synthesizer: AudioSynthesizer | null;
+  private readonly synthesizer: MediaProviderPort | null;
   private readonly activeBranchIds = new Set<string>();
   private readonly drainResolvers: Array<() => void> = [];
 

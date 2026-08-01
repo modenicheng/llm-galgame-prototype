@@ -7,14 +7,14 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { StoryGenerator } from "./llm.js";
+import { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
 import type { AppConfig } from "./config.js";
 import type { PromptBundle } from "./prompts.js";
 import type { StoryContextEvent, InteractionEvent, ModelEvent } from "./schema.js";
 import { makeTestConfig } from "./test-helpers.js";
 import type { StoryState, GenerationEnvelope } from "./story/types.js";
 import { createInitialState } from "./story/state.js";
-import { parseTerminalModelJsonl } from "./jsonl.js";
+import { parseTerminalModelJsonl } from "./core/protocol/model-jsonl.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers — reusable fixtures, no real network calls
@@ -97,7 +97,7 @@ function makeTestHistory(): StoryContextEvent[] {
 // removeMarkdownFence — imported from jsonl.ts (shared helper)
 // ---------------------------------------------------------------------------
 
-import { removeMarkdownFence } from "./jsonl.js";
+import { removeMarkdownFence } from "./core/protocol/model-jsonl.js";
 
 describe("removeMarkdownFence", () => {
   it("strips ```json fence from both ends", () => {

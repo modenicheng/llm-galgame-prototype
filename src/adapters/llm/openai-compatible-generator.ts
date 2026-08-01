@@ -1,17 +1,41 @@
 import OpenAI from "openai";
-import type { AppConfig, AuthorConfig } from "./config.js";
+import type { AppConfig, AuthorConfig } from "../../config.js";
 import {
   buildSystemContext,
   buildUserPrompt,
   type ContextInput,
-} from "./story/context-builder.js";
-import { parsePrefetchModelJsonl, parseTerminalModelJsonl, removeMarkdownFence, type ParsedJsonl } from "./jsonl.js";
-import type { InstructionSet, PromptBundle } from "./prompts.js";
-import type { LLMRequestCounts } from "./runtime/metrics.js";
-import { Metrics } from "./runtime/metrics.js";
-import { isStatePatchLine, ModelEventSchema, StatePatchLineSchema, type ChoiceEvent, type ChoiceOption, type InteractionEvent, type ModelEvent, type ModelPlayableEvent, type StoryContextEvent } from "./schema.js";
-import type { GenerationEnvelope, StoryState, StoryStatePatch } from "./story/types.js";
-import { mergePatches } from "./story/patch.js";
+} from "../../story/context-builder.js";
+import {
+  parsePrefetchModelJsonl,
+  parseTerminalModelJsonl,
+  removeMarkdownFence,
+  type ParsedJsonl,
+} from "../../core/protocol/model-jsonl.js";
+import type { InstructionSet, PromptBundle } from "../../prompts.js";
+import type { LLMRequestCounts } from "../../runtime/metrics.js";
+import { Metrics } from "../../runtime/metrics.js";
+import {
+  isStatePatchLine,
+  ModelEventSchema,
+  StatePatchLineSchema,
+  type ChoiceEvent,
+  type ChoiceOption,
+  type InteractionEvent,
+  type ModelEvent,
+  type ModelPlayableEvent,
+  type StoryContextEvent,
+} from "../../schema.js";
+import type { GenerationEnvelope, StoryState, StoryStatePatch } from "../../story/types.js";
+import { mergePatches } from "../../story/patch.js";
+import {
+  createGenerationHandle,
+  type BranchPrefetchRequest,
+  type ContinuationRequest,
+  type GenerationHandle,
+  type InputResponseRequest,
+  type OpeningRequest,
+  type StoryGeneratorPort,
+} from "../../core/ports/story-generator-port.js";
 
 // ---------------------------------------------------------------------------
 // Tiny template engine: replace {key} placeholders with values
@@ -429,4 +453,62 @@ function mergePatchesList(patches: StoryStatePatch[]): StoryStatePatch {
   let merged: StoryStatePatch = {};
   for (const patch of patches) merged = mergePatches(merged, patch);
   return merged;
+}
+
+// ---------------------------------------------------------------------------
+// StoryGeneratorPort facade
+//
+// Adapts the promise + onEvent API above into the handle-based port used by
+// future core consumers, without rewriting the streaming request pipeline.
+// ---------------------------------------------------------------------------
+
+export class GeneratorPortFacade implements StoryGeneratorPort {
+  constructor(private readonly inner: StoryGenerator) {}
+
+  generateOpening(request: OpeningRequest): GenerationHandle {
+    return createGenerationHandle(`opening:${request.turn}`, (signal, onEvent) =>
+      this.inner.generateOpening(request.turn, request.state, signal, { onEvent }),
+    );
+  }
+
+  generateContinuation(request: ContinuationRequest): GenerationHandle {
+    return createGenerationHandle(`continuation:${request.turn}`, (signal, onEvent) =>
+      this.inner.generateContinuation(
+        request.turn,
+        request.state,
+        request.history,
+        request.prefetchedEvents,
+        signal,
+        { onEvent },
+      ),
+    );
+  }
+
+  generateBranchPrefetch(request: BranchPrefetchRequest): GenerationHandle {
+    return createGenerationHandle(`branch:${request.option.id}`, (signal, onEvent) =>
+      this.inner.generateBranchPrefetch(
+        request.turn,
+        request.state,
+        request.history,
+        request.choice,
+        request.option,
+        signal,
+        { onEvent },
+      ),
+    );
+  }
+
+  generateInputResponse(request: InputResponseRequest): GenerationHandle {
+    return createGenerationHandle(`input:${request.interaction.interaction_id}`, (signal, onEvent) =>
+      this.inner.generateInputResponse(
+        request.turn,
+        request.state,
+        request.history,
+        request.interaction,
+        request.playerInput,
+        signal,
+        { onEvent },
+      ),
+    );
+  }
 }

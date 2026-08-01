@@ -1,12 +1,16 @@
 import "dotenv/config";
 import { loadApiKey, loadAuthorConfig, loadConfig } from "./config.js";
 import { Game } from "./game.js";
-import { StoryGenerator } from "./llm.js";
+import { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
+import { NodeJsonlSessionStore } from "./adapters/storage/node-jsonl-session-store.js";
+import { ConsoleDiagnosticSink } from "./adapters/platform/console-diagnostic-sink.js";
+import { SessionIdGenerator } from "./adapters/platform/session-id-generator.js";
+import { SystemClock } from "./adapters/platform/system-clock.js";
 import { MediaPrefetchScheduler } from "./media.js";
 import { loadPrompts } from "./prompts.js";
 import { Metrics } from "./runtime/metrics.js";
 import { RuntimeStatus } from "./status.js";
-import { TerminalUI, UserExitError } from "./ui.js";
+import { TerminalUI, UserExitError } from "./apps/cli/terminal-ui.js";
 
 function parseArgs(argv: string[]): { configPath: string } {
   let configPath = "config.yaml";
@@ -32,7 +36,12 @@ async function main(): Promise<void> {
   const media = new MediaPrefetchScheduler(config.media.audio, status);
 
   const ui = new TerminalUI(config.game.show_line_ids);
-  const game = new Game(config, generator, status, ui, media, metrics);
+  const game = new Game(config, generator, status, ui, media, metrics, {
+    store: new NodeJsonlSessionStore(config.game.sessions_dir),
+    clock: new SystemClock(),
+    ids: new SessionIdGenerator(),
+    diagnostics: new ConsoleDiagnosticSink(),
+  });
 
   await game.run();
   printMetrics(game);
