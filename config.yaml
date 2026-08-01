@@ -7,7 +7,7 @@ api:
 
 generation:
   temperature: 0.9
-  max_tokens: 800
+  max_tokens: 1800
   repair_attempts: 1
 
 prefetch:

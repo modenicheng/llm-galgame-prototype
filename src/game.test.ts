@@ -787,6 +787,86 @@ describe("JSONL store initialization", () => {
     expect(ui.renderEnd).toHaveBeenCalledTimes(1);
     expect(ui.choose).toHaveBeenCalledTimes(1);
   });
+
+  it("does not crash when the continuation segment fails while the preview is still playing", async () => {
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const ui = makeMockUI();
+    const media = makeMockMedia();
+    (ui.choose as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "a",
+      text: "选项A",
+    });
+
+    // Gate the preview narration render (2nd narration) so the run loop is
+    // blocked in preview playback while the background continuation segment
+    // fails — the exact window that used to produce an unhandled rejection
+    // and crash the process.
+    let releasePreview!: () => void;
+    const previewGate = new Promise<void>((resolve) => {
+      releasePreview = resolve;
+    });
+    let renderCalls = 0;
+    (ui.renderNarration as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => {
+        renderCalls += 1;
+        if (renderCalls === 2) await previewGate;
+      },
+    );
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "choice",
+          prompt: "怎么选？",
+          options: [
+            { id: "a", text: "选项A" },
+            { id: "b", text: "选项B" },
+          ],
+        },
+      ]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    // Continuation #1: publish one line, then fail mid-stream while the
+    // run loop is still presenting the selected branch's preview.
+    (generator.generateContinuation as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(
+        async (_t, _s, _h, _p, _sig, options) => {
+          options!.onEvent!({ type: "narration", text: "续写半句。" });
+          throw new Error("续写网络中断");
+        },
+      )
+      // Repair continuation completes the story.
+      .mockImplementationOnce(async () =>
+        envelope([narrationEvent("修复续写。"), endEvent("end_1", "Fin.")]),
+      );
+
+    const game = new Game(config, generator, status, ui, media);
+    const runPromise = game.run();
+
+    // Let the run loop reach the gated preview render, then give the
+    // continuation segment's rejection time to propagate.
+    await vi.waitFor(() => {
+      expect(renderCalls).toBe(2);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releasePreview();
+
+    // Without the factory-level catch on segment.done this run would die of
+    // an unhandled rejection; with it, the repair path takes over and the
+    // game finishes normally.
+    await expect(runPromise).resolves.toBeUndefined();
+    // 开场 + 分支内容 + 续写半句 + 修复续写 = 4 段旁白；结局 1 次。
+    expect(ui.renderNarration).toHaveBeenCalledTimes(4);
+    expect(ui.renderEnd).toHaveBeenCalledTimes(1);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(generator.generateContinuation).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

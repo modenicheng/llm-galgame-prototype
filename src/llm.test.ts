@@ -488,6 +488,22 @@ describe("requestEnvelope streaming", () => {
     })();
   }
 
+  /**
+   * Like makeStream, but the final fragment is emitted without a trailing
+   * newline — simulating a token-limit cut in the middle of a line.
+   */
+  function makeStreamTruncated(
+    completeLines: string[],
+    finalFragment: string,
+  ): AsyncGenerator<unknown> {
+    return (async function* () {
+      for (const line of completeLines) {
+        yield { choices: [{ delta: { content: `${line}\n` } }] };
+      }
+      yield { choices: [{ delta: { content: finalFragment } }] };
+    })();
+  }
+
   function mockClient(gen: StoryGenerator, stream: AsyncGenerator<unknown>): void {
     (gen as any).client = {
       chat: {
@@ -575,6 +591,55 @@ describe("requestEnvelope streaming", () => {
     await expect(promise).rejects.toThrow(/校验失败/);
     expect(received).toHaveLength(2);
   });
+
+  it("drops a trailing token-limit fragment instead of failing the stream", async () => {
+    const gen = makeTestGenerator();
+    mockClient(gen, makeStreamTruncated(
+      [
+        '{"type":"narration","text":"第一句。"}',
+        '{"type":"dialogue","speaker":"A","text":"第二句。"}',
+        '{"type":"end","ending_id":"e","text":"终"}',
+      ],
+      '{"type": "d', // cut mid-string, no trailing newline
+    ));
+
+    const received: ModelEvent[] = [];
+    const envelope = await (gen as any).generateOpening(
+      1,
+      createInitialState(),
+      undefined,
+      { onEvent: (e: ModelEvent) => received.push(e) },
+    );
+
+    // The partial line is discarded; the complete lines (including the
+    // terminal event) are delivered normally.
+    expect(received).toHaveLength(3);
+    expect(envelope.events).toHaveLength(3);
+    expect(envelope.events[2]!.type).toBe("end");
+  });
+
+  it("fails the batch (with events preserved) when truncation removes the terminal event", async () => {
+    const gen = makeTestGenerator();
+    mockClient(gen, makeStreamTruncated(
+      ['{"type":"narration","text":"第一句。"}'],
+      '{"type":"choice","prompt":"怎么', // terminal cut off mid-string
+    ));
+
+    const received: ModelEvent[] = [];
+    const promise = (gen as any).generateOpening(
+      1,
+      createInitialState(),
+      undefined,
+      { onEvent: (e: ModelEvent) => received.push(e) },
+    );
+
+    // Dropping the fragment leaves a batch without a terminal event, so the
+    // batch validation must still fail — but the published narration stays
+    // available for the runtime's repair path.
+    await expect(promise).rejects.toThrow(/完整剧情段/);
+    expect(received).toHaveLength(1);
+  });
+
 
   it("retries from scratch when a malformed line precedes any published event", async () => {
     const gen = makeTestGenerator({ generation: { repair_attempts: 1 } });

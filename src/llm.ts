@@ -306,10 +306,15 @@ export class StoryGenerator {
   /**
    * Yield complete lines from a streaming chat completion.
    * Buffers partial chunks until a newline arrives.
+   *
+   * Each yielded line records whether it was terminated by a newline. The
+   * final fragment flushed at end-of-stream has `eol === false` — when it
+   * fails to parse it is a token-limit truncation (cut mid-string), not a
+   * corrupt line, and can be dropped without failing the whole request.
    */
   private async *streamLines(
     stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>,
-  ): AsyncGenerator<string> {
+  ): AsyncGenerator<{ text: string; eol: boolean }> {
     let buffer = "";
     for await (const chunk of stream) {
       const text = chunk.choices[0]?.delta?.content;
@@ -320,10 +325,10 @@ export class StoryGenerator {
         if (idx === -1) break;
         const line = buffer.slice(0, idx).trim();
         buffer = buffer.slice(idx + 1);
-        if (line) yield line;
+        if (line) yield { text: line, eol: true };
       }
     }
-    if (buffer.trim()) yield buffer.trim();
+    if (buffer.trim()) yield { text: buffer.trim(), eol: false };
   }
 
   private async requestEnvelope(
@@ -381,12 +386,12 @@ export class StoryGenerator {
           { signal: controller.signal },
         );
 
-        for await (const line of this.streamLines(stream)) {
+        for await (const chunk of this.streamLines(stream)) {
           if (firstLineMs === 0) firstLineMs = Date.now();
-          rawLines.push(line);
+          rawLines.push(chunk.text);
 
           // Tolerate markdown fence markers around the JSONL payload.
-          const trimmed = line.trim();
+          const trimmed = chunk.text.trim();
           if (trimmed.startsWith("```") || trimmed.endsWith("```")) continue;
 
           // Parse each line immediately.
@@ -394,6 +399,21 @@ export class StoryGenerator {
           try {
             parsed = JSON.parse(trimmed);
           } catch (error) {
+            // The last line arrived without a trailing newline and is not
+            // valid JSON on its own — the model was cut off by the token
+            // limit mid-string, not a corrupt stream. Drop the partial line;
+            // every line before it was already validated. If the remaining
+            // batch then violates the terminal-event contract, the batch
+            // validation below still fails and the normal retry/repair paths
+            // take over.
+            if (!chunk.eol) {
+              rawLines.pop();
+              this.metrics?.recordSchemaValidationFailure();
+              console.warn(
+                `[LLM] ${type} 输出在末尾被截断，已丢弃残片（截断于第 ${rawLines.length + 1} 行）`,
+              );
+              break;
+            }
             // Malformed line. Once events have been published (or patches
             // applied), the stream is corrupt — abort and preserve the
             // prefix so the runtime can keep what is already playable.

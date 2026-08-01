@@ -130,7 +130,6 @@ export class Game {
 
     this.status.setPhase("开场生成", "首条完整事件到达后立即进入播放缓冲");
     let segment = this.startActiveSegment("opening", 1, [], []);
-    void segment.done.catch(() => undefined);
     let outcome = await this.consumeActiveSegment(segment, 1, []);
 
     while (outcome.type !== "end") {
@@ -166,7 +165,6 @@ export class Game {
         await this.consumePlayableEvents(currentOutcome.preview, currentOutcome.nextTurn);
       }
       segment = await continuationPromise;
-      void segment.done.catch(() => undefined);
       const selectedContext = currentOutcome.liveSelection
         ? [...historyBeforePreview, ...currentOutcome.liveSelection.events]
         : speculativeContext;
@@ -303,6 +301,14 @@ export class Game {
       }
     });
 
+    // Factory invariant: every segment's `done` promise must carry a handler
+    // from birth. The run loop only attaches its own handler after the
+    // preview playback finishes, which can be seconds after this segment
+    // started generating in the background. An unhandled rejection in that
+    // window (e.g. a mid-stream schema failure) would otherwise kill the
+    // whole process via Node's default unhandledRejection=throw.
+    void segment.done.catch(() => undefined);
+
     return segment;
   }
 
@@ -333,7 +339,35 @@ export class Game {
           );
         }
 
-        const fullContext = [...priorContext, ...segment.events];
+        // The failed segment may already have published a terminal event
+        // (choice/interaction) whose branch prefetches are still running —
+        // that terminal is never consumed once the stream broke. Discard the
+        // orphaned prefetch group, remove its status jobs, and strip the
+        // terminal event from the repair context so the repair continuation
+        // does not regenerate the same interaction point. Reset the playback
+        // buffer as well: any stale tail from the broken stream would
+        // otherwise mismatch the repaired segment's events and crash the
+        // ordering check in advanceBufferedEvent.
+        segment.branchManager?.discardAll();
+        this.playbackBuffer.clear();
+        const terminal = segment.terminal;
+        if (terminal?.type === "choice") {
+          for (const option of terminal.options) {
+            this.status.removeJob(`branch:${option.id}`);
+          }
+          this.status.clearBranches();
+        } else if (terminal?.type === "interaction" && terminal.options) {
+          for (const option of terminal.options) {
+            this.status.removeJob(`branch:${option.id}`);
+          }
+          this.status.clearBranches();
+        }
+        const fullContext = terminal
+          ? [
+              ...priorContext,
+              ...segment.events.filter((event) => event !== terminal),
+            ]
+          : [...priorContext, ...segment.events];
         console.log(
           `\x1b[2m[Repair] 生成段失败，保留 ${playable.length} 条事件，启动修复续写（剩余 ${repairBudget - 1} 次）\x1b[0m`,
         );
