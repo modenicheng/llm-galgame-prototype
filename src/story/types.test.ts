@@ -11,13 +11,11 @@ import {
   StoryStateSchema,
   StoryStatePatchSchema,
   BranchCandidateSchema,
-  AutocompleteResultSchema,
 } from "./types.js";
 
 import type {
   InteractionEvent,
   InteractionMode,
-  InteractionOption,
   InputSpec,
   GeneratedEvent,
   GenerationEnvelope,
@@ -28,7 +26,6 @@ import type {
   BranchSource,
   BranchStatus,
   BranchCandidate,
-  AutocompleteResult,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -50,20 +47,6 @@ describe("type exports", () => {
     };
     expect(spec.kind).toBe("free_text");
     expect(spec.max_length).toBeGreaterThan(0);
-  });
-
-  it("InteractionOption should require id and text, with intent_hint optional", () => {
-    const withoutHint: InteractionOption = {
-      id: "opt-1",
-      text: "Go left",
-    };
-    const withHint: InteractionOption = {
-      id: "opt-2",
-      text: "Go right",
-      intent_hint: "The player wants to explore the right path",
-    };
-    expect(withoutHint.intent_hint).toBeUndefined();
-    expect(withHint.intent_hint).toBeDefined();
   });
 
   it("InteractionEvent should be constructible with choice mode", () => {
@@ -196,18 +179,6 @@ describe("type exports", () => {
       "failed",
     ];
     expect(statuses).toContain(branch.status);
-  });
-
-  it("AutocompleteResult should require draft_id, suffix, intent, and confidence", () => {
-    const result: AutocompleteResult = {
-      draft_id: "draft-1",
-      revision: 0,
-      suffix: " quietly",
-      intent: "The player wants to move stealthily",
-      confidence: 0.85,
-    };
-    expect(result.confidence).toBeGreaterThanOrEqual(0);
-    expect(result.confidence).toBeLessThanOrEqual(1);
   });
 });
 
@@ -389,10 +360,8 @@ describe("BranchCandidateSchema", () => {
     const result = BranchCandidateSchema.safeParse({
       id: "br-2",
       interaction_id: "int-2",
-      source: "autocomplete",
+      source: "choice",
       status: "ready",
-      predicted_input: "open the chest",
-      intent: "player wants to loot",
       events: [
         { type: "narration", text: "The chest creaks open to reveal..." },
       ],
@@ -412,38 +381,5 @@ describe("BranchCandidateSchema", () => {
       events: [],
     });
     expect(result.success).toBe(false);
-  });
-});
-
-describe("AutocompleteResultSchema", () => {
-  it("should parse a valid autocomplete result", () => {
-    const result = AutocompleteResultSchema.safeParse({
-      draft_id: "draft-1",
-      revision: 3,
-      suffix: " by the moonlight",
-      intent: "player describes the scenery",
-      confidence: 0.72,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("should fail when confidence is outside [0,1]", () => {
-    const tooHigh = AutocompleteResultSchema.safeParse({
-      draft_id: "draft-2",
-      revision: 0,
-      suffix: "test",
-      intent: "test",
-      confidence: 1.5,
-    });
-    expect(tooHigh.success).toBe(false);
-
-    const negative = AutocompleteResultSchema.safeParse({
-      draft_id: "draft-3",
-      revision: 0,
-      suffix: "test",
-      intent: "test",
-      confidence: -0.1,
-    });
-    expect(negative.success).toBe(false);
   });
 });

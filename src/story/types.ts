@@ -48,11 +48,6 @@ export interface InteractionOption {
   id: string;
   /** Display text shown to the player. */
   text: string;
-  /**
-   * Optional hint describing the player's likely intent when picking this
-   * option. Used by the autocomplete system to generate continuations.
-   */
-  intent_hint?: string;
 }
 
 /**
@@ -212,7 +207,7 @@ export interface StoryState {
 // ---------------------------------------------------------------------------
 
 /** Where the branch originated. */
-export type BranchSource = "choice" | "autocomplete" | "input_preview";
+export type BranchSource = "choice" | "input_preview";
 
 /** Lifecycle status of a branch candidate. */
 export type BranchStatus =
@@ -225,9 +220,8 @@ export type BranchStatus =
 
 /**
  * A formal transaction representing one speculative branch. The runtime
- * creates one `BranchCandidate` per choice option (or autocomplete
- * suggestion), tracks its generation lifecycle, and activates it if
- * the player selects it.
+ * creates one `BranchCandidate` per choice option, tracks its generation
+ * lifecycle, and activates it if the player selects it.
  */
 export interface BranchCandidate {
   /** Unique branch identifier. */
@@ -238,35 +232,10 @@ export interface BranchCandidate {
   source: BranchSource;
   /** Current lifecycle status. */
   status: BranchStatus;
-  /** For autocomplete branches: the text the player typed so far. */
-  predicted_input?: string;
-  /** For autocomplete branches: the predicted intent. */
-  intent?: string;
   /** Ordered narrative events for this branch. */
   events: GeneratedEvent[];
   /** Optional state patch produced by the branch generation. */
   state_patch?: StoryStatePatch;
-}
-
-// ---------------------------------------------------------------------------
-// AutocompleteResult — real-time input prediction
-// ---------------------------------------------------------------------------
-
-/**
- * A single autocomplete suggestion returned during the player's text input.
- * Multiple results may be returned for the same draft to show alternatives.
- */
-export interface AutocompleteResult {
-  /** Identifies the draft being completed. */
-  draft_id: string;
-  /** Monotonic revision number; higher means a more recent prediction. */
-  revision: number;
-  /** The suggested text to append to the player's input. */
-  suffix: string;
-  /** What the model believes the player intends to say/do. */
-  intent: string;
-  /** Confidence score in [0, 1]. */
-  confidence: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +275,6 @@ const InputSpecSchema = z.object({
 const InteractionOptionSchema = z.object({
   id: z.string().min(1),
   text: z.string().min(1),
-  intent_hint: z.string().optional(),
 });
 
 export const InteractionEventSchema = z.object({
@@ -374,7 +342,7 @@ export const StoryStatePatchSchema = z.object({
 export const BranchCandidateSchema = z.object({
   id: z.string().min(1),
   interaction_id: z.string().min(1),
-  source: z.enum(["choice", "autocomplete", "input_preview"]),
+  source: z.enum(["choice", "input_preview"]),
   status: z.enum([
     "queued",
     "generating",
@@ -383,8 +351,6 @@ export const BranchCandidateSchema = z.object({
     "discarded",
     "failed",
   ]),
-  predicted_input: z.string().optional(),
-  intent: z.string().optional(),
   events: z.array(
     z.discriminatedUnion("type", [
       DialogueDraftEventSchema,
@@ -409,12 +375,4 @@ export const BranchCandidateSchema = z.object({
     ])
   ),
   state_patch: StoryStatePatchSchema.optional(),
-});
-
-export const AutocompleteResultSchema = z.object({
-  draft_id: z.string().min(1),
-  revision: z.number().int().nonnegative(),
-  suffix: z.string(),
-  intent: z.string(),
-  confidence: z.number().min(0).max(1),
 });

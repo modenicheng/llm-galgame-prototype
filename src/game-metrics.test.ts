@@ -131,7 +131,6 @@ describe("Game Metrics integration", () => {
     expect(snap.llm.requests.opening).toBe(0);
     expect(snap.llm.requests.branch_prefetch).toBe(0);
     expect(snap.llm.requests.continuation).toBe(0);
-    expect(snap.llm.requests.autocomplete).toBe(0);
     expect(snap.llm.requests.speculative).toBe(0);
 
     // Prefetch
@@ -139,11 +138,6 @@ describe("Game Metrics integration", () => {
     expect(snap.prefetch.branches_hit).toBe(0);
     expect(snap.prefetch.branches_missed).toBe(0);
     expect(snap.prefetch.hit_rate).toBe(0);
-
-    // Autocomplete
-    expect(snap.autocomplete.accepted).toBe(0);
-    expect(snap.autocomplete.ignored).toBe(0);
-    expect(snap.autocomplete.acceptance_rate).toBe(0);
 
     // Waste
     expect(snap.waste.text_bytes).toBe(0);

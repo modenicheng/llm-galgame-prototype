@@ -76,12 +76,6 @@ describe("loadConfig defaults", () => {
     expect(config.prefetch.branch_dialogue_lines).toBe(3); // explicit
     expect(config.prefetch.branch_concurrency).toBe(3); // default
 
-    // Autocomplete defaults
-    expect(config.autocomplete.minimum_characters).toBe(4);
-    expect(config.autocomplete.debounce_ms).toBe(350);
-    expect(config.autocomplete.max_suffix_characters).toBe(20);
-    expect(config.autocomplete.confidence_threshold).toBe(0.55);
-
     // Media defaults
     expect(config.media.audio.enabled).toBe(false);
     expect(config.media.audio.provider).toBe("disabled");
@@ -124,13 +118,6 @@ describe("loadConfig with all fields", () => {
       "  branch_dialogue_lines: 5",
       "  branch_concurrency: 4",
       "",
-      "autocomplete:",
-      "  enabled: false",
-      "  minimum_characters: 6",
-      "  debounce_ms: 500",
-      "  max_suffix_characters: 40",
-      "  confidence_threshold: 0.75",
-      "",
       "media:",
       "  audio:",
       "    enabled: true",
@@ -166,12 +153,6 @@ describe("loadConfig with all fields", () => {
     // Prefetch
     expect(config.prefetch.branch_dialogue_lines).toBe(5);
     expect(config.prefetch.branch_concurrency).toBe(4);
-
-    // Autocomplete
-    expect(config.autocomplete.minimum_characters).toBe(6);
-    expect(config.autocomplete.debounce_ms).toBe(500);
-    expect(config.autocomplete.max_suffix_characters).toBe(40);
-    expect(config.autocomplete.confidence_threshold).toBe(0.75);
 
     // Media
     expect(config.media.audio.enabled).toBe(true);
@@ -423,23 +404,6 @@ describe("loadConfig validation errors", () => {
         "",
         "generation:",
         "  temperature: 3.0",
-      ].join("\n"),
-    );
-
-    await expect(loadConfig(filePath)).rejects.toThrow();
-  });
-
-  it("should reject invalid autocomplete confidence_threshold", async () => {
-    const filePath = await writeTempYaml(
-      "bad-autocomplete-confidence",
-      [
-        "api:",
-        "  provider: openai_compatible",
-        "  model: test",
-        "  base_url: https://api.example.com",
-        "",
-        "autocomplete:",
-        "  confidence_threshold: 1.5",
       ].join("\n"),
     );
 

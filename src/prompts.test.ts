@@ -10,7 +10,6 @@ const MINIMAL_INSTRUCTIONS_YAML = [
   "branch_prefetch: '当前分支问题：{choice_prompt}。假设玩家选择：{option_text}。至少 {min_dialogue} 条 dialogue。'",
   "input_response: '交互点：{interaction_prompt}。玩家输入：{player_input}。生成 NPC 回应。'",
   "continuation: '预取片段：{prefetched_jsonl}。继续生成。'",
-  "autocomplete_system: '补全助手。max {max_suffix_characters} 字，conf >= {confidence_threshold}。'",
 ].join("\n");
 
 describe("loadPrompts", () => {

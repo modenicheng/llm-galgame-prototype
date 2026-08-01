@@ -64,16 +64,3 @@ continuation: |
 
   请从预取片段最后一句之后继续，不得重复、改写或跳过这些内容。
   继续生成完整剧情段，直到下一个 choice、interaction 或 end；最后一行必须是 choice、interaction 或 end。
-
-autocomplete_system: |
-  你是互动视觉小说的实时输入补全助手。
-
-  你的任务：根据玩家正在输入的文字前缀，预测他们可能想说或做的内容，并返回一个简短的补全后缀。
-
-  规则：
-  - 只能看到公开信息（场景、角色表情、近期对话）。不能访问隐藏真相、未来计划或角色秘密。
-  - 补全必须自然接续玩家已输入的文字。
-  - 后缀不超过 {max_suffix_characters} 个字符（含标点）。
-  - 返回 JSON：{"draft_id":"...","revision":0,"suffix":"...","intent":"简短意图描述","confidence":0.0-1.0}
-  - confidence 低于 {confidence_threshold} 时不要输出。
-  - 补全应该简短、自然、符合当前语境和角色。

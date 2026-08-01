@@ -1,11 +1,10 @@
 /**
  * Latency and cost metrics collector for the GalGame runtime.
  *
- * Tracks LLM request counts, token usage, generation latency, autocomplete
- * acceptance, prefetch hit rates, and player interaction timings.
- * interaction timings. The Game and UI classes import this module to
- * record observability data; a snapshot can be rendered in the TUI or
- * exported for analysis.
+ * Tracks LLM request counts, token usage, generation latency, prefetch hit
+ * rates, and player interaction timings. The Game and UI classes import
+ * this module to record observability data; a snapshot can be rendered in
+ * the TUI or exported for analysis.
  */
 
 // ---------------------------------------------------------------------------
@@ -17,7 +16,6 @@ export interface LLMRequestCounts {
   opening: number;
   branch_prefetch: number;
   continuation: number;
-  autocomplete: number;
   speculative: number;
 }
 
@@ -33,14 +31,6 @@ export interface LLMLatencyStats {
   p95: number;
   max: number;
   samples: number;
-}
-
-/** Autocomplete acceptance tracking. */
-export interface AutocompleteStats {
-  accepted: number;
-  ignored: number;
-  /** accepted / (accepted + ignored), or 0 when neither. */
-  acceptance_rate: number;
 }
 
 /** Branch prefetch hit-rate tracking. */
@@ -86,7 +76,6 @@ export interface MetricsSnapshot {
     tokens: LLMTokenStats;
     latency_ms: LLMLatencyStats;
   };
-  autocomplete: AutocompleteStats;
   prefetch: PrefetchStats;
   waste: WasteStats;
   input: InputStats;
@@ -119,16 +108,11 @@ export class Metrics {
     opening: 0,
     branch_prefetch: 0,
     continuation: 0,
-    autocomplete: 0,
     speculative: 0,
   };
   private inputTokens = 0;
   private outputTokens = 0;
   private latencySamples: number[] = [];
-
-  // --- Autocomplete ---
-  private autocompleteAccepted = 0;
-  private autocompleteIgnored = 0;
 
   // --- Prefetch ---
   private branchesRequested = 0;
@@ -164,16 +148,6 @@ export class Metrics {
     this.inputTokens += tokens.input;
     this.outputTokens += tokens.output;
     this.latencySamples.push(latencyMs);
-  }
-
-  /** Call when the player accepts an autocomplete suggestion. */
-  recordAutocompleteAccept(): void {
-    this.autocompleteAccepted += 1;
-  }
-
-  /** Call when the player ignores / dismisses an autocomplete suggestion. */
-  recordAutocompleteIgnore(): void {
-    this.autocompleteIgnored += 1;
   }
 
   /** Call when a branch prefetch is queued / started. */
@@ -263,14 +237,6 @@ export class Metrics {
           samples: sortedLatency.length,
         },
       },
-      autocomplete: {
-        accepted: this.autocompleteAccepted,
-        ignored: this.autocompleteIgnored,
-        acceptance_rate: this.computeRate(
-          this.autocompleteAccepted,
-          this.autocompleteAccepted + this.autocompleteIgnored,
-        ),
-      },
       prefetch: {
         branches_requested: this.branchesRequested,
         branches_hit: this.branchesHit,
@@ -305,14 +271,11 @@ export class Metrics {
       opening: 0,
       branch_prefetch: 0,
       continuation: 0,
-      autocomplete: 0,
       speculative: 0,
     };
     this.inputTokens = 0;
     this.outputTokens = 0;
     this.latencySamples = [];
-    this.autocompleteAccepted = 0;
-    this.autocompleteIgnored = 0;
     this.branchesRequested = 0;
     this.branchesHit = 0;
     this.branchesMissed = 0;

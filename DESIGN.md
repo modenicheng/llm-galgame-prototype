@@ -82,13 +82,6 @@ llm-galgame-prototype/
    │  ├─ generation-scheduler.ts
    │  ├─ playback-buffer.ts
    │  └─ metrics.ts
-   └─ ui/
-      └─ web/
-         ├─ server.ts
-         ├─ web-ui.ts
-         ├─ game-bridge.ts
-         ├─ autocomplete-manager.ts
-         └─ public/index.html
 ```
 
 模块职责：
@@ -277,12 +270,6 @@ prefetch:
   branch_dialogue_lines: 2
   branch_concurrency: 4
 
-autocomplete:
-  minimum_characters: 4
-  debounce_ms: 350
-  max_suffix_characters: 20
-  confidence_threshold: 0.55
-
 media:
   audio:
     enabled: false
@@ -354,6 +341,6 @@ media:
 1. 将 `AudioSynthesizer` 提取为公开 provider 接口，接入真实 TTS。
 2. 为图片、立绘、表情和背景实现同类 `MediaPrefetchScheduler`，共用 `line_id` 或独立 `asset_slot_id`。
 3. 增加状态快照和 `state_patch`，避免长剧情只依赖最近事件。
-4. 将核心状态机提取为无 Node.js 依赖包，TUI 与 Web UI 共用。
-5. Web 版使用 Worker 或后端流式接口运行预取任务；平台密钥仍必须留在服务端。
+4. 将核心状态机提取为无 Node.js 依赖包，供 CLI 与未来项目共用。
+5. Web 版属于未来独立项目，不在当前原型范围内；届时使用 Worker 或后端流式接口运行预取任务，平台密钥仍必须留在服务端。
 6. 根据实时合成速度、阅读速度和预算动态调整提前量，而不是长期使用固定 3/2 参数。

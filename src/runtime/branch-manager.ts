@@ -43,21 +43,13 @@ export class BranchManager {
    * create all candidates first, then call `startPrefetch`) to begin the
    * generation pipeline.
    */
-  createCandidate(
-    id: string,
-    interactionId: string,
-    source: BranchSource,
-    overrides?: Partial<
-      Pick<BranchCandidate, "predicted_input" | "intent">
-    >,
-  ): BranchCandidate {
+  createCandidate(id: string, interactionId: string, source: BranchSource): BranchCandidate {
     const candidate: BranchCandidate = {
       id,
       interaction_id: interactionId,
       source,
       status: "queued",
       events: [],
-      ...overrides,
     };
     this.candidates.set(id, candidate);
     return candidate;

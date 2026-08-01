@@ -7,7 +7,7 @@ type DeepPartial<T> = {
 /**
  * Shared test fixture for a fully-populated AppConfig.
  *
- * Every test file that needs a Game / StoryGenerator / GameBridge should
+ * Every test file that needs a Game / StoryGenerator / GameUI should
  * use this instead of inlining its own copy. Override individual sections
  * via `overrides` (deep partial, e.g. `{ game: { sessions_dir } }`).
  */
@@ -28,12 +28,6 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
     prefetch: {
       branch_dialogue_lines: 2,
       branch_concurrency: 2,
-    },
-    autocomplete: {
-      minimum_characters: 4,
-      debounce_ms: 350,
-      max_suffix_characters: 20,
-      confidence_threshold: 0.55,
     },
     media: {
       audio: {

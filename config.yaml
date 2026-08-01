@@ -16,12 +16,6 @@ prefetch:
   branch_dialogue_lines: 2
   branch_concurrency: 4
 
-autocomplete:
-  minimum_characters: 4
-  debounce_ms: 350
-  max_suffix_characters: 20
-  confidence_threshold: 0.55
-
 media:
   audio:
     # 文本预研默认关闭。改为 true + mock 可观察异步媒体调度。

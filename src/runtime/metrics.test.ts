@@ -46,12 +46,6 @@ describe("Metrics LLM request recording", () => {
     expect(snap.llm.requests.continuation).toBe(1);
   });
 
-  it("should increment autocomplete request counter", () => {
-    m.recordLLMRequest("autocomplete", { input: 20, output: 10 }, 200);
-    const snap = m.snapshot();
-    expect(snap.llm.requests.autocomplete).toBe(1);
-  });
-
   it("should increment speculative request counter", () => {
     m.recordLLMRequest("speculative", { input: 40, output: 60 }, 400);
     const snap = m.snapshot();
@@ -68,7 +62,6 @@ describe("Metrics LLM request recording", () => {
     expect(snap.llm.requests.opening).toBe(2);
     expect(snap.llm.requests.branch_prefetch).toBe(1);
     expect(snap.llm.requests.continuation).toBe(1);
-    expect(snap.llm.requests.autocomplete).toBe(0);
     expect(snap.llm.requests.speculative).toBe(0);
   });
 });
@@ -110,12 +103,11 @@ describe("Metrics token accumulation", () => {
     m.recordLLMRequest("opening", { input: 10, output: 20 }, 100);
     m.recordLLMRequest("branch_prefetch", { input: 5, output: 8 }, 100);
     m.recordLLMRequest("continuation", { input: 30, output: 50 }, 100);
-    m.recordLLMRequest("autocomplete", { input: 2, output: 1 }, 100);
     m.recordLLMRequest("speculative", { input: 3, output: 4 }, 100);
 
     const snap = m.snapshot();
-    expect(snap.llm.tokens.input).toBe(50);
-    expect(snap.llm.tokens.output).toBe(83);
+    expect(snap.llm.tokens.input).toBe(48);
+    expect(snap.llm.tokens.output).toBe(82);
   });
 });
 
@@ -206,55 +198,6 @@ describe("Metrics latency percentiles", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Autocomplete acceptance rate
-// ---------------------------------------------------------------------------
-
-describe("Metrics autocomplete tracking", () => {
-  let m: Metrics;
-
-  beforeEach(() => {
-    m = freshMetrics();
-  });
-
-  it("should start with zero rate", () => {
-    const snap = m.snapshot();
-    expect(snap.autocomplete.accepted).toBe(0);
-    expect(snap.autocomplete.ignored).toBe(0);
-    expect(snap.autocomplete.acceptance_rate).toBe(0);
-  });
-
-  it("should compute 100% acceptance rate", () => {
-    m.recordAutocompleteAccept();
-    m.recordAutocompleteAccept();
-    const snap = m.snapshot();
-    expect(snap.autocomplete.accepted).toBe(2);
-    expect(snap.autocomplete.ignored).toBe(0);
-    expect(snap.autocomplete.acceptance_rate).toBe(1);
-  });
-
-  it("should compute 0% acceptance rate", () => {
-    m.recordAutocompleteIgnore();
-    m.recordAutocompleteIgnore();
-    m.recordAutocompleteIgnore();
-    const snap = m.snapshot();
-    expect(snap.autocomplete.accepted).toBe(0);
-    expect(snap.autocomplete.ignored).toBe(3);
-    expect(snap.autocomplete.acceptance_rate).toBe(0);
-  });
-
-  it("should compute mixed acceptance rate", () => {
-    m.recordAutocompleteAccept();
-    m.recordAutocompleteAccept();
-    m.recordAutocompleteAccept();
-    m.recordAutocompleteIgnore();
-    const snap = m.snapshot();
-    expect(snap.autocomplete.accepted).toBe(3);
-    expect(snap.autocomplete.ignored).toBe(1);
-    expect(snap.autocomplete.acceptance_rate).toBe(0.75);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Prefetch hit rate
 // ---------------------------------------------------------------------------
 
@@ -323,7 +266,6 @@ describe("Metrics snapshot immutability", () => {
   beforeEach(() => {
     m = freshMetrics();
     m.recordLLMRequest("opening", { input: 100, output: 200 }, 1500);
-    m.recordAutocompleteAccept();
     m.recordBranchRequested(3);
   });
 
@@ -333,12 +275,10 @@ describe("Metrics snapshot immutability", () => {
     // Mutate the snapshot
     snap1.llm.requests.opening = 999;
     snap1.llm.tokens.input = 999;
-    snap1.autocomplete.accepted = 999;
 
     const snap2 = m.snapshot();
     expect(snap2.llm.requests.opening).toBe(1);
     expect(snap2.llm.tokens.input).toBe(100);
-    expect(snap2.autocomplete.accepted).toBe(1);
   });
 
   it("should not share array references in player timing", () => {
@@ -486,8 +426,6 @@ describe("Metrics reset", () => {
   it("should clear all counters to zero / empty", () => {
     const m = freshMetrics();
     m.recordLLMRequest("opening", { input: 100, output: 200 }, 1000);
-    m.recordAutocompleteAccept();
-    m.recordAutocompleteIgnore();
     m.recordBranchRequested(4);
     m.recordPrefetchHit();
     m.recordPrefetchMiss();
@@ -509,15 +447,11 @@ describe("Metrics reset", () => {
     expect(after.llm.requests.opening).toBe(0);
     expect(after.llm.requests.branch_prefetch).toBe(0);
     expect(after.llm.requests.continuation).toBe(0);
-    expect(after.llm.requests.autocomplete).toBe(0);
     expect(after.llm.requests.speculative).toBe(0);
     expect(after.llm.tokens.input).toBe(0);
     expect(after.llm.tokens.output).toBe(0);
     expect(after.llm.latency_ms.samples).toBe(0);
     expect(after.llm.latency_ms.p50).toBe(0);
-    expect(after.autocomplete.accepted).toBe(0);
-    expect(after.autocomplete.ignored).toBe(0);
-    expect(after.autocomplete.acceptance_rate).toBe(0);
     expect(after.prefetch.branches_requested).toBe(0);
     expect(after.prefetch.branches_hit).toBe(0);
     expect(after.prefetch.branches_missed).toBe(0);

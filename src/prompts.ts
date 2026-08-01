@@ -36,8 +36,6 @@ export interface InstructionSet {
   input_response: string;
   /** Template for continuation after prefetch playthrough. Placeholder: {prefetched_jsonl} */
   continuation: string;
-  /** System prompt for the autocomplete assistant. Placeholders: {max_suffix_characters}, {confidence_threshold} */
-  autocomplete_system: string;
 }
 
 const InstructionSetSchema = z.object({
@@ -46,7 +44,6 @@ const InstructionSetSchema = z.object({
   branch_prefetch: z.string().min(1),
   input_response: z.string().min(1),
   continuation: z.string().min(1),
-  autocomplete_system: z.string().min(1),
 });
 
 // ---------------------------------------------------------------------------

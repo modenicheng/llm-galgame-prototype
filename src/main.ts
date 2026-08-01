@@ -8,26 +8,20 @@ import { Metrics } from "./runtime/metrics.js";
 import { RuntimeStatus } from "./status.js";
 import { TerminalUI, UserExitError } from "./ui.js";
 
-function parseArgs(argv: string[]): { configPath: string; webMode: boolean; port: number } {
+function parseArgs(argv: string[]): { configPath: string } {
   let configPath = "config.yaml";
-  let webMode = false;
-  let port = 3000;
 
   for (const arg of argv) {
-    if (arg === "--web") {
-      webMode = true;
-    } else if (arg.startsWith("--port=")) {
-      port = parseInt(arg.slice("--port=".length), 10) || 3000;
-    } else if (!arg.startsWith("--") && arg.endsWith(".yaml")) {
+    if (!arg.startsWith("--") && arg.endsWith(".yaml")) {
       configPath = arg;
     }
   }
 
-  return { configPath, webMode, port };
+  return { configPath };
 }
 
 async function main(): Promise<void> {
-  const { configPath, webMode, port } = parseArgs(process.argv.slice(2));
+  const { configPath } = parseArgs(process.argv.slice(2));
   const config = await loadConfig(configPath);
   const authorConfig = await loadAuthorConfig("prompts/author.yaml");
   const { bundle, instructions } = await loadPrompts("prompts");
@@ -37,19 +31,11 @@ async function main(): Promise<void> {
   const generator = new StoryGenerator(config, bundle, instructions, apiKey, authorConfig, metrics);
   const media = new MediaPrefetchScheduler(config.media.audio, status);
 
-  // TUI mode (default)
   const ui = new TerminalUI(config.game.show_line_ids);
   const game = new Game(config, generator, status, ui, media, metrics);
 
-  if (webMode) {
-    // Web mode: wrap game with GameBridge (replaces UI with WebUI internally)
-    const { GameBridge } = await import("./ui/web/game-bridge.js");
-    const bridge = new GameBridge(config, generator, game);
-    await bridge.start(port);
-  } else {
-    await game.run();
-    printMetrics(game);
-  }
+  await game.run();
+  printMetrics(game);
 }
 
 function printMetrics(game: Game): void {
@@ -60,7 +46,6 @@ function printMetrics(game: Game): void {
   console.log(`  开场生成：     ${snap.llm.requests.opening}`);
   console.log(`  分支预取：     ${snap.llm.requests.branch_prefetch}`);
   console.log(`  剧情续写：     ${snap.llm.requests.continuation}`);
-  console.log(`  自动补全：     ${snap.llm.requests.autocomplete}`);
 
   console.log("\n── Token 用量 ──");
   console.log(`  输入 token：   ${snap.llm.tokens.input}`);
@@ -81,11 +66,6 @@ function printMetrics(game: Game): void {
   console.log("\n── 输入 ──");
   console.log(`  预览次数：     ${snap.input.preview_count}`);
   console.log(`  平均停留(ms)： ${snap.input.avg_dwell_ms.toFixed(0)}`);
-
-  console.log("\n── 自动补全 ──");
-  console.log(`  接受：         ${snap.autocomplete.accepted}`);
-  console.log(`  忽略：         ${snap.autocomplete.ignored}`);
-  console.log(`  接受率：       ${(snap.autocomplete.acceptance_rate * 100).toFixed(1)}%`);
 
   console.log("\n── 错误 ──");
   console.log(`  Schema 校验失败：${snap.errors.schema_validation_failures}`);

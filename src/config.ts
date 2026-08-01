@@ -42,7 +42,6 @@ export interface AppConfig {
     branch_dialogue_lines: number;
     branch_concurrency: number;
   };
-  autocomplete: AutocompleteConfig;
   media: {
     audio: AudioConfig;
   };
@@ -56,13 +55,6 @@ export interface AppConfig {
 // ---------------------------------------------------------------------------
 // Configuration sections
 // ---------------------------------------------------------------------------
-
-export interface AutocompleteConfig {
-  minimum_characters: number;
-  debounce_ms: number;
-  max_suffix_characters: number;
-  confidence_threshold: number;
-}
 
 // ---------------------------------------------------------------------------
 // Author config types
@@ -136,12 +128,6 @@ const ConfigSchema = z.object({
       branch_dialogue_lines: z.number().int().min(1).max(20).default(3),
       branch_concurrency: z.number().int().min(1).max(10).default(3),
     }),
-  autocomplete: z.object({
-    minimum_characters: z.number().int().min(1).default(4),
-    debounce_ms: z.number().int().min(0).max(5_000).default(350),
-    max_suffix_characters: z.number().int().min(1).max(200).default(20),
-    confidence_threshold: z.number().min(0).max(1).default(0.55),
-  }).default({ minimum_characters: 4, debounce_ms: 350, max_suffix_characters: 20, confidence_threshold: 0.55 }),
   media: z.object({
     audio: AudioConfigSchema
   }),

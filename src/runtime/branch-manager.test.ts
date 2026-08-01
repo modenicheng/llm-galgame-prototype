@@ -99,7 +99,7 @@ describe("BranchManager createCandidate", () => {
 
   it("should store candidates in the internal map", () => {
     manager.createCandidate("br1", "int_1", "choice");
-    manager.createCandidate("br2", "int_1", "autocomplete");
+    manager.createCandidate("br2", "int_1", "choice");
 
     const retrieved = manager.getCandidate("br1");
     expect(retrieved).toBeDefined();
@@ -107,20 +107,11 @@ describe("BranchManager createCandidate", () => {
     expect(retrieved!.source).toBe("choice");
 
     const retrieved2 = manager.getCandidate("br2");
-    expect(retrieved2!.source).toBe("autocomplete");
+    expect(retrieved2!.source).toBe("choice");
   });
 
   it("should return undefined for unknown candidates", () => {
     expect(manager.getCandidate("no_such_id")).toBeUndefined();
-  });
-
-  it("should accept overrides for predicted_input and intent", () => {
-    const candidate = manager.createCandidate("br1", "int_1", "autocomplete", {
-      predicted_input: "player typed thi",
-      intent: "player wants to open door",
-    });
-    expect(candidate.predicted_input).toBe("player typed thi");
-    expect(candidate.intent).toBe("player wants to open door");
   });
 
   it("should list all candidates via getCandidates", () => {
@@ -493,18 +484,13 @@ describe("BranchManager edge cases", () => {
 
   it("should preserve interaction_id and source across candidate lifecycle", () => {
     const manager = freshManager();
-    manager.createCandidate("br1", "interaction_42", "autocomplete", {
-      predicted_input: "open",
-      intent: "open door",
-    });
+    manager.createCandidate("br1", "interaction_42", "choice");
     manager.updateCandidateStatus("br1", "generating");
     manager.updateCandidateStatus("br1", "ready", [makeDialogueEvent("X", "Y")]);
 
     const c = manager.getCandidate("br1")!;
     expect(c.interaction_id).toBe("interaction_42");
-    expect(c.source).toBe("autocomplete");
-    expect(c.predicted_input).toBe("open");
-    expect(c.intent).toBe("open door");
+    expect(c.source).toBe("choice");
     expect(c.status).toBe("ready");
   });
 });

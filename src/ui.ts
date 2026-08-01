@@ -11,7 +11,7 @@ import type { RuntimeStatusSnapshot } from "./status.js";
 import type { RuntimeStatus } from "./status.js";
 
 // ---------------------------------------------------------------------------
-// GameUI interface — shared contract for TerminalUI and WebUI
+// GameUI interface — shared contract for the CLI terminal UI
 // ---------------------------------------------------------------------------
 
 export interface GameUI {

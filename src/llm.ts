@@ -10,8 +10,7 @@ import type { InstructionSet, PromptBundle } from "./prompts.js";
 import type { LLMRequestCounts } from "./runtime/metrics.js";
 import { Metrics } from "./runtime/metrics.js";
 import { isStatePatchLine, ModelEventSchema, StatePatchLineSchema, type ChoiceEvent, type ChoiceOption, type InteractionEvent, type ModelEvent, type ModelPlayableEvent, type StoryContextEvent } from "./schema.js";
-import type { AutocompleteResult, GenerationEnvelope, StoryState, StoryStatePatch } from "./story/types.js";
-import { AutocompleteResultSchema } from "./story/types.js";
+import type { GenerationEnvelope, StoryState, StoryStatePatch } from "./story/types.js";
 import { mergePatches } from "./story/patch.js";
 
 // ---------------------------------------------------------------------------
@@ -187,109 +186,6 @@ export class StoryGenerator {
       signal,
       options,
     );
-  }
-
-  // -----------------------------------------------------------------------
-  // Autocomplete
-  // -----------------------------------------------------------------------
-
-  async generateAutocomplete(
-    state: StoryState,
-    history: StoryContextEvent[],
-    interaction: InteractionEvent,
-    playerPrefix: string,
-    signal?: AbortSignal,
-  ): Promise<AutocompleteResult | null> {
-    if (playerPrefix.trim().length < this.config.autocomplete.minimum_characters) {
-      return null;
-    }
-
-    const recentHistory = history.slice(-6);
-    const request = {
-      model: this.config.api.model,
-      temperature: 0.3,
-      ...(this.config.api.token_limit_field === "max_tokens"
-        ? { max_tokens: 80 }
-        : { max_completion_tokens: 80 }),
-      messages: [
-        {
-          role: "system" as const,
-          content: fill(this.instructions.autocomplete_system, {
-            max_suffix_characters: this.config.autocomplete.max_suffix_characters,
-            confidence_threshold: this.config.autocomplete.confidence_threshold,
-          }),
-        },
-        {
-          role: "user" as const,
-          content: this.buildAutocompletePrompt(state, recentHistory, interaction, playerPrefix),
-        },
-      ],
-    };
-
-    try {
-      const completion = signal
-        ? await this.client.chat.completions.create(request, { signal })
-        : await this.client.chat.completions.create(request);
-
-      const text = completion.choices[0]?.message.content;
-      if (!text) return null;
-
-      const cleaned = removeMarkdownFence(text);
-      const parsed: unknown = JSON.parse(cleaned);
-      const result = AutocompleteResultSchema.parse(parsed) as AutocompleteResult;
-
-      if (result.confidence < this.config.autocomplete.confidence_threshold) return null;
-
-      if (result.suffix.length > this.config.autocomplete.max_suffix_characters) {
-        result.suffix = result.suffix.slice(0, this.config.autocomplete.max_suffix_characters);
-      }
-
-      return result;
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") throw error;
-      return null;
-    }
-  }
-
-  /** Build the user-facing autocomplete prompt. Kept in code due to programmatic construction. */
-  private buildAutocompletePrompt(
-    state: StoryState,
-    recentHistory: StoryContextEvent[],
-    interaction: InteractionEvent,
-    playerPrefix: string,
-  ): string {
-    const lines: string[] = [];
-    const timeStr = state.scene.time ? ` (${state.scene.time})` : "";
-    lines.push(`当前场景：${state.scene.location}${timeStr}`);
-
-    const charIds = Object.keys(state.characters);
-    if (charIds.length > 0) {
-      const charDescs = charIds.map((id) => {
-        const c = state.characters[id];
-        const parts = [id];
-        if (c?.emotion) parts.push(`情绪:${c.emotion}`);
-        if (c?.location) parts.push(`位置:${c.location}`);
-        return parts.join(" ");
-      });
-      lines.push(`在场角色：${charDescs.join("；")}`);
-    }
-
-    if (recentHistory.length > 0) {
-      lines.push("最近对话：");
-      for (const event of recentHistory.slice(-4)) {
-        if (event.type === "dialogue") {
-          lines.push(`  ${event.speaker}："${event.text.slice(0, 100)}"`);
-        } else if (event.type === "narration") {
-          lines.push(`  [旁白] ${event.text.slice(0, 80)}`);
-        }
-      }
-    }
-
-    lines.push(`当前提示：${interaction.prompt}`);
-    lines.push(`玩家正在输入："${playerPrefix}"`);
-    lines.push("请预测补全后缀。");
-
-    return lines.join("\n");
   }
 
   // -----------------------------------------------------------------------

@@ -744,7 +744,7 @@ export class Game {
     turn: number,
     prefetchContext: StoryContextEvent[],
     interactionId?: string,
-    source: "choice" | "autocomplete" | "input_preview" = "choice"
+    source: "choice" | "input_preview" = "choice"
   ): BranchManager {
     const manager = new BranchManager(this.metrics);
 
@@ -1142,11 +1142,6 @@ export class Game {
     const dir = path.dirname(this.store.filePath);
     const statePath = path.join(dir, "state.json");
     await saveStateSnapshot(this.storyState, statePath);
-  }
-
-  /** Provides readonly context for the autocomplete system. */
-  getAutocompleteContext(): { state: StoryState; events: StoryContextEvent[] } {
-    return { state: this.storyState, events: [...this.events] };
   }
 
   /**

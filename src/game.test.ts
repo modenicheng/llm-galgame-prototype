@@ -115,19 +115,18 @@ describe("Game construction", () => {
     const game = new Game(config, generator, status, ui, media);
     expect(game).toBeDefined();
     expect(game.getMetrics).toBeInstanceOf(Function);
-    expect(game.getAutocompleteContext).toBeInstanceOf(Function);
   });
 
   it("should initialise with an empty events array", () => {
     const game = new Game(config, generator, status, ui, media);
-    const ctx = game.getAutocompleteContext();
-    expect(ctx.events).toEqual([]);
+    const events = (game as any).events;
+    expect(events).toEqual([]);
   });
 
   it("should initialise with the default StoryState", () => {
     const game = new Game(config, generator, status, ui, media);
-    const ctx = game.getAutocompleteContext();
-    expect(ctx.state).toEqual(createInitialState());
+    const state = (game as any).storyState;
+    expect(state).toEqual(createInitialState());
   });
 
   it("should auto-create a Metrics instance when none is provided", () => {
@@ -189,10 +188,10 @@ describe("Session ID", () => {
 });
 
 // ---------------------------------------------------------------------------
-// getAutocompleteContext
+// Internal state access (events / story state)
 // ---------------------------------------------------------------------------
 
-describe("getAutocompleteContext", () => {
+describe("internal state access", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
@@ -207,19 +206,11 @@ describe("getAutocompleteContext", () => {
     media = makeMockMedia();
   });
 
-  it("should return the current story state", () => {
+  it("should expose the current story state", () => {
     const game = new Game(config, generator, status, ui, media);
-    const ctx = game.getAutocompleteContext();
-    expect(ctx.state).toBeDefined();
-    expect(ctx.state.scene.id).toBe("prologue");
-  });
-
-  it("should return a copy of the events array, not the internal reference", () => {
-    const game = new Game(config, generator, status, ui, media);
-    const ctx1 = game.getAutocompleteContext();
-    const ctx2 = game.getAutocompleteContext();
-    // They should be different array objects
-    expect(ctx1.events).not.toBe(ctx2.events);
+    const state = (game as any).storyState;
+    expect(state).toBeDefined();
+    expect(state.scene.id).toBe("prologue");
   });
 
   it("should reflect events after a player choice is recorded", () => {
@@ -227,9 +218,9 @@ describe("getAutocompleteContext", () => {
     const g = game as any;
     g.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 1);
 
-    const ctx = game.getAutocompleteContext();
-    expect(ctx.events.length).toBe(1);
-    expect(ctx.events[0]).toMatchObject({
+    const events = g.events;
+    expect(events.length).toBe(1);
+    expect(events[0]).toMatchObject({
       type: "player_choice",
       choice_id: "opt_1",
       text: "Go left",
@@ -403,10 +394,10 @@ describe("recordPlayerChoice", () => {
     const g = game as any;
     await g.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 3);
 
-    const ctx = game.getAutocompleteContext();
-    expect(ctx.events).toHaveLength(1);
+    const events = g.events;
+    expect(events).toHaveLength(1);
 
-    const event = ctx.events[0];
+    const event = events[0];
     expect(event).toMatchObject({
       type: "player_choice",
       choice_id: "opt_1",
@@ -423,8 +414,8 @@ describe("recordPlayerChoice", () => {
   it("should emit a valid ISO timestamp", async () => {
     const g = game as any;
     await g.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 1);
-    const event = game.getAutocompleteContext().events[0] as any;
-    const ts = event.timestamp as string;
+    const events = (game as any).events as any[];
+    const ts = events[0].timestamp as string;
     expect(() => new Date(ts)).not.toThrow();
     expect(new Date(ts).toISOString()).toBe(ts);
   });
@@ -451,10 +442,10 @@ describe("recordPlayerInput", () => {
     const g = game as any;
     await g.recordPlayerInput("int_42", "I open the door.", 2);
 
-    const ctx = game.getAutocompleteContext();
-    expect(ctx.events).toHaveLength(1);
+    const events = g.events;
+    expect(events).toHaveLength(1);
 
-    const event = ctx.events[0];
+    const event = events[0];
     expect(event).toMatchObject({
       type: "player_input",
       interaction_id: "int_42",
@@ -468,8 +459,8 @@ describe("recordPlayerInput", () => {
     const g = game as any;
     await g.recordPlayerInput("int_1", "", 1);
 
-    const ctx = game.getAutocompleteContext();
-    expect(ctx.events[0]).toMatchObject({
+    const events = g.events;
+    expect(events[0]).toMatchObject({
       type: "player_input",
       text: "",
     });
@@ -480,8 +471,8 @@ describe("recordPlayerInput", () => {
     const longText = "A".repeat(1000);
     await g.recordPlayerInput("int_1", longText, 1);
 
-    const ctx = game.getAutocompleteContext();
-    expect(ctx.events[0]).toMatchObject({
+    const events = g.events;
+    expect(events[0]).toMatchObject({
       text: longText,
     });
   });
@@ -513,7 +504,7 @@ describe("Sequence numbering", () => {
     await g.recordPlayerInput("int_1", "text", 1);
     await g.recordPlayerChoice({ id: "b", text: "B" }, 2);
 
-    const events = game.getAutocompleteContext().events;
+    const events = (game as any).events;
     const seqs = events.map((e: any) => e.seq);
     expect(seqs).toEqual([1, 2, 3]);
   });
@@ -523,7 +514,7 @@ describe("Sequence numbering", () => {
     await g.recordPlayerChoice({ id: "a", text: "A" }, 10);
     await g.recordPlayerChoice({ id: "b", text: "B" }, 5);
 
-    const events = game.getAutocompleteContext().events;
+    const events = (game as any).events;
     const seqs = events.map((e: any) => e.seq);
     expect(seqs).toEqual([1, 2]);
   });
@@ -540,7 +531,7 @@ describe("Sequence numbering", () => {
     await g.recordPlayerChoice({ id: "c", text: "C" }, 1);
     await g.recordModelEvent({ ...modelEvent, line_id: "line_test_000002" }, 2);
 
-    const events = game.getAutocompleteContext().events;
+    const events = (game as any).events;
     const seqs = events.map((e: any) => e.seq);
     expect(seqs).toEqual([1, 2, 3]);
   });
@@ -1091,8 +1082,8 @@ describe("State patch rejection", () => {
 
     expect(game.getMetrics().errors.state_patch_rejections).toBe(1);
     // Story state should remain the initial state since patch was rejected
-    const ctx = game.getAutocompleteContext();
-    expect(ctx.state.scene.id).toBe("prologue");
+    const state = (game as any).storyState;
+    expect(state.scene.id).toBe("prologue");
   });
 });
 
