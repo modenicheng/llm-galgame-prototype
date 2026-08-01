@@ -78,9 +78,25 @@ describe("type exports", () => {
         placeholder: "Or describe what you do...",
         max_length: 150,
       },
+      input_bridge: {
+        events: [{ type: "narration", text: "The door looms before you." }],
+      },
     };
     expect(event.mode).toBe("hybrid");
     expect(event.input?.kind).toBe("action");
+  });
+
+  it("ChoiceInteraction should not expose input or bridge fields", () => {
+    const event: InteractionEvent = {
+      type: "interaction",
+      interaction_id: "int-003",
+      prompt: "Choose!",
+      mode: "choice",
+      options: [{ id: "a", text: "Go" }],
+    };
+    expect(event.mode).toBe("choice");
+    expect("input" in event).toBe(false);
+    expect("input_bridge" in event).toBe(false);
   });
 
   it("StoryThread should accept all five status values", () => {
@@ -198,7 +214,7 @@ describe("InteractionEventSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("should parse a valid input-mode interaction", () => {
+  it("should parse a valid input-mode interaction with a bridge", () => {
     const result = InteractionEventSchema.safeParse({
       type: "interaction",
       interaction_id: "int-2",
@@ -208,6 +224,31 @@ describe("InteractionEventSchema", () => {
         kind: "free_text",
         placeholder: "Type here...",
         max_length: 500,
+      },
+      input_bridge: {
+        events: [{ type: "narration", text: "The room falls quiet." }],
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("should parse a valid hybrid-mode interaction with a bridge", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int-6",
+      prompt: "Choose or speak.",
+      mode: "hybrid",
+      options: [{ id: "a", text: "Ask" }],
+      input: {
+        kind: "free_text",
+        placeholder: "Or say anything...",
+        max_length: 200,
+      },
+      input_bridge: {
+        events: [
+          { type: "narration", text: "She raises an eyebrow." },
+          { type: "narration", text: "The candle flickers." },
+        ],
       },
     });
     expect(result.success).toBe(true);
@@ -230,6 +271,9 @@ describe("InteractionEventSchema", () => {
       prompt: "",
       mode: "input",
       input: { kind: "free_text", placeholder: "...", max_length: 100 },
+      input_bridge: {
+        events: [{ type: "narration", text: "..." }],
+      },
     });
     expect(result.success).toBe(false);
   });

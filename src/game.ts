@@ -1,6 +1,7 @@
 import type { AppConfig } from "./config.js";
 import { InputEngine } from "./interaction/input-engine.js";
 import { AsyncEventQueue } from "./core/runtime/async-event-queue.js";
+import { InputBridgeBuffer } from "./core/interaction/input-bridge.js";
 import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
 import type {
   RuntimeInteractionEvent,
@@ -26,6 +27,8 @@ import { PlaybackBuffer } from "./runtime/playback-buffer.js";
 import type {
   ChoiceEvent,
   ChoiceOption,
+  HybridInteraction,
+  InputInteraction,
   InteractionEvent,
   ModelEvent,
   ModelPlayableEvent,
@@ -40,7 +43,12 @@ import type {
 import { isPlayableEvent } from "./schema.js";
 import { applyPatch } from "./story/patch.js";
 import { createInitialState } from "./story/state.js";
-import type { GeneratedEvent, StoryState, StoryStatePatch } from "./story/types.js";
+import type {
+  GeneratedEvent,
+  InputBridge,
+  StoryState,
+  StoryStatePatch,
+} from "./story/types.js";
 import type { RuntimeStatus } from "./status.js";
 
 interface ActiveSegment {
@@ -100,6 +108,7 @@ export class Game {
   private readonly ids: IdGeneratorPort;
   private readonly diagnostics: DiagnosticSink;
   private readonly inputEngine = new InputEngine();
+  private readonly bridgeBuffer = new InputBridgeBuffer();
   private storyState: StoryState;
   private readonly metrics: Metrics;
   private choiceTimestamp: number | null = null;
@@ -282,6 +291,9 @@ export class Game {
       if (event.type === "choice" || event.type === "interaction" || event.type === "end") {
         segment.terminal = event;
         if (event.type !== "end") {
+          if (event.type === "interaction" && "input_bridge" in event) {
+            this.materializeInputBridge(event);
+          }
           const context = [...history, ...segment.events];
           segment.branchManager = this.createBranchManagerForTerminal(event, turn, context);
         }
@@ -392,7 +404,7 @@ export class Game {
             this.status.removeJob(`branch:${option.id}`);
           }
           this.status.clearBranches();
-        } else if (terminal?.type === "interaction" && terminal.options) {
+        } else if (terminal?.type === "interaction" && terminal.mode !== "input") {
           for (const option of terminal.options) {
             this.status.removeJob(`branch:${option.id}`);
           }
@@ -462,25 +474,14 @@ export class Game {
         const syntheticChoice: ChoiceEvent = {
           type: "choice",
           prompt: event.prompt,
-          options: event.options!.map((option) => ({ id: option.id, text: option.text })),
+          options: event.options.map((option) => ({ id: option.id, text: option.text })),
         };
         const preview = await this.handleChoice(syntheticChoice, turn, segment.branchManager, context);
         return { type: "choice", nextTurn: turn + 1, ...preview };
       }
 
       if (event.mode === "hybrid") {
-        if (!event.options || !event.input) {
-          throw new Error("hybrid 模式需要同时提供 options 和 input 字段。");
-        }
-        return this.handleHybridInteraction(
-          event as InteractionEvent & {
-            options: NonNullable<InteractionEvent["options"]>;
-            input: NonNullable<InteractionEvent["input"]>;
-          },
-          turn,
-          segment.branchManager,
-          context,
-        );
+        return this.handleHybridInteraction(event, turn, segment.branchManager, context);
       }
 
       const preview = await this.handleInteractionInput(event, turn, segment.branchManager);
@@ -514,6 +515,19 @@ export class Game {
     }
   }
 
+  /**
+   * Assign stable line_ids to an interaction's bridge narration and buffer
+   * it. Bridge events never enter the formal event log.
+   */
+  private materializeInputBridge(
+    interaction: InputInteraction | HybridInteraction,
+  ): void {
+    const events = interaction.input_bridge.events.map(
+      (draft) => ({ ...draft, line_id: this.nextLineId() }),
+    );
+    this.bridgeBuffer.store(interaction.interaction_id, events);
+  }
+
   private createBranchManagerForTerminal(
     terminal: ChoiceEvent | InteractionEvent,
     turn: number,
@@ -526,7 +540,7 @@ export class Game {
       const choice: ChoiceEvent = {
         type: "choice",
         prompt: terminal.prompt,
-        options: terminal.options!.map((option) => ({ id: option.id, text: option.text })),
+        options: terminal.options.map((option) => ({ id: option.id, text: option.text })),
       };
       return this.createBranchManager(choice, turn, context, terminal.interaction_id, "choice");
     }
@@ -876,7 +890,7 @@ export class Game {
    * editor step is skipped and the flow goes directly to preview.
    */
   private async handleInteractionInput(
-    interaction: InteractionEvent,
+    interaction: InputInteraction | HybridInteraction,
     turn: number,
     branchManager: BranchManager | null,
     initialText?: string,
@@ -899,7 +913,7 @@ export class Game {
           (c) => c.type === "preview_input" && c.interactionId === interactionId,
         );
         if (command.type !== "preview_input") throw new RuntimeShutdownError();
-        text = command.text.trim().slice(0, interaction.input?.max_length ?? 200);
+        text = command.text.trim().slice(0, interaction.input.max_length);
       }
 
       // Freeze the text and enter preview.
@@ -1039,12 +1053,12 @@ export class Game {
    * Hybrid interaction: player can select a preset option OR type free text.
    * The runtime opens the interaction once and awaits `select_choice` or
    * `preview_input`; client-side cancels simply re-prompt without commands.
+   *
+   * Choosing a preset option discards the buffered input bridge; choosing
+   * free text keeps it for the confirm → bridge → response playback.
    */
   private async handleHybridInteraction(
-    interaction: InteractionEvent & {
-      options: NonNullable<InteractionEvent["options"]>;
-      input: NonNullable<InteractionEvent["input"]>;
-    },
+    interaction: HybridInteraction,
     turn: number,
     branchManager: BranchManager | null,
     prefetchContext: StoryContextEvent[]
@@ -1078,6 +1092,10 @@ export class Game {
     }
 
     if (command.type !== "select_choice") throw new RuntimeShutdownError();
+
+    // A preset option resolves the interaction through the branch flow; the
+    // input bridge belongs to the free-text path and is discarded.
+    this.bridgeBuffer.discard(interactionId);
 
     const selected = interaction.options.find(
       (o) => o.id === command.optionId

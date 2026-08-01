@@ -52,8 +52,7 @@ describe("parseTerminalModelJsonl", () => {
     expect(events).toHaveLength(3);
     const terminal = events[2]!;
     expect(terminal.type).toBe("interaction");
-    if (terminal.type === "interaction") {
-      expect(terminal.mode).toBe("choice");
+    if (terminal.type === "interaction" && terminal.mode === "choice") {
       expect(terminal.options).toHaveLength(2);
     }
   });
@@ -64,16 +63,16 @@ describe("parseTerminalModelJsonl", () => {
     const text = [
       '{"type":"narration","text":"她看着你。"}',
       '{"type":"dialogue","speaker":"小樱","text":"你在想什么？"}',
-      '{"type":"interaction","interaction_id":"int_002","prompt":"请写下你的回答：","mode":"input","input":{"kind":"free_text","placeholder":"输入你的想法...","max_length":200}}'
+      '{"type":"interaction","interaction_id":"int_002","prompt":"请写下你的回答：","mode":"input","input":{"kind":"free_text","placeholder":"输入你的想法...","max_length":200},"input_bridge":{"events":[{"type":"narration","text":"房间里安静下来。"}]}}'
     ].join("\n");
 
     const { events } = parseTerminalModelJsonl(text);
     expect(events).toHaveLength(3);
     const terminal = events[2]!;
     expect(terminal.type).toBe("interaction");
-    if (terminal.type === "interaction") {
-      expect(terminal.mode).toBe("input");
+    if (terminal.type === "interaction" && terminal.mode === "input") {
       expect(terminal.input).toBeDefined();
+      expect(terminal.input_bridge.events).toHaveLength(1);
     }
   });
 
@@ -82,15 +81,14 @@ describe("parseTerminalModelJsonl", () => {
   it("parses valid terminal JSONL with interaction event (hybrid mode)", () => {
     const text = [
       '{"type":"narration","text":"你需要做出决定。"}',
-      '{"type":"interaction","interaction_id":"int_003","prompt":"怎么做？","mode":"hybrid","options":[{"id":"a","text":"开门"},{"id":"b","text":"等待"}],"input":{"kind":"free_text","placeholder":"或自己做决定...","max_length":100}}'
+      '{"type":"interaction","interaction_id":"int_003","prompt":"怎么做？","mode":"hybrid","options":[{"id":"a","text":"开门"},{"id":"b","text":"等待"}],"input":{"kind":"free_text","placeholder":"或自己做决定...","max_length":100},"input_bridge":{"events":[{"type":"narration","text":"她等着你的决定。"},{"type":"narration","text":"烛火轻轻摇晃。"}]}}'
     ].join("\n");
 
     const { events } = parseTerminalModelJsonl(text);
     expect(events).toHaveLength(2);
     const terminal = events[1]!;
     expect(terminal.type).toBe("interaction");
-    if (terminal.type === "interaction") {
-      expect(terminal.mode).toBe("hybrid");
+    if (terminal.type === "interaction" && terminal.mode === "hybrid") {
       expect(terminal.options).toHaveLength(2);
       expect(terminal.input).toBeDefined();
     }

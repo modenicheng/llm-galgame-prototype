@@ -1,6 +1,6 @@
 import { z } from "zod";
 import {
-  InteractionEventSchema as BaseInteractionEventSchema,
+  InteractionEventSchema,
   DialogueDraftEventSchema,
   NarrationDraftEventSchema,
   PortraitSchema,
@@ -10,34 +10,23 @@ import {
 } from "./story/types.js";
 
 // Re-export for convenience
-export type { InteractionEvent } from "./story/types.js";
+export type {
+  InteractionEvent,
+  InputBridge,
+  InputBridgeEvent,
+  ChoiceInteraction,
+  InputInteraction,
+  HybridInteraction,
+} from "./story/types.js";
 export {
   PortraitSchema,
   DialogueDraftEventSchema,
   NarrationDraftEventSchema,
+  InputBridgeEventSchema,
+  InputBridgeSchema,
 } from "./story/types.js";
 
-export const InteractionEventSchema = BaseInteractionEventSchema.refine(
-  (data) => {
-    if (
-      (data.mode === "choice" || data.mode === "hybrid") &&
-      (!data.options || data.options.length === 0)
-    ) {
-      return false;
-    }
-    if (
-      (data.mode === "input" || data.mode === "hybrid") &&
-      !data.input
-    ) {
-      return false;
-    }
-    return true;
-  },
-  {
-    message:
-      "choice/hybrid 模式需要 options 数组，input/hybrid 模式需要 input 字段",
-  }
-);
+export { InteractionEventSchema } from "./story/types.js";
 
 export interface Portrait {
   character: string;

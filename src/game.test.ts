@@ -27,6 +27,7 @@ import type {
   RuntimePlayableEvent,
   NarrationDraftEvent,
   EndEvent,
+  StoredEvent,
 } from "./schema.js";
 import type { GenerationEnvelope } from "./story/types.js";
 
@@ -272,6 +273,9 @@ describe("materializeEvents", () => {
         prompt: "What do you say?",
         mode: "input",
         input: { kind: "free_text", placeholder: "Type...", max_length: 100 },
+        input_bridge: {
+          events: [{ type: "narration", text: "她等待着你的回答。" }],
+        },
       },
     ];
     const g = game as any;
@@ -887,6 +891,9 @@ describe("Input preview cancellation", () => {
           prompt: "说什么？",
           mode: "input",
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
+          input_bridge: {
+            events: [{ type: "narration", text: "她静静地看着你。" }],
+          },
         },
       ]),
     );
@@ -958,6 +965,9 @@ describe("Input preview cancellation", () => {
           prompt: "说什么？",
           mode: "input",
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
+          input_bridge: {
+            events: [{ type: "narration", text: "她静静地看着你。" }],
+          },
         },
       ]),
     );
@@ -1005,6 +1015,159 @@ describe("Input preview cancellation", () => {
     expect([...buffered.values()]).toEqual([]);
     // 开场 + 第二次回应 + 结尾 = 3 段旁白；第一次的回应从未渲染。
     expect(controller.countPlayback("narration")).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Input bridge semantics
+// ---------------------------------------------------------------------------
+
+describe("Input bridge semantics", () => {
+  it("assigns stable line_ids to bridge events when the input interaction arrives", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "interaction",
+          interaction_id: "int_1",
+          prompt: "说什么？",
+          mode: "input",
+          input: { kind: "free_text", placeholder: "...", max_length: 200 },
+          input_bridge: {
+            events: [
+              { type: "narration", text: "风穿过走廊。" },
+              { type: "narration", text: "她抬起了头。" },
+            ],
+          },
+        },
+      ]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // The bridge stays in the buffer for the confirm → bridge → response
+    // playback (Phase E) and never enters the formal event log.
+    const g = game as any;
+    const bridge = g.bridgeBuffer.peek("int_1") as RuntimePlayableEvent[];
+    expect(bridge).toHaveLength(2);
+    expect(bridge[0]!.line_id).toMatch(/^line_.+_\d{6}$/);
+    expect(bridge[0]!.line_id).not.toBe(bridge[1]!.line_id);
+    // Stable across reads.
+    expect(g.bridgeBuffer.peek("int_1")).toBe(bridge);
+    // Bridge narration never appears as a stored event.
+    const storedTexts = (g.events as StoredEvent[]).map((e) =>
+      (e as { text?: string }).text,
+    );
+    expect(storedTexts).not.toContain("风穿过走廊。");
+    expect(storedTexts).not.toContain("她抬起了头。");
+  });
+
+  it("discards the bridge when a hybrid preset option is chosen", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "interaction",
+          interaction_id: "int_1",
+          prompt: "怎么做？",
+          mode: "hybrid",
+          options: [
+            { id: "a", text: "选项A" },
+            { id: "b", text: "选项B" },
+          ],
+          input: { kind: "free_text", placeholder: "...", max_length: 200 },
+          input_bridge: {
+            events: [{ type: "narration", text: "她等着你的决定。" }],
+          },
+        },
+      ]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.select(output.interactionId, "a"),
+    });
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    expect((game as any).bridgeBuffer.peek("int_1")).toBeNull();
+  });
+
+  it("keeps the bridge when hybrid free text is submitted", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "interaction",
+          interaction_id: "int_1",
+          prompt: "怎么做？",
+          mode: "hybrid",
+          options: [
+            { id: "a", text: "选项A" },
+            { id: "b", text: "选项B" },
+          ],
+          input: { kind: "free_text", placeholder: "...", max_length: 200 },
+          input_bridge: {
+            events: [{ type: "narration", text: "她等着你的决定。" }],
+          },
+        },
+      ]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) =>
+        controller.submitInput(output.interactionId, "随便说点什么"),
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const bridge = (game as any).bridgeBuffer.peek("int_1") as RuntimePlayableEvent[];
+    expect(bridge).toHaveLength(1);
+    expect(bridge[0]!.text).toBe("她等着你的决定。");
   });
 });
 
@@ -1189,6 +1352,9 @@ describe("Hybrid interaction commands", () => {
             { id: "b", text: "选项B" },
           ],
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
+          input_bridge: {
+            events: [{ type: "narration", text: "她等着你的决定。" }],
+          },
         },
       ]),
     );

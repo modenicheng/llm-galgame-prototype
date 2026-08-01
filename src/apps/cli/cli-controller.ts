@@ -11,7 +11,7 @@ import type {
   RuntimeOutput,
 } from "../../core/runtime/runtime-output.js";
 import type { Game } from "../../game.js";
-import type { ChoiceEvent, InteractionEvent, RuntimePlayableEvent } from "../../schema.js";
+import type { ChoiceEvent, HybridInteraction, RuntimePlayableEvent } from "../../schema.js";
 import { TerminalUI } from "./terminal-ui.js";
 
 export class CliController {
@@ -98,12 +98,7 @@ export class CliController {
 
     if (interaction.mode === "hybrid") {
       while (true) {
-        const result = await this.ui.renderHybridInteraction(
-          interaction as InteractionEvent & {
-            options: NonNullable<InteractionEvent["options"]>;
-            input: NonNullable<InteractionEvent["input"]>;
-          },
-        );
+        const result = await this.ui.renderHybridInteraction(interaction as HybridInteraction);
         // Cancels just re-prompt; no runtime command involved.
         if (result.type === "cancel") continue;
         if (result.type === "choice") {

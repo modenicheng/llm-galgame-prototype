@@ -396,6 +396,9 @@ describe("ModelEventSchema discriminatedUnion", () => {
         placeholder: "Type here...",
         max_length: 200,
       },
+      input_bridge: {
+        events: [{ type: "narration", text: "She waits." }],
+      },
     });
     expect(result.success).toBe(true);
     if (result.success) {
@@ -467,6 +470,9 @@ describe("isPlayableEvent", () => {
         placeholder: "...",
         max_length: 100,
       },
+      input_bridge: {
+        events: [{ type: "narration", text: "..." }],
+      },
     };
     expect(isPlayableEvent(event)).toBe(false);
   });
@@ -482,9 +488,11 @@ describe("isPlayableEvent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// InteractionEventSchema refinement (schema.ts override)
+// InteractionEventSchema (discriminated union with input_bridge)
 // ---------------------------------------------------------------------------
-describe("InteractionEventSchema refinement", () => {
+const BRIDGE = { events: [{ type: "narration", text: "She waits." }] };
+
+describe("InteractionEventSchema union", () => {
   it("rejects choice mode without options", () => {
     const result = InteractionEventSchema.safeParse({
       type: "interaction",
@@ -506,7 +514,7 @@ describe("InteractionEventSchema refinement", () => {
     expect(result.success).toBe(false);
   });
 
-  it("accepts choice mode with options", () => {
+  it("accepts choice mode with options and no bridge", () => {
     const result = InteractionEventSchema.safeParse({
       type: "interaction",
       interaction_id: "int1",
@@ -528,6 +536,7 @@ describe("InteractionEventSchema refinement", () => {
         placeholder: "...",
         max_length: 100,
       },
+      input_bridge: BRIDGE,
     });
     expect(result.success).toBe(false);
   });
@@ -539,11 +548,12 @@ describe("InteractionEventSchema refinement", () => {
       prompt: "Choose or type!",
       mode: "hybrid",
       options: [{ id: "a", text: "A" }],
+      input_bridge: BRIDGE,
     });
     expect(result.success).toBe(false);
   });
 
-  it("accepts valid hybrid mode with both options and input", () => {
+  it("accepts valid hybrid mode with options, input, and a bridge", () => {
     const result = InteractionEventSchema.safeParse({
       type: "interaction",
       interaction_id: "int1",
@@ -555,11 +565,39 @@ describe("InteractionEventSchema refinement", () => {
         placeholder: "Type...",
         max_length: 200,
       },
+      input_bridge: BRIDGE,
     });
     expect(result.success).toBe(true);
   });
 
-  it("accepts input mode with input but no options", () => {
+  it("accepts input mode with input and a bridge", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int1",
+      prompt: "Type something!",
+      mode: "input",
+      input: {
+        kind: "free_text",
+        placeholder: "Your answer...",
+        max_length: 100,
+      },
+      input_bridge: BRIDGE,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects input mode without input field", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int1",
+      prompt: "Type something!",
+      mode: "input",
+      input_bridge: BRIDGE,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects input mode without an input_bridge", () => {
     const result = InteractionEventSchema.safeParse({
       type: "interaction",
       interaction_id: "int1",
@@ -571,15 +609,82 @@ describe("InteractionEventSchema refinement", () => {
         max_length: 100,
       },
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
-  it("rejects input mode without input field", () => {
+  it("rejects hybrid mode without an input_bridge", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int1",
+      prompt: "Choose or type!",
+      mode: "hybrid",
+      options: [{ id: "a", text: "A" }],
+      input: {
+        kind: "free_text",
+        placeholder: "Type...",
+        max_length: 200,
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a bridge with more than two events", () => {
     const result = InteractionEventSchema.safeParse({
       type: "interaction",
       interaction_id: "int1",
       prompt: "Type something!",
       mode: "input",
+      input: {
+        kind: "free_text",
+        placeholder: "Your answer...",
+        max_length: 100,
+      },
+      input_bridge: {
+        events: [
+          { type: "narration", text: "One." },
+          { type: "narration", text: "Two." },
+          { type: "narration", text: "Three." },
+        ],
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a bridge containing a dialogue event", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int1",
+      prompt: "Type something!",
+      mode: "input",
+      input: {
+        kind: "free_text",
+        placeholder: "Your answer...",
+        max_length: 100,
+      },
+      input_bridge: {
+        events: [{ type: "dialogue", speaker: "NPC", text: "Hi" }],
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a bridge containing a state_patch entry (no protocol entry)", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int1",
+      prompt: "Type something!",
+      mode: "input",
+      input: {
+        kind: "free_text",
+        placeholder: "Your answer...",
+        max_length: 100,
+      },
+      input_bridge: {
+        events: [
+          { type: "narration", text: "One." },
+          { type: "state_patch", patch: { recent_summary: "nope" } },
+        ],
+      },
     });
     expect(result.success).toBe(false);
   });

@@ -10,7 +10,7 @@ output_protocol: |
      - 旁白：{"type":"narration","text":"..."}
      - 台词：{"type":"dialogue","speaker":"角色名","text":"...","portrait":{"character":"角色标识","expression":"表情标识","position":"left|center|right"}}
      - 选择：{"type":"choice","prompt":"请选择：","options":[{"id":"稳定且唯一的短标识","text":"选项文本"}]}
-     - 交互：{"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本","mode":"choice|input|hybrid","options":[{"id":"...","text":"..."}],"input":{"kind":"free_text|guided_text|question|action|short_answer","placeholder":"占位提示","max_length":200}}
+     - 交互：{"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本","mode":"choice|input|hybrid","options":[{"id":"...","text":"..."}],"input":{"kind":"free_text|guided_text|question|action|short_answer","placeholder":"占位提示","max_length":200},"input_bridge":{"events":[{"type":"narration","text":"场景过渡旁白"}]}}
      - 结束：{"type":"end","ending_id":"ending_xxx","text":"结束说明"}
 
   2. 状态更新行（可选，需要更新故事状态时输出，可出现在任意位置，建议放在最后）：
@@ -29,6 +29,12 @@ output_protocol: |
   - 选项可以是客观描述，也可以是主角（玩家）的内心独白；
   - interaction 的 mode 为 choice 或 hybrid 时必须提供非空 options 数组。
   - interaction 的 mode 为 input 或 hybrid 时必须提供 input 字段。
+  - interaction 的 mode 为 input 或 hybrid 时必须提供 input_bridge，其 events 包含 1-2 条 narration。
+  - input_bridge 是玩家确认自由输入后、NPC 正式回应前展示的场景过渡旁白：
+    - 只描写环境、表情、动作、氛围等场景细节；
+    - 不得回答或预判玩家的输入内容，不得引入新事实，不得修改任何状态，不得创建新的交互点；
+    - 结尾应自然衔接 NPC 的回应（NPC 的正式回应会在 bridge 之后紧接着展示）；
+    - 避免固定模板，不要反复使用"沉默片刻""一时间无人说话"之类的套话。
   - 不得生成 player_choice 或 player_input；这些事件由程序记录。
   - portrait 可省略或设为 null；出现时必须对应当前说话角色。
   - 不得重复已经发生的剧情，不得替玩家选择。
@@ -57,6 +63,7 @@ input_response: |
   只能包含 narration 和 dialogue 事件（建议 2-5 条），不得生成 choice、interaction 或 end 事件。
   NPC 的回应要符合角色设定和当前语境，自然、生动。
   在自然停顿处结束，保留后续剧情继续展开的空间。
+  注意：交互点携带的 input_bridge 场景过渡旁白会先于你的内容展示；你的生成直接衔接 bridge 之后，不得重复 bridge 已经描写的场景细节。
 
 continuation: |
   以下预取片段已经固定，将先于你的新内容展示：

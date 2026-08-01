@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { InputEngine } from "./input-engine.js";
 import type { InputSession } from "./input-engine.js";
-import type { InteractionEvent } from "../schema.js";
+import type { InputInteraction } from "../schema.js";
 
-function makeInteraction(overrides: Partial<InteractionEvent> = {}): InteractionEvent {
+function makeInteraction(overrides: Partial<InputInteraction> = {}): InputInteraction {
   return {
     type: "interaction",
     interaction_id: "int-test-001",
@@ -14,13 +14,16 @@ function makeInteraction(overrides: Partial<InteractionEvent> = {}): Interaction
       placeholder: "Type your response...",
       max_length: 200,
     },
+    input_bridge: {
+      events: [{ type: "narration", text: "She waits for your answer." }],
+    },
     ...overrides,
   };
 }
 
 describe("InputEngine", () => {
   let engine: InputEngine;
-  let interaction: InteractionEvent;
+  let interaction: InputInteraction;
   let session: InputSession;
 
   beforeEach(() => {

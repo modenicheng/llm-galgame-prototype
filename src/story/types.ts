@@ -73,19 +73,64 @@ export interface InputSpec {
  * in a generation segment. Unlike the old `choice`/`end` events, this
  * unifies both branching and text-input interactions under one type.
  */
-export interface InteractionEvent {
+
+/** A bridge event is always narration — never dialogue, never state. */
+export type InputBridgeEvent = NarrationDraftEvent;
+
+/**
+ * 1–2 narration lines bundled with an input/hybrid interaction.
+ *
+ * The runtime plays them after the player confirms their input and before
+ * the NPC response arrives: they set the scene without answering the
+ * input, introducing facts, changing state, or creating a new interaction.
+ */
+export interface InputBridge {
+  events: InputBridgeEvent[];
+}
+
+export interface ChoiceInteraction {
   type: "interaction";
   /** Unique identifier for this interaction point. */
   interaction_id: string;
   /** Prompt text displayed to the player. */
   prompt: string;
-  /** The interaction mode. */
-  mode: InteractionMode;
-  /** Curated options (required for `choice` and `hybrid` modes). */
-  options?: InteractionOption[];
-  /** Open-ended input specification (required for `input` and `hybrid`). */
-  input?: InputSpec;
+  mode: "choice";
+  /** Curated options. */
+  options: InteractionOption[];
 }
+
+export interface InputInteraction {
+  type: "interaction";
+  /** Unique identifier for this interaction point. */
+  interaction_id: string;
+  /** Prompt text displayed to the player. */
+  prompt: string;
+  mode: "input";
+  /** Open-ended input specification. */
+  input: InputSpec;
+  /** Scene-aware lead-in narration played after the player confirms. */
+  input_bridge: InputBridge;
+}
+
+export interface HybridInteraction {
+  type: "interaction";
+  /** Unique identifier for this interaction point. */
+  interaction_id: string;
+  /** Prompt text displayed to the player. */
+  prompt: string;
+  mode: "hybrid";
+  /** Curated options. */
+  options: InteractionOption[];
+  /** Open-ended input specification. */
+  input: InputSpec;
+  /** Scene-aware lead-in narration; discarded when a preset option is chosen. */
+  input_bridge: InputBridge;
+}
+
+export type InteractionEvent =
+  | ChoiceInteraction
+  | InputInteraction
+  | HybridInteraction;
 
 // ---------------------------------------------------------------------------
 // GenerationEnvelope — the model's structured return format
@@ -260,6 +305,13 @@ export const NarrationDraftEventSchema = z.object({
   text: z.string().min(1)
 });
 
+/** Bridge events are plain narration lines, 1–2 per interaction. */
+export const InputBridgeEventSchema = NarrationDraftEventSchema;
+
+export const InputBridgeSchema = z.object({
+  events: z.array(InputBridgeEventSchema).min(1).max(2),
+});
+
 const InputSpecSchema = z.object({
   kind: z.enum([
     "free_text",
@@ -277,14 +329,38 @@ const InteractionOptionSchema = z.object({
   text: z.string().min(1),
 });
 
-export const InteractionEventSchema = z.object({
+const ChoiceInteractionSchema = z.object({
   type: z.literal("interaction"),
   interaction_id: z.string().min(1),
   prompt: z.string().min(1),
-  mode: z.enum(["choice", "input", "hybrid"]),
-  options: z.array(InteractionOptionSchema).min(1).optional(),
-  input: InputSpecSchema.optional(),
+  mode: z.literal("choice"),
+  options: z.array(InteractionOptionSchema).min(1),
 });
+
+const InputInteractionSchema = z.object({
+  type: z.literal("interaction"),
+  interaction_id: z.string().min(1),
+  prompt: z.string().min(1),
+  mode: z.literal("input"),
+  input: InputSpecSchema,
+  input_bridge: InputBridgeSchema,
+});
+
+const HybridInteractionSchema = z.object({
+  type: z.literal("interaction"),
+  interaction_id: z.string().min(1),
+  prompt: z.string().min(1),
+  mode: z.literal("hybrid"),
+  options: z.array(InteractionOptionSchema).min(1),
+  input: InputSpecSchema,
+  input_bridge: InputBridgeSchema,
+});
+
+export const InteractionEventSchema = z.discriminatedUnion("mode", [
+  ChoiceInteractionSchema,
+  InputInteractionSchema,
+  HybridInteractionSchema,
+]);
 
 const StoryThreadSchema = z.object({
   id: z.string().min(1),

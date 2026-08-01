@@ -2,7 +2,8 @@ import readline from "node:readline";
 import type {
   ChoiceEvent,
   ChoiceOption,
-  InteractionEvent,
+  HybridInteraction,
+  InputInteraction,
   RuntimeDialogueEvent,
   RuntimeNarrationEvent,
   EndEvent,
@@ -193,11 +194,11 @@ export class TerminalUI {
    * support inline cursor movement.
    */
   async inputEditor(
-    interaction: InteractionEvent,
+    interaction: InputInteraction,
   ): Promise<{ action: "confirm" | "cancel"; text: string }> {
     this.ensureInteractive();
 
-    const inputSpec = interaction.input!;
+    const inputSpec = interaction.input;
     const maxLength = inputSpec.max_length;
 
     // Print prompt + status (static, no live refresh while typing)
@@ -292,7 +293,7 @@ export class TerminalUI {
    * to pick an option, or type anything else + Enter to submit free text.
    */
   async renderHybridInteraction(
-    event: InteractionEvent & { options: NonNullable<InteractionEvent["options"]>; input: NonNullable<InteractionEvent["input"]> },
+    event: HybridInteraction,
   ): Promise<
     | { type: "choice"; optionId: string }
     | { type: "input"; text: string }

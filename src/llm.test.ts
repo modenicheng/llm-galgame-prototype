@@ -451,6 +451,9 @@ describe("StoryGenerator ContextInput integration", () => {
         prompt: "你想说什么？",
         mode: "input",
         input: { kind: "free_text", placeholder: "...", max_length: 200 },
+        input_bridge: {
+          events: [{ type: "narration", text: "她静静地看着你。" }],
+        },
       };
       gen.generateInputResponse(2, state, history, interaction, "你好").catch(() => {});
     }).not.toThrow();
