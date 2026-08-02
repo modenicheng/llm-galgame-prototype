@@ -51,7 +51,7 @@ media:
 
     synthesis:
       # V2 权威开关：web 模式从这里读取 provider（dashscope / mock / disabled）。
-      provider: mock
+      provider: dashscope
       max_concurrency: 2
       model_profile: cosyvoice_v3_flash
       api_key_env: DASHSCOPE_API_KEY
@@ -78,4 +78,4 @@ game:
   show_line_ids: true
 
 debug:
-  runtime_status: false
+  runtime_status: true

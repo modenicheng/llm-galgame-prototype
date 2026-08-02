@@ -94,10 +94,12 @@ describe("RuntimeWebSocket", () => {
   let catalog: AudioCatalogServiceImpl;
   let game: ReturnType<typeof makeFakeGame>;
   let statusListener: ((event: TaskStatusEvent) => void) | null;
+  let startedGame = false;
   const clients: WebSocket[] = [];
 
   beforeEach(async () => {
     catalog = new AudioCatalogServiceImpl();
+    startedGame = false;
     game = makeFakeGame();
     const projection = makeFakeProjection();
     statusListener = null;
@@ -118,6 +120,9 @@ describe("RuntimeWebSocket", () => {
         return () => {
           statusListener = null;
         };
+      },
+      startGame: () => {
+        startedGame = true;
       },
       token: TOKEN,
       controllerLimit: 1,
@@ -165,6 +170,13 @@ describe("RuntimeWebSocket", () => {
     const client = await connect();
     const message = await waitForMessage(client.messages, (m) => m.type === "projection.snapshot");
     expect(message).toEqual({ type: "projection.snapshot", projection: { phase: "idle", recentLines: [] } });
+  });
+
+  it("starts the game on the first controller connection (§10.5)", async () => {
+    expect(startedGame).toBe(false);
+    const client = await connect();
+    await waitForMessage(client.messages, (m) => m.type === "projection.snapshot");
+    expect(startedGame).toBe(true);
   });
 
   it("replays all catalog descriptors on open", async () => {
@@ -350,6 +362,9 @@ describe("RuntimeWebSocket", () => {
       projection: makeFakeProjection().projection,
       catalog,
       ttsStatus: () => () => {},
+      startGame: () => {
+        startedGame = true;
+      },
       token: TOKEN,
       controllerLimit,
       originGuard: (origin) => isAllowedOrigin(origin, "127.0.0.1", multiPort),

@@ -28,6 +28,8 @@ export interface RuntimeWebSocketDeps {
   catalog: AudioCatalogService;
   /** Subscribe bridge for TTS task status events (host: app.taskStatusSubscribe). */
   ttsStatus: (cb: (event: TaskStatusEvent) => void) => () => void;
+  /** Start the game run loop on the first controller connection (§10.5). */
+  startGame: () => void;
   token: string;
   controllerLimit: number;
   originGuard: (origin: string | undefined) => boolean;
@@ -50,6 +52,7 @@ export class RuntimeWebSocket {
   private readonly controllerLimit: number;
   private readonly originGuard: (origin: string | undefined) => boolean;
   private readonly publicConfig: PublicWebConfig;
+  private readonly deps: RuntimeWebSocketDeps;
 
   /** Accepted connections (all controllers; extras are rejected). */
   private readonly controllers = new Set<WebSocket>();
@@ -60,6 +63,7 @@ export class RuntimeWebSocket {
   private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(deps: RuntimeWebSocketDeps) {
+    this.deps = deps;
     this.game = deps.game;
     this.projection = deps.projection;
     this.catalog = deps.catalog;
@@ -87,6 +91,13 @@ export class RuntimeWebSocket {
     if (this.controllers.size >= this.controllerLimit) {
       ws.close(4001, "controller-limit");
       return;
+    }
+
+    // §10.5: the browser's Start click opens this socket — the first
+    // controller connection starts the story. Never start on a reconnect
+    // (the host guards with its own flag).
+    if (this.controllers.size === 0) {
+      this.deps.startGame();
     }
 
     this.controllers.add(ws);

@@ -39,6 +39,12 @@
   color-scheme: dark;
 }
 
+/* The UI toggles panels via the `hidden` attribute; author display rules
+   (grid/flex) would otherwise override it and leave every overlay visible. */
+[hidden] {
+  display: none !important;
+}
+
 /* --------------------------------------------------------------------------
    Reset & base
    -------------------------------------------------------------------------- */

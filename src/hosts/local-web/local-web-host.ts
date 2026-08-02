@@ -109,6 +109,7 @@ export class LocalWebHost {
       controllerLimit: this.config.local_web.controller_limit,
       originGuard: (origin) => isAllowedOrigin(origin, host, port),
       publicConfig: this.publicConfig,
+      startGame: () => this.startGame(),
     });
     this.audioRoute = new AudioStreamRoute({
       ttsTasks: this.app.ttsTasks,
@@ -160,16 +161,6 @@ export class LocalWebHost {
     const address = server.address();
     const actualPort =
       typeof address === "object" && address !== null ? address.port : configuredPort;
-
-    // The run loop consumes browser commands; it exits on shutdown or story
-    // end (RuntimeShutdownError is the expected shutdown path).
-    void this.app.game.run().catch((error: unknown) => {
-      if (error instanceof RuntimeShutdownError) return;
-      this.logger(
-        `game run loop exited: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
-
     const url = `http://${host}:${actualPort}/`;
 
     // The page URL carries the session token so the browser can pass it
@@ -185,6 +176,27 @@ export class LocalWebHost {
       this.logger(`open the game manually: ${tokenUrl}`);
     }
     return { url, port: actualPort };
+  }
+
+  /**
+   * Kick off the game run loop on the FIRST controller connection
+   * (§10.5: the browser's Start click opens the WebSocket, which starts
+   * the story). Never auto-runs at boot: that would burn LLM calls before
+   * any player connects. Guarded so a reconnect (refresh) cannot start a
+   * second run loop.
+   */
+  private gameStarted = false;
+
+  private startGame(): void {
+    if (this.gameStarted) return;
+    this.gameStarted = true;
+    void this.app.game.run().catch((error: unknown) => {
+      // RuntimeShutdownError is the expected shutdown path.
+      if (error instanceof RuntimeShutdownError) return;
+      this.logger(
+        `game run loop exited: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
   }
 
   /** §15.3 order: stop commands → abort runtime → close WS → close HTTP → close vite. */
