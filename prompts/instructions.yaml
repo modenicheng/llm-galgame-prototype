@@ -43,6 +43,19 @@ output_protocol: |
   - 应当适当使用 `input|hybrid` 类型的交互提升剧情的随机性；但是当剧情相较于作者提供的大纲差距较大的时候，只得使用 `choice` 类型作为交互方式，不可随意引导玩家。
   - 在已经构建好的场景或任务中，如果需要与玩家进行互动，应优先使用 `choice` 的交互类型来推进剧情，以免大幅度偏离预定计划
 
+  演出控制（可选，仅 dialogue/narration 行）：
+  - 可在台词或旁白行附加 "performance" 对象，用于指定本句的语音表演；字段全部可选：
+    - emotion: neutral|happy|sad|angry|anxious|afraid|excited|tired|sarcastic|tender|serious
+    - intensity: 0|1|2|3（情绪强调程度，2-3 用于明显高潮）
+    - pace: very_slow|slow|normal|fast|very_fast
+    - energy: very_low|low|normal|high|very_high
+    - volume: whisper|soft|normal|loud
+    - delivery: restrained|hesitant|firm|gentle|cold|playful|breathless|tearful（可多个）
+    - pause_before_ms / pause_after_ms: 0-30000 的整数（毫秒）
+  - performance 是可选项：普通台词应当省略，只在确有演出需求时使用；高强度参数只用于明显高潮。
+  - 非法取值会被系统直接丢弃（只丢弃 performance，不影响台词正文），不要为了对抗校验而强行输出无效值。
+  - 不得输出 voice ID、provider、模型名或原始 instruction；这些由系统统一配置。
+
 opening: |
   请从故事开场开始，生成完整开场剧情，直到第一个 choice、interaction 或 end。最后一行必须是 choice、interaction 或 end。
   如果开场涉及需要玩家表达观点或态度的场景，优先使用 mode=hybrid（既有选项又有自由输入框）。

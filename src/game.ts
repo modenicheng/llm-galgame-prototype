@@ -20,7 +20,7 @@ import type {
   SessionStorePort,
 } from "./core/ports/session-store-port.js";
 import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
-import type { MediaPrefetchScheduler } from "./media.js";
+import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import { BranchManager } from "./runtime/branch-manager.js";
 import type { LiveBranchSelection } from "./prefetch.js";
 import { GenerationScheduler } from "./runtime/generation-scheduler.js";
@@ -151,7 +151,7 @@ export class Game {
     private readonly config: AppConfig,
     private readonly generator: StoryGenerator,
     private readonly status: RuntimeStatus,
-    private readonly media: MediaPrefetchScheduler,
+    private readonly media: MediaPlannerPort,
     metrics: Metrics | undefined,
     ports: GamePorts,
   ) {
@@ -341,7 +341,7 @@ export class Game {
       segment.events.push(event);
       if (isPlayableEvent(event)) {
         this.registerBuffered([event]);
-        this.media.appendActive([event]);
+        this.media.registerActive([event]);
       }
       this.playbackBuffer.enqueue(event);
       queue.push(event);
@@ -667,12 +667,12 @@ export class Game {
         .generateBranchPrefetch(turn + 1, this.storyState, prefetchContext, choice, selected)
         .then((envelope) => this.materializePlayableEvents(this.filterPlayableEvents(envelope.events)));
       preview = await retryPromise;
-      this.media.prefetchBranch(selected.id, preview);
+      this.media.registerCandidate(selected.id, preview);
       this.status.removeJob("selected-branch-retry");
     }
 
-    this.media.activateBranch(selected.id);
-    this.media.appendActive(preview);
+    this.media.activateCandidate(selected.id);
+    this.media.registerActive(preview);
     this.registerBuffered(preview);
 
     return {
@@ -834,7 +834,7 @@ export class Game {
       // they must already count toward the formal low-water mark.
       this.playbackBuffer.enqueue(event);
       this.registerBuffered([event]);
-      this.media.appendActive([event]);
+      this.media.registerActive([event]);
       queue.push(event);
       onEvent?.(event);
     };
@@ -1034,7 +1034,7 @@ export class Game {
         return materialized;
       },
       onReady: (option, branchEvents) => {
-        this.media.prefetchBranch(option.id, branchEvents);
+        this.media.registerCandidate(option.id, branchEvents);
       }
     });
 
@@ -1143,6 +1143,7 @@ export class Game {
         this.status.removeJob("input-response");
         this.status.clearBranches();
         this.emit({ type: "input_preview_canceled", previewId });
+        this.media.discardCandidate(previewId);
         continue;
       }
 
@@ -1207,7 +1208,7 @@ export class Game {
         if (responseSession.failure) {
           this.diagnostics.warn("input", `NPC 回应生成失败 — ${responseSession.failure.message}`);
         }
-        this.media.appendActive(responseSession.responseEvents);
+        this.media.registerActive(responseSession.responseEvents);
         this.status.removeJob("input-response");
         return {
           preview: [playerDialogue, ...bridgeEvents, ...responseSession.responseEvents],
@@ -1223,7 +1224,7 @@ export class Game {
           this.diagnostics.warn("input", `NPC 回应生成失败 — ${liveSession.failure.message}`);
         }
       });
-      this.media.appendActive(liveSession.responseEvents);
+      this.media.registerActive(liveSession.responseEvents);
       return {
         preview: [playerDialogue, ...bridgeEvents, ...liveSession.responseEvents],
         liveResponse: liveSession,

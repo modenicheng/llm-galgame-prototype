@@ -287,6 +287,55 @@ export interface BranchCandidate {
 // Zod schemas for runtime validation
 // ---------------------------------------------------------------------------
 
+/**
+ * Restricted performance intent the LLM may attach to a playable line
+ * (V2 §14.3). Optional and bounded; invalid values are dropped by the
+ * schema while the line body survives (§14.5). Mirrors the identical
+ * interface in src/application/audio/performance-compiler.ts — keep the
+ * two shapes in sync (the compiler maps intent → provider parameters).
+ */
+export interface LinePerformance {
+  emotion?:
+    | "neutral"
+    | "happy"
+    | "sad"
+    | "angry"
+    | "anxious"
+    | "afraid"
+    | "excited"
+    | "tired"
+    | "sarcastic"
+    | "tender"
+    | "serious";
+  intensity?: 0 | 1 | 2 | 3;
+  pace?: "very_slow" | "slow" | "normal" | "fast" | "very_fast";
+  energy?: "very_low" | "low" | "normal" | "high" | "very_high";
+  volume?: "whisper" | "soft" | "normal" | "loud";
+  delivery?: Array<
+    | "restrained"
+    | "hesitant"
+    | "firm"
+    | "gentle"
+    | "cold"
+    | "playful"
+    | "breathless"
+    | "tearful"
+  >;
+  pause_before_ms?: number;
+  pause_after_ms?: number;
+}
+
+export const LinePerformanceSchema = z.object({
+  emotion: z.enum(["neutral","happy","sad","angry","anxious","afraid","excited","tired","sarcastic","tender","serious"]).optional(),
+  intensity: z.union([z.literal(0),z.literal(1),z.literal(2),z.literal(3)]).optional(),
+  pace: z.enum(["very_slow","slow","normal","fast","very_fast"]).optional(),
+  energy: z.enum(["very_low","low","normal","high","very_high"]).optional(),
+  volume: z.enum(["whisper","soft","normal","loud"]).optional(),
+  delivery: z.array(z.enum(["restrained","hesitant","firm","gentle","cold","playful","breathless","tearful"])).optional(),
+  pause_before_ms: z.number().int().min(0).max(30000).optional(),
+  pause_after_ms: z.number().int().min(0).max(30000).optional(),
+});
+
 export const PortraitSchema = z.object({
   character: z.string().min(1),
   expression: z.string().min(1),
@@ -297,12 +346,17 @@ export const DialogueDraftEventSchema = z.object({
   type: z.literal("dialogue"),
   speaker: z.string().min(1),
   text: z.string().min(1),
-  portrait: PortraitSchema.nullish()
+  portrait: PortraitSchema.nullish(),
+  // §14.5: an invalid performance is DROPPED (catch → undefined) while the
+  // line body survives. `as never` satisfies zod 4's catch-typing without
+  // changing the runtime fallback value.
+  performance: LinePerformanceSchema.catch(undefined as never).optional(),
 });
 
 export const NarrationDraftEventSchema = z.object({
   type: z.literal("narration"),
-  text: z.string().min(1)
+  text: z.string().min(1),
+  performance: LinePerformanceSchema.catch(undefined as never).optional(),
 });
 
 /** Bridge events are plain narration lines, 1–2 per interaction. */

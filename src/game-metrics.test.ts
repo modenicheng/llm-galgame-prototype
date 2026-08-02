@@ -8,7 +8,7 @@ import { Metrics } from "./runtime/metrics.js";
 import type { MetricsSnapshot } from "./runtime/metrics.js";
 import { makeTestConfig, makeTestPorts } from "./test-helpers.js";
 import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
-import type { MediaPrefetchScheduler } from "./media.js";
+import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { RuntimeStatus } from "./status.js";
 import type { AppConfig } from "./config.js";
 
@@ -25,15 +25,16 @@ function makeMockGenerator(): StoryGenerator {
   } as unknown as StoryGenerator;
 }
 
-function makeMockMedia(): MediaPrefetchScheduler {
+function makeMockMedia(): MediaPlannerPort {
   return {
-    appendActive: vi.fn(),
-    prefetchBranch: vi.fn(),
-    activateBranch: vi.fn(),
+    registerActive: vi.fn(),
+    registerCandidate: vi.fn(),
+    activateCandidate: vi.fn(),
+    discardCandidate: vi.fn(),
     isReady: vi.fn().mockReturnValue(true),
     waitUntilReady: vi.fn().mockResolvedValue(undefined),
     markPresented: vi.fn(),
-  } as unknown as MediaPrefetchScheduler;
+  } as unknown as MediaPlannerPort;
 }
 
 function makeMockStatus(): RuntimeStatus {
@@ -57,7 +58,7 @@ describe("Game Metrics integration", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
-  let media: MediaPrefetchScheduler;
+  let media: MediaPlannerPort;
 
   beforeEach(() => {
     config = makeTestConfig();

@@ -19,7 +19,7 @@ import {
 import { NodeJsonlSessionStore } from "./adapters/storage/node-jsonl-session-store.js";
 import { SessionIdGenerator } from "./adapters/platform/session-id-generator.js";
 import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
-import type { MediaPrefetchScheduler } from "./media.js";
+import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { RuntimeStatus } from "./status.js";
 import type { AppConfig } from "./config.js";
 import type {
@@ -45,15 +45,16 @@ function makeMockGenerator(): StoryGenerator {
   } as unknown as StoryGenerator;
 }
 
-function makeMockMedia(): MediaPrefetchScheduler {
+function makeMockMedia(): MediaPlannerPort {
   return {
-    appendActive: vi.fn(),
-    prefetchBranch: vi.fn(),
-    activateBranch: vi.fn(),
+    registerActive: vi.fn(),
+    registerCandidate: vi.fn(),
+    activateCandidate: vi.fn(),
+    discardCandidate: vi.fn(),
     isReady: vi.fn().mockReturnValue(true),
     waitUntilReady: vi.fn().mockResolvedValue(undefined),
     markPresented: vi.fn(),
-  } as unknown as MediaPrefetchScheduler;
+  } as unknown as MediaPlannerPort;
 }
 
 function makeMockStatus(): RuntimeStatus {
@@ -93,7 +94,7 @@ describe("Game construction", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
-  let media: MediaPrefetchScheduler;
+  let media: MediaPlannerPort;
 
   beforeEach(() => {
     config = makeTestConfig();
@@ -143,7 +144,7 @@ describe("Session ID", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
-  let media: MediaPrefetchScheduler;
+  let media: MediaPlannerPort;
 
   beforeEach(() => {
     config = makeTestConfig();
@@ -184,7 +185,7 @@ describe("internal state access", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
-  let media: MediaPrefetchScheduler;
+  let media: MediaPlannerPort;
 
   beforeEach(() => {
     config = makeTestConfig();
@@ -1003,8 +1004,8 @@ describe("Input preview cancellation", () => {
 
     // Only the second (committed) response may reach the media timeline;
     // the cancelled first response must never appear.
-    const appendActive = media.appendActive as ReturnType<typeof vi.fn>;
-    const appendedTexts = appendActive.mock.calls.flatMap((call) =>
+    const registerActive = media.registerActive as ReturnType<typeof vi.fn>;
+    const appendedTexts = registerActive.mock.calls.flatMap((call) =>
       (call[0] as RuntimePlayableEvent[]).map((e) => e.text),
     );
     expect(appendedTexts).not.toContain("已完成的回应。");
@@ -1828,7 +1829,7 @@ describe("Metrics pass-through", () => {
   let config: AppConfig;
   let generator: StoryGenerator;
   let status: RuntimeStatus;
-  let media: MediaPrefetchScheduler;
+  let media: MediaPlannerPort;
 
   beforeEach(() => {
     config = makeTestConfig();

@@ -57,3 +57,71 @@ export interface AudioCatalogService {
   /** Subscribe to lifecycle events; returns an unsubscribe function. */
   subscribe(listener: (event: AudioCatalogEvent) => void): () => void;
 }
+
+/**
+ * AudioCatalogServiceImpl — the authoritative descriptor/recipe registry.
+ *
+ * A line is "valid" while it holds a descriptor. Invalidation removes both
+ * the descriptor and its recipe, so `get`/`getRecipe` return undefined and
+ * `validateFetchRequest` refuses stale or forged requests (§22 invariant 10).
+ */
+export class AudioCatalogServiceImpl implements AudioCatalogService {
+  private readonly descriptors = new Map<string, AudioDescriptor>();
+  private readonly recipes = new Map<string, InternalAudioRecipe>();
+  private readonly listeners = new Set<(event: AudioCatalogEvent) => void>();
+
+  upsertDescriptor(descriptor: AudioDescriptor, recipe: InternalAudioRecipe): void {
+    this.descriptors.set(descriptor.lineId, descriptor);
+    this.recipes.set(descriptor.lineId, recipe);
+    this.emit({ type: "descriptor", descriptor });
+  }
+
+  get(lineId: string): AudioDescriptor | undefined {
+    return this.descriptors.get(lineId);
+  }
+
+  getRecipe(lineId: string): InternalAudioRecipe | undefined {
+    return this.recipes.get(lineId);
+  }
+
+  isValidScope(lineId: string): boolean {
+    return this.descriptors.has(lineId);
+  }
+
+  invalidate(lineId: string, reason: AudioInvalidationReason): void {
+    if (!this.descriptors.has(lineId)) return;
+    this.descriptors.delete(lineId);
+    this.recipes.delete(lineId);
+    this.emit({ type: "invalidated", lineId, reason });
+  }
+
+  setPriority(lineId: string, priority: AudioPriority): void {
+    const descriptor = this.descriptors.get(lineId);
+    if (!descriptor) return;
+    if (descriptor.priority === priority) return;
+    this.descriptors.set(lineId, { ...descriptor, priority });
+    this.emit({ type: "priority_changed", lineId, priority });
+  }
+
+  validateFetchRequest(request: AudioFetchRequest): AudioDescriptor | undefined {
+    const descriptor = this.descriptors.get(request.lineId);
+    if (!descriptor || descriptor.cacheKey !== request.cacheKey) return undefined;
+    if (!this.isValidScope(request.lineId)) return undefined;
+    return descriptor;
+  }
+
+  listDescriptors(): AudioDescriptor[] {
+    return [...this.descriptors.values()];
+  }
+
+  subscribe(listener: (event: AudioCatalogEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private emit(event: AudioCatalogEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+}
