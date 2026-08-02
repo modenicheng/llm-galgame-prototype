@@ -9,6 +9,7 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -23,7 +24,23 @@ import { RuntimeWebSocket } from "./runtime-websocket.js";
 import { createViteDevMiddleware, type ViteDevMiddleware } from "./vite-middleware.js";
 import { openBrowser } from "./open-browser.js";
 
-const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+/**
+ * Walk up from this module until a directory containing package.json is
+ * found. Works in both layouts: dev (tsx: <repo>/src/hosts/local-web) and
+ * prod (compiled: <repo>/dist/node/hosts/local-web).
+ */
+function findProjectRoot(): string {
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 10; depth++) {
+    if (existsSync(path.join(dir, "package.json"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error("无法定位项目根目录（未找到 package.json）");
+}
+
+const PROJECT_ROOT = findProjectRoot();
 const DEFAULT_WEB_DIST_DIR = path.join(PROJECT_ROOT, "dist", "web");
 /** Test seam: point the prod static handler at a different dist directory. */
 const WEB_DIST_DIR_ENV = "LLM_GALGAME_WEB_DIST_DIR";
