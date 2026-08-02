@@ -14,20 +14,23 @@ import { CliController } from "./apps/cli/cli-controller.js";
 import { TerminalUI, UserExitError } from "./apps/cli/terminal-ui.js";
 import { RuntimeShutdownError } from "./game.js";
 
-function parseArgs(argv: string[]): { configPath: string } {
+function parseArgs(argv: string[]): { configPath: string; debugRuntime: boolean } {
   let configPath = "config.yaml";
+  let debugRuntime = false;
 
   for (const arg of argv) {
-    if (!arg.startsWith("--") && arg.endsWith(".yaml")) {
+    if (arg === "--debug-runtime") {
+      debugRuntime = true;
+    } else if (!arg.startsWith("--") && arg.endsWith(".yaml")) {
       configPath = arg;
     }
   }
 
-  return { configPath };
+  return { configPath, debugRuntime };
 }
 
 async function main(): Promise<void> {
-  const { configPath } = parseArgs(process.argv.slice(2));
+  const { configPath, debugRuntime } = parseArgs(process.argv.slice(2));
   const config = await loadConfig(configPath);
   const authorConfig = await loadAuthorConfig("prompts/author.yaml");
   const { bundle, instructions } = await loadPrompts("prompts");
@@ -37,7 +40,7 @@ async function main(): Promise<void> {
   const generator = new StoryGenerator(config, bundle, instructions, apiKey, authorConfig, metrics);
   const media = new MediaPrefetchScheduler(config.media.audio, status);
 
-  const ui = new TerminalUI(config.game.show_line_ids);
+  const ui = new TerminalUI(config.game.show_line_ids, debugRuntime);
   const game = new Game(config, generator, status, media, metrics, {
     store: new NodeJsonlSessionStore(config.game.sessions_dir),
     clock: new SystemClock(),

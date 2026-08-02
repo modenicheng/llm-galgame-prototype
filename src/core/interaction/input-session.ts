@@ -44,6 +44,7 @@ export class InputResponseSession {
   private readonly listeners = new Set<(event: RuntimePlayableEvent) => void>();
   private readonly donePromise: Promise<void>;
   private doneResolve!: () => void;
+  private settledInternal = false;
 
   constructor(init: InputResponseSessionInit) {
     this.previewId = init.previewId;
@@ -68,8 +69,14 @@ export class InputResponseSession {
     this.pendingStatePatch = patch;
   }
 
+  /** Whether the generation stream has ended (ready or failed). */
+  get settled(): boolean {
+    return this.settledInternal;
+  }
+
   /** The generation stream ended cleanly. */
   markReady(): void {
+    this.settledInternal = true;
     // A committed session must not be downgraded by a late stream end.
     if (this.status === "canceled" || this.status === "committed") {
       this.doneResolve();
@@ -81,6 +88,7 @@ export class InputResponseSession {
 
   /** The generation stream failed. */
   markFailed(error: Error): void {
+    this.settledInternal = true;
     // Keep the committed status (the confirmed prefix stays valid) but
     // still record the failure for diagnostics.
     this.failure = error;

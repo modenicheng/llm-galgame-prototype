@@ -1296,13 +1296,20 @@ describe("Input response streaming", () => {
     const controller = new MemoryController({
       onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
       onInputPreviewOpened: (output) => {
-        // One line is present at confirm; the second arrives afterwards.
+        // One line is present at confirm; the second arrives only after the
+        // committed prefix (player → bridge → first line) has been presented,
+        // so the drain must wait for it: a genuine underrun.
         emitLine({ type: "narration", text: "第一行。" });
         controller.confirm(output.previewId);
-        setTimeout(() => {
-          emitLine({ type: "narration", text: "第二行。" });
-          completeResponse();
-        }, 10);
+      },
+      onPlaybackReady: (event) => {
+        if (event.type === "narration" && event.text === "第一行。") {
+          setTimeout(() => {
+            emitLine({ type: "narration", text: "第二行。" });
+            completeResponse();
+          }, 20);
+        }
+        controller.dispatch({ type: "advance" });
       },
     });
     controller.attach(game);
@@ -1310,6 +1317,8 @@ describe("Input response streaming", () => {
 
     // Confirm never issues a second LLM request.
     expect(generator.generateInputResponse).toHaveBeenCalledTimes(1);
+    // The bridge ran out before the second line arrived: one underrun.
+    expect(game.getMetrics().input.response_underrun_count).toBe(1);
     const played = controller.playbackEvents().map((output) => output.event);
     expect(played.map((e) => e.text)).toEqual([
       "开场。",

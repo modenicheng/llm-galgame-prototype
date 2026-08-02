@@ -774,6 +774,9 @@ export class Game {
       initialEvents,
       live,
       turn,
+      undefined,
+      undefined,
+      () => this.metrics.recordInputResponseUnderrun(),
     );
 
     if (failure) {
@@ -790,7 +793,8 @@ export class Game {
    *
    * `onEvent` fires for each newly enqueued event; `onSynced` fires once
    * after the initial snapshot so callers can re-check conditions that
-   * depend on the full committed prefix.
+   * depend on the full committed prefix. `onFirstWait` fires once when the
+   * prefix is exhausted and the next event has not arrived yet (underrun).
    */
   private async consumeLiveStream(
     initialEvents: RuntimePlayableEvent[],
@@ -798,6 +802,7 @@ export class Game {
     turn: number,
     onEvent?: (event: RuntimePlayableEvent) => void,
     onSynced?: () => void,
+    onFirstWait?: () => void,
   ): Promise<unknown> {
     const seen = new Set(initialEvents.map((event) => event.line_id));
     const queue = new AsyncEventQueue<RuntimePlayableEvent>();
@@ -832,7 +837,15 @@ export class Game {
 
     await this.consumePlayableEvents(initialEvents, turn);
 
+    // Underrun: the committed prefix (player line + bridge) has been fully
+    // presented and the next response line has not arrived yet. The CLI
+    // keeps the current screen and waits silently; the metric counts it.
+    let recordedUnderrun = false;
     while (true) {
+      if (!recordedUnderrun && queue.pendingCount() === 0) {
+        recordedUnderrun = true;
+        onFirstWait?.();
+      }
       const next = await queue.next();
       if (!next.done) {
         const event = next.value;
@@ -1108,10 +1121,12 @@ export class Game {
 
       // Failure with no usable events: one repair attempt, streamed live so
       // the player line + bridge can play first (reading time hides it).
-      // Note: commit() already moved the session to "committed", so the
-      // failure is detected via the `failure` field, not the status.
+      // `settled` tells whether the generation has ended; the failure is
+      // detected via the `failure` field because commit() already moved the
+      // session to "committed".
       let liveSession: InputResponseSession | null = null;
       if (
+        responseSession.settled &&
         responseSession.failure !== null &&
         responseSession.responseEvents.length === 0
       ) {
@@ -1129,8 +1144,8 @@ export class Game {
           `NPC 回应：${text.slice(0, 30)}`,
           "running"
         );
-      } else if (responseSession.status === "generating") {
-        // Live promotion: the confirmed stream keeps running; its later
+      } else if (!responseSession.settled) {
+        // Live promotion: the confirmed stream is still running; its later
         // events enter the formal buffer directly. No abort, no new request.
         liveSession = responseSession;
       }

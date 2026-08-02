@@ -120,9 +120,7 @@ export class CliController {
   }
 
   private async handlePreview(previewId: string, text: string): Promise<void> {
-    const job = this.ui.getStatus()?.jobs["input-response"];
-    const generating = job?.state === "running" || job?.state === "queued";
-    const result = await this.ui.inputPreview(text, generating);
+    const result = await this.ui.inputPreview(text);
     if (result.action === "confirm") {
       this.dispatch({ type: "confirm_input", previewId });
     } else {

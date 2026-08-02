@@ -358,6 +358,13 @@ describe("Metrics input preview tracking", () => {
     expect(snap.input.preview_count).toBe(0);
     expect(snap.input.avg_dwell_ms).toBe(0);
   });
+
+  it("should count input response underruns", () => {
+    m.recordInputResponseUnderrun();
+    m.recordInputResponseUnderrun();
+    const snap = m.snapshot();
+    expect(snap.input.response_underrun_count).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -432,6 +439,7 @@ describe("Metrics reset", () => {
     m.recordTextWaste(500);
     m.recordAudioWaste(2);
     m.recordInputPreview(300);
+    m.recordInputResponseUnderrun();
     m.recordSchemaValidationFailure();
     m.recordStatePatchRejection();
     m.recordChoiceToNextLine(800);
@@ -460,6 +468,7 @@ describe("Metrics reset", () => {
     expect(after.waste.audio_files).toBe(0);
     expect(after.input.preview_count).toBe(0);
     expect(after.input.avg_dwell_ms).toBe(0);
+    expect(after.input.response_underrun_count).toBe(0);
     expect(after.errors.schema_validation_failures).toBe(0);
     expect(after.errors.state_patch_rejections).toBe(0);
     expect(after.player.choice_to_next_line_ms).toEqual([]);

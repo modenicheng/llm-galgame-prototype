@@ -55,6 +55,8 @@ export interface InputStats {
   preview_count: number;
   /** Weighted-average dwell time in milliseconds. */
   avg_dwell_ms: number;
+  /** Times the bridge narration ran out before the response's first line. */
+  response_underrun_count: number;
 }
 
 /** Schema / state-patch rejection counters. */
@@ -126,6 +128,7 @@ export class Metrics {
   // --- Input ---
   private previewCount = 0;
   private totalDwellMs = 0;
+  private responseUnderrunCount = 0;
 
   // --- Errors ---
   private schemaValidationFailures = 0;
@@ -191,6 +194,11 @@ export class Metrics {
     this.totalDwellMs += dwellMs;
   }
 
+  /** Call when the bridge narration runs out before the response's first line. */
+  recordInputResponseUnderrun(): void {
+    this.responseUnderrunCount += 1;
+  }
+
   /** Call when a schema validation failure occurs (JSONL parse error, etc.). */
   recordSchemaValidationFailure(): void {
     this.schemaValidationFailures += 1;
@@ -254,6 +262,7 @@ export class Metrics {
         preview_count: this.previewCount,
         avg_dwell_ms:
           this.previewCount > 0 ? this.totalDwellMs / this.previewCount : 0,
+        response_underrun_count: this.responseUnderrunCount,
       },
       errors: {
         schema_validation_failures: this.schemaValidationFailures,
@@ -283,6 +292,7 @@ export class Metrics {
     this.audioWasteCount = 0;
     this.previewCount = 0;
     this.totalDwellMs = 0;
+    this.responseUnderrunCount = 0;
     this.schemaValidationFailures = 0;
     this.statePatchRejections = 0;
     this.choiceToNextLineSamples = [];

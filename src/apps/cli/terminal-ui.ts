@@ -110,7 +110,10 @@ export class TerminalUI {
   private latestStatus: RuntimeStatusSnapshot | null = null;
   private readonly statusListeners = new Set<(snapshot: RuntimeStatusSnapshot) => void>();
 
-  constructor(private readonly showLineIds: boolean) {
+  constructor(
+    private readonly showLineIds: boolean,
+    private readonly showRuntimeStatus = false,
+  ) {
     readline.emitKeypressEvents(process.stdin);
   }
 
@@ -207,7 +210,9 @@ export class TerminalUI {
     const promptLines = interaction.prompt.split("\n");
     console.log("");
     for (const line of promptLines) console.log(line);
-    for (const s of compactStatus(this.latestStatus)) console.log(s);
+    if (this.showRuntimeStatus) {
+      for (const s of compactStatus(this.latestStatus)) console.log(s);
+    }
 
     const placeholder = `\x1b[2m${inputSpec.placeholder}\x1b[0m`;
     const prompt = `\x1b[36m▸ \x1b[0m`;
@@ -225,34 +230,24 @@ export class TerminalUI {
 
   /**
    * Preview confirmation: shows the frozen text and waits for Enter
-   * (commit) or Esc (back to editing). A spinner runs while the NPC
-   * response is still being generated.
+   * (commit) or Esc (back to editing). No generation state is displayed.
    */
   async inputPreview(
     text: string,
-    generatingResponse: boolean,
   ): Promise<{ action: "confirm" | "cancel" }> {
     this.ensureInteractive();
 
     const region = new LiveRegion();
-    const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let frame = 0;
     let latest = this.latestStatus;
 
     const draw = (): void => {
-      const genStatus = generatingResponse
-        ? `${frames[frame % frames.length]} 正在生成 NPC 回应……`
-        : `\x1b[32m✓ NPC 回应已就绪\x1b[0m`;
-
       region.render([
         "",
         "\x1b[1m你准备说：\x1b[0m",
         `\x1b[33m"${text}"\x1b[0m`,
         "",
-        genStatus,
-        "",
         "\x1b[2m[Enter] 确认发送  |  [Esc] 返回修改\x1b[0m",
-        ...compactStatus(latest),
+        ...(this.showRuntimeStatus ? compactStatus(latest) : []),
       ]);
     };
 
@@ -260,11 +255,6 @@ export class TerminalUI {
       latest = snapshot;
       draw();
     });
-
-    const timer = setInterval(() => {
-      frame += 1;
-      draw();
-    }, 90);
     draw();
 
     try {
@@ -282,7 +272,6 @@ export class TerminalUI {
       region.clear();
       return result;
     } finally {
-      clearInterval(timer);
       unsubscribe();
       region.clear();
     }
@@ -315,12 +304,16 @@ export class TerminalUI {
     // Print numbered options with prefetch badges
     for (let i = 0; i < Math.min(9, options.length); i++) {
       const opt = options[i]!;
-      const badge = branchBadge(this.latestStatus, opt.id);
-      console.log(`  \x1b[1m[${i + 1}]\x1b[0m ${opt.text}  \x1b[2m[${badge}]\x1b[0m`);
+      const badge = this.showRuntimeStatus
+        ? `  \x1b[2m[${branchBadge(this.latestStatus, opt.id)}]\x1b[0m`
+        : "";
+      console.log(`  \x1b[1m[${i + 1}]\x1b[0m ${opt.text}${badge}`);
     }
 
     // Status
-    for (const s of compactStatus(this.latestStatus)) console.log(s);
+    if (this.showRuntimeStatus) {
+      for (const s of compactStatus(this.latestStatus)) console.log(s);
+    }
     console.log(
       `\x1b[2m[1-${Math.min(9, options.length)}] 选择选项  |  其他任意文字 Enter 发送  |  留空取消\x1b[0m`
     );
@@ -353,13 +346,16 @@ export class TerminalUI {
     const draw = (): void => {
       const optionLines = event.options.map((option, index) => {
         const cursor = index === selectedIndex ? "❯" : " ";
-        return `${cursor} ${option.text}  [${branchBadge(latest, option.id)}]`;
+        const badge = this.showRuntimeStatus
+          ? `  [${branchBadge(latest, option.id)}]`
+          : "";
+        return `${cursor} ${option.text}${badge}`;
       });
       region.render([
         "",
         event.prompt,
         ...optionLines,
-        ...compactStatus(latest),
+        ...(this.showRuntimeStatus ? compactStatus(latest) : []),
         "\x1b[2m↑/↓ 选择，Enter 确认，Ctrl+C 退出\x1b[0m"
       ]);
     };
@@ -398,14 +394,17 @@ export class TerminalUI {
 
   /**
    * Wait for the player to press Enter/Space to continue playback.
-   * The status region stays live via setStatus feeds.
+   * The status region stays live via setStatus feeds (debug mode only).
    */
   async waitForAdvance(): Promise<void> {
     this.ensureInteractive();
     const region = new LiveRegion();
     let latest = this.latestStatus;
     const draw = (): void => {
-      region.render([...compactStatus(latest), "\x1b[2mEnter/Space 下一句，Ctrl+C 退出\x1b[0m"]);
+      region.render([
+        ...(this.showRuntimeStatus ? compactStatus(latest) : []),
+        "\x1b[2mEnter/Space 下一句，Ctrl+C 退出\x1b[0m",
+      ]);
     };
     const unsubscribe = this.onStatusChange((snapshot) => {
       latest = snapshot;
