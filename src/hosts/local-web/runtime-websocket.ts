@@ -94,10 +94,15 @@ export class RuntimeWebSocket {
     this.ensureHeartbeat();
 
     let sequence = 0;
-    this.send(ws, { type: "projection.snapshot", projection: this.projection.snapshot() });
-    for (const descriptor of this.catalog.listDescriptors()) {
-      this.send(ws, { type: "audio.descriptor", descriptor });
-    }
+    // handleUpgrade invokes this callback while the socket is still
+    // CONNECTING; `send` drops messages before OPEN, so defer the initial
+    // snapshot + descriptor catalog until the handshake completes.
+    setImmediate(() => {
+      this.send(ws, { type: "projection.snapshot", projection: this.projection.snapshot() });
+      for (const descriptor of this.catalog.listDescriptors()) {
+        this.send(ws, { type: "audio.descriptor", descriptor });
+      }
+    });
 
     const unsubGame = this.game.subscribe((output) => {
       if (output.type === "session_ended") this.sessionEnded = true;

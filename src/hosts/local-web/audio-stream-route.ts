@@ -126,15 +126,19 @@ export class AudioStreamRoute {
     this.activeCacheKeys.add(request.cacheKey);
 
     const controller = new AbortController();
-    // ServerResponse 'close' fires on premature connection termination AND
-    // after a normal end; aborting a finalized task is a no-op in the task
-    // service, so this single handler covers both.
-    const onClose = () => controller.abort();
+    // Abort the upstream task ONLY on premature connection termination.
+    // A normal end (res.end()) also fires 'close', so guard with a flag —
+    // otherwise every completed stream would be reported "canceled" and
+    // partial instead of "finished" (§8.2 task_status contract).
+    const completion = { ended: false };
+    const onClose = () => {
+      if (!completion.ended) controller.abort();
+    };
     res.once("close", onClose);
 
     try {
       const session = await this.ttsTasks.synthesize(request, controller.signal);
-      await this.streamSession(res, session, request.taskId);
+      await this.streamSession(res, session, request.taskId, completion);
     } catch (error) {
       if (!res.headersSent) {
         this.sendError(res, ttsErrorStatus(error), errorMessageForStatus(ttsErrorStatus(error)));
@@ -195,7 +199,6 @@ export class AudioStreamRoute {
 
     req.on("data", onData);
     req.on("end", onEnd);
-    req.on("error", onError);
     return promise;
   }
 
@@ -203,6 +206,7 @@ export class AudioStreamRoute {
     res: ServerResponse,
     session: TtsStreamSession,
     taskId: string,
+    completion: { ended: boolean },
   ): Promise<void> {
     const { metadata } = session;
     res.writeHead(200, {
@@ -219,20 +223,23 @@ export class AudioStreamRoute {
       if (res.destroyed || res.writableEnded) break;
       if (!res.write(chunk)) {
         // Backpressure: wait for drain, but never hang if the peer vanishes.
-        const { promise, resolve } = Promise.withResolvers<void>();
-        const onDrain = () => resolve();
-        const onAbort = () => {
-          res.removeListener("drain", onDrain);
-          resolve();
-        };
-        res.once("drain", onDrain);
-        res.once("close", onAbort);
-        await promise;
+        await new Promise<void>((resolve) => {
+          const onDrain = () => resolve();
+          const onAbort = () => {
+            res.removeListener("drain", onDrain);
+            resolve();
+          };
+          res.once("drain", onDrain);
+          res.once("close", onAbort);
+        });
       }
       if (res.destroyed || res.writableEnded) break;
     }
 
     if (!res.destroyed && !res.writableEnded) {
+      // Normal end: mark ended BEFORE res.end() so the 'close' listener
+      // does not abort the (already completed) upstream task.
+      completion.ended = true;
       res.end();
     }
   }
