@@ -90,6 +90,20 @@ describe("AudioIntentPlanner", () => {
     expect(catalog.get("l2")?.priority).toBe("next");
   });
 
+  it("registerActive emits descriptors only for newly added lines", () => {
+    const { catalog, planner } = makePlanner();
+    const events: AudioCatalogEvent[] = [];
+    catalog.subscribe((event) => events.push(event));
+    planner.registerActive([dialogue("l1"), dialogue("l2")]);
+
+    // Re-registering the same timeline must not re-emit prior descriptors.
+    events.length = 0;
+    planner.registerActive([dialogue("l1"), dialogue("l2"), dialogue("l3")]);
+
+    const descriptorEvents = events.filter((event) => event.type === "descriptor");
+    expect(descriptorEvents.map((event) => event.descriptor.lineId)).toEqual(["l3"]);
+  });
+
   it("registerCandidate marks the first configured line candidate_first_line, rest background", () => {
     const { catalog, planner } = makePlanner();
     planner.registerCandidate("b1", [dialogue("c1"), dialogue("c2"), dialogue("c3")]);
@@ -144,6 +158,20 @@ describe("AudioIntentPlanner", () => {
     expect(catalog.get("c1")?.priority).toBe("next");
   });
 
+  it("activateCandidate emits descriptors only for newly promoted lines", () => {
+    const { catalog, planner } = makePlanner();
+    const events: AudioCatalogEvent[] = [];
+    catalog.subscribe((event) => events.push(event));
+    planner.registerActive([dialogue("l1")]);
+    planner.registerCandidate("b1", [dialogue("c1")]);
+
+    // Promoting b1 must not re-emit the already-registered l1 descriptor.
+    events.length = 0;
+    planner.activateCandidate("b1");
+
+    const descriptorEvents = events.filter((event) => event.type === "descriptor");
+    expect(descriptorEvents.map((event) => event.descriptor.lineId)).toEqual(["c1"]);
+  });
   it("discardCandidate invalidates the branch lines", () => {
     const { catalog, planner } = makePlanner();
     const events: AudioCatalogEvent[] = [];

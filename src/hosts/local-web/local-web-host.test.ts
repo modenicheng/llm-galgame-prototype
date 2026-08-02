@@ -157,6 +157,23 @@ describe("LocalWebHost", () => {
     expect(port).toBeLessThanOrEqual(65535);
   });
 
+  it("logs the token-bearing URL when auto-open is disabled", async () => {
+    const lines: string[] = [];
+    const host2 = new LocalWebHost({
+      config,
+      app,
+      dev: false,
+      logger: (line) => lines.push(line),
+    });
+    const started = await host2.start();
+
+    // The returned URL stays token-free; the logged line carries the token
+    // so the app stays reachable when no browser is opened.
+    expect(started.url).not.toContain("token=");
+    expect(lines).toContain(`open the game manually: ${started.url}?token=${host2.getToken()}`);
+    await host2.shutdown();
+  });
+
   it("serves index.html from the prod dist dir", async () => {
     const result = await request(port, "GET", "/");
     expect(result.status).toBe(200);

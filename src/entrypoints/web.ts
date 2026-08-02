@@ -24,7 +24,12 @@ async function main(): Promise<void> {
   const { dev, configPath } = parseArgs(process.argv.slice(2));
   const config = await loadConfig(configPath);
   const app = await createRuntimeApplication({ config, configPath });
-  const host = new LocalWebHost({ config, app, dev });
+  const host = new LocalWebHost({
+    config,
+    app,
+    dev,
+    logger: (line) => console.log(line),
+  });
   const { url } = await host.start();
   console.log(`listening ${url}`);
 

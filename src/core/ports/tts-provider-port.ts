@@ -1,9 +1,8 @@
 /**
  * TtsProviderPort — the streaming synthesis boundary.
  *
- * Replaces the old `MediaProviderPort.synthesize(): Promise<MediaAsset[]>`
- * contract: V2 providers stream PCM chunks as an AsyncIterable instead of
- * returning completed file assets.
+ * V2 providers stream PCM chunks as an AsyncIterable instead of returning
+ * completed file assets.
  *
  * Implementations: DashScope CosyVoice adapter (real) and the streaming
  * mock (tests / offline demo).

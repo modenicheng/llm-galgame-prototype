@@ -171,12 +171,18 @@ export class LocalWebHost {
     });
 
     const url = `http://${host}:${actualPort}/`;
+
+    // The page URL carries the session token so the browser can pass it
+    // back on WS connect and TTS POSTs (§8.3). If auto-open is disabled or
+    // fails, surface the token-bearing URL so the app stays reachable.
+    const tokenUrl = `${url}?token=${this.token}`;
     if (this.config.local_web.open_browser) {
-      // The page URL carries the session token so the browser can pass it
-      // back on WS connect and TTS POSTs (§8.3).
-      void openBrowser(`${url}?token=${this.token}`).catch(() => {
+      void openBrowser(tokenUrl).catch(() => {
         this.logger("could not open a browser; continuing without one");
+        this.logger(`open the game manually: ${tokenUrl}`);
       });
+    } else {
+      this.logger(`open the game manually: ${tokenUrl}`);
     }
     return { url, port: actualPort };
   }

@@ -41,17 +41,23 @@ export class AudioIntentPlanner implements MediaPlannerPort {
   constructor(private readonly options: AudioIntentPlannerOptions) {}
 
   registerActive(lines: RuntimePlayableEvent[]): void {
+    const addedIndices: number[] = [];
     for (const event of lines) {
       if (this.timeline.some((entry) => entry.event.line_id === event.line_id)) continue;
+      addedIndices.push(this.timeline.length);
       this.timeline.push({ event, active: true });
     }
     if (this.currentIndex === -1 && this.timeline.length > 0) {
       this.currentIndex = 0;
     }
-    for (let i = 0; i < this.timeline.length; i += 1) {
-      const entry = this.timeline[i];
+    // Build/upsert descriptors only for newly added lines; existing lines
+    // are already registered and priority changes are delta-emitted via
+    // markPresented → setPriority. Re-upserting the whole timeline here
+    // would re-emit every descriptor per call (O(n²) over a session).
+    for (const index of addedIndices) {
+      const entry = this.timeline[index];
       if (entry === undefined) continue;
-      const priority = this.priorityFor(i);
+      const priority = this.priorityFor(index);
       const result = this.options.factory.build(
         entry.event,
         { type: "active" },
@@ -91,17 +97,21 @@ export class AudioIntentPlanner implements MediaPlannerPort {
     }
     this.branches.clear();
 
+    const addedIndices: number[] = [];
     for (const event of promoted) {
       if (this.timeline.some((entry) => entry.event.line_id === event.line_id)) continue;
+      addedIndices.push(this.timeline.length);
       this.timeline.push({ event, active: true });
     }
     if (this.currentIndex === -1 && this.timeline.length > 0) {
       this.currentIndex = 0;
     }
-    for (let i = 0; i < this.timeline.length; i += 1) {
-      const entry = this.timeline[i];
-      if (entry === undefined || !entry.active) continue;
-      const priority = this.priorityFor(i);
+    // Same delta-only policy as registerActive: promoted lines were never
+    // active descriptors, so only they are built/upserted here.
+    for (const index of addedIndices) {
+      const entry = this.timeline[index];
+      if (entry === undefined) continue;
+      const priority = this.priorityFor(index);
       const result = this.options.factory.build(
         entry.event,
         { type: "active" },
