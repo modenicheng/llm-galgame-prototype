@@ -10,6 +10,7 @@ import type {
   RuntimeInteractionEvent,
   RuntimeOutput,
 } from "../../core/runtime/runtime-output.js";
+import type { AppConfig } from "../../config.js";
 import type { Game } from "../../game.js";
 import type { ChoiceEvent, HybridInteraction, RuntimePlayableEvent } from "../../schema.js";
 import { TerminalUI } from "./terminal-ui.js";
@@ -17,7 +18,10 @@ import { TerminalUI } from "./terminal-ui.js";
 export class CliController {
   private game: Game | null = null;
 
-  constructor(private readonly ui: TerminalUI) {}
+  constructor(
+    private readonly ui: TerminalUI,
+    private readonly config: AppConfig,
+  ) {}
 
   attach(game: Game): void {
     this.game = game;
@@ -120,7 +124,10 @@ export class CliController {
   }
 
   private async handlePreview(previewId: string, text: string): Promise<void> {
-    const result = await this.ui.inputPreview(text);
+    const result = await this.ui.inputPreview(
+      text,
+      this.config.input.show_generation_status,
+    );
     if (result.action === "confirm") {
       this.dispatch({ type: "confirm_input", previewId });
     } else {

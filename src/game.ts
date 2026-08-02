@@ -132,6 +132,12 @@ export class Game {
   private readonly bridgeBuffer = new InputBridgeBuffer();
   /** line_ids of bridge narration currently staged for playback. */
   private readonly bridgeLineIds = new Set<string>();
+  /** line_ids of staged input response events (for bridge-cover timing). */
+  private readonly responseLineIds = new Set<string>();
+  /** Confirm timestamp awaiting the first response line (E3/G1 metric). */
+  private inputConfirmAtMs: number | null = null;
+  /** Bridge playback start awaiting the first response line play. */
+  private bridgePlayStartedAtMs: number | null = null;
   private storyState: StoryState;
   private readonly metrics: Metrics;
   private choiceTimestamp: number | null = null;
@@ -579,11 +585,24 @@ export class Game {
   private materializeInputBridge(
     interaction: InputInteraction | HybridInteraction,
   ): void {
-    const events = interaction.input_bridge.events.map(
+    const cfg = this.config.prefetch.input_bridge;
+    const events = interaction.input_bridge.events;
+    if (!cfg.enabled) return;
+    // Runtime-level re-validation of the bridge contract (the schema already
+    // enforces the same shape; this catches config drift).
+    if (
+      events.length < cfg.min_events ||
+      events.length > cfg.max_events ||
+      (cfg.only_narration && events.some((event) => event.type !== "narration"))
+    ) {
+      this.metrics.recordSchemaValidationFailure();
+      return;
+    }
+    const materialized = events.map(
       (draft) => ({ ...draft, line_id: this.nextLineId() }),
     );
-    for (const event of events) this.bridgeLineIds.add(event.line_id);
-    this.bridgeBuffer.store(interaction.interaction_id, events);
+    for (const event of materialized) this.bridgeLineIds.add(event.line_id);
+    this.bridgeBuffer.store(interaction.interaction_id, materialized);
   }
 
   private createBranchManagerForTerminal(
@@ -881,6 +900,9 @@ export class Game {
     // Bridge narration is materialized and played like narration but never
     // recorded into the formal log and never scheduled for media.
     const isBridge = event.type === "narration" && this.bridgeLineIds.has(event.line_id);
+    if (isBridge && this.bridgePlayStartedAtMs === null) {
+      this.bridgePlayStartedAtMs = this.clock.nowMs();
+    }
     if (event.type === "player_dialogue") {
       await this.recordPlayerDialogue(event, turn);
     } else if (isModelPlayable && !isBridge) {
@@ -894,6 +916,12 @@ export class Game {
     this.updateBufferStatus();
     this.media.markPresented(event.line_id);
     if (isBridge) this.bridgeLineIds.delete(event.line_id);
+    if (this.responseLineIds.has(event.line_id) && this.bridgePlayStartedAtMs !== null) {
+      this.metrics.recordInputBridgeCoverDuration(
+        this.clock.nowMs() - this.bridgePlayStartedAtMs,
+      );
+      this.bridgePlayStartedAtMs = null;
+    }
 
     this.emit({ type: "playback_ready", event });
     await this.waitForAdvance();
@@ -1091,11 +1119,17 @@ export class Game {
 
       // Show preview and await confirmation.
       this.emit({ type: "input_preview_opened", previewId, text });
-      const previewCommand = await this.waitForCommand(
-        (c) =>
-          (c.type === "confirm_input" || c.type === "cancel_input") &&
-          c.previewId === previewId,
-      );
+      let previewCommand: RuntimeCommand;
+      if (this.config.input.require_preview_confirmation) {
+        previewCommand = await this.waitForCommand(
+          (c) =>
+            (c.type === "confirm_input" || c.type === "cancel_input") &&
+            c.previewId === previewId,
+        );
+      } else {
+        // Single-Enter flow: the preview is implicit, commit immediately.
+        previewCommand = { type: "confirm_input", previewId };
+      }
       const previewDwellMs = this.clock.nowMs() - previewStartTime;
       this.metrics.recordInputPreview(previewDwellMs);
 
@@ -1104,6 +1138,7 @@ export class Game {
         // can never be buffered or rendered for the previous edit session.
         responseController.abort();
         responseSession.cancel();
+        this.metrics.recordInputResponseCanceled();
         this.inputEngine.cancel(session);
         this.status.removeJob("input-response");
         this.status.clearBranches();
@@ -1116,6 +1151,13 @@ export class Game {
       responseSession.commit();
       this.emit({ type: "input_committed", previewId });
       this.bridgeBuffer.take(interactionId);
+
+      // Confirm → first response line measurement (E3/G1).
+      this.inputConfirmAtMs = this.clock.nowMs();
+      if (responseSession.responseEvents.length > 0) {
+        this.metrics.recordInputConfirmToFirstResponseLine(0);
+        this.inputConfirmAtMs = null;
+      }
 
       const playerDialogue = this.makePlayerDialogue(interactionId, text);
 
@@ -1148,6 +1190,7 @@ export class Game {
         // Live promotion: the confirmed stream is still running; its later
         // events enter the formal buffer directly. No abort, no new request.
         liveSession = responseSession;
+        this.metrics.recordInputResponsePromotedLive();
       }
 
       await this.recordPlayerInput(interactionId, text, turn);
@@ -1210,11 +1253,16 @@ export class Game {
         controller.signal,
         {
           onEvent: (draft) => {
-            if (controller.signal.aborted) return;
+            if (controller.signal.aborted) {
+              // Late event from a cancelled session — must never enter any
+              // formal buffer.
+              this.metrics.recordStaleInputEventDropped();
+              return;
+            }
             if (draft.type !== "dialogue" && draft.type !== "narration") return;
             const event = this.materializeEvents([draft])[0]!;
             if (!isPlayableEvent(event)) return;
-            responseSession.appendResponseEvent(event);
+            this.stageResponseEvent(responseSession, event);
           },
         },
       )
@@ -1231,7 +1279,8 @@ export class Game {
           // through the same staging path.
           if (responseSession.responseEvents.length === 0) {
             for (const draft of this.filterPlayableEvents(envelope.events)) {
-              responseSession.appendResponseEvent(
+              this.stageResponseEvent(
+                responseSession,
                 this.materializePlayableEvents([draft])[0]!,
               );
             }
@@ -1257,6 +1306,24 @@ export class Game {
       );
 
     return { promise, controller };
+  }
+
+  /**
+   * Stage one response event, measuring the confirm → first-line window.
+   */
+  private stageResponseEvent(
+    responseSession: InputResponseSession,
+    event: RuntimePlayableEvent,
+  ): void {
+    const confirmAt = this.inputConfirmAtMs;
+    const firstAfterConfirm =
+      confirmAt !== null && responseSession.responseEvents.length === 0;
+    responseSession.appendResponseEvent(event);
+    this.responseLineIds.add(event.line_id);
+    if (firstAfterConfirm) {
+      this.metrics.recordInputConfirmToFirstResponseLine(this.clock.nowMs() - confirmAt);
+      this.inputConfirmAtMs = null;
+    }
   }
 
   /**

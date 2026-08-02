@@ -15,6 +15,24 @@ prefetch:
   # 同时作为 live 分支交接正式续写的可播放行数阈值。
   branch_dialogue_lines: 2
   branch_concurrency: 4
+  # input_bridge：input/hybrid 交互携带的场景过渡旁白（1-2 条 narration）。
+  # schema 仍强制 1-2 条且只能为 narration；这里的数值是运行时二次校验。
+  input_bridge:
+    enabled: true
+    min_events: 1
+    max_events: 2
+    only_narration: true
+
+# 自由输入表现：玩家台词以 dialogue 呈现；两次 Enter 流程；
+# 预览不显示生成状态（debug 模式可开启）。
+input:
+  kind: dialogue
+  require_preview_confirmation: true
+  show_generation_status: false
+
+debug:
+  # 等价于命令行 --debug-runtime；两者任一为真即显示状态面板。
+  runtime_status: false
 
 media:
   audio:

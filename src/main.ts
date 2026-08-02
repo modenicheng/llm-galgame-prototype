@@ -40,14 +40,17 @@ async function main(): Promise<void> {
   const generator = new StoryGenerator(config, bundle, instructions, apiKey, authorConfig, metrics);
   const media = new MediaPrefetchScheduler(config.media.audio, status);
 
-  const ui = new TerminalUI(config.game.show_line_ids, debugRuntime);
+  const ui = new TerminalUI(
+    config.game.show_line_ids,
+    debugRuntime || config.debug.runtime_status,
+  );
   const game = new Game(config, generator, status, media, metrics, {
     store: new NodeJsonlSessionStore(config.game.sessions_dir),
     clock: new SystemClock(),
     ids: new SessionIdGenerator(),
     diagnostics: new ConsoleDiagnosticSink(),
   });
-  const controller = new CliController(ui);
+  const controller = new CliController(ui, config);
   controller.attach(game);
 
   await controller.run();

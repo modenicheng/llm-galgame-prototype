@@ -42,6 +42,20 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
     prefetch: {
       branch_dialogue_lines: 2,
       branch_concurrency: 2,
+      input_bridge: {
+        enabled: true,
+        min_events: 1,
+        max_events: 2,
+        only_narration: true,
+      },
+    },
+    input: {
+      kind: "dialogue",
+      require_preview_confirmation: true,
+      show_generation_status: false,
+    },
+    debug: {
+      runtime_status: false,
     },
     media: {
       audio: {

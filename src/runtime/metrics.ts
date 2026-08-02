@@ -57,6 +57,16 @@ export interface InputStats {
   avg_dwell_ms: number;
   /** Times the bridge narration ran out before the response's first line. */
   response_underrun_count: number;
+  /** Confirm → first response line arrived, in ms. */
+  confirm_to_first_response_line_ms: number[];
+  /** Bridge playback started → first response line played, in ms. */
+  bridge_cover_duration_ms: number[];
+  /** Previewed inputs cancelled with Esc. */
+  response_canceled_count: number;
+  /** Events dropped because they belonged to a stale/cancelled session. */
+  stale_input_event_dropped_count: number;
+  /** Confirmed while the response stream was still generating (promoted). */
+  response_promoted_live_count: number;
 }
 
 /** Schema / state-patch rejection counters. */
@@ -129,6 +139,11 @@ export class Metrics {
   private previewCount = 0;
   private totalDwellMs = 0;
   private responseUnderrunCount = 0;
+  private confirmToFirstResponseLineSamples: number[] = [];
+  private bridgeCoverDurationSamples: number[] = [];
+  private responseCanceledCount = 0;
+  private staleInputEventDroppedCount = 0;
+  private responsePromotedLiveCount = 0;
 
   // --- Errors ---
   private schemaValidationFailures = 0;
@@ -199,6 +214,31 @@ export class Metrics {
     this.responseUnderrunCount += 1;
   }
 
+  /** Call when the first response line arrives after the confirm. */
+  recordInputConfirmToFirstResponseLine(ms: number): void {
+    this.confirmToFirstResponseLineSamples.push(ms);
+  }
+
+  /** Call when the bridge cover window (bridge start → first response line) ends. */
+  recordInputBridgeCoverDuration(ms: number): void {
+    this.bridgeCoverDurationSamples.push(ms);
+  }
+
+  /** Call when a previewed input is cancelled with Esc. */
+  recordInputResponseCanceled(): void {
+    this.responseCanceledCount += 1;
+  }
+
+  /** Call when an event from a stale/cancelled input session is dropped. */
+  recordStaleInputEventDropped(): void {
+    this.staleInputEventDroppedCount += 1;
+  }
+
+  /** Call when a confirmed input response is promoted to the live path. */
+  recordInputResponsePromotedLive(): void {
+    this.responsePromotedLiveCount += 1;
+  }
+
   /** Call when a schema validation failure occurs (JSONL parse error, etc.). */
   recordSchemaValidationFailure(): void {
     this.schemaValidationFailures += 1;
@@ -263,6 +303,11 @@ export class Metrics {
         avg_dwell_ms:
           this.previewCount > 0 ? this.totalDwellMs / this.previewCount : 0,
         response_underrun_count: this.responseUnderrunCount,
+        confirm_to_first_response_line_ms: [...this.confirmToFirstResponseLineSamples],
+        bridge_cover_duration_ms: [...this.bridgeCoverDurationSamples],
+        response_canceled_count: this.responseCanceledCount,
+        stale_input_event_dropped_count: this.staleInputEventDroppedCount,
+        response_promoted_live_count: this.responsePromotedLiveCount,
       },
       errors: {
         schema_validation_failures: this.schemaValidationFailures,
@@ -293,6 +338,11 @@ export class Metrics {
     this.previewCount = 0;
     this.totalDwellMs = 0;
     this.responseUnderrunCount = 0;
+    this.confirmToFirstResponseLineSamples = [];
+    this.bridgeCoverDurationSamples = [];
+    this.responseCanceledCount = 0;
+    this.staleInputEventDroppedCount = 0;
+    this.responsePromotedLiveCount = 0;
     this.schemaValidationFailures = 0;
     this.statePatchRejections = 0;
     this.choiceToNextLineSamples = [];

@@ -41,6 +41,27 @@ export interface AppConfig {
   prefetch: {
     branch_dialogue_lines: number;
     branch_concurrency: number;
+    /** Input bridge protocol contract (schema still enforces the shape). */
+    input_bridge: {
+      /** Whether bridge narration is materialized and played. */
+      enabled: boolean;
+      min_events: number;
+      max_events: number;
+      only_narration: boolean;
+    };
+  };
+  /** Free-text input presentation. */
+  input: {
+    /** How the player's own line is presented (only "dialogue" is implemented). */
+    kind: "dialogue";
+    /** Two-Enter flow: preview confirmation before committing the input. */
+    require_preview_confirmation: boolean;
+    /** Show the input-response generation state in the preview (debug only). */
+    show_generation_status: boolean;
+  };
+  debug: {
+    /** Render runtime status panels even without --debug-runtime. */
+    runtime_status: boolean;
   };
   media: {
     audio: AudioConfig;
@@ -127,7 +148,45 @@ const ConfigSchema = z.object({
     .object({
       branch_dialogue_lines: z.number().int().min(1).max(20).default(3),
       branch_concurrency: z.number().int().min(1).max(10).default(3),
+      input_bridge: z
+        .object({
+          enabled: z.boolean().default(true),
+          min_events: z.number().int().min(1).max(2).default(1),
+          max_events: z.number().int().min(1).max(2).default(2),
+          only_narration: z.boolean().default(true),
+        })
+        .default({
+          enabled: true,
+          min_events: 1,
+          max_events: 2,
+          only_narration: true,
+        }),
+    })
+    .superRefine((value, context: RefinementContext) => {
+      if (value.input_bridge.min_events > value.input_bridge.max_events) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["input_bridge"],
+          message: "input_bridge.min_events 不能大于 max_events。",
+        });
+      }
     }),
+  input: z
+    .object({
+      kind: z.enum(["dialogue"]).default("dialogue"),
+      require_preview_confirmation: z.boolean().default(true),
+      show_generation_status: z.boolean().default(false),
+    })
+    .default({
+      kind: "dialogue",
+      require_preview_confirmation: true,
+      show_generation_status: false,
+    }),
+  debug: z
+    .object({
+      runtime_status: z.boolean().default(false),
+    })
+    .default({ runtime_status: false }),
   media: z.object({
     audio: AudioConfigSchema
   }),

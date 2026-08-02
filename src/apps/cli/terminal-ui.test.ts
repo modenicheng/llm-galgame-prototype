@@ -18,10 +18,16 @@ async function sourceOf(file: string): Promise<string> {
 }
 
 describe("CLI narrative pacing", () => {
-  it("should not mention generating or readiness in the terminal UI", async () => {
+  it("should not surface generation copy outside the opt-in gate", async () => {
     const source = await sourceOf(uiPath);
-    expect(source).not.toContain("正在生成 NPC 回应");
-    expect(source).not.toContain("NPC 回应已就绪");
+    for (const banned of ["正在生成 NPC 回应", "NPC 回应已就绪", "NPC 回应生成失败"]) {
+      const index = source.indexOf(banned);
+      if (index === -1) continue;
+      // The copy is only reachable through a helper that early-returns unless
+      // debug mode AND input.show_generation_status are enabled.
+      const before = source.slice(Math.max(0, index - 400), index);
+      expect(before, `ungated copy near: ${banned}`).toMatch(/showGenerationStatus/);
+    }
   });
 
   it("should not contain spinner frames", async () => {

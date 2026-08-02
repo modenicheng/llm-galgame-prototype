@@ -117,6 +117,19 @@ describe("loadConfig with all fields", () => {
       "prefetch:",
       "  branch_dialogue_lines: 5",
       "  branch_concurrency: 4",
+      "  input_bridge:",
+      "    enabled: false",
+      "    min_events: 2",
+      "    max_events: 2",
+      "    only_narration: true",
+      "",
+      "input:",
+      "  kind: dialogue",
+      "  require_preview_confirmation: false",
+      "  show_generation_status: true",
+      "",
+      "debug:",
+      "  runtime_status: true",
       "",
       "media:",
       "  audio:",
@@ -153,6 +166,18 @@ describe("loadConfig with all fields", () => {
     // Prefetch
     expect(config.prefetch.branch_dialogue_lines).toBe(5);
     expect(config.prefetch.branch_concurrency).toBe(4);
+    expect(config.prefetch.input_bridge.enabled).toBe(false);
+    expect(config.prefetch.input_bridge.min_events).toBe(2);
+    expect(config.prefetch.input_bridge.max_events).toBe(2);
+    expect(config.prefetch.input_bridge.only_narration).toBe(true);
+
+    // Input presentation
+    expect(config.input.kind).toBe("dialogue");
+    expect(config.input.require_preview_confirmation).toBe(false);
+    expect(config.input.show_generation_status).toBe(true);
+
+    // Debug
+    expect(config.debug.runtime_status).toBe(true);
 
     // Media
     expect(config.media.audio.enabled).toBe(true);
@@ -404,6 +429,42 @@ describe("loadConfig validation errors", () => {
         "",
         "generation:",
         "  temperature: 3.0",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+
+  it("should reject input_bridge min_events > max_events", async () => {
+    const filePath = await writeTempYaml(
+      "bad-bridge-range",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test",
+        "  base_url: https://api.example.com",
+        "",
+        "prefetch:",
+        "  input_bridge:",
+        "    min_events: 2",
+        "    max_events: 1",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+
+  it("should reject an unsupported input kind", async () => {
+    const filePath = await writeTempYaml(
+      "bad-input-kind",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test",
+        "  base_url: https://api.example.com",
+        "",
+        "input:",
+        "  kind: voice",
       ].join("\n"),
     );
 

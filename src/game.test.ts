@@ -1622,6 +1622,112 @@ describe("Input response streaming", () => {
       "结尾。",
     ]);
   });
+
+  it("records cancel, stale-drop, promotion and timing metrics", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    let emitStale!: (draft: ModelEvent) => void;
+    let completeStale!: () => void;
+    let emitLive!: (draft: ModelEvent) => void;
+    let completeLive!: () => void;
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
+        return new Promise((resolve) => {
+          emitStale = (draft) => options?.onEvent?.(draft);
+          completeStale = () => resolve(envelope([], {}));
+        });
+      })
+      .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
+        return new Promise((resolve) => {
+          emitLive = (draft) => options?.onEvent?.(draft);
+          completeLive = () => resolve(envelope([], {}));
+        });
+      });
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    let previewIndex = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        if (previewIndex === 0) {
+          controller.submitInput(output.interactionId, "第一次");
+        } else {
+          // The cancelled stream is fully torn down by now (the runtime
+          // re-opened the interaction after the cancel); its late event must
+          // be dropped as stale.
+          emitStale({ type: "narration", text: "迟到。" });
+          completeStale();
+          controller.submitInput(output.interactionId, "第二次");
+        }
+      },
+      onInputPreviewOpened: (output) => {
+        if (previewIndex === 0) {
+          controller.cancel(output.previewId);
+        } else {
+          controller.confirm(output.previewId);
+          setTimeout(() => {
+            emitLive({ type: "narration", text: "回应。" });
+            completeLive();
+          }, 5);
+        }
+        previewIndex += 1;
+      },
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const input = game.getMetrics().input;
+    expect(input.response_canceled_count).toBe(1);
+    expect(input.stale_input_event_dropped_count).toBe(1);
+    expect(input.response_promoted_live_count).toBe(1);
+    expect(input.confirm_to_first_response_line_ms).toHaveLength(1);
+    expect(input.confirm_to_first_response_line_ms[0]).toBeGreaterThan(0);
+    expect(input.bridge_cover_duration_ms).toHaveLength(1);
+  });
+
+  it("commits immediately when preview confirmation is disabled", async () => {
+    const config = makeTestConfig({ input: { require_preview_confirmation: false } });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // The preview is implicit: opened + committed without any confirm command.
+    expect(controller.count("input_preview_opened")).toBe(1);
+    expect(controller.count("input_committed")).toBe(1);
+    const played = controller.playbackEvents().map((output) => output.event);
+    expect(played.map((e) => e.text)).toEqual([
+      "开场。",
+      "你好",
+      "她等着你开口。",
+      "回应。",
+      "结尾。",
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

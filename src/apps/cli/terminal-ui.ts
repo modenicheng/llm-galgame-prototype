@@ -100,6 +100,30 @@ function branchBadge(snapshot: RuntimeStatusSnapshot | null, optionId: string): 
 }
 
 /**
+ * Input-response generation indicator for the preview. Only reachable when
+ * debug mode AND `input.show_generation_status` are enabled.
+ */
+function inputResponseStatusLine(
+  snapshot: RuntimeStatusSnapshot | null,
+  showRuntimeStatus: boolean,
+  showGenerationStatus: boolean,
+): string[] {
+  if (!showRuntimeStatus || !showGenerationStatus) return [];
+  const job = snapshot?.jobs["input-response"];
+  if (!job) return [];
+  switch (job.state) {
+    case "running":
+      return ["正在生成 NPC 回应……"];
+    case "ready":
+      return ["NPC 回应已就绪"];
+    case "failed":
+      return ["NPC 回应生成失败"];
+    default:
+      return [];
+  }
+}
+
+/**
  * Pure I/O terminal UI.
  *
  * Owns no runtime state and never calls the generator, store, or
@@ -230,10 +254,12 @@ export class TerminalUI {
 
   /**
    * Preview confirmation: shows the frozen text and waits for Enter
-   * (commit) or Esc (back to editing). No generation state is displayed.
+   * (commit) or Esc (back to editing). Generation state is shown only
+   * when both debug mode and `input.show_generation_status` are enabled.
    */
   async inputPreview(
     text: string,
+    showGenerationStatus = false,
   ): Promise<{ action: "confirm" | "cancel" }> {
     this.ensureInteractive();
 
@@ -246,6 +272,7 @@ export class TerminalUI {
         "\x1b[1m你准备说：\x1b[0m",
         `\x1b[33m"${text}"\x1b[0m`,
         "",
+        ...inputResponseStatusLine(latest, this.showRuntimeStatus, showGenerationStatus),
         "\x1b[2m[Enter] 确认发送  |  [Esc] 返回修改\x1b[0m",
         ...(this.showRuntimeStatus ? compactStatus(latest) : []),
       ]);

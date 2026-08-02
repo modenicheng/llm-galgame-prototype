@@ -365,6 +365,26 @@ describe("Metrics input preview tracking", () => {
     const snap = m.snapshot();
     expect(snap.input.response_underrun_count).toBe(2);
   });
+
+  it("should track confirm-to-first-line and bridge-cover samples", () => {
+    m.recordInputConfirmToFirstResponseLine(250);
+    m.recordInputConfirmToFirstResponseLine(0);
+    m.recordInputBridgeCoverDuration(180);
+    const snap = m.snapshot();
+    expect(snap.input.confirm_to_first_response_line_ms).toEqual([250, 0]);
+    expect(snap.input.bridge_cover_duration_ms).toEqual([180]);
+  });
+
+  it("should count canceled, stale-dropped and promoted-live events", () => {
+    m.recordInputResponseCanceled();
+    m.recordStaleInputEventDropped();
+    m.recordStaleInputEventDropped();
+    m.recordInputResponsePromotedLive();
+    const snap = m.snapshot();
+    expect(snap.input.response_canceled_count).toBe(1);
+    expect(snap.input.stale_input_event_dropped_count).toBe(2);
+    expect(snap.input.response_promoted_live_count).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -440,6 +460,11 @@ describe("Metrics reset", () => {
     m.recordAudioWaste(2);
     m.recordInputPreview(300);
     m.recordInputResponseUnderrun();
+    m.recordInputConfirmToFirstResponseLine(10);
+    m.recordInputBridgeCoverDuration(5);
+    m.recordInputResponseCanceled();
+    m.recordStaleInputEventDropped();
+    m.recordInputResponsePromotedLive();
     m.recordSchemaValidationFailure();
     m.recordStatePatchRejection();
     m.recordChoiceToNextLine(800);
@@ -469,6 +494,11 @@ describe("Metrics reset", () => {
     expect(after.input.preview_count).toBe(0);
     expect(after.input.avg_dwell_ms).toBe(0);
     expect(after.input.response_underrun_count).toBe(0);
+    expect(after.input.confirm_to_first_response_line_ms).toEqual([]);
+    expect(after.input.bridge_cover_duration_ms).toEqual([]);
+    expect(after.input.response_canceled_count).toBe(0);
+    expect(after.input.stale_input_event_dropped_count).toBe(0);
+    expect(after.input.response_promoted_live_count).toBe(0);
     expect(after.errors.schema_validation_failures).toBe(0);
     expect(after.errors.state_patch_rejections).toBe(0);
     expect(after.player.choice_to_next_line_ms).toEqual([]);

@@ -59,41 +59,38 @@ llm-galgame-prototype/
 ├─ sessions/
 │  └─ .gitkeep
 └─ src/
-   ├─ main.ts
-   ├─ config.ts
-   ├─ prompts.ts
-   ├─ schema.ts
-   ├─ jsonl.ts
-   ├─ llm.ts
-   ├─ status.ts
-   ├─ prefetch.ts
-   ├─ media.ts
-   ├─ ui.ts
-   ├─ game.ts
-   ├─ interaction/
-   │  └─ input-engine.ts
-   ├─ story/
-   │  ├─ types.ts
-   │  ├─ state.ts
-   │  ├─ patch.ts
-   │  └─ context-builder.ts
-   ├─ runtime/
-   │  ├─ branch-manager.ts
-   │  ├─ generation-scheduler.ts
-   │  ├─ playback-buffer.ts
-   │  └─ metrics.ts
+   ├─ main.ts                # 组合根：实例化适配器并注入运行时
+   ├─ config.ts / prompts.ts / status.ts
+   ├─ schema.ts              # 事件协议（含 input_bridge / player_dialogue）
+   ├─ game.ts                # 运行时（命令/事件驱动；后续迁入 core/runtime）
+   ├─ media.ts / prefetch.ts / llm.ts 已迁出：
+   ├─ core/
+   │  ├─ ports/              # Clock / IdGenerator / SessionStore / StoryGenerator /
+   │  │                       # MediaProvider / DiagnosticSink（纯接口，无 Node 依赖）
+   │  ├─ protocol/           # model-jsonl 纯解析
+   │  ├─ runtime/            # async-event-queue、RuntimeCommand、RuntimeOutput
+   │  └─ interaction/        # input-bridge 缓冲、InputResponseSession 流式会话
+   ├─ adapters/
+   │  ├─ llm/openai-compatible-generator.ts
+   │  ├─ storage/node-jsonl-session-store.ts
+   │  ├─ media/（mock 提供器）
+   │  └─ platform/           # SystemClock / SessionIdGenerator / ConsoleDiagnosticSink
+   └─ apps/cli/              # terminal-ui（纯 I/O）+ cli-controller（命令/事件适配）
 ```
+
+依赖方向：`apps → adapters → core`，`core` 不得导入 Node、OpenAI 或 CLI 模块；
+`core/architecture.test.ts` 静态扫描保证该边界。
 
 模块职责：
 
-- `schema.ts`：模型草稿事件、运行时事件、落盘事件和 `line_id` 类型。
-- `jsonl.ts`：分别校验完整剧情段和分支预取段。
-- `llm.ts`：开场生成、分支短片段生成、已选路径续写。
+- `schema.ts`：模型草稿事件、运行时事件、落盘事件和 `line_id` 类型；`input_bridge` 随 interaction 内嵌，`player_dialogue` 由运行时生成。
+- `core/protocol/model-jsonl.ts`：纯 JSONL 模型协议解析（无文件系统）。
+- `adapters/llm/openai-compatible-generator.ts`：OpenAI 流式调用 + 逐行解析。
 - `prefetch.ts`：候选分支并发池、排队、优先选中项、取消未选项。
 - `media.ts`：媒体低水位调度器及可选 mock 提供器。
 - `status.ts`：文本任务、分支状态、缓冲量和媒体状态的统一可观察状态。
-- `ui.ts`：自定义 TUI；支持逐句推进、上下键选择和动态状态重绘。
-- `game.ts`：串联上述模块，维护唯一有效剧情路径。
+- `game.ts`：命令/事件运行时（`dispatch`/`subscribe`），维护唯一有效剧情路径。
+- `apps/cli/cli-controller.ts`：把 RuntimeOutput 转成渲染、把键盘/行输入转成命令。
 
 ## 4. JSONL 协议与 `line_id`
 
@@ -149,9 +146,67 @@ line_<session_id>_<monotonic_sequence>
 
 未选分支可能消耗若干 ID，活动剧情 ID 出现间隔属于正常现象。
 
-## 5. 两种模型输出模式
+## 5. 自由输入与 input_bridge
 
-### 5.1 完整剧情段
+### 5.1 交互协议
+
+`interaction` 事件按 `mode` 区分为三种（Zod discriminated union）：
+
+- `choice`：仅 options；不允许携带 `input_bridge`。
+- `input`：必须携带 input 与 `input_bridge`。
+- `hybrid`：必须携带 options、input 与 `input_bridge`。
+
+`input_bridge` 是 1-2 条 narration，作为玩家确认输入后、NPC 正式回应前的场景过渡：
+
+```json
+{"type":"interaction","interaction_id":"int_001","prompt":"说什么？","mode":"input","input":{"kind":"free_text","placeholder":"...","max_length":200},"input_bridge":{"events":[{"type":"narration","text":"风穿过走廊，她抬起了头。"}]}}
+```
+
+bridge 规则（写入 `prompts/instructions.yaml`）：
+
+- 只描写环境、表情、动作、氛围；不回答或预判玩家输入。
+- 不引入新事实、不修改状态、不创建新的交互点。
+- 结尾自然衔接 NPC 回应；避免固定模板和重复"沉默片刻"。
+
+### 5.2 流式回应与两阶段确认
+
+第一次 Enter（`preview_input`）后立即发起 `generateInputResponse`，每条完整 JSONL 事件到达时立刻物化（分配稳定 `line_id`）并暂存进 `InputResponseSession`，不进入正式日志；`state_patch` 只暂存。
+
+第二次 Enter（`confirm_input`）原地升级：
+
+1. 创建并提交 `player_dialogue`（玩家台词，`source: "player"`）。
+2. 提交 bridge（从 `InputBridgeBuffer` 取出）。
+3. 提交已到达的回应事件；顺序为 玩家台词 → bridge → 回应。
+4. 若回应流仍在生成：不 abort、不重新请求，提升为正式路径（live promotion），新到达事件直接进入正式 playback buffer，由 `consumeLiveStream` 播放；任务结束后再启动正常续写。
+
+Esc（`cancel_input`）：abort 生成、会话标记 canceled、清空事件、丢弃 patch；bridge 保留供下一次预览复用；旧流迟到事件被 signal/会话校验丢弃。
+
+状态补丁提交条件（修复了旧时序竞态）：`status === "committed"` 且生成任务已完成且 patch 校验通过。未确认时完成请求也不提交 patch；取消后永久丢弃。
+
+失败处理：
+
+- 流失败但已有事件：保留已到达前缀，续写以此（玩家台词 + bridge + 已有回应）为固定前缀继续。
+- 流失败且无事件：确认后先播玩家台词 + bridge，同时进行一次流式 repair；repair 仍失败则静默继续（不伪造 NPC 语义回应）。
+
+### 5.3 播放表现
+
+确认后：
+
+```text
+你
+  她看起来有心事。
+
+风穿过走廊，她抬起了头。
+
+苏遥
+  你来啦。我正在想你说的事。
+```
+
+每条仍按推进键等待，正常阅读节奏本身就覆盖了剩余生成时间；bridge 播完而回应首行未到时保持当前画面静默等待（`input.response_underrun_count` 计数一次）。CLI 不显示任何生成状态、Spinner 或加载提示。
+
+## 6. 两种模型输出模式
+
+### 6.1 完整剧情段
 
 用于开场和已选路径续写：
 
@@ -162,7 +217,7 @@ choice 或 end × 1
 
 要求末行必须且只能是 `choice` 或 `end`。
 
-### 5.2 分支预取段
+### 6.2 分支预取段
 
 用于候选选项短片段：
 
@@ -172,7 +227,7 @@ narration/dialogue × N
 
 不得含 `choice` 或 `end`。默认要求至少 3 条 `dialogue`，由 `prefetch.branch_dialogue_lines` 调整。这里“3 条”指三个对白事件，不强行定义为三次完整问答，以免限制叙事节奏。注意：`branch_dialogue_lines` 同时作为已选分支交接正式续写的“可播放行数”阈值（live 分支在达到该行数时立即 handoff，防止纯旁白分支无法交接）。
 
-## 6. 分支预取与取消
+## 7. 分支预取与取消
 
 每个完整剧情段一生成完，程序立刻读取末尾 `choice` 并创建 `BranchPrefetchGroup`：
 
@@ -184,7 +239,7 @@ narration/dialogue × N
 - 已经完成的未选请求无法追回模型成本，这是分支预取换取低延迟的必然代价。
 - 已选分支预取失败时，前台自动重试一次，不会误用其他分支内容。
 
-## 7. 媒体按量预生成
+## 8. 媒体按量预生成
 
 媒体调度不采用“一次生成整章”，而采用目标提前量与低水位补充：
 
@@ -222,13 +277,31 @@ media:
 
 真实 TTS 只需实现 `AudioSynthesizer.synthesize(lines, signal)`，不应改动游戏主循环。
 
-## 8. TUI 状态显示
+## 9. TUI 状态显示
 
-TUI 不再使用一次性选择组件，而是自行处理 raw mode 输入，以便后台任务变化时重绘：
+普通模式只显示剧情、选择、输入与确认，不显示任何生成状态（无 Spinner、无加载提示）：
 
 ```text
-苏遥 [suyao/serious@right] [line_..._000005]
+苏遥 [suyao/serious@right]
   别碰它。至少现在别碰。
+
+Enter/Space 下一句，Ctrl+C 退出
+```
+
+输入预览只显示冻结文本与确认提示：
+
+```text
+你准备说：
+"她看起来有心事。"
+
+[Enter] 确认发送  |  [Esc] 返回修改
+```
+
+debug 模式（`--debug-runtime` 或 `config.debug.runtime_status: true`）额外显示缓冲、任务、媒体状态面板与分支徽标，供开发观察：
+
+```text
+苏遥
+  别碰它。
 
 [状态] 剧情播放：当前文本已就绪；下一分支正在后台预取
 [文本] 缓冲 5 条事件 / 3 条对白；分支：追问原因=生成中
@@ -236,22 +309,11 @@ TUI 不再使用一次性选择组件，而是自行处理 raw mode 输入，以
 Enter/Space 下一句，Ctrl+C 退出
 ```
 
-选择界面：
+CLI 通过 `RuntimeOutput`（`status_changed`、`playback_ready`、`interaction_opened`、`input_preview_opened` 等）驱动；TerminalUI 是纯 I/O，CliController 负责把事件转成渲染、把按键转成 `RuntimeCommand`。
 
-```text
-如何回应？
-❯ 追问她为何了解终端  [已就绪 4 条/3 对白]
-  无视警告，触碰屏幕  [生成中]
+逐句推进既符合 GalGame 交互，也为后台续写、回应生成和媒体预取提供真实时间窗口。
 
-[状态] 等待选择：各分支正在并行预取；可随时选择
-[文本] 缓冲 0 条事件 / 0 条对白；分支：无视警告=生成中
-[媒体] 音频关闭，目标提前量 3，补充阈值 2
-↑/↓ 选择，Enter 确认，Ctrl+C 退出
-```
-
-逐句推进既符合 GalGame 交互，也为后台续写和媒体预取提供真实时间窗口。
-
-## 9. 配置
+## 10. 配置
 
 ```yaml
 api:
@@ -269,6 +331,22 @@ generation:
 prefetch:
   branch_dialogue_lines: 2
   branch_concurrency: 4
+  # input_bridge：input/hybrid 交互携带的场景过渡旁白（1-2 条 narration）。
+  # schema 强制 1-2 条且只能为 narration；此处是运行时二次校验。
+  input_bridge:
+    enabled: true
+    min_events: 1
+    max_events: 2
+    only_narration: true
+
+# 自由输入表现
+input:
+  kind: dialogue        # 玩家台词以 dialogue 呈现（目前唯一实现）
+  require_preview_confirmation: true   # 两次 Enter 流程；false 为单次 Enter 直接提交
+  show_generation_status: false        # 预览中显示回应生成状态（需 debug 模式）
+
+debug:
+  runtime_status: false  # 等价于 --debug-runtime
 
 media:
   audio:
@@ -292,8 +370,10 @@ game:
 
 - `refill_threshold_lines < active_target_lines`。
 - `audio.enabled: true` 时 provider 不能是 `disabled`。
+- `input_bridge.min_events <= max_events`；`input.kind` 仅支持 `dialogue`。
+- 不提供只有日志没有执行逻辑的配置项；每个字段都有运行时行为对应。
 
-## 10. 成本与延迟权衡
+## 11. 成本与延迟权衡
 
 候选分支预取必然增加无效生成量。第一版选择“每个分支都生成短片段”，因为目标是验证无缝体验。正式版本可进一步采用：
 
@@ -304,7 +384,7 @@ game:
 - 检测生成速度和阅读速度，自动调整提前量。
 - 达到会话预算后降级为“只预取当前高亮分支”。
 
-## 11. 从空目录运行
+## 12. 从空目录运行
 
 要求 Node.js 20 或更高版本：
 
@@ -336,11 +416,11 @@ media:
     provider: mock
 ```
 
-## 12. 后续演进
+## 13. 后续演进
 
 1. 将 `AudioSynthesizer` 提取为公开 provider 接口，接入真实 TTS。
 2. 为图片、立绘、表情和背景实现同类 `MediaPrefetchScheduler`，共用 `line_id` 或独立 `asset_slot_id`。
-3. 增加状态快照和 `state_patch`，避免长剧情只依赖最近事件。
-4. 将核心状态机提取为无 Node.js 依赖包，供 CLI 与未来项目共用。
-5. Web 版属于未来独立项目，不在当前原型范围内；届时使用 Worker 或后端流式接口运行预取任务，平台密钥仍必须留在服务端。
-6. 根据实时合成速度、阅读速度和预算动态调整提前量，而不是长期使用固定 3/2 参数。
+3. 将 `game.ts` 迁入 `core/runtime/game-runtime.ts`，使运行时完全通过 `RuntimeCommand`/`RuntimeOutput` 与宿主交互（CLI 已通过命令/事件驱动）。
+4. Web 版属于未来独立项目，不在当前原型范围内；届时使用 Worker 或后端流式接口运行预取任务，平台密钥仍必须留在服务端。
+5. 根据实时合成速度、阅读速度和预算动态调整提前量，而不是长期使用固定 3/2 参数。
+6. 根据 `input_bridge_cover_duration_ms` 与 `input_confirm_to_first_response_line_ms` 观察 bridge 长度是否足够覆盖回应等待，必要时让模型自适应。
