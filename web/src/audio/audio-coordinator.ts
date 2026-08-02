@@ -68,25 +68,42 @@ export class AudioCoordinator {
     if (this.workletNode) {
       return;
     }
-    await this.context.audioWorklet.addModule(workletUrl);
-    const node = this.context.createAudioWorkletNode("pcm-playback", {
-      numberOfInputs: 0,
-      numberOfOutputs: 1,
-      outputChannelCount: [1],
-    });
-    const gain = this.context.createGain();
-    gain.gain.value = this.muted ? 0 : this.volume;
-    node.connect(gain);
-    gain.connect(this.context.destination);
-    node.port.onmessage = (event: MessageEvent) => {
-      this.handleWorkletMessage(event);
-    };
-    this.workletNode = node;
-    this.gainNode = gain;
-    if (this.playbackStarted && this.currentLineId !== null) {
-      // Samples fed before the worklet existed were kept queued (beginPlayback
-      // could not flush them) — hand them over now so playback is not silent.
-      this.flushPending(this.currentLineId);
+    // Environment capability check (§10.5): older browsers / embedded
+    // webviews may expose AudioContext without AudioWorklet support. The
+    // app degrades to text-only — never fail the session start over audio.
+    if (
+      typeof this.context.createAudioWorkletNode !== "function" ||
+      this.context.audioWorklet === undefined
+    ) {
+      return;
+    }
+    try {
+      await this.context.audioWorklet.addModule(workletUrl);
+      const node = this.context.createAudioWorkletNode("pcm-playback", {
+        numberOfInputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      const gain = this.context.createGain();
+      gain.gain.value = this.muted ? 0 : this.volume;
+      node.connect(gain);
+      gain.connect(this.context.destination);
+      node.port.onmessage = (event: MessageEvent) => {
+        this.handleWorkletMessage(event);
+      };
+      this.workletNode = node;
+      this.gainNode = gain;
+      if (this.playbackStarted && this.currentLineId !== null) {
+        // Samples fed before the worklet existed were kept queued
+        // (beginPlayback could not flush them) — hand them over now.
+        this.flushPending(this.currentLineId);
+      }
+    } catch {
+      // addModule failed (fetch error, CSP, unsupported module type):
+      // degrade to text-only playback. All public methods already guard
+      // on a null workletNode.
+      this.workletNode = null;
+      this.gainNode = null;
     }
   }
 
@@ -162,6 +179,11 @@ export class AudioCoordinator {
     if (this.currentLineId !== null && this.playbackStarted) {
       this.scheduleFinish(); // pause_after handling depends on the mode
     }
+  }
+
+  /** False when the environment lacks AudioWorklet (text-only mode). */
+  get available(): boolean {
+    return this.workletNode !== null;
   }
 
   setVolume(v: number): void {

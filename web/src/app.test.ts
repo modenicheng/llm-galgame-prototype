@@ -5,7 +5,7 @@
  * pipeline (PCM feed + cache write, dedup, abort, failure).
  */
 import "fake-indexeddb/auto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { GameApp, DEFAULT_PUBLIC_WEB_CONFIG } from "./app.js";
 import { AudioDb } from "./storage/audio-db.js";
 import { AudioCacheWriter } from "./storage/audio-cache-writer.js";
@@ -54,19 +54,26 @@ class FakeWebSocket implements WebSocketLike {
   }
 }
 
-function makeFakeAudioContext(): { context: AudioContext; addModule: ReturnType<typeof vi.fn> } {
+/** Result of makeFakeAudioContext — a stub AudioContext for tests. */
+interface FakeAudioContextResult {
+  context: AudioContext;
+  addModule: Mock;
+}
+
+function makeFakeAudioContext(noWorklet = false): FakeAudioContextResult {
   const port = { postMessage: vi.fn(), onmessage: null as ((e: MessageEvent) => void) | null };
   const node = { port, connect: vi.fn() };
   const gain = { gain: { value: 1 }, connect: vi.fn() };
   const addModule = vi.fn().mockResolvedValue(undefined);
   const context = {
-    audioWorklet: { addModule },
-    createAudioWorkletNode: vi.fn(() => node),
+    audioWorklet: noWorklet ? undefined : { addModule },
+    createAudioWorkletNode: noWorklet ? undefined : vi.fn(() => node),
     createGain: vi.fn(() => gain),
     destination: {},
     resume: vi.fn().mockResolvedValue(undefined),
-    currentTime: 0,
     state: "running",
+    sampleRate: 22050,
+    currentTime: 0,
   } as unknown as AudioContext;
   return { context, addModule };
 }
@@ -211,8 +218,13 @@ beforeEach(async () => {
   db = new AudioDb();
   await resetDb(db);
   db.close();
-  // RuntimeClient reports audioWorklet capability from the global.
-  vi.stubGlobal("AudioContext", class {});
+  // RuntimeClient reports audioWorklet capability from the global. A real
+  // AudioContext has createAudioWorkletNode on the prototype; the no-worklet
+  // tests override this stub with a bare class.
+  class StubAudioContext {
+    createAudioWorkletNode(): void {}
+  }
+  vi.stubGlobal("AudioContext", StubAudioContext);
 });
 
 afterEach(() => {
@@ -617,7 +629,7 @@ describe("GameApp", () => {
     }
   });
 
-  it("start failure resets the gate, surfaces the error and allows retry", async () => {
+  it("worklet failure degrades to text-only instead of failing the session", async () => {
     const failing = makeFakeAudioContext();
     failing.addModule.mockRejectedValue(new Error("worklet module failed"));
     const app = new GameApp({
@@ -628,14 +640,15 @@ describe("GameApp", () => {
       db,
     });
 
-    await expect(app.start(failing.context)).rejects.toThrow("worklet module failed");
-    expect(app.state().startError).toBe("worklet module failed");
+    // The session must still boot: audio degrades, the story continues.
+    await expect(app.start(failing.context)).resolves.toBeUndefined();
+    expect(app.state().startError).toBeNull();
+    expect(FakeWebSocket.last).not.toBeNull();
 
-    // The session is not wedged: a retry constructs everything fresh.
+    // A later retry with a working context restores audio.
     const { context } = makeFakeAudioContext();
     await app.start(context);
     expect(app.state().startError).toBeNull();
-    expect(FakeWebSocket.last).not.toBeNull();
   });
 
   it("manual advance during the auto pause window sends only one advance", async () => {
@@ -696,5 +709,61 @@ describe("GameApp", () => {
     ws.receive(descriptorMsg("line-3", "cache-3"));
     await flush();
     expect(synthCalls).toHaveLength(1); // only line-1 was fetched
+  });
+
+  it("start degrades to text-only when AudioWorklet is unsupported", async () => {
+    const { context } = makeFakeAudioContext(true);
+    const app = new GameApp({
+      wsUrl: WS_URL,
+      token: TOKEN,
+      fetchImpl: makeFetchImpl().fetchImpl,
+      webSocketImpl: FakeWebSocket as unknown as WebSocketCtor,
+      db,
+    });
+
+    // Must NOT throw: the session boots without audio.
+    await app.start(context);
+    const ws = FakeWebSocket.last as FakeWebSocket;
+    ws.open();
+
+    // A playback line renders and advances without any synthesis request.
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await flush();
+    expect(app.state().view.currentLine).toBeDefined();
+    expect(app.state().view.mode).toBe("PLAYING");
+    expect(app.state().audioPlaying).toBe(false);
+
+    app.advance();
+    const advanced = sentCommands(ws).some((c) => {
+      const command = c.command;
+      return (
+        command !== null &&
+        typeof command === "object" &&
+        "type" in command &&
+        command.type === "advance"
+      );
+    });
+    expect(advanced).toBe(true);
+  });
+
+  it("does not request synthesis after a no-worklet start", async () => {
+    const { fetchImpl, synthesizeCalls } = makeFetchImpl();
+    const { context } = makeFakeAudioContext(true);
+    const app = new GameApp({
+      wsUrl: WS_URL,
+      token: TOKEN,
+      fetchImpl,
+      webSocketImpl: FakeWebSocket as unknown as WebSocketCtor,
+      db,
+    });
+    await app.start(context);
+    const ws = FakeWebSocket.last as FakeWebSocket;
+    ws.open();
+
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await flush();
+    expect(synthesizeCalls).toHaveLength(0);
   });
 });

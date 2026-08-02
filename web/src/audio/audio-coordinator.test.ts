@@ -68,6 +68,20 @@ describe("AudioCoordinator", () => {
     expect(gain.connect).toHaveBeenCalledWith(context.destination);
   });
 
+  it("init resolves without throwing when the context lacks createAudioWorkletNode", async () => {
+    const fake = makeFakeContext();
+    const context = fake.context as unknown as {
+      createAudioWorkletNode?: unknown;
+    };
+    delete context.createAudioWorkletNode;
+    const coordinator = new AudioCoordinator(
+      { context: fake.context, playbackConfig, format },
+      makeEvents(),
+    );
+    await expect(coordinator.init()).resolves.toBeUndefined();
+    expect(coordinator.bufferedAheadMs()).toBe(0);
+  });
+
   it("startup buffer: feeds below threshold do not start playback", async () => {
     const { context, port } = makeFakeContext();
     const events = makeEvents();

@@ -227,7 +227,9 @@ export class RuntimeClient {
     return {
       type: "client.ready",
       capabilities: {
-        audioWorklet: typeof AudioContext !== "undefined",
+        audioWorklet:
+          typeof AudioContext !== "undefined" &&
+          typeof AudioContext.prototype.createAudioWorkletNode === "function",
         indexedDb: typeof indexedDB !== "undefined",
       },
     };

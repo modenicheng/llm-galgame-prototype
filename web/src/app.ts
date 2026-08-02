@@ -186,8 +186,18 @@ export class GameApp {
         },
         this.coordinatorEvents,
       );
-      await this.coordinator.init();
-
+      // AudioWorklet is optional (§10.5): when the environment cannot
+      // create a playback node, degrade to text-only instead of failing
+      // the whole session. Every audio call site is already `?.`-guarded.
+      try {
+        await this.coordinator.init();
+      } catch {
+        this.coordinator.stop();
+        this.coordinator = null;
+      }
+      if (this.coordinator !== null && !this.coordinator.available) {
+        this.coordinator = null;
+      }
       await this.db.open();
       const writeOptions: CacheWriteOptions = {
         writeBatchBytes: this.config.audio.cache.write_batch_bytes,
@@ -515,8 +525,6 @@ export class GameApp {
     const entry = this.descriptors.get(lineId);
     if (entry === undefined) return;
     const scope = entry.descriptor.scope.type;
-    // Candidate/preview audio never enters the playback timeline (§22
-    // invariants 16/17) — unless the line became the current one.
     if (scope !== "active" && lineId !== this.currentLineId) return;
     this.coordinator.enqueueLine(lineId, entry.descriptor.cacheKey, 0, 0);
     this.enqueued.add(lineId);
@@ -527,12 +535,14 @@ export class GameApp {
     const entry = this.descriptors.get(lineId);
     if (entry === undefined || entry.state !== "idle") return;
     if (this.reader === null || this.writer === null || this.downloader === null) return;
+    // Text-only mode (§10.5 degrade): no playback node, so no synthesis —
+    // the story advances on the reading-time fallback.
+    if (this.coordinator === null) return;
     // §10.3 prefetch headroom: the current line is always on the critical
     // path, but future lines are only fetched while the contiguous buffer
     // has room below the target — bounds every fill burst (P3).
     if (
       lineId !== this.currentLineId &&
-      this.coordinator !== null &&
       this.coordinator.bufferedAheadMs() >= this.config.audio.playback.target_buffer_ms
     ) {
       return;
