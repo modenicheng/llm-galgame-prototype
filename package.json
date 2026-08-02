@@ -5,24 +5,34 @@
   "type": "module",
   "description": "LLM-driven GalGame prototype with branch prefetching and media lookahead scheduling.",
   "scripts": {
-    "dev": "tsx src/main.ts",
-    "dev:tui": "tsx src/main.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "npm run dev:web",
+    "dev:web": "tsx src/entrypoints/web.ts --dev",
+    "dev:cli": "tsx src/entrypoints/cli.ts",
+    "build": "tsc -p tsconfig.node.json && vite build",
+    "build:node": "tsc -p tsconfig.node.json",
+    "build:web": "vite build",
+    "start": "npm run start:web",
+    "start:web": "node dist/node/entrypoints/web.js",
+    "start:cli": "node dist/node/entrypoints/cli.js",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
     "dotenv": "latest",
     "openai": "latest",
+    "ws": "latest",
     "yaml": "latest",
     "zod": "latest"
   },
   "devDependencies": {
     "@types/node": "latest",
+    "@types/ws": "latest",
+    "fake-indexeddb": "latest",
+    "happy-dom": "latest",
     "tsx": "latest",
     "typescript": "latest",
+    "vite": "latest",
     "vitest": "^4.1.10"
   },
   "engines": {

@@ -85,6 +85,24 @@ function printMetrics(game: Game): void {
   console.log("\n── 输入 ──");
   console.log(`  预览次数：     ${snap.input.preview_count}`);
   console.log(`  平均停留(ms)： ${snap.input.avg_dwell_ms.toFixed(0)}`);
+  console.log(`  确认→首行 样本数：${snap.input.confirm_to_first_response_line_ms.length}`);
+  if (snap.input.confirm_to_first_response_line_ms.length > 0) {
+    const avg =
+      snap.input.confirm_to_first_response_line_ms.reduce((a, b) => a + b, 0) /
+      snap.input.confirm_to_first_response_line_ms.length;
+    console.log(`  确认→首行 平均(ms)：${avg.toFixed(0)}`);
+  }
+  console.log(`  bridge 覆盖 样本数：${snap.input.bridge_cover_duration_ms.length}`);
+  if (snap.input.bridge_cover_duration_ms.length > 0) {
+    const avg =
+      snap.input.bridge_cover_duration_ms.reduce((a, b) => a + b, 0) /
+      snap.input.bridge_cover_duration_ms.length;
+    console.log(`  bridge 覆盖 平均(ms)：${avg.toFixed(0)}`);
+  }
+  console.log(`  回应欠载次数： ${snap.input.response_underrun_count}`);
+  console.log(`  回应取消次数： ${snap.input.response_canceled_count}`);
+  console.log(`  迟到事件丢弃： ${snap.input.stale_input_event_dropped_count}`);
+  console.log(`  直播接管次数： ${snap.input.response_promoted_live_count}`);
 
   console.log("\n── 错误 ──");
   console.log(`  Schema 校验失败：${snap.errors.schema_validation_failures}`);
