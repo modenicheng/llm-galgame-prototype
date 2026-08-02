@@ -15,6 +15,10 @@ export interface CacheKeyRecipe {
   text: string;
   /** Compiled instruction (may be undefined → excluded from digest). */
   compiledInstruction?: string;
+  /** Compiled lead-in pause (ms); absent = no pause (excluded from digest). */
+  pauseBeforeMs?: number;
+  /** Compiled trailing pause (ms); absent = no pause (excluded from digest). */
+  pauseAfterMs?: number;
   rate: number;
   pitch: number;
   volume: number;
@@ -37,6 +41,14 @@ export function cacheKeyFromRecipe(recipe: CacheKeyRecipe): string {
   hash.update("\u0000");
   if (recipe.compiledInstruction !== undefined) {
     hash.update(recipe.compiledInstruction);
+    hash.update("\u0000");
+  }
+  if (recipe.pauseBeforeMs !== undefined) {
+    hash.update(String(recipe.pauseBeforeMs));
+    hash.update("\u0000");
+  }
+  if (recipe.pauseAfterMs !== undefined) {
+    hash.update(String(recipe.pauseAfterMs));
     hash.update("\u0000");
   }
   hash.update(String(recipe.rate));

@@ -41,6 +41,8 @@ describe("cacheKeyFromRecipe", () => {
       { seed: 43 },
       { format: "pcm_s16le" }, // same value → same key (sanity)
       { sampleRate: 16000 },
+      { pauseBeforeMs: 500 },
+      { pauseAfterMs: 300 },
       { compiledInstruction: "温柔地说" },
     ];
     for (const mutation of mutations) {
@@ -65,5 +67,13 @@ describe("cacheKeyFromRecipe", () => {
     const withoutInstruction = cacheKeyFromRecipe(makeRecipe());
 
     expect(withInstruction).not.toBe(withoutInstruction);
+  });
+
+  it("includes a present pause in the digest and excludes an absent one", () => {
+    const base = cacheKeyFromRecipe(makeRecipe());
+
+    expect(cacheKeyFromRecipe(makeRecipe({ pauseBeforeMs: 500 }))).not.toBe(base);
+    expect(cacheKeyFromRecipe(makeRecipe({ pauseAfterMs: 300 }))).not.toBe(base);
+    expect(cacheKeyFromRecipe(makeRecipe({ pauseBeforeMs: 500, pauseAfterMs: 300 }))).not.toBe(base);
   });
 });

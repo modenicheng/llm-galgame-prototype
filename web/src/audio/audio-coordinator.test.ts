@@ -208,4 +208,65 @@ describe("AudioCoordinator", () => {
     expect(coordinator.isPlaying()).toBe(false);
     expect(events.onLinePlaybackFinished).not.toHaveBeenCalled();
   });
+
+  it("start/skip on an unknown line is a no-op", async () => {
+    const { context } = makeFakeContext();
+    const events = makeEvents();
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
+    await coordinator.init();
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
+    coordinator.start("line-1");
+    coordinator.start("unknown");
+    coordinator.skip("unknown");
+    expect(events.onLinePlaybackStarted).not.toHaveBeenCalled();
+    expect(coordinator.isPlaying()).toBe(false);
+    // currentLineId is unchanged (still line-1), so feeding line-1 drives startup playback
+    coordinator.feedPcm("line-1", new Int16Array(8000)); // 363ms ≥ 350ms threshold
+    expect(events.onLinePlaybackStarted).toHaveBeenCalledWith("line-1");
+    expect(coordinator.isPlaying()).toBe(true);
+  });
+
+  it("start/skip on the currently playing line is a no-op (no duplicate events)", async () => {
+    vi.useFakeTimers();
+    const { context } = makeFakeContext();
+    const events = makeEvents();
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
+    await coordinator.init();
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
+    coordinator.start("line-1");
+    coordinator.feedPcm("line-1", new Int16Array(22050)); // exactly 1s — starts playback
+    expect(events.onLinePlaybackStarted).toHaveBeenCalledTimes(1);
+    coordinator.start("line-1");
+    coordinator.skip("line-1");
+    expect(events.onLinePlaybackStarted).toHaveBeenCalledTimes(1);
+    expect(coordinator.isPlaying()).toBe(true);
+    vi.advanceTimersByTime(1000);
+    expect(events.onLinePlaybackFinished).toHaveBeenCalledTimes(1);
+    expect(coordinator.isPlaying()).toBe(false);
+  });
+
+  it("flushes samples fed before init resolves once the worklet node exists", async () => {
+    const { context, port } = makeFakeContext();
+    const events = makeEvents();
+    let resolveModule!: () => void;
+    context.audioWorklet.addModule = vi
+      .fn()
+      .mockReturnValue(
+        new Promise<void>((resolve) => {
+          resolveModule = resolve;
+        })
+      );
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
+    coordinator.start("line-1");
+    coordinator.feedPcm("line-1", new Int16Array(8000)); // crosses the startup threshold
+    expect(events.onLinePlaybackStarted).toHaveBeenCalledWith("line-1");
+    expect(viewPosts(port)).toHaveLength(0); // no worklet yet — nothing can be flushed
+    const initPromise = coordinator.init();
+    resolveModule();
+    await initPromise;
+    const posts = viewPosts(port);
+    expect(posts).toHaveLength(1);
+    expect((posts[0] as Int16Array).length).toBe(8000);
+  });
 });

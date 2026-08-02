@@ -96,6 +96,8 @@ export class AudioDescriptorFactory {
       rate: compiled.rate,
       pitch: compiled.pitch,
       volume: compiled.volume,
+      pauseBeforeMs: compiled.pauseBeforeMs,
+      pauseAfterMs: compiled.pauseAfterMs,
       seed,
     };
     if (compiled.instruction !== undefined) {
@@ -181,6 +183,12 @@ export class AudioDescriptorFactory {
     };
     if (compiled.instruction !== undefined) {
       recipe.compiledInstruction = compiled.instruction;
+    }
+    if (compiled.pauseBeforeMs > 0) {
+      recipe.pauseBeforeMs = compiled.pauseBeforeMs;
+    }
+    if (compiled.pauseAfterMs > 0) {
+      recipe.pauseAfterMs = compiled.pauseAfterMs;
     }
     return recipe;
   }

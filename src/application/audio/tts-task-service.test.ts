@@ -52,6 +52,50 @@ class FakeTtsProvider implements TtsProviderPort {
   }
 }
 
+/**
+ * Provider that RESOLVES completion with partial bytes when aborted —
+ * mirrors the Task B provider contract: abort stops streaming but the
+ * completion promise settles with whatever bytes were already emitted
+ * (never rejects).
+ */
+class ResolvingAbortProvider implements TtsProviderPort {
+  calls: Array<{ signal: AbortSignal }> = [];
+  readonly chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])];
+
+  async start(_request: unknown, signal: AbortSignal): Promise<TtsStreamSession> {
+    this.calls.push({ signal });
+    let resolveCompletion: (c: TtsCompletion) => void = () => {};
+    const completion = new Promise<TtsCompletion>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    // Abort resolves with the partial byte count — no rejection.
+    signal.addEventListener(
+      "abort",
+      () => resolveCompletion({ totalBytes: this.chunks[0]!.byteLength }),
+      { once: true },
+    );
+    const chunks = this.emitChunks(signal, resolveCompletion);
+    return {
+      metadata: { encoding: "pcm_s16le", sampleRate: 22050, channels: 1, bitDepth: 16 },
+      chunks,
+      completion,
+    };
+  }
+
+  private async *emitChunks(
+    signal: AbortSignal,
+    resolve: (c: TtsCompletion) => void,
+  ): AsyncGenerator<Uint8Array> {
+    let emitted = 0;
+    for (const chunk of this.chunks) {
+      if (signal.aborted) break;
+      emitted += chunk.byteLength;
+      yield chunk;
+    }
+    resolve({ totalBytes: emitted });
+  }
+}
+
 function seedCatalog(catalog: AudioCatalogServiceImpl, lineId: string, cacheKey?: string): string {
   const key = cacheKey ?? `key-${lineId}`;
   catalog.upsertDescriptor(
@@ -74,6 +118,8 @@ function seedCatalog(catalog: AudioCatalogServiceImpl, lineId: string, cacheKey?
       rate: 1,
       pitch: 1,
       volume: 1,
+      pauseBeforeMs: 0,
+      pauseAfterMs: 0,
       seed: 1,
     },
   );
@@ -324,6 +370,57 @@ describe("TtsTaskServiceImpl", () => {
     expect(started[0]?.taskId).toBe("t1");
     expect(started[1]?.taskId).toBe("t2");
     expect(finished[0]?.taskId).toBe("t1");
+  });
+
+  it("reports canceled (not finished) when the provider resolves with partial bytes on abort", async () => {
+    const catalog = new AudioCatalogServiceImpl();
+    const key = seedCatalog(catalog, "l1");
+    const provider = new ResolvingAbortProvider();
+    const statuses: TaskStatusEvent[] = [];
+    const service = new TtsTaskServiceImpl({
+      catalog,
+      provider,
+      maxConcurrency: 2,
+      onStatus: (event) => statuses.push(event),
+    });
+    const controller = new AbortController();
+    const session = await service.synthesize(request("l1", key), controller.signal);
+
+    controller.abort();
+    await flush();
+
+    expect(provider.calls[0]?.signal.aborted).toBe(true);
+    const canceled = statuses.find((s) => s.status === "canceled");
+    expect(canceled).toBeDefined();
+    expect(canceled?.totalBytes).toBe(3); // partial count, not the full 6
+    expect(statuses.map((s) => s.status)).not.toContain("finished");
+    // Provider contract: completion resolves with partial bytes, never rejects.
+    await expect(session.completion).resolves.toEqual({ totalBytes: 3 });
+  });
+
+  it("reports finished when completion resolves without abort", async () => {
+    const catalog = new AudioCatalogServiceImpl();
+    const key = seedCatalog(catalog, "l1");
+    const provider = new ResolvingAbortProvider();
+    const statuses: TaskStatusEvent[] = [];
+    const service = new TtsTaskServiceImpl({
+      catalog,
+      provider,
+      maxConcurrency: 2,
+      onStatus: (event) => statuses.push(event),
+    });
+    const session = await service.synthesize(request("l1", key), new AbortController().signal);
+
+    for await (const _ of session.chunks) {
+      /* drain */
+    }
+    await session.completion;
+    await flush();
+
+    const finished = statuses.find((s) => s.status === "finished");
+    expect(finished).toBeDefined();
+    expect(finished?.totalBytes).toBe(6);
+    expect(statuses.map((s) => s.status)).not.toContain("canceled");
   });
 
   it("propagates provider failure and emits failed", async () => {

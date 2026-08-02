@@ -11,6 +11,7 @@
 import type { RuntimePlayableEvent } from "../../schema.js";
 import type { AudioPriority } from "../../shared/wire/audio-descriptor.js";
 import type { MediaPlannerPort } from "../../core/ports/media-planner-port.js";
+import type { LinePerformance } from "./performance-compiler.js";
 import type { AudioCatalogService } from "./audio-catalog-service.js";
 import type { AudioDescriptorFactory } from "./audio-descriptor-factory.js";
 
@@ -51,7 +52,12 @@ export class AudioIntentPlanner implements MediaPlannerPort {
       const entry = this.timeline[i];
       if (entry === undefined) continue;
       const priority = this.priorityFor(i);
-      const result = this.options.factory.build(entry.event, { type: "active" }, priority);
+      const result = this.options.factory.build(
+        entry.event,
+        { type: "active" },
+        priority,
+        this.performanceOf(entry.event),
+      );
       if (result) this.options.catalog.upsertDescriptor(result.descriptor, result.recipe);
     }
   }
@@ -68,6 +74,7 @@ export class AudioIntentPlanner implements MediaPlannerPort {
         event,
         { type: "candidate", branchId },
         priority,
+        this.performanceOf(event),
       );
       if (result) this.options.catalog.upsertDescriptor(result.descriptor, result.recipe);
     }
@@ -95,7 +102,12 @@ export class AudioIntentPlanner implements MediaPlannerPort {
       const entry = this.timeline[i];
       if (entry === undefined || !entry.active) continue;
       const priority = this.priorityFor(i);
-      const result = this.options.factory.build(entry.event, { type: "active" }, priority);
+      const result = this.options.factory.build(
+        entry.event,
+        { type: "active" },
+        priority,
+        this.performanceOf(entry.event),
+      );
       if (result) this.options.catalog.upsertDescriptor(result.descriptor, result.recipe);
     }
   }
@@ -128,6 +140,7 @@ export class AudioIntentPlanner implements MediaPlannerPort {
     return true;
   }
 
+
   waitUntilReady(_lineId: string, _timeoutMs?: number): Promise<boolean> {
     return Promise.resolve(true);
   }
@@ -137,5 +150,14 @@ export class AudioIntentPlanner implements MediaPlannerPort {
     if (index === this.currentIndex) return "current";
     if (index === this.currentIndex + 1) return "next";
     return "active_future";
+  }
+
+  /**
+   * Forward the line's §14.3 performance intent to the factory. Player
+   * lines have no performance field, so the union is narrowed by property
+   * presence. All three build sites must forward it in lockstep.
+   */
+  private performanceOf(event: RuntimePlayableEvent): LinePerformance | undefined {
+    return "performance" in event ? event.performance : undefined;
   }
 }

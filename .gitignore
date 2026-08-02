@@ -10,3 +10,4 @@ npm-debug.log*
 .omo/
 nul
 sessions/state.json
+.superpowers/

@@ -181,14 +181,33 @@ export class AudioCacheWriter {
     this.pending = new Map();
     if (pending.size === 0) return;
 
+    // Snapshot every job BEFORE the first await. Writing an earlier key yields
+    // to the caller, who may restart a later key via startAsset — that
+    // replaces the key's session and cascade-deletes its chunks. Each batch
+    // must be written against the session it was captured under; a batch whose
+    // session is no longer current when its turn comes belongs to a restarted
+    // key, and writing it would re-insert old sequences into the new session.
+    const jobs: Array<{
+      cacheKey: string;
+      chunks: WriteChunkInput[];
+      session: WriterSession;
+    }> = [];
     for (const [cacheKey, batch] of pending) {
       const session = this.sessions.get(cacheKey);
-      if (!session || batch.chunks.length === 0) continue;
+      if (!session || session.finished || batch.chunks.length === 0) continue;
+      jobs.push({ cacheKey, chunks: batch.chunks, session });
+    }
+
+    for (const job of jobs) {
+      // The key was restarted (or finished) while earlier keys were written:
+      // the captured session is gone, so the batch is stale. Drop it — startAsset
+      // already wiped the key, and writing would pollute the new session.
+      if (this.sessions.get(job.cacheKey) !== job.session || job.session.finished) continue;
       try {
-        await this.db.writeChunkBatch(cacheKey, batch.chunks, session.asset);
+        await this.db.writeChunkBatch(job.cacheKey, job.chunks, job.session.asset);
       } catch (error) {
         // Non-fatal by design: a failed cache write must never break playback.
-        console.warn(`[audio-cache] flush failed for ${cacheKey}`, error);
+        console.warn(`[audio-cache] flush failed for ${job.cacheKey}`, error);
       }
     }
   }

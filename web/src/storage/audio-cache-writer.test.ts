@@ -1,11 +1,12 @@
 /**
  * AudioCacheWriter tests: batching + flush thresholds, two-phase completion,
- * interruption handling, and the fire-and-forget playback path (§22
- * invariant 13). Runs against fake-indexeddb in the node environment.
+ * interruption handling, key-restart-during-flush isolation, and the
+ * fire-and-forget playback path (§22 invariant 13). Runs against
+ * fake-indexeddb in the node environment.
  */
 import "fake-indexeddb/auto";
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { AudioDb } from "./audio-db.js";
+import { AudioDb, type AudioAssetRecord, type WriteChunkInput } from "./audio-db.js";
 import { AudioCacheWriter, type StartAssetMeta } from "./audio-cache-writer.js";
 import { resetDb, deleteChunkRaw } from "./test-utils.js";
 
@@ -93,6 +94,66 @@ describe("AudioCacheWriter", () => {
     await writer.finishComplete("k1"); // must wait for that flush, not race past it
 
     expect((await db.getAsset("k1"))?.status).toBe("complete");
+  });
+
+  it("restarting a key during an in-flight flush never writes the stale batch into the new session", async () => {
+    const writer = new AudioCacheWriter(db, {
+      writeBatchBytes: 1_000_000,
+      flushIntervalMs: 30_000,
+    });
+    await writer.startAsset("k1", "line-1", META);
+    await writer.startAsset("k2", "line-2", META);
+    writer.append("k1", new Uint8Array([1, 2])); // k1: seq 0
+    writer.append("k2", new Uint8Array([3, 4])); // k2 (old session): seq 0
+    writer.append("k2", new Uint8Array([5, 6])); // k2 (old session): seq 1
+    writer.append("k2", new Uint8Array([7, 8])); // k2 (old session): seq 2
+
+    // Gate k1's write so the flush loop parks inside its await; k2's job is
+    // only processed after we restart k2.
+    let releaseK1!: () => void;
+    const k1Gate = new Promise<void>((resolve) => {
+      releaseK1 = resolve;
+    });
+    const realWrite = db.writeChunkBatch.bind(db);
+    const writeSpy = vi.spyOn(db, "writeChunkBatch").mockImplementation(
+      async (cacheKey: string, chunks: WriteChunkInput[], asset: AudioAssetRecord) => {
+        if (cacheKey === "k1") await k1Gate;
+        return realWrite(cacheKey, chunks, asset);
+      },
+    );
+
+    const flushPromise = writer.flush();
+    await vi.waitFor(() => {
+      expect(writeSpy.mock.calls.some(([cacheKey]) => cacheKey === "k1")).toBe(true);
+    });
+
+    // Restart k2 while k1's write is still in flight: startAsset cascade-wipes
+    // k2 and installs a fresh session; the new stream appends its own chunk.
+    await writer.startAsset("k2", "line-2b", META);
+    writer.append("k2", new Uint8Array([9, 9])); // new session: seq 0
+
+    releaseK1();
+    await flushPromise;
+
+    // finishComplete for the new session sees only its own chunk: no stale
+    // sequences remain to make the count-based contiguity check spuriously
+    // mark the fully-streamed line partial.
+    await writer.finishComplete("k2");
+    const asset = await db.getAsset("k2");
+    expect(asset?.status).toBe("complete");
+    expect(asset?.lineId).toBe("line-2b");
+    expect(asset?.chunkCount).toBe(1);
+    expect(asset?.totalBytes).toBe(2);
+    const chunks = await db.getChunks("k2", 0, 10);
+    expect(chunks.map((c) => Array.from(new Uint8Array(c.data)))).toEqual([[9, 9]]);
+
+    // The old batch was captured under the pre-restart session, which
+    // startAsset wiped: the flush must not write it — its sequences would
+    // pollute the new session's space and finishComplete would over-count.
+    const k2Writes = writeSpy.mock.calls.filter(([cacheKey]) => cacheKey === "k2");
+    expect(k2Writes).toHaveLength(1); // only finishComplete's flush of the new chunk
+    expect(k2Writes[0]![1].every((chunk) => chunk.sequence === 0)).toBe(true);
+    expect(k2Writes[0]![2].lineId).toBe("line-2b");
   });
 
   it("finishComplete marks complete when chunks are contiguous and bytes match", async () => {

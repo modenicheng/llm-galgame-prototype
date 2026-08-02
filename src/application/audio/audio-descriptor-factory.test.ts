@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { AudioDescriptorFactory, type AudioDescriptorFactoryOptions } from "./audio-descriptor-factory.js";
 import type { VoicesConfig } from "../../config/voices.js";
-import type { PerformanceCompiler } from "./performance-compiler.js";
+import type { LinePerformance, PerformanceCompiler } from "./performance-compiler.js";
 import type { RuntimePlayableEvent } from "../../schema.js";
 import type { InternalAudioRecipe } from "./internal-audio-recipe.js";
 
@@ -179,5 +179,56 @@ describe("AudioDescriptorFactory", () => {
     )!;
     expect(result.descriptor.scope).toEqual({ type: "candidate", branchId: "b1" });
     expect(result.descriptor.priority).toBe("candidate_first_line");
+  });
+
+  it("compiles event.performance into the recipe", () => {
+    const seen: Array<LinePerformance | undefined> = [];
+    const factory = makeFactory({
+      compiler: {
+        compile: (input) => {
+          seen.push(input.performance);
+          return {
+            rate: 1.2,
+            pitch: 0.9,
+            volume: 0.7,
+            instruction: "语气：温柔。",
+            pauseBeforeMs: 800,
+            pauseAfterMs: 400,
+          };
+        },
+      },
+    });
+    const performance: LinePerformance = { emotion: "sad", pace: "slow" };
+    const result = factory.build(
+      dialogue("suyao", "今天天气真好。", "l10"),
+      { type: "active" },
+      "current",
+      performance,
+    )!;
+
+    expect(seen).toEqual([performance]);
+    expect(result.recipe).toMatchObject({
+      rate: 1.2,
+      pitch: 0.9,
+      volume: 0.7,
+      instruction: "语气：温柔。",
+      pauseBeforeMs: 800,
+      pauseAfterMs: 400,
+    });
+  });
+
+  it("carries compiled pauses into the recipe and cacheKey", () => {
+    const withPause = makeFactory({
+      compiler: {
+        compile: () => ({ rate: 1, pitch: 1, volume: 1, pauseBeforeMs: 800, pauseAfterMs: 0 }),
+      },
+    }).build(dialogue("suyao", "停顿。", "l11"), { type: "active" }, "current")!;
+    const identity = makeFactory().build(dialogue("suyao", "停顿。", "l11"), { type: "active" }, "current")!;
+
+    expect(withPause.recipe.pauseBeforeMs).toBe(800);
+    expect(withPause.recipe.pauseAfterMs).toBe(0);
+    expect(identity.recipe.pauseBeforeMs).toBe(0);
+    // A non-zero pause must change the audio identity.
+    expect(withPause.recipe.cacheKey).not.toBe(identity.recipe.cacheKey);
   });
 });

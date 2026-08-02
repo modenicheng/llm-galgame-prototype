@@ -2,9 +2,10 @@
  * AudioCacheCleaner — IndexedDB cache eviction (V2 §11.7).
  *
  * Cleanup order:
- *   1. partial / failed / corrupt assets idle longer than `partialTtlMinutes`
- *      (age measured from `lastAccessedAt`, so abandoned writes are reclaimed
- *      while active streaming keeps refreshing it);
+ *   1. partial / failed / corrupt assets, plus `streaming` assets abandoned
+ *      mid-synthesis (tab closed before markPartial ran), idle longer than
+ *      `partialTtlMinutes` (age measured from `lastAccessedAt`, so abandoned
+ *      writes are reclaimed while active streaming keeps refreshing it);
  *   2. candidate / input_preview scope assets older than `candidateTtlHours`
  *      (age measured from `createdAt` — discarded branches and canceled
  *      previews age out);
@@ -29,7 +30,12 @@ export interface CleanupReport {
   freedBytes: number;
 }
 
-const TERMINAL_STATUSES = new Set<AudioAssetRecord["status"]>(["partial", "failed", "corrupt"]);
+const TTL_RECLAIM_STATUSES = new Set<AudioAssetRecord["status"]>([
+  "streaming", // left abandoned by a page that died mid-synthesis
+  "partial",
+  "failed",
+  "corrupt",
+]);
 const PREFETCH_SCOPES = new Set<AudioAssetRecord["scopeAtCreation"]>([
   "candidate",
   "input_preview",
@@ -63,7 +69,7 @@ export class AudioCacheCleaner {
         // Current session: never delete, whatever its age or status.
         continue;
       }
-      if (TERMINAL_STATUSES.has(asset.status)) {
+      if (TTL_RECLAIM_STATUSES.has(asset.status)) {
         if (now - asset.lastAccessedAt > partialTtlMs) {
           doomed.add(asset.cacheKey);
           continue;

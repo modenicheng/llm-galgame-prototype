@@ -1,7 +1,8 @@
 /**
- * AudioCacheCleaner tests: expired partial reclamation, candidate TTL,
- * LRU eviction to the cleanup target, and current-session preservation
- * (§11.7). Runs against fake-indexeddb in the node environment.
+ * AudioCacheCleaner tests: expired partial and abandoned streaming
+ * reclamation, candidate TTL, LRU eviction to the cleanup target, and
+ * current-session preservation (§11.7). Runs against fake-indexeddb in the
+ * node environment.
  */
 import "fake-indexeddb/auto";
 import { describe, it, expect, beforeEach } from "vitest";
@@ -51,6 +52,57 @@ describe("AudioCacheCleaner", () => {
     expect(report.freedBytes).toBe(100);
     expect(await db.getAsset("old-partial")).toBeUndefined();
     expect(await db.getAsset("fresh-partial")).toBeDefined();
+  });
+
+  it("reclaims abandoned streaming assets and frees their chunks", async () => {
+    const cleaner = new AudioCacheCleaner(db, BASE_OPTIONS);
+    await db.putAsset(
+      makeAsset("abandoned-stream", {
+        status: "streaming",
+        totalBytes: 60,
+        lastAccessedAt: Date.now() - 11 * MINUTE, // older than partialTtlMinutes
+      }),
+    );
+    await db.putChunk("abandoned-stream", 0, new Uint8Array([1, 2]).buffer);
+    await db.putAsset(
+      makeAsset("fresh-stream", {
+        status: "streaming",
+        totalBytes: 40,
+        lastAccessedAt: Date.now() - 1 * MINUTE, // actively streaming
+      }),
+    );
+
+    const report = await cleaner.run();
+
+    expect(report.removed).toBe(1);
+    expect(report.freedBytes).toBe(60);
+    expect(await db.getAsset("abandoned-stream")).toBeUndefined();
+    expect(await db.countChunks("abandoned-stream")).toBe(0); // chunks cascade
+    expect(await db.getAsset("fresh-stream")).toBeDefined();
+  });
+
+  it("never deletes abandoned streaming assets referenced by the current session", async () => {
+    const cleaner = new AudioCacheCleaner(db, BASE_OPTIONS);
+    await db.putAsset(
+      makeAsset("active-stream", {
+        status: "streaming",
+        totalBytes: 100,
+        lastAccessedAt: 1, // would be reclaimed by the streaming TTL
+      }),
+    );
+    await db.putAsset(
+      makeAsset("inactive-stream", {
+        status: "streaming",
+        totalBytes: 100,
+        lastAccessedAt: 1,
+      }),
+    );
+
+    const report = await cleaner.run(new Set(["active-stream"]));
+
+    expect(report.removed).toBe(1);
+    expect(await db.getAsset("active-stream")).toBeDefined();
+    expect(await db.getAsset("inactive-stream")).toBeUndefined();
   });
 
   it("removes expired candidate-scope assets", async () => {

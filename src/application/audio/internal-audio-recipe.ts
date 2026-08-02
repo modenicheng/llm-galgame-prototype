@@ -13,6 +13,10 @@ export interface InternalAudioRecipe {
   instruction?: string;
   rate: number;
   pitch: number;
+  /** Compiled lead-in silence (ms) before the line starts speaking. */
+  pauseBeforeMs: number;
+  /** Compiled trailing silence (ms) after the line finishes. */
+  pauseAfterMs: number;
   volume: number;
   seed: number;
 }

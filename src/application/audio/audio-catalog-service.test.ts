@@ -32,6 +32,8 @@ function makeRecipe(lineId: string, cacheKey = `key-${lineId}`): InternalAudioRe
     rate: 1,
     pitch: 1,
     volume: 1,
+    pauseBeforeMs: 0,
+    pauseAfterMs: 0,
     seed: 42,
   };
 }

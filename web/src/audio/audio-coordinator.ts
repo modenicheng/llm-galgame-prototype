@@ -83,6 +83,11 @@ export class AudioCoordinator {
     };
     this.workletNode = node;
     this.gainNode = gain;
+    if (this.playbackStarted && this.currentLineId !== null) {
+      // Samples fed before the worklet existed were kept queued (beginPlayback
+      // could not flush them) — hand them over now so playback is not silent.
+      this.flushPending(this.currentLineId);
+    }
   }
 
   /** Feed decoded PCM for a line. Future lines are buffered, not played. */
@@ -159,6 +164,12 @@ export class AudioCoordinator {
   }
 
   private switchToLine(lineId: string): void {
+    if (!this.timeline.hasSegment(lineId)) {
+      return; // unknown line — never enqueued, so nothing to play
+    }
+    if (lineId === this.currentLineId && this.playbackStarted) {
+      return; // already playing this line — restarting would drop audio mid-line
+    }
     this.cancelFinishTimer();
     this.postWorkletMessage({ type: "clear" });
     this.currentLineId = lineId;

@@ -9,7 +9,11 @@ import { AudioCatalogServiceImpl } from "./audio-catalog-service.js";
 import type { AudioCatalogEvent } from "./audio-catalog-service.js";
 import type { AudioDescriptorFactoryOptions } from "./audio-descriptor-factory.js";
 import { AudioDescriptorFactory } from "./audio-descriptor-factory.js";
-import type { PerformanceCompiler } from "./performance-compiler.js";
+import {
+  PerformanceCompilerImpl,
+  type LinePerformance,
+  type PerformanceCompiler,
+} from "./performance-compiler.js";
 import type { VoicesConfig } from "../../config/voices.js";
 import type { RuntimePlayableEvent } from "../../schema.js";
 
@@ -33,7 +37,10 @@ const characters: AudioDescriptorFactoryOptions["characters"] = {
   suyao: { name: "苏遥", voice_profile: "suyao_main" },
 };
 
-function makePlanner(overrides: Partial<{ candidatePrefetchLines: number; maxActiveFutureLines: number }> = {}) {
+function makePlanner(
+  overrides: Partial<{ candidatePrefetchLines: number; maxActiveFutureLines: number }> = {},
+  compiler: PerformanceCompiler = stubCompiler,
+) {
   const catalog = new AudioCatalogServiceImpl();
   const factory = new AudioDescriptorFactory({
     characters,
@@ -43,7 +50,7 @@ function makePlanner(overrides: Partial<{ candidatePrefetchLines: number; maxAct
     sampleRate: 22050,
     format: "pcm_s16le",
     env: { MOCK_VOICE_suyao: "mock-voice" },
-    compiler: stubCompiler,
+    compiler,
     seedFor: (lineId) => [...lineId].reduce((acc, char) => acc + char.charCodeAt(0), 0),
   });
   const planner = new AudioIntentPlanner({
@@ -57,6 +64,10 @@ function makePlanner(overrides: Partial<{ candidatePrefetchLines: number; maxAct
 
 function dialogue(lineId: string): RuntimePlayableEvent {
   return { type: "dialogue", speaker: "suyao", text: `台词 ${lineId}`, line_id: lineId };
+}
+
+function dialogueWithPerformance(lineId: string, performance: LinePerformance): RuntimePlayableEvent {
+  return { type: "dialogue", speaker: "suyao", text: `台词 ${lineId}`, line_id: lineId, performance };
 }
 
 describe("AudioIntentPlanner", () => {
@@ -169,5 +180,23 @@ describe("AudioIntentPlanner", () => {
     const { planner } = makePlanner();
     expect(planner.isReady("anything")).toBe(true);
     await expect(planner.waitUntilReady("anything", 100)).resolves.toBe(true);
+  });
+
+  it("forwards event.performance so compiled params reach the recipe", () => {
+    const { catalog, planner } = makePlanner({}, new PerformanceCompilerImpl());
+    const event = dialogueWithPerformance("perf1", {
+      emotion: "sad",
+      pace: "slow",
+      pause_before_ms: 600,
+      pause_after_ms: 200,
+    });
+
+    planner.registerActive([event]);
+
+    const recipe = catalog.getRecipe("perf1");
+    expect(recipe).toBeDefined();
+    expect(recipe!.rate).toBe(0.92); // slow pace → slower rate, not identity
+    expect(recipe!.pauseBeforeMs).toBe(600);
+    expect(recipe!.pauseAfterMs).toBe(200);
   });
 });

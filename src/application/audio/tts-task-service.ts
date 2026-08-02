@@ -248,7 +248,13 @@ export class TtsTaskServiceImpl implements TtsTaskService {
     try {
       const completion = await session.completion;
       if (entry.finalized) return;
-      this.finish(entry, "finished", undefined, completion.totalBytes ?? entry.totalBytes);
+      if (entry.cancelRequested) {
+        // Provider resolved with partial bytes after a consumer abort
+        // (§7.5 contract): the task is canceled, never finished.
+        this.finish(entry, "canceled", undefined, completion.totalBytes ?? entry.totalBytes);
+      } else {
+        this.finish(entry, "finished", undefined, completion.totalBytes ?? entry.totalBytes);
+      }
     } catch (error) {
       if (entry.finalized) return;
       if (entry.cancelRequested) {
