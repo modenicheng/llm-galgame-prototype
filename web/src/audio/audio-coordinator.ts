@@ -138,6 +138,25 @@ export class AudioCoordinator {
     this.fedForCurrentLine = 0;
   }
 
+  /**
+   * Remove a line entirely (§12.5 invalidation): its timeline segment,
+   * queued sample count and any not-yet-fed pending PCM. When the line is
+   * the current one, playback halts silently — dead audio must not keep
+   * bufferedAheadMs, the finish timer or the worklet feed alive.
+   */
+  dropLine(lineId: string): void {
+    if (lineId === this.currentLineId) {
+      this.cancelFinishTimer();
+      this.postWorkletMessage({ type: "clear" });
+      this.currentLineId = null;
+      this.playbackStarted = false;
+      this.startupSamples = 0;
+      this.fedForCurrentLine = 0;
+    }
+    this.timeline.remove(lineId);
+    this.pendingByLine.delete(lineId);
+  }
+
   setMode(mode: PlaybackMode): void {
     this.mode = mode;
     if (this.currentLineId !== null && this.playbackStarted) {

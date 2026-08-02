@@ -56,7 +56,14 @@ export function boot(root?: HTMLElement | null): void {
       if (context.state !== "running") {
         await context.resume(); // unlock within the gesture
       }
-      await app.start(context); // worklet + cache + WebSocket (+ client.ready)
+      try {
+        await app.start(context); // worklet + cache + WebSocket (+ client.ready)
+      } catch (error) {
+        // A failed start must not wedge the session (P2): the app has already
+        // reset its gate — surface the reason and let the user retry.
+        errorBanner.show(error instanceof Error ? error.message : String(error));
+        return;
+      }
       started = true; // keep the gate closed once the session is underway
       startScreen.hide();
     },

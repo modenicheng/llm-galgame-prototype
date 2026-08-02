@@ -88,6 +88,8 @@ export interface GameAppState {
   underrunCount: number;
   configSource: "server" | "defaults";
   showLineIds: boolean;
+  /** Non-null when the last start() attempt failed (P2 start-failure wedge). */
+  startError: string | null;
 }
 
 interface DescriptorEntry {
@@ -142,9 +144,13 @@ export class GameApp {
   private currentLineId: string | null = null;
 
   private started = false;
+  /** Start failure surfaced to the UI banner (P2 start-failure wedge). */
+  private startError: string | null = null;
   private bufferTimer: ReturnType<typeof setInterval> | null = null;
   private cleanerTimer: ReturnType<typeof setTimeout> | null = null;
   private readingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Auto-mode pause before the post-playback advance (§9.3). */
+  private pauseTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: GameAppOptions) {
     this.options = options;
@@ -165,57 +171,72 @@ export class GameApp {
     if (this.started) return;
     this.started = true;
     try {
-      this.config = await this.loadConfig();
-    } catch {
-      this.config = DEFAULT_PUBLIC_WEB_CONFIG;
-      this.configSource = "defaults";
+      try {
+        this.config = await this.loadConfig();
+      } catch {
+        this.config = DEFAULT_PUBLIC_WEB_CONFIG;
+        this.configSource = "defaults";
+      }
+
+      this.coordinator = new AudioCoordinator(
+        {
+          context,
+          playbackConfig: this.config.audio.playback,
+          format: this.config.audio.format,
+        },
+        this.coordinatorEvents,
+      );
+      await this.coordinator.init();
+
+      await this.db.open();
+      const writeOptions: CacheWriteOptions = {
+        writeBatchBytes: this.config.audio.cache.write_batch_bytes,
+        flushIntervalMs: this.config.audio.cache.write_flush_interval_ms,
+      };
+      this.writer = new AudioCacheWriter(this.db, writeOptions);
+      this.reader = new AudioCacheReader(this.db);
+      this.cleaner = new AudioCacheCleaner(this.db, CLEANER_DEFAULTS);
+      this.downloader = new AudioDownloader({
+        token: this.options.token,
+        writer: this.writer,
+        decoder: () => new PcmDecoder(),
+        onPcm: (lineId, samples) => this.onPcm(lineId, samples),
+        ...(this.options.fetchImpl !== undefined
+          ? { fetchImpl: this.options.fetchImpl }
+          : {}),
+      });
+
+      this.client = new RuntimeClient({
+        wsUrl: this.options.wsUrl,
+        token: this.options.token,
+        onServerMessage: (msg) => this.onServerMessage(msg),
+        onConnectionChange: (state) => {
+          this.connection = state;
+          if (state === "open") this.startBufferReports();
+          this.emitState();
+        },
+        ...(this.options.webSocketImpl !== undefined
+          ? { webSocketImpl: this.options.webSocketImpl }
+          : {}),
+      });
+      void this.client.connect();
+
+      void this.runCleaner();
+      this.startError = null;
+      this.emitState();
+    } catch (error) {
+      // A throwing init step (worklet registration, IndexedDB open) must not
+      // wedge the session: reset the gate so a retry constructs everything
+      // fresh, tear down whatever was half-built, and surface the error.
+      this.started = false;
+      this.client?.close();
+      this.client = null;
+      this.coordinator?.stop();
+      this.coordinator = null;
+      this.startError = error instanceof Error ? error.message : String(error);
+      this.emitState();
+      throw error;
     }
-
-    this.coordinator = new AudioCoordinator(
-      {
-        context,
-        playbackConfig: this.config.audio.playback,
-        format: this.config.audio.format,
-      },
-      this.coordinatorEvents,
-    );
-    await this.coordinator.init();
-
-    await this.db.open();
-    const writeOptions: CacheWriteOptions = {
-      writeBatchBytes: this.config.audio.cache.write_batch_bytes,
-      flushIntervalMs: this.config.audio.cache.write_flush_interval_ms,
-    };
-    this.writer = new AudioCacheWriter(this.db, writeOptions);
-    this.reader = new AudioCacheReader(this.db);
-    this.cleaner = new AudioCacheCleaner(this.db, CLEANER_DEFAULTS);
-    this.downloader = new AudioDownloader({
-      token: this.options.token,
-      writer: this.writer,
-      decoder: () => new PcmDecoder(),
-      onPcm: (lineId, samples) => this.onPcm(lineId, samples),
-      ...(this.options.fetchImpl !== undefined
-        ? { fetchImpl: this.options.fetchImpl }
-        : {}),
-    });
-
-    this.client = new RuntimeClient({
-      wsUrl: this.options.wsUrl,
-      token: this.options.token,
-      onServerMessage: (msg) => this.onServerMessage(msg),
-      onConnectionChange: (state) => {
-        this.connection = state;
-        if (state === "open") this.startBufferReports();
-        this.emitState();
-      },
-      ...(this.options.webSocketImpl !== undefined
-        ? { webSocketImpl: this.options.webSocketImpl }
-        : {}),
-    });
-    void this.client.connect();
-
-    void this.runCleaner();
-    this.emitState();
   }
 
   /** Tear down the WebSocket and all timers; the cache stays on disk. */
@@ -224,6 +245,7 @@ export class GameApp {
     this.client = null;
     this.stopBufferReports();
     this.cancelReadingTimer();
+    this.cancelPauseTimer();
     if (this.cleanerTimer !== null) {
       clearTimeout(this.cleanerTimer);
       this.cleanerTimer = null;
@@ -252,6 +274,7 @@ export class GameApp {
       underrunCount: this.underrunCount,
       configSource: this.configSource,
       showLineIds: this.config.game.show_line_ids,
+      startError: this.startError,
     };
   }
 
@@ -262,6 +285,7 @@ export class GameApp {
   /** Manual advance: halt local playback immediately and ask the runtime. */
   advance(): void {
     this.cancelReadingTimer();
+    this.cancelPauseTimer();
     this.coordinator?.stop();
     this.sendCommand({ type: "advance" });
   }
@@ -296,7 +320,10 @@ export class GameApp {
 
   setMode(mode: PlaybackMode): void {
     this.playbackMode = mode;
-    if (mode === "manual") this.cancelReadingTimer();
+    if (mode === "manual") {
+      this.cancelReadingTimer();
+      this.cancelPauseTimer();
+    }
     this.coordinator?.setMode(mode);
     this.emitState();
   }
@@ -417,6 +444,10 @@ export class GameApp {
     if (entry !== undefined && entry.state === "downloading" && entry.abort !== null) {
       entry.abort.abort(); // the downloader catch marks the cache partial
     }
+    // §12.5: dead audio must not keep the timeline segment, queued samples
+    // or bufferedAheadMs alive — otherwise the low-watermark fill is
+    // suppressed and playback underruns.
+    this.coordinator?.dropLine(lineId);
     this.descriptors.delete(lineId);
     this.enqueued.delete(lineId);
     this.cacheDecoders.delete(entry?.descriptor.cacheKey ?? "");
@@ -435,10 +466,13 @@ export class GameApp {
       case "finished":
         if (cacheKey !== undefined && this.writer !== null) {
           await this.writer.finishComplete(cacheKey).catch(() => {});
+          // finishComplete is cache bookkeeping only. The downloader already
+          // fed every PCM chunk live via onPcm — re-reading the cache here
+          // would play the whole line a second time (§12.4/§12.2).
           if (entry !== undefined && entry.state === "downloading") {
             entry.state = "cached";
             entry.abort = null;
-            await this.feedFromCache(entry);
+            entry.fed = true;
           }
         }
         break;
@@ -493,12 +527,24 @@ export class GameApp {
     const entry = this.descriptors.get(lineId);
     if (entry === undefined || entry.state !== "idle") return;
     if (this.reader === null || this.writer === null || this.downloader === null) return;
+    // §10.3 prefetch headroom: the current line is always on the critical
+    // path, but future lines are only fetched while the contiguous buffer
+    // has room below the target — bounds every fill burst (P3).
+    if (
+      lineId !== this.currentLineId &&
+      this.coordinator !== null &&
+      this.coordinator.bufferedAheadMs() >= this.config.audio.playback.target_buffer_ms
+    ) {
+      return;
+    }
     entry.state = "checking";
     const { cacheKey } = entry.descriptor;
     void (async () => {
       try {
         const lookup = await this.reader!.lookup(cacheKey);
-        if (entry.state !== "checking") return; // invalidated meanwhile
+        // Invalidated meanwhile: the entry may be gone or a newer entry may
+        // have replaced it — never continue a stale lookup (P3 race).
+        if (entry.state !== "checking" || this.descriptors.get(lineId) !== entry) return;
         if (lookup.status === "complete") {
           entry.state = "cached";
           this.sendCacheReport(lineId, cacheKey, "hit");
@@ -513,8 +559,10 @@ export class GameApp {
         this.emitState();
       } catch {
         // A cache error is non-fatal: the story continues without audio.
-        entry.state = "idle";
-        this.reconcileAudio();
+        if (this.descriptors.get(lineId) === entry) {
+          entry.state = "idle";
+          this.reconcileAudio();
+        }
       }
     })();
   }
@@ -522,12 +570,13 @@ export class GameApp {
   private async startDownload(entry: DescriptorEntry): Promise<void> {
     if (entry.state === "downloading" || entry.state === "cached") return;
     entry.state = "downloading";
+    // One taskId for both the POST body and the bookkeeping (P3 dead field).
     entry.taskId = crypto.randomUUID();
     const controller = new AbortController();
     entry.abort = controller;
     const { lineId, cacheKey } = entry.descriptor;
     try {
-      await this.downloader!.download(entry.descriptor, controller.signal);
+      await this.downloader!.download(entry.descriptor, controller.signal, entry.taskId);
       // Stream consumed; `complete` is decided by audio.task_status finished.
     } catch {
       if (entry.state !== "downloading") return; // task_status already settled it
@@ -563,16 +612,14 @@ export class GameApp {
     entry.fed = true;
   }
 
-  /**
-   * §12.2 low-watermark scheduler. The current line's audio is always
-   * ensured (the critical path); future active/candidate lines are filled
-   * while the contiguous buffer sits at or below the low watermark.
-   */
   private reconcileAudio(): void {
     if (this.coordinator === null) return;
+    // The current line's audio is always ensured (the critical path);
+    // future lines are filled below the low watermark, with ensureAudio
+    // itself gating prefetch against the §10.3 target (P3).
+    if (this.currentLineId !== null) this.ensureAudio(this.currentLineId);
     const below =
       this.coordinator.bufferedAheadMs() <= this.config.audio.playback.low_watermark_ms;
-    if (this.currentLineId !== null) this.ensureAudio(this.currentLineId);
     if (below) {
       for (const lineId of this.fetchPriorityOrder()) {
         if (lineId === this.currentLineId) continue;
@@ -646,7 +693,11 @@ export class GameApp {
         const pauseAfterMs = line?.performance?.pause_after_ms ?? 0;
         if (pauseAfterMs > 0) {
           // The coordinator enqueues with 0 pauses; the app owns the pause.
-          setTimeout(() => {
+          // Tracked like the reading timer so a manual click during the
+          // pause window cancels it — otherwise the story skips a line (P2).
+          this.cancelPauseTimer();
+          this.pauseTimer = setTimeout(() => {
+            this.pauseTimer = null;
             if (
               this.playbackMode === "auto" &&
               this.currentLineId === lineId &&
@@ -667,6 +718,13 @@ export class GameApp {
       this.emitState();
     },
   };
+
+  private cancelPauseTimer(): void {
+    if (this.pauseTimer !== null) {
+      clearTimeout(this.pauseTimer);
+      this.pauseTimer = null;
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Reporting (§8.1)

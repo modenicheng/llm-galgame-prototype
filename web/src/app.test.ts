@@ -531,4 +531,170 @@ describe("GameApp", () => {
       expect(app.state().bufferedAheadMs).toBeGreaterThan(0);
     });
   });
+  it("task_status finished does not re-feed the cache (samples play exactly once)", async () => {
+    const { app, ws } = await setupApp();
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await vi.waitFor(() => {
+      expect(app.state().audioPlaying).toBe(true);
+    });
+    const bufferedBefore = app.state().bufferedAheadMs; // ~1000ms of streamed PCM
+
+    ws.receive(taskStatusMsg("t-1", "line-1", "finished"));
+    await flush();
+
+    // The finished branch is cache bookkeeping only — it must NOT feed the
+    // cache a second time (the downloader already fed every chunk live).
+    expect(app.state().bufferedAheadMs).toBeLessThanOrEqual(bufferedBefore + 100);
+  });
+
+  it("invalidating a non-owner deduped consumer aborts the shared fetch", async () => {
+    let capturedSignal: AbortSignal | null = null;
+    let aborted = false;
+    const fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/config") {
+        return Promise.resolve(new Response(JSON.stringify(CONFIG), { status: 200 }));
+      }
+      capturedSignal = init?.signal ?? null;
+      init?.signal?.addEventListener("abort", () => {
+        aborted = true;
+      });
+      return Promise.resolve(pendingStreamResponse(init?.signal ?? undefined));
+    }) as unknown as typeof fetch;
+
+    const { app, ws } = await setupApp({ fetchImpl });
+    ws.receive(descriptorMsg("line-1", "cache-x"));
+    ws.receive(descriptorMsg("line-2", "cache-x"));
+    await vi.waitFor(() => {
+      expect(capturedSignal).not.toBeNull();
+    });
+
+    // line-2 is the deduped (non-owner) consumer — aborting IT must abort
+    // the shared fetch, not just strand its own controller.
+    ws.receive(
+      JSON.stringify({ type: "audio.invalidated", lineId: "line-2", reason: "branch_discarded" }),
+    );
+    await vi.waitFor(() => {
+      expect(aborted).toBe(true);
+    });
+  });
+
+  it("invalidation during an in-flight cache lookup prevents the download", async () => {
+    let releaseLookup!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    class SlowLookupDb extends AudioDb {
+      override async getAsset(cacheKey: string): Promise<Awaited<ReturnType<AudioDb["getAsset"]>>> {
+        if (cacheKey === "cache-1") await gate;
+        return super.getAsset(cacheKey);
+      }
+    }
+    const slowDb = new SlowLookupDb();
+    await resetDb(slowDb);
+    try {
+      const { app, ws, synthesizeCalls } = await setupApp({ db: slowDb });
+      ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+      ws.receive(descriptorMsg("line-1", "cache-1"));
+      await flush(2); // ensureAudio is inside reader.lookup, awaiting the gate
+
+      ws.receive(
+        JSON.stringify({
+          type: "audio.invalidated",
+          lineId: "line-1",
+          reason: "branch_discarded",
+        }),
+      );
+      releaseLookup();
+      await flush();
+
+      // The stale lookup continuation must not start a download for a
+      // forgotten line.
+      expect(synthesizeCalls).toHaveLength(0);
+    } finally {
+      slowDb.close();
+    }
+  });
+
+  it("start failure resets the gate, surfaces the error and allows retry", async () => {
+    const failing = makeFakeAudioContext();
+    failing.addModule.mockRejectedValue(new Error("worklet module failed"));
+    const app = new GameApp({
+      wsUrl: WS_URL,
+      token: TOKEN,
+      fetchImpl: makeFetchImpl().fetchImpl,
+      webSocketImpl: FakeWebSocket as unknown as WebSocketCtor,
+      db,
+    });
+
+    await expect(app.start(failing.context)).rejects.toThrow("worklet module failed");
+    expect(app.state().startError).toBe("worklet module failed");
+
+    // The session is not wedged: a retry constructs everything fresh.
+    const { context } = makeFakeAudioContext();
+    await app.start(context);
+    expect(app.state().startError).toBeNull();
+    expect(FakeWebSocket.last).not.toBeNull();
+  });
+
+  it("manual advance during the auto pause window sends only one advance", async () => {
+    const { app, ws } = await setupApp();
+    vi.useFakeTimers();
+    app.setMode("auto");
+    ws.receive(
+      JSON.stringify({
+        type: "runtime.output",
+        sequence: 1,
+        output: {
+          type: "playback_ready",
+          event: {
+            type: "dialogue",
+            line_id: "line-1",
+            speaker: "苏遥",
+            text: "夜色正浓。",
+            performance: { pause_after_ms: 500 },
+          },
+        },
+      }),
+    );
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await vi.advanceTimersByTimeAsync(5); // download chain settles
+    expect(app.state().audioPlaying).toBe(true);
+
+    // 1s of audio → playback finishes at ~1000ms, opening the 500ms pause.
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(sentCommands(ws)).toHaveLength(0); // pause window — not advanced yet
+
+    // Manual click during the pause window: exactly one advance, and the
+    // pending pause timer must be cancelled so it cannot fire a second one.
+    app.advance();
+    expect(sentCommands(ws)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sentCommands(ws)).toHaveLength(1);
+  });
+  it("reconcileAudio does not start fills once bufferedAheadMs reaches target_buffer_ms", async () => {
+    const synthCalls: unknown[] = [];
+    const fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/config") {
+        return Promise.resolve(new Response(JSON.stringify(CONFIG), { status: 200 }));
+      }
+      synthCalls.push(JSON.parse(String(init?.body)));
+      return Promise.resolve(streamResponse([pcmChunk(22050 * 7)])); // 7s ≥ target 6500ms
+    }) as unknown as typeof fetch;
+    const { app, ws } = await setupApp({ fetchImpl });
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await vi.waitFor(() => {
+      expect(app.state().bufferedAheadMs).toBeGreaterThanOrEqual(6500);
+    });
+
+    // Idle descriptors arriving while the buffer is at target must not
+    // trigger a prefetch burst.
+    ws.receive(descriptorMsg("line-2", "cache-2"));
+    ws.receive(descriptorMsg("line-3", "cache-3"));
+    await flush();
+    expect(synthCalls).toHaveLength(1); // only line-1 was fetched
+  });
 });

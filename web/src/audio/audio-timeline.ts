@@ -96,6 +96,27 @@ export class AudioTimeline {
     this.currentIndex = 0;
   }
 
+  /**
+   * Drop one line's segment and its queued sample count (§12.5 invalidation).
+   * The play head adjusts when the removed line sits at or before it.
+   */
+  remove(lineId: string): void {
+    const index = this.entries.findIndex((e) => e.segment.lineId === lineId);
+    if (index < 0) {
+      return;
+    }
+    this.entries.splice(index, 1);
+    if (this.currentIndex < 0) {
+      return; // no play head yet — nothing to adjust
+    }
+    if (index < this.currentIndex) {
+      this.currentIndex -= 1; // entries before the head shifted left
+    } else if (index === this.currentIndex) {
+      // The head line itself is gone: point at the successor (or -1 if none).
+      this.currentIndex = Math.min(index, this.entries.length - 1);
+    }
+  }
+
   clear(): void {
     this.entries.length = 0;
     this.currentIndex = -1;

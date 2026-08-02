@@ -269,4 +269,43 @@ describe("AudioCoordinator", () => {
     expect(posts).toHaveLength(1);
     expect((posts[0] as Int16Array).length).toBe(8000);
   });
+  it("dropLine removes the segment, queued samples and pending PCM (invalidation)", async () => {
+    const { context } = makeFakeContext();
+    const events = makeEvents();
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
+    await coordinator.init();
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
+    coordinator.start("line-1");
+    coordinator.feedPcm("line-1", new Int16Array(8000)); // starts line-1
+    coordinator.enqueueLine("line-2", "cache-2", 0, 0);
+    coordinator.feedPcm("line-2", new Int16Array(5000)); // future line — queued
+    const before = coordinator.bufferedAheadMs();
+    expect(before).toBeGreaterThan((8000 / 22050) * 1000);
+
+    coordinator.dropLine("line-2");
+    // Only line-1's samples remain — line-2's segment and count are gone.
+    expect(coordinator.bufferedAheadMs()).toBeCloseTo((8000 / 22050) * 1000, 1);
+    // Feeding the dropped line afterwards is a no-op (no segment to count).
+    coordinator.feedPcm("line-2", new Int16Array(1000));
+    expect(coordinator.bufferedAheadMs()).toBeCloseTo((8000 / 22050) * 1000, 1);
+  });
+
+  it("dropLine of the current line halts playback silently and frees the buffer", async () => {
+    vi.useFakeTimers();
+    const { context } = makeFakeContext();
+    const events = makeEvents();
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
+    await coordinator.init();
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
+    coordinator.start("line-1");
+    coordinator.feedPcm("line-1", new Int16Array(22050)); // 1s — playback starts
+    expect(events.onLinePlaybackStarted).toHaveBeenCalledWith("line-1");
+
+    coordinator.dropLine("line-1");
+    expect(coordinator.isPlaying()).toBe(false);
+    expect(coordinator.bufferedAheadMs()).toBe(0);
+    // The finish timer was cancelled — dead audio emits no finished event.
+    vi.advanceTimersByTime(5000);
+    expect(events.onLinePlaybackFinished).not.toHaveBeenCalled();
+  });
 });
