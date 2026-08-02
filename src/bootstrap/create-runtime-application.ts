@@ -23,7 +23,10 @@ import { UiProjectionStoreImpl } from "../application/ui/ui-projection-store.js"
 import { AudioCatalogServiceImpl } from "../application/audio/audio-catalog-service.js";
 import { AudioDescriptorFactory } from "../application/audio/audio-descriptor-factory.js";
 import { AudioIntentPlanner } from "../application/audio/audio-intent-planner.js";
-import { TtsTaskServiceImpl } from "../application/audio/tts-task-service.js";
+import {
+  TtsTaskServiceImpl,
+  type TaskStatusEvent,
+} from "../application/audio/tts-task-service.js";
 import { PerformanceCompilerImpl } from "../application/audio/performance-compiler.js";
 import { MockStreamingTtsProvider } from "../adapters/tts/mock-streaming-tts-provider.js";
 import { DashScopeCosyVoiceProvider } from "../adapters/tts/dashscope-cosyvoice-provider.js";
@@ -106,13 +109,15 @@ export async function createRuntimeApplication(
     candidatePrefetchLines: config.media.audio.planner?.candidate_prefetch_lines ?? 1,
     maxActiveFutureLines: config.media.audio.planner?.max_active_future_lines ?? 4,
   });
+  // TaskStatusEvent fan-out: hosts subscribe via app.taskStatusSubscribe.
+  const taskStatusListeners = new Set<(event: TaskStatusEvent) => void>();
   const ttsTasks = new TtsTaskServiceImpl({
     catalog,
     provider,
     maxConcurrency: synthesis?.max_concurrency ?? 2,
-    // The web host bridges TaskStatusEvents to the browser; until it
-    // lands, statuses go nowhere.
-    onStatus: () => undefined,
+    onStatus: (event) => {
+      for (const listener of taskStatusListeners) listener(event);
+    },
   });
 
   const projection = new UiProjectionStoreImpl();
@@ -136,6 +141,10 @@ export async function createRuntimeApplication(
     projection,
     config,
     metrics,
+    taskStatusSubscribe: (listener) => {
+      taskStatusListeners.add(listener);
+      return () => taskStatusListeners.delete(listener);
+    },
     shutdown: async () => {
       // Stop the run loop: the command wakes waitForCommand, which throws
       // RuntimeShutdownError out of game.run(). Yield one macrotask so the

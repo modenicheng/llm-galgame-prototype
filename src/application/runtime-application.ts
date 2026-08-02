@@ -10,6 +10,7 @@ import type { Game } from "../game.js";
 import type { UiProjectionStore } from "./ui/ui-projection-store.js";
 import type { AudioCatalogService } from "./audio/audio-catalog-service.js";
 import type { TtsTaskService } from "./audio/tts-task-service.js";
+import type { TaskStatusEvent } from "./audio/tts-task-service.js";
 import type { AppConfig } from "../config.js";
 import type { Metrics } from "../runtime/metrics.js";
 
@@ -23,6 +24,8 @@ export interface RuntimeApplication {
   /** Shared metrics collector (also fed to the Game). */
   metrics: Metrics;
   shutdown(): Promise<void>;
+  /** Subscribe to TTS task status events (hosts bridge these to the browser). */
+  taskStatusSubscribe(listener: (event: TaskStatusEvent) => void): () => void;
 }
 
 export interface RuntimeApplicationOptions {
