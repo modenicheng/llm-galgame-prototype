@@ -2,6 +2,9 @@ import type { AppConfig } from "./config.js";
 import { InputEngine } from "./interaction/input-engine.js";
 import { AsyncEventQueue } from "./core/runtime/async-event-queue.js";
 import { InputBridgeBuffer } from "./core/interaction/input-bridge.js";
+import {
+  InputResponseSession,
+} from "./core/interaction/input-session.js";
 import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
 import type {
   RuntimeInteractionEvent,
@@ -32,11 +35,14 @@ import type {
   InteractionEvent,
   ModelEvent,
   ModelPlayableEvent,
+  PlayerDialogueEvent,
   RuntimeModelEvent,
   RuntimePlayableEvent,
+  RuntimeBufferEvent,
   StoredEvent,
   StoredModelEvent,
   StoredPlayerChoiceEvent,
+  StoredPlayerDialogueEvent,
   StoredPlayerInputEvent,
   StoryContextEvent
 } from "./schema.js";
@@ -69,9 +75,24 @@ interface ChoiceOutcome {
   nextTurn: number;
   preview: RuntimePlayableEvent[];
   liveSelection?: LiveBranchSelection;
+  /** Response stream still running after input confirm (live promotion). */
+  liveResponse?: InputResponseSession;
 }
 
 type ChoiceSelection = Pick<ChoiceOutcome, "preview" | "liveSelection">;
+
+/** Result of committing an input: fixed prefix plus optional live stream. */
+interface InputCommitOutcome {
+  preview: RuntimePlayableEvent[];
+  liveResponse?: InputResponseSession;
+}
+
+/** Structural contract for live-consumable streams. */
+interface LiveStreamLike {
+  events: readonly RuntimePlayableEvent[];
+  done: Promise<unknown>;
+  subscribe(listener: (event: RuntimePlayableEvent) => void): () => void;
+}
 
 interface EndOutcome {
   type: "end";
@@ -109,6 +130,8 @@ export class Game {
   private readonly diagnostics: DiagnosticSink;
   private readonly inputEngine = new InputEngine();
   private readonly bridgeBuffer = new InputBridgeBuffer();
+  /** line_ids of bridge narration currently staged for playback. */
+  private readonly bridgeLineIds = new Set<string>();
   private storyState: StoryState;
   private readonly metrics: Metrics;
   private choiceTimestamp: number | null = null;
@@ -195,6 +218,12 @@ export class Game {
           currentOutcome.liveSelection,
           currentOutcome.nextTurn,
         );
+      } else if (currentOutcome.liveResponse) {
+        await this.consumeLiveInputResponse(
+          currentOutcome.preview,
+          currentOutcome.liveResponse,
+          currentOutcome.nextTurn,
+        );
       } else {
         await this.consumePlayableEvents(currentOutcome.preview, currentOutcome.nextTurn);
       }
@@ -218,7 +247,30 @@ export class Game {
     history: StoryContextEvent[],
   ): Promise<ActiveSegment> {
     const live = outcome.liveSelection;
+    const liveResponse = outcome.liveResponse;
     const waitForPrevious = previousSegment.done.catch(() => undefined);
+
+    if (liveResponse) {
+      // The confirmed response stream is still running. Its remaining events
+      // join the committed prefix: player line + bridge + full response. No
+      // new LLM request is created until the response task completes.
+      return waitForPrevious
+        .then(() => liveResponse.done.catch(() => undefined))
+        .then(() => {
+          const committed = [...outcome.preview];
+          for (const event of liveResponse.responseEvents) {
+            if (!committed.some((existing) => existing.line_id === event.line_id)) {
+              committed.push(event);
+            }
+          }
+          return this.startActiveSegment(
+            "continuation",
+            outcome.nextTurn,
+            history,
+            committed,
+          );
+        });
+    }
 
     if (!live) {
       return waitForPrevious.then(() =>
@@ -484,8 +536,13 @@ export class Game {
         return this.handleHybridInteraction(event, turn, segment.branchManager, context);
       }
 
-      const preview = await this.handleInteractionInput(event, turn, segment.branchManager);
-      return { type: "choice", nextTurn: turn + 1, preview };
+      const committed = await this.handleInteractionInput(event, turn, segment.branchManager);
+      return {
+        type: "choice",
+        nextTurn: turn + 1,
+        preview: committed.preview,
+        ...(committed.liveResponse ? { liveResponse: committed.liveResponse } : {}),
+      };
     }
   }
 
@@ -525,6 +582,7 @@ export class Game {
     const events = interaction.input_bridge.events.map(
       (draft) => ({ ...draft, line_id: this.nextLineId() }),
     );
+    for (const event of events) this.bridgeLineIds.add(event.line_id);
     this.bridgeBuffer.store(interaction.interaction_id, events);
   }
 
@@ -665,16 +723,13 @@ export class Game {
     selection: LiveBranchSelection,
     turn: number,
   ): Promise<void> {
-    const seen = new Set(initialEvents.map((event) => event.line_id));
-    const queue = new AsyncEventQueue<RuntimePlayableEvent>();
-    let completed = false;
-    let failure: unknown;
-
     const handoffIfReady = (): void => {
       // Count all playable lines (dialogue + narration) so a branch that
       // produced mostly narration can still hand over to the continuation
       // request instead of running until the model stops on its own.
-      const playableCount = selection.events.filter(isPlayableEvent).length;
+      const playableCount = selection.events.filter(
+        (event) => event.type === "dialogue" || event.type === "narration",
+      ).length;
       if (playableCount >= this.config.prefetch.branch_dialogue_lines) {
         this.diagnostics.info(
           "Prefetch",
@@ -684,34 +739,97 @@ export class Game {
       }
     };
 
+    const failure = await this.consumeLiveStream(
+      initialEvents,
+      {
+        events: selection.events,
+        done: selection.done,
+        subscribe: selection.subscribe,
+      },
+      turn,
+      handoffIfReady,
+      handoffIfReady,
+    );
+
+    // The branch request has ended. Its already generated lines remain valid;
+    // the caller starts a normal continuation using that committed prefix.
+    if (failure) {
+      const message = failure instanceof Error ? failure.message : String(failure);
+      this.status.setPhase("后台续写", `已保留分支前缀，分支流失败：${message}`);
+    }
+  }
+
+  /**
+   * Consume a confirmed input response while its generation task is still
+   * running. Arrived events play in the committed order
+   * (player → bridge → response); late events are routed into the formal
+   * buffer directly (live promotion) and played as they arrive.
+   */
+  private async consumeLiveInputResponse(
+    initialEvents: RuntimePlayableEvent[],
+    live: InputResponseSession,
+    turn: number,
+  ): Promise<void> {
+    const failure = await this.consumeLiveStream(
+      initialEvents,
+      live,
+      turn,
+    );
+
+    if (failure) {
+      const message = failure instanceof Error ? failure.message : String(failure);
+      this.status.setPhase("后台续写", `已保留输入回应前缀，回应流失败：${message}`);
+    }
+    this.status.removeJob("input-response");
+  }
+
+  /**
+   * Shared live-stream consumption: play the committed prefix, subscribe to
+   * later events, enqueue them into the formal buffer, and play them until
+   * the stream ends. Returns the stream failure, if any.
+   *
+   * `onEvent` fires for each newly enqueued event; `onSynced` fires once
+   * after the initial snapshot so callers can re-check conditions that
+   * depend on the full committed prefix.
+   */
+  private async consumeLiveStream(
+    initialEvents: RuntimePlayableEvent[],
+    live: LiveStreamLike,
+    turn: number,
+    onEvent?: (event: RuntimePlayableEvent) => void,
+    onSynced?: () => void,
+  ): Promise<unknown> {
+    const seen = new Set(initialEvents.map((event) => event.line_id));
+    const queue = new AsyncEventQueue<RuntimePlayableEvent>();
+    let failure: unknown;
+
     const enqueueIfNew = (event: RuntimePlayableEvent): void => {
       if (seen.has(event.line_id)) return;
       seen.add(event.line_id);
-      // Publish late branch lines immediately. Playback may consume them
-      // later, but they must already count toward the formal low-water mark.
+      // Publish late lines immediately. Playback may consume them later, but
+      // they must already count toward the formal low-water mark.
       this.playbackBuffer.enqueue(event);
       this.registerBuffered([event]);
       this.media.appendActive([event]);
       queue.push(event);
-      handoffIfReady();
+      onEvent?.(event);
     };
-    const unsubscribe = selection.subscribe(enqueueIfNew);
-    // Catch events emitted between selectLive() and subscribe(). JavaScript
+    const unsubscribe = live.subscribe(enqueueIfNew);
+    // Catch events emitted between stream creation and subscribe(). JavaScript
     // callbacks cannot interleave this synchronous snapshot, so this closes
     // the only handoff gap without duplicating line IDs.
-    for (const event of selection.events) enqueueIfNew(event);
+    for (const event of live.events) enqueueIfNew(event);
+    onSynced?.();
 
-    void selection.done
+    void live.done
       .catch((error: unknown) => {
         failure = error;
       })
       .finally(() => {
-        completed = true;
         unsubscribe();
         queue.close();
       });
 
-    handoffIfReady();
     await this.consumePlayableEvents(initialEvents, turn);
 
     while (true) {
@@ -724,15 +842,10 @@ export class Game {
       break;
     }
 
-    // The branch request has ended. Its already generated lines remain valid;
-    // the caller starts a normal continuation using that committed prefix.
-    if (failure) {
-      const message = failure instanceof Error ? failure.message : String(failure);
-      this.status.setPhase("后台续写", `已保留分支前缀，分支流失败：${message}`);
-    }
+    return failure;
   }
 
-  private advanceBufferedEvent(event: RuntimeModelEvent): void {
+  private advanceBufferedEvent(event: RuntimeBufferEvent): void {
     const bufferedEvent = this.playbackBuffer.advance();
     if (bufferedEvent && bufferedEvent !== event) {
       throw new Error("播放缓冲顺序与生成事件流不一致。");
@@ -750,15 +863,24 @@ export class Game {
       this.choiceTimestamp = null;
     }
 
-    await this.recordModelEvent(event, turn);
-
-    if (!this.media.isReady(event.line_id)) {
+    const isModelPlayable =
+      event.type === "dialogue" || event.type === "narration";
+    // Bridge narration is materialized and played like narration but never
+    // recorded into the formal log and never scheduled for media.
+    const isBridge = event.type === "narration" && this.bridgeLineIds.has(event.line_id);
+    if (event.type === "player_dialogue") {
+      await this.recordPlayerDialogue(event, turn);
+    } else if (isModelPlayable && !isBridge) {
+      await this.recordModelEvent(event, turn);
+    }
+    if (isModelPlayable && !isBridge && !this.media.isReady(event.line_id)) {
       await this.media.waitUntilReady(event.line_id);
     }
 
     this.buffered.delete(event.line_id);
     this.updateBufferStatus();
     this.media.markPresented(event.line_id);
+    if (isBridge) this.bridgeLineIds.delete(event.line_id);
 
     this.emit({ type: "playback_ready", event });
     await this.waitForAdvance();
@@ -879,12 +1001,17 @@ export class Game {
   }
 
   /**
-   * Two-phase free-text input commit, driven by commands.
+   * Two-phase free-text input commit, driven by commands and a streaming
+   * InputResponseSession.
    *
    * - `interaction_opened` (input mode) → await `preview_input`
+   * - preview opens and the response generation streams into the session
    * - `input_preview_opened` → await `confirm_input` / `cancel_input`
-   * - cancel → `input_preview_canceled`, reopen the same interaction
-   * - confirm → `input_committed`, return the committed response events
+   * - cancel → `input_preview_canceled`, reopen the same interaction; the
+   *   bridge survives for the next preview
+   * - confirm → `input_committed`; returns the committed prefix
+   *   (player line → bridge → arrived response) plus a live stream when the
+   *   response is still generating (promotion, no second request)
    *
    * When `initialText` is provided (e.g. from a hybrid interaction) the
    * editor step is skipped and the flow goes directly to preview.
@@ -894,10 +1021,13 @@ export class Game {
     turn: number,
     branchManager: BranchManager | null,
     initialText?: string,
-  ): Promise<RuntimePlayableEvent[]> {
+  ): Promise<InputCommitOutcome> {
     branchManager?.discardAll();
     this.status.clearBranches();
     const interactionId = interaction.interaction_id;
+    // The bridge is shared across preview cancels; it is consumed only at
+    // confirm so a cancelled preview can retry with the same bridge.
+    const bridgeEvents = this.bridgeBuffer.peek(interactionId) ?? [];
 
     while (true) {
       let text: string;
@@ -922,66 +1052,26 @@ export class Game {
       this.inputEngine.requestPreview(session);
 
       const previewId = this.ids.nextPreviewId(interactionId);
+      const responseSession = new InputResponseSession({
+        previewId,
+        interactionId,
+        generationId: this.ids.nextGenerationId(`input:${interactionId}`),
+        frozenText: text,
+        bridgeEvents,
+      });
+
       this.status.setPhase("输入预览", `玩家输入：${text.slice(0, 50)}`);
       const previewStartTime = this.clock.nowMs();
-
-      // Fire NPC response generation in background
-      const responseState = { ready: false, error: null as Error | null };
-      let pendingStatePatch: StoryStatePatch | null = null;
-
       this.status.setJob(
         "input-response",
         `NPC 回应：${text.slice(0, 30)}`,
         "running"
       );
 
-      // Cancelling the preview must abort the in-flight response request so a
-      // stale NPC reply can never pollute the buffer / media timeline after the
-      // player has already moved on to a new edit session.
-      const responseController = new AbortController();
-
-      const responsePromise: Promise<RuntimePlayableEvent[]> = this.generator
-        .generateInputResponse(
-          turn + 1,
-          this.storyState,
-          [...this.events],
-          interaction,
-          text,
-          responseController.signal,
-        )
-        .then((envelope) => {
-          if (responseController.signal.aborted) return [];
-          // Defer state patch until player confirms with second Enter.
-          pendingStatePatch = envelope.state_patch;
-          const events = this.filterPlayableEvents(envelope.events);
-          const materialized = this.materializePlayableEvents(events);
-          // Note: events are NOT registered into the formal buffer / media
-          // timeline here. Registration happens only after the player confirms
-          // (see below), so cancelling the preview can never leave stale state
-          // behind, even if the response completed before the cancel.
-          this.inputEngine.setResponseEvents(session, materialized);
-          this.status.setJob(
-            "input-response",
-            `NPC 回应：${text.slice(0, 30)}`,
-            "ready"
-          );
-          return materialized;
-        })
-        .catch((error) => {
-          if (responseController.signal.aborted) return [];
-          const err = error instanceof Error ? error : new Error(String(error));
-          responseState.error = err;
-          this.status.setJob(
-            "input-response",
-            `NPC 回应：${text.slice(0, 30)}`,
-            "failed",
-            err.message
-          );
-          return [];
-        })
-        .finally(() => {
-          responseState.ready = true;
-        });
+      // Fire NPC response generation in background; every complete event is
+      // staged into the session immediately (never the formal log).
+      const { promise: responsePromise, controller: responseController } =
+        this.startInputResponseGeneration(interaction, turn, text, responseSession);
 
       // Don't await — the driver shows the preview while generating.
       void responsePromise.catch(() => undefined);
@@ -1000,6 +1090,7 @@ export class Game {
         // Return to editing — abort the stale response request so its events
         // can never be buffered or rendered for the previous edit session.
         responseController.abort();
+        responseSession.cancel();
         this.inputEngine.cancel(session);
         this.status.removeJob("input-response");
         this.status.clearBranches();
@@ -1007,46 +1098,175 @@ export class Game {
         continue;
       }
 
-      // Confirm — commit the session
+      // Confirm — commit the session.
       this.inputEngine.commit(session);
+      responseSession.commit();
       this.emit({ type: "input_committed", previewId });
+      this.bridgeBuffer.take(interactionId);
 
-      // Apply deferred state patch now that player has confirmed
-      if (pendingStatePatch) {
-        try {
-          this.storyState = applyPatch(this.storyState, pendingStatePatch);
-        } catch {
-          this.metrics.recordStatePatchRejection();
-        }
-        pendingStatePatch = null;
+      const playerDialogue = this.makePlayerDialogue(interactionId, text);
+
+      // Failure with no usable events: one repair attempt, streamed live so
+      // the player line + bridge can play first (reading time hides it).
+      // Note: commit() already moved the session to "committed", so the
+      // failure is detected via the `failure` field, not the status.
+      let liveSession: InputResponseSession | null = null;
+      if (
+        responseSession.failure !== null &&
+        responseSession.responseEvents.length === 0
+      ) {
+        liveSession = new InputResponseSession({
+          previewId,
+          interactionId,
+          generationId: this.ids.nextGenerationId(`input:${interactionId}:repair`),
+          frozenText: text,
+          bridgeEvents,
+        });
+        const repair = this.startInputResponseGeneration(interaction, turn, text, liveSession);
+        void repair.promise.catch(() => undefined);
+        this.status.setJob(
+          "input-response",
+          `NPC 回应：${text.slice(0, 30)}`,
+          "running"
+        );
+      } else if (responseSession.status === "generating") {
+        // Live promotion: the confirmed stream keeps running; its later
+        // events enter the formal buffer directly. No abort, no new request.
+        liveSession = responseSession;
       }
 
-      // Record the player input
       await this.recordPlayerInput(interactionId, text, turn);
-
       this.status.setPhase(
         "输入已提交",
         `玩家输入：${text.slice(0, 50)}`
       );
 
-      // Wait for response generation to complete
-      const responseEvents = await responsePromise;
-
-      if (responseState.error) {
-        this.diagnostics.warn("input", `NPC 回应生成失败 — ${responseState.error.message}`);
+      if (!liveSession) {
+        // Response finished before/during confirm: commit the staged patch
+        // (E3: committed && generation done), then return the fixed prefix.
+        await responseSession.done;
+        this.applyInputPatch(responseSession);
+        if (responseSession.failure) {
+          this.diagnostics.warn("input", `NPC 回应生成失败 — ${responseSession.failure.message}`);
+        }
+        this.media.appendActive(responseSession.responseEvents);
+        this.status.removeJob("input-response");
+        return {
+          preview: [playerDialogue, ...bridgeEvents, ...responseSession.responseEvents],
+        };
       }
 
-      // Register the confirmed response into the formal buffer and media
-      // timeline only now — anything registered earlier could never be
-      // un-registered if the player cancelled the preview.
-      if (responseEvents.length > 0) {
-        this.registerBuffered(responseEvents);
-        this.media.appendActive(responseEvents);
-      }
-
-      this.status.removeJob("input-response");
-      return responseEvents;
+      // Live path: the patch is committed when the stream ends; the response
+      // prefix already staged plays first, late events flow to the formal
+      // buffer via consumeLiveInputResponse.
+      void liveSession.done.then(() => {
+        this.applyInputPatch(liveSession);
+        if (liveSession.failure) {
+          this.diagnostics.warn("input", `NPC 回应生成失败 — ${liveSession.failure.message}`);
+        }
+      });
+      this.media.appendActive(liveSession.responseEvents);
+      return {
+        preview: [playerDialogue, ...bridgeEvents, ...liveSession.responseEvents],
+        liveResponse: liveSession,
+      };
     }
+  }
+
+  /**
+   * Start one input response generation that streams events into the
+   * session. Returns the settled promise and the abort controller.
+   */
+  private startInputResponseGeneration(
+    interaction: InputInteraction | HybridInteraction,
+    turn: number,
+    text: string,
+    responseSession: InputResponseSession,
+  ): { promise: Promise<void>; controller: AbortController } {
+    const controller = new AbortController();
+
+    const promise = this.generator
+      .generateInputResponse(
+        turn + 1,
+        this.storyState,
+        [...this.events],
+        interaction,
+        text,
+        controller.signal,
+        {
+          onEvent: (draft) => {
+            if (controller.signal.aborted) return;
+            if (draft.type !== "dialogue" && draft.type !== "narration") return;
+            const event = this.materializeEvents([draft])[0]!;
+            if (!isPlayableEvent(event)) return;
+            responseSession.appendResponseEvent(event);
+          },
+        },
+      )
+      // Single reaction (not .then().catch()): the fulfillment/rejection
+      // handler runs in ONE microtask, so by the time the confirm command is
+      // processed the session status is already settled — the repair decision
+      // at confirm never races the failure reaction.
+      .then(
+        (envelope) => {
+          if (controller.signal.aborted) return;
+          // Defer state patch until the player confirms (second Enter).
+          responseSession.setPendingPatch(envelope.state_patch);
+          // Envelope-format providers do not invoke onEvent; feed their events
+          // through the same staging path.
+          if (responseSession.responseEvents.length === 0) {
+            for (const draft of this.filterPlayableEvents(envelope.events)) {
+              responseSession.appendResponseEvent(
+                this.materializePlayableEvents([draft])[0]!,
+              );
+            }
+          }
+          responseSession.markReady();
+          this.status.setJob(
+            "input-response",
+            `NPC 回应：${text.slice(0, 30)}`,
+            "ready"
+          );
+        },
+        (error) => {
+          if (controller.signal.aborted) return;
+          const err = error instanceof Error ? error : new Error(String(error));
+          responseSession.markFailed(err);
+          this.status.setJob(
+            "input-response",
+            `NPC 回应：${text.slice(0, 30)}`,
+            "failed",
+            err.message
+          );
+        },
+      );
+
+    return { promise, controller };
+  }
+
+  /**
+   * Commit a staged state patch. E3 timing rule: only after the session is
+   * committed AND the generation has ended (callers await `done` first).
+   */
+  private applyInputPatch(session: InputResponseSession): void {
+    if (session.status !== "committed") return;
+    if (session.pendingStatePatch === null) return;
+    try {
+      this.storyState = applyPatch(this.storyState, session.pendingStatePatch);
+    } catch {
+      this.metrics.recordStatePatchRejection();
+    }
+    session.pendingStatePatch = null;
+  }
+
+  private makePlayerDialogue(interactionId: string, text: string): PlayerDialogueEvent {
+    return {
+      type: "player_dialogue",
+      interaction_id: interactionId,
+      speaker: "你",
+      text,
+      line_id: this.nextLineId(),
+    };
   }
 
   /**
@@ -1077,7 +1297,7 @@ export class Game {
       branchManager?.discardAll();
       this.status.clearBranches();
 
-      const preview = await this.handleInteractionInput(
+      const committed = await this.handleInteractionInput(
         interaction,
         turn,
         null,
@@ -1087,7 +1307,8 @@ export class Game {
       return {
         type: "choice",
         nextTurn: turn + 1,
-        preview,
+        preview: committed.preview,
+        ...(committed.liveResponse ? { liveResponse: committed.liveResponse } : {}),
       };
     }
 
@@ -1202,6 +1423,21 @@ export class Game {
       type: "player_input",
       interaction_id: interactionId,
       text,
+      seq: this.seq,
+      turn,
+      timestamp: this.clock.nowIso(),
+      source: "player"
+    };
+    this.seq += 1;
+    await this.record(stored);
+  }
+
+  private async recordPlayerDialogue(
+    event: PlayerDialogueEvent,
+    turn: number
+  ): Promise<void> {
+    const stored: StoredPlayerDialogueEvent = {
+      ...event,
       seq: this.seq,
       turn,
       timestamp: this.clock.nowIso(),

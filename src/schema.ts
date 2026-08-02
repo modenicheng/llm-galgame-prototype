@@ -68,8 +68,31 @@ export type ModelEvent = ModelPlayableEvent | ChoiceEvent | InteractionEvent | E
 
 export type RuntimeDialogueEvent = DialogueDraftEvent & { line_id: string };
 export type RuntimeNarrationEvent = NarrationDraftEvent & { line_id: string };
-export type RuntimePlayableEvent = RuntimeDialogueEvent | RuntimeNarrationEvent;
-export type RuntimeModelEvent = RuntimePlayableEvent | ChoiceEvent | InteractionEvent | EndEvent;
+
+/**
+ * The player's own spoken line, created by the runtime at input confirm.
+ * Playable like dialogue, but stored with `source: "player"` and never
+ * produced by the model.
+ */
+export interface PlayerDialogueEvent {
+  type: "player_dialogue";
+  /** Links back to the InteractionEvent that spawned this line. */
+  interaction_id: string;
+  /** Speaker label shown to the player (e.g. "你"). */
+  speaker: string;
+  text: string;
+  line_id: string;
+}
+
+export type RuntimePlayableEvent =
+  | RuntimeDialogueEvent
+  | RuntimeNarrationEvent
+  | PlayerDialogueEvent;
+
+export type RuntimeModelEvent = RuntimeDialogueEvent | RuntimeNarrationEvent | ChoiceEvent | InteractionEvent | EndEvent;
+
+/** Everything the playback buffer may hold (model stream + player lines). */
+export type RuntimeBufferEvent = RuntimeModelEvent | PlayerDialogueEvent;
 
 export interface StoredEventBase {
   seq: number;
@@ -92,7 +115,13 @@ export type StoredPlayerInputEvent = StoredEventBase & {
   text: string;
 };
 
-export type StoredEvent = StoredModelEvent | StoredPlayerChoiceEvent | StoredPlayerInputEvent;
+export type StoredPlayerDialogueEvent = StoredEventBase & PlayerDialogueEvent;
+
+export type StoredEvent =
+  | StoredModelEvent
+  | StoredPlayerChoiceEvent
+  | StoredPlayerInputEvent
+  | StoredPlayerDialogueEvent;
 
 export type StoryContextEvent =
   | StoredEvent
@@ -106,7 +135,8 @@ export type StoryContextEvent =
       type: "player_input";
       interaction_id: string;
       text: string;
-    };
+    }
+  | PlayerDialogueEvent;
 
 export const ChoiceOptionSchema = z.object({
   id: z.string().min(1),
@@ -158,6 +188,8 @@ export const ModelEventSchema = z.discriminatedUnion("type", [
   EndEventSchema
 ]);
 
-export function isPlayableEvent(event: RuntimeModelEvent): event is RuntimePlayableEvent {
+export function isPlayableEvent(
+  event: RuntimeModelEvent,
+): event is RuntimeDialogueEvent | RuntimeNarrationEvent {
   return event.type === "dialogue" || event.type === "narration";
 }

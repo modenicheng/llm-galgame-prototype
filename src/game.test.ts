@@ -28,6 +28,7 @@ import type {
   NarrationDraftEvent,
   EndEvent,
   StoredEvent,
+  StoryContextEvent,
 } from "./schema.js";
 import type { GenerationEnvelope } from "./story/types.js";
 
@@ -934,8 +935,8 @@ describe("Input preview cancellation", () => {
     await expect(game.run()).resolves.toBeUndefined();
 
     // At this point only the committed response (and opening/continuation)
-    // have rendered: 开场 + 回应 + 结尾 = 3.
-    expect(controller.countPlayback("narration")).toBe(3);
+    // have rendered: 开场 + bridge + 回应 + 结尾 = 4 段旁白，外加玩家的台词。
+    expect(controller.countPlayback("narration")).toBe(4);
     expect(controller.count("interaction_opened")).toBe(2);
     expect(controller.count("input_preview_opened")).toBe(2);
     expect(controller.count("input_preview_canceled")).toBe(1);
@@ -945,7 +946,7 @@ describe("Input preview cancellation", () => {
     // Now the stale response finally arrives — it must be discarded.
     resolveStale(envelope([narrationEvent("过期回应。")]));
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(controller.countPlayback("narration")).toBe(3);
+    expect(controller.countPlayback("narration")).toBe(4);
     expect(game.getMetrics().input.preview_count).toBe(2);
   });
 
@@ -1013,8 +1014,13 @@ describe("Input preview cancellation", () => {
     // Every rendered line is consumed and removed; the cancelled response
     // must leave no residue behind.
     expect([...buffered.values()]).toEqual([]);
-    // 开场 + 第二次回应 + 结尾 = 3 段旁白；第一次的回应从未渲染。
-    expect(controller.countPlayback("narration")).toBe(3);
+    // 开场 + bridge + 第二次回应 + 结尾 = 4 段旁白；第一次的回应从未渲染。
+    expect(controller.countPlayback("narration")).toBe(4);
+    // 玩家的台词以 player_dialogue 播放，不进入媒体时间线。
+    const playerLines = controller.playbackEvents().filter(
+      (output) => output.event.type === "player_dialogue",
+    );
+    expect(playerLines.map((output) => output.event.text)).toEqual(["第二次"]);
   });
 });
 
@@ -1063,15 +1069,20 @@ describe("Input bridge semantics", () => {
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
-    // The bridge stays in the buffer for the confirm → bridge → response
-    // playback (Phase E) and never enters the formal event log.
+    // The bridge is consumed at confirm and played after the player's line:
+    // player_dialogue → bridge ×2 → response. It never enters the formal log.
     const g = game as any;
-    const bridge = g.bridgeBuffer.peek("int_1") as RuntimePlayableEvent[];
-    expect(bridge).toHaveLength(2);
-    expect(bridge[0]!.line_id).toMatch(/^line_.+_\d{6}$/);
-    expect(bridge[0]!.line_id).not.toBe(bridge[1]!.line_id);
-    // Stable across reads.
-    expect(g.bridgeBuffer.peek("int_1")).toBe(bridge);
+    expect(g.bridgeBuffer.peek("int_1")).toBeNull();
+    const played = controller.playbackEvents().map((output) => output.event);
+    expect(played[0]!.text).toBe("开场。");
+    expect(played[1]!.type).toBe("player_dialogue");
+    expect(played.slice(2, 4).map((e) => e.text)).toEqual(["风穿过走廊。", "她抬起了头。"]);
+    const bridgeIds = played.slice(2, 4).map((e) => e.line_id);
+    expect(bridgeIds[0]).toMatch(/^line_.+_\d{6}$/);
+    expect(bridgeIds[0]).not.toBe(bridgeIds[1]);
+    // line_ids never repeat across the whole playback.
+    const allIds = played.map((e) => e.line_id);
+    expect(new Set(allIds).size).toBe(allIds.length);
     // Bridge narration never appears as a stored event.
     const storedTexts = (g.events as StoredEvent[]).map((e) =>
       (e as { text?: string }).text,
@@ -1165,9 +1176,442 @@ describe("Input bridge semantics", () => {
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
-    const bridge = (game as any).bridgeBuffer.peek("int_1") as RuntimePlayableEvent[];
-    expect(bridge).toHaveLength(1);
-    expect(bridge[0]!.text).toBe("她等着你的决定。");
+    // The bridge is consumed at confirm and played between the player's line
+    // and the NPC response.
+    expect((game as any).bridgeBuffer.peek("int_1")).toBeNull();
+    const played = controller.playbackEvents().map((output) => output.event);
+    expect(played[1]!.type).toBe("player_dialogue");
+    expect(played[2]!.text).toBe("她等着你的决定。");
+    expect(played[3]!.text).toBe("回应。");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Input response streaming (Phase E: stream → promote / cancel / repair)
+// ---------------------------------------------------------------------------
+
+/** Wire generateInputResponse to a manually controlled streaming provider. */
+function makeManualInputResponse(
+  generator: StoryGenerator,
+  run: (
+    signal: AbortSignal,
+    onEvent: (draft: ModelEvent) => void,
+  ) => Promise<GenerationEnvelope>,
+): void {
+  (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(
+    async (_t, _s, _h, _interaction, _text, signal, options) => {
+      return run(signal, (draft) => options?.onEvent?.(draft));
+    },
+  );
+}
+
+function inputInteractionFixture(bridgeText = "她等着你开口。") {
+  return {
+    type: "interaction" as const,
+    interaction_id: "int_1",
+    prompt: "说什么？",
+    mode: "input" as const,
+    input: { kind: "free_text" as const, placeholder: "...", max_length: 200 },
+    input_bridge: {
+      events: [{ type: "narration" as const, text: bridgeText }],
+    },
+  };
+}
+
+describe("Input response streaming", () => {
+  it("stages streamed lines during preview without touching the formal state", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    let emitLine!: (draft: ModelEvent) => void;
+    let completeResponse!: () => void;
+    makeManualInputResponse(generator, async (_signal, onEvent) => {
+      return new Promise((resolve) => {
+        emitLine = onEvent;
+        completeResponse = () => resolve(envelope([], {}));
+      });
+    });
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    const g = game as any;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => {
+        // Two lines arrive during the preview: they must stay staged.
+        emitLine({ type: "narration", text: "第一行。" });
+        emitLine({ type: "narration", text: "第二行。" });
+        const storedTexts = (g.events as StoredEvent[]).map((e) =>
+          (e as { text?: string }).text,
+        );
+        expect(storedTexts).not.toContain("第一行。");
+        expect(g.buffered.size).toBe(0);
+        completeResponse();
+        controller.confirm(output.previewId);
+      },
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const played = controller.playbackEvents().map((output) => output.event);
+    expect(played.map((e) => e.text)).toEqual([
+      "开场。",
+      "你好",
+      "她等着你开口。",
+      "第一行。",
+      "第二行。",
+      "结尾。",
+    ]);
+  });
+
+  it("promotes a confirmed stream: late lines play without a second request", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    let emitLine!: (draft: ModelEvent) => void;
+    let completeResponse!: () => void;
+    makeManualInputResponse(generator, async (_signal, onEvent) => {
+      return new Promise((resolve) => {
+        emitLine = onEvent;
+        completeResponse = () => resolve(envelope([], {}));
+      });
+    });
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => {
+        // One line is present at confirm; the second arrives afterwards.
+        emitLine({ type: "narration", text: "第一行。" });
+        controller.confirm(output.previewId);
+        setTimeout(() => {
+          emitLine({ type: "narration", text: "第二行。" });
+          completeResponse();
+        }, 10);
+      },
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // Confirm never issues a second LLM request.
+    expect(generator.generateInputResponse).toHaveBeenCalledTimes(1);
+    const played = controller.playbackEvents().map((output) => output.event);
+    expect(played.map((e) => e.text)).toEqual([
+      "开场。",
+      "你好",
+      "她等着你开口。",
+      "第一行。",
+      "第二行。",
+      "结尾。",
+    ]);
+    // line_ids never repeat.
+    const allIds = played.map((e) => e.line_id);
+    expect(new Set(allIds).size).toBe(allIds.length);
+  });
+
+  it("discards late stream events after cancel", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    let emitLine!: (draft: ModelEvent) => void;
+    let completeResponse!: () => void;
+    // First call: manually controlled pending stream. Second call: normal.
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
+        return new Promise((resolve) => {
+          emitLine = (draft) => options?.onEvent?.(draft);
+          completeResponse = () => resolve(envelope([], {}));
+        });
+      })
+      .mockResolvedValueOnce(envelope([narrationEvent("回应。")]));
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    let previewIndex = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) =>
+        controller.submitInput(output.interactionId, previewIndex === 0 ? "第一次" : "第二次"),
+      onInputPreviewOpened: (output) => {
+        if (previewIndex === 0) {
+          controller.cancel(output.previewId);
+          // The stale stream emits AFTER the cancel — must be dropped.
+          emitLine({ type: "narration", text: "迟到事件。" });
+          completeResponse();
+        } else {
+          controller.confirm(output.previewId);
+        }
+        previewIndex += 1;
+      },
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const played = controller.playbackEvents().map((output) => output.event);
+    expect(played.map((e) => e.text)).not.toContain("迟到事件。");
+    const storedTexts = ((game as any).events as StoredEvent[]).map((e) =>
+      (e as { text?: string }).text,
+    );
+    expect(storedTexts).not.toContain("迟到事件。");
+  });
+
+  it("reuses the bridge across preview cancels", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    let previewIndex = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) =>
+        controller.submitInput(output.interactionId, previewIndex === 0 ? "第一次" : "第二次"),
+      onInputPreviewOpened: (output) => {
+        if (previewIndex === 0) controller.cancel(output.previewId);
+        else controller.confirm(output.previewId);
+        previewIndex += 1;
+      },
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const played = controller.playbackEvents().map((output) => output.event);
+    // The bridge plays exactly once, on the committed attempt, after the
+    // player's line and before the response.
+    const bridgePlays = played.filter((e) => e.text === "她等着你开口。");
+    expect(bridgePlays).toHaveLength(1);
+    expect(played[2]!.text).toBe("她等着你开口。");
+    expect(played[3]!.text).toBe("回应。");
+  });
+
+  it("commits the state patch only after confirm and request completion", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    let resolveResponse!: (env: GenerationEnvelope) => void;
+    makeManualInputResponse(generator, async () => {
+      return new Promise((resolve) => {
+        resolveResponse = resolve;
+      });
+    });
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => {
+        controller.confirm(output.previewId);
+        // The patch only arrives AFTER the confirm.
+        resolveResponse(
+          envelope([narrationEvent("回应。")], { recent_summary: "玩家说了你好" }),
+        );
+      },
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    expect((game as any).storyState.recent_summary).toBe("玩家说了你好");
+  });
+
+  it("does not commit the patch while the request finishes during preview", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    makeManualInputResponse(generator, async () =>
+      envelope([narrationEvent("回应。")], { recent_summary: "未确认的摘要" }),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: async (output) => {
+        // Let the request finish while the preview is still open.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect((game as any).storyState.recent_summary).toBe("The story has just begun.");
+        controller.confirm(output.previewId);
+      },
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // After confirm + completion the patch commits.
+    expect((game as any).storyState.recent_summary).toBe("未确认的摘要");
+  });
+
+  it("keeps the arrived prefix when a confirmed stream fails", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    makeManualInputResponse(generator, async (_signal, onEvent) => {
+      onEvent({ type: "narration", text: "半句回应。" });
+      throw new Error("流中断");
+    });
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_t, _s, _h, prefetchedEvents: StoryContextEvent[]) => {
+        // The continuation repair receives the committed prefix: player line
+        // + bridge + the arrived response line.
+        expect(
+          prefetchedEvents.some(
+            (e) => (e as { text?: string }).text === "半句回应。",
+          ),
+        ).toBe(true);
+        expect(
+          prefetchedEvents.some(
+            (e) =>
+              e.type === "player_dialogue" &&
+              (e as { text?: string }).text === "你好",
+          ),
+        ).toBe(true);
+        expect(
+          prefetchedEvents.some(
+            (e) => (e as { text?: string }).text === "她等着你开口。",
+          ),
+        ).toBe(true);
+        return envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]);
+      },
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const played = controller.playbackEvents().map((output) => output.event);
+    expect(played.map((e) => e.text)).toEqual([
+      "开场。",
+      "你好",
+      "她等着你开口。",
+      "半句回应。",
+      "结尾。",
+    ]);
+  });
+
+  it("retries once when the response stream fails without events", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async () => {
+        throw new Error("首轮失败");
+      })
+      .mockResolvedValueOnce(envelope([narrationEvent("修复回应。")]));
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    expect(generator.generateInputResponse).toHaveBeenCalledTimes(2);
+    const played = controller.playbackEvents().map((output) => output.event);
+    expect(played.map((e) => e.text)).toEqual([
+      "开场。",
+      "你好",
+      "她等着你开口。",
+      "修复回应。",
+      "结尾。",
+    ]);
+  });
+
+  it("continues without a fake NPC response when the repair also fails", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => {
+        throw new Error("总是失败");
+      },
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // One original attempt + one repair; nothing fabricated is played.
+    expect(generator.generateInputResponse).toHaveBeenCalledTimes(2);
+    const played = controller.playbackEvents().map((output) => output.event);
+    expect(played.map((e) => e.text)).toEqual([
+      "开场。",
+      "你好",
+      "她等着你开口。",
+      "结尾。",
+    ]);
   });
 });
 

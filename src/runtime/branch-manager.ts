@@ -77,12 +77,12 @@ export class BranchManager {
             (existing) => (existing as RuntimePlayableEvent).line_id === event.line_id,
           )
         ) {
-          candidate.events.push(event);
+          candidate.events.push(event as GeneratedEvent);
         }
         options.onEvent?.(option, event);
       },
       onReady: (option, events) => {
-        this.updateCandidateStatus(option.id, "ready", events);
+        this.updateCandidateStatus(option.id, "ready", events as GeneratedEvent[]);
         options.onReady?.(option, events);
       },
     };
@@ -137,7 +137,7 @@ export class BranchManager {
   selectCandidateLive(optionId: string): LiveBranchSelection {
     if (!this.group) throw new Error("No active prefetch group");
     const selection = this.group.selectLive(optionId);
-    this.updateCandidateStatus(optionId, "selected", selection.events);
+    this.updateCandidateStatus(optionId, "selected", selection.events as GeneratedEvent[]);
     this.metrics?.recordPrefetchHit();
     return selection;
   }

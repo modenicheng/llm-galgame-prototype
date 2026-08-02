@@ -4,6 +4,7 @@ import type {
   ChoiceOption,
   HybridInteraction,
   InputInteraction,
+  PlayerDialogueEvent,
   RuntimeDialogueEvent,
   RuntimeNarrationEvent,
   EndEvent,
@@ -138,10 +139,11 @@ export class TerminalUI {
     console.log(`\n${id}${event.text}`);
   }
 
-  renderDialogue(event: RuntimeDialogueEvent): void {
-    const portrait = event.portrait
-      ? `\x1b[2m [${event.portrait.character}/${event.portrait.expression}@${event.portrait.position}]\x1b[0m`
-      : "";
+  renderDialogue(event: RuntimeDialogueEvent | PlayerDialogueEvent): void {
+    const portrait =
+      "portrait" in event && event.portrait
+        ? `\x1b[2m [${event.portrait.character}/${event.portrait.expression}@${event.portrait.position}]\x1b[0m`
+        : "";
     const id = this.showLineIds ? `\x1b[2m [${event.line_id}]\x1b[0m` : "";
     console.log(`\n\x1b[1m${event.speaker}\x1b[0m${portrait}${id}\n  ${event.text}`);
   }

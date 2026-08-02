@@ -1,5 +1,4 @@
-import type { RuntimeModelEvent } from "../schema.js";
-import { isPlayableEvent } from "../schema.js";
+import type { RuntimeBufferEvent } from "../schema.js";
 
 /**
  * Cursor-based playback buffer for the active story path.
@@ -11,21 +10,21 @@ import { isPlayableEvent } from "../schema.js";
  * events[cursor .. end]     → waiting to play
  */
 export class PlaybackBuffer {
-  private events: RuntimeModelEvent[] = [];
+  private events: RuntimeBufferEvent[] = [];
   private cursor = 0;
 
   /** Append a single event to the end of the buffer. */
-  enqueue(event: RuntimeModelEvent): void {
+  enqueue(event: RuntimeBufferEvent): void {
     this.events.push(event);
   }
 
   /** Append multiple events to the end of the buffer. */
-  enqueueMany(events: RuntimeModelEvent[]): void {
+  enqueueMany(events: RuntimeBufferEvent[]): void {
     for (const event of events) this.events.push(event);
   }
 
   /** Return the next event and advance the cursor. */
-  advance(): RuntimeModelEvent | undefined {
+  advance(): RuntimeBufferEvent | undefined {
     if (this.cursor >= this.events.length) return undefined;
     const event = this.events[this.cursor]!;
     this.cursor += 1;
@@ -33,7 +32,7 @@ export class PlaybackBuffer {
   }
 
   /** Peek at the next event without consuming it. */
-  peek(): RuntimeModelEvent | undefined {
+  peek(): RuntimeBufferEvent | undefined {
     return this.events[this.cursor];
   }
 
@@ -45,7 +44,7 @@ export class PlaybackBuffer {
     let count = 0;
     for (let i = this.cursor; i < this.events.length; i += 1) {
       const event = this.events[i]!;
-      if (isPlayableEvent(event)) count += 1;
+      if (event.type === "dialogue" || event.type === "narration") count += 1;
     }
     return count;
   }
@@ -84,7 +83,7 @@ export class PlaybackBuffer {
   }
 
   /** Get all pending events without consuming them. */
-  getPendingEvents(): RuntimeModelEvent[] {
+  getPendingEvents(): RuntimeBufferEvent[] {
     return this.events.slice(this.cursor);
   }
 
