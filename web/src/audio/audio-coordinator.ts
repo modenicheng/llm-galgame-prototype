@@ -16,7 +16,7 @@
  */
 import type { PublicWebConfig } from "@shared/wire/public-web-config.js";
 import { AudioTimeline } from "./audio-timeline.js";
-import workletUrl from "./pcm-worklet.ts?url";
+import workletSource from "./pcm-worklet.js?raw";
 
 export interface AudioCoordinatorOptions {
   context: AudioContext;
@@ -69,14 +69,21 @@ export class AudioCoordinator {
       return;
     }
     // Environment capability check (§10.5): older browsers / embedded
-    // webviews may expose AudioContext without AudioWorklet support. The
-    // app degrades to text-only — never fail the session start over audio.
+    // webviews may expose AudioContext without AudioWorklet support. Only
+    // THIS genuinely missing capability degrades to text-only — a failing
+    // addModule is a build/network bug and must not be silently hidden.
     if (
       typeof this.context.createAudioWorkletNode !== "function" ||
       this.context.audioWorklet === undefined
     ) {
       return;
     }
+    // Vite 8 inlines `?url` imports as a `data:` URL, which
+    // audioWorklet.addModule() rejects (same-origin / blob only per spec).
+    // Load the source via `?raw` and give the worklet a blob: URL instead
+    // — works identically in dev and in the production bundle.
+    const blob = new Blob([workletSource], { type: "application/javascript" });
+    const workletUrl = URL.createObjectURL(blob);
     try {
       await this.context.audioWorklet.addModule(workletUrl);
       const node = this.context.createAudioWorkletNode("pcm-playback", {
@@ -98,12 +105,10 @@ export class AudioCoordinator {
         // (beginPlayback could not flush them) — hand them over now.
         this.flushPending(this.currentLineId);
       }
-    } catch {
-      // addModule failed (fetch error, CSP, unsupported module type):
-      // degrade to text-only playback. All public methods already guard
-      // on a null workletNode.
-      this.workletNode = null;
-      this.gainNode = null;
+    } finally {
+      // The blob URL is only needed during addModule; revoke it once the
+      // module is loaded (or the attempt failed) to avoid leaking.
+      URL.revokeObjectURL(workletUrl);
     }
   }
 

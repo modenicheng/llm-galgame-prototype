@@ -20,6 +20,11 @@ declare module "*.ts?url" {
   export default url;
 }
 
+declare module "*.js?raw" {
+  const source: string;
+  export default source;
+}
+
 interface AudioWorkletProcessor {
   readonly port: MessagePort;
   readonly currentTime: number;
