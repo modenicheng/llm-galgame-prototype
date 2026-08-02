@@ -1,3 +1,12 @@
+app:
+  default_host: web
+
+local_web:
+  host: 127.0.0.1
+  port: 0
+  open_browser: true
+  controller_limit: 1
+
 api:
   model: deepseek-v4-flash
   base_url: https://api.deepseek.com
@@ -7,49 +16,66 @@ api:
 
 generation:
   temperature: 0.9
-  max_tokens: 1800
-  repair_attempts: 1
+  max_tokens: 1400
+  repair_attempts: 2
 
 prefetch:
-  # 每个选项至少提前生成多少条 dialogue(提示词 min_dialogue + 解析校验下限);
-  # 同时作为 live 分支交接正式续写的可播放行数阈值。
-  branch_dialogue_lines: 2
-  branch_concurrency: 4
-  # input_bridge：input/hybrid 交互携带的场景过渡旁白（1-2 条 narration）。
-  # schema 仍强制 1-2 条且只能为 narration；这里的数值是运行时二次校验。
+  branch_dialogue_lines: 3
+  branch_concurrency: 3
   input_bridge:
     enabled: true
     min_events: 1
     max_events: 2
     only_narration: true
 
-# 自由输入表现：玩家台词以 dialogue 呈现；两次 Enter 流程；
-# 预览不显示生成状态（debug 模式可开启）。
 input:
   kind: dialogue
   require_preview_confirmation: true
   show_generation_status: false
 
-debug:
-  # 等价于命令行 --debug-runtime；两者任一为真即显示状态面板。
-  runtime_status: false
-
 media:
   audio:
-    # 文本预研默认关闭。改为 true + mock 可观察异步媒体调度。
+    # V1 遗留平面字段：保持默认，CLI 行为不变（enabled=false 不等待音频）。
     enabled: false
     provider: disabled
-    # 当前播放位置前方维持 3 条可用资源；降到 2 条时补充。
-    active_target_lines: 3
-    refill_threshold_lines: 2
-    # 每个候选分支先准备前 2 条媒体资源。
-    branch_prefetch_lines: 2
-    batch_size: 2
-    max_concurrency: 2
-    mock_latency_ms: 800
-    output_dir: assets/audio
+
+    planner:
+      candidate_prefetch_lines: 1
+      max_active_future_lines: 4
+
+    playback:
+      startup_buffer_ms: 350
+      critical_watermark_ms: 500
+      low_watermark_ms: 2500
+      target_buffer_ms: 6500
+
+    synthesis:
+      # V2 权威开关：web 模式从这里读取 provider（dashscope / mock / disabled）。
+      provider: mock
+      max_concurrency: 2
+      model_profile: cosyvoice_v3_flash
+      api_key_env: DASHSCOPE_API_KEY
+      format: pcm_s16le
+      sample_rate: 22050
+
+    cache:
+      max_bytes: 536870912
+      cleanup_target_bytes: 402653184
+      write_batch_bytes: 262144
+      write_flush_interval_ms: 300
+      partial_ttl_minutes: 10
+      candidate_ttl_hours: 1
+
+# 角色 → 逻辑音色配置映射（V2）
+characters:
+  suyao:
+    name: 苏遥
+    voice_profile: suyao_main
 
 game:
   history_events: 80
   sessions_dir: sessions
   show_line_ids: true
+
+debug:
+  runtime_status: false

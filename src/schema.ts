@@ -5,10 +5,11 @@ import {
   NarrationDraftEventSchema,
   PortraitSchema,
   StoryStatePatchSchema,
+  LinePerformanceSchema,
   type InteractionEvent,
   type StoryStatePatch,
+  type LinePerformance,
 } from "./story/types.js";
-
 // Re-export for convenience
 export type {
   InteractionEvent,
@@ -17,6 +18,7 @@ export type {
   ChoiceInteraction,
   InputInteraction,
   HybridInteraction,
+  LinePerformance,
 } from "./story/types.js";
 export {
   PortraitSchema,
@@ -24,10 +26,9 @@ export {
   NarrationDraftEventSchema,
   InputBridgeEventSchema,
   InputBridgeSchema,
+  LinePerformanceSchema,
 } from "./story/types.js";
-
 export { InteractionEventSchema } from "./story/types.js";
-
 export interface Portrait {
   character: string;
   expression: string;
@@ -39,11 +40,13 @@ export interface DialogueDraftEvent {
   speaker: string;
   text: string;
   portrait?: Portrait | null;
+  performance?: LinePerformance;
 }
 
 export interface NarrationDraftEvent {
   type: "narration";
   text: string;
+  performance?: LinePerformance;
 }
 
 export interface ChoiceOption {

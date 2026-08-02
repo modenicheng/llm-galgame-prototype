@@ -19,6 +19,45 @@ export interface AudioConfig {
   max_concurrency: number;
   mock_latency_ms: number;
   output_dir: string;
+  /** V2 sections (optional; legacy flat fields remain for CLI compat). */
+  planner?: AudioPlannerConfig;
+  playback?: AudioPlaybackConfig;
+  synthesis?: AudioSynthesisConfig;
+  cache?: AudioCacheConfig;
+}
+
+/** V2 media planner tuning (lines). */
+export interface AudioPlannerConfig {
+  candidate_prefetch_lines: number;
+  max_active_future_lines: number;
+}
+
+/** V2 browser playback buffering (milliseconds). */
+export interface AudioPlaybackConfig {
+  startup_buffer_ms: number;
+  critical_watermark_ms: number;
+  low_watermark_ms: number;
+  target_buffer_ms: number;
+}
+
+/** V2 synthesis provider settings (Node-side only; never serialized to web). */
+export interface AudioSynthesisConfig {
+  provider: "disabled" | "mock" | "dashscope";
+  max_concurrency: number;
+  model_profile: string;
+  api_key_env: string;
+  format: "pcm_s16le";
+  sample_rate: number;
+}
+
+/** V2 IndexedDB cache tuning (browser-side). */
+export interface AudioCacheConfig {
+  max_bytes: number;
+  cleanup_target_bytes: number;
+  write_batch_bytes: number;
+  write_flush_interval_ms: number;
+  partial_ttl_minutes: number;
+  candidate_ttl_hours: number;
 }
 
 interface RefinementContext {
@@ -66,12 +105,87 @@ export interface AppConfig {
   media: {
     audio: AudioConfig;
   };
+  /** V2: default host entrypoint. */
+  app: {
+    default_host: "web" | "cli";
+  };
+  /** V2: local web host settings. */
+  local_web: {
+    host: string;
+    port: number;
+    open_browser: boolean;
+    controller_limit: number;
+  };
+  /** Character → voice profile mapping (V2). */
+  characters: Record<string, { name: string; voice_profile: string }>;
   game: {
     history_events: number;
     sessions_dir: string;
     show_line_ids: boolean;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Configuration sections
+// ---------------------------------------------------------------------------
+
+/** V2 audio synthesis/playback/cache sub-schemas. */
+const AudioPlannerConfigSchema = z
+  .object({
+    candidate_prefetch_lines: z.number().int().min(0).max(20).default(1),
+    max_active_future_lines: z.number().int().min(1).max(50).default(4),
+  })
+  .default({ candidate_prefetch_lines: 1, max_active_future_lines: 4 });
+
+const AudioPlaybackConfigSchema = z
+  .object({
+    startup_buffer_ms: z.number().int().min(0).max(10_000).default(350),
+    critical_watermark_ms: z.number().int().min(0).max(60_000).default(500),
+    low_watermark_ms: z.number().int().min(0).max(120_000).default(2500),
+    target_buffer_ms: z.number().int().min(0).max(300_000).default(6500),
+  })
+  .default({
+    startup_buffer_ms: 350,
+    critical_watermark_ms: 500,
+    low_watermark_ms: 2500,
+    target_buffer_ms: 6500,
+  });
+
+const AudioSynthesisConfigSchema = z
+  .object({
+    provider: z.enum(["disabled", "mock", "dashscope"]).default("dashscope"),
+    max_concurrency: z.number().int().min(1).max(10).default(2),
+    model_profile: z.string().min(1).default("cosyvoice_v3_flash"),
+    api_key_env: z.string().min(1).default("DASHSCOPE_API_KEY"),
+    format: z.literal("pcm_s16le").default("pcm_s16le"),
+    sample_rate: z.number().int().min(8000).max(48000).default(22050),
+  })
+  .default({
+    provider: "dashscope",
+    max_concurrency: 2,
+    model_profile: "cosyvoice_v3_flash",
+    api_key_env: "DASHSCOPE_API_KEY",
+    format: "pcm_s16le",
+    sample_rate: 22050,
+  });
+
+const AudioCacheConfigSchema = z
+  .object({
+    max_bytes: z.number().int().positive().default(536_870_912),
+    cleanup_target_bytes: z.number().int().positive().default(402_653_184),
+    write_batch_bytes: z.number().int().positive().default(262_144),
+    write_flush_interval_ms: z.number().int().positive().default(300),
+    partial_ttl_minutes: z.number().int().positive().default(10),
+    candidate_ttl_hours: z.number().int().positive().default(1),
+  })
+  .default({
+    max_bytes: 536_870_912,
+    cleanup_target_bytes: 402_653_184,
+    write_batch_bytes: 262_144,
+    write_flush_interval_ms: 300,
+    partial_ttl_minutes: 10,
+    candidate_ttl_hours: 1,
+  });
 
 // ---------------------------------------------------------------------------
 // Configuration sections
@@ -110,9 +224,14 @@ const AudioConfigSchema = z
     batch_size: z.number().int().min(1).max(20).default(2),
     max_concurrency: z.number().int().min(1).max(10).default(2),
     mock_latency_ms: z.number().int().min(0).max(60_000).default(800),
-    output_dir: z.string().min(1).default("assets/audio")
+    output_dir: z.string().min(1).default("assets/audio"),
+    // V2 nested sections (optional; legacy flat fields remain for CLI compat).
+    planner: AudioPlannerConfigSchema.optional(),
+    playback: AudioPlaybackConfigSchema.optional(),
+    synthesis: AudioSynthesisConfigSchema.optional(),
+    cache: AudioCacheConfigSchema.optional(),
   })
-  .superRefine((value: AudioConfig, context: RefinementContext) => {
+  .superRefine((value, context: RefinementContext) => {
     if (value.refill_threshold_lines >= value.active_target_lines) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -190,6 +309,31 @@ const ConfigSchema = z.object({
   media: z.object({
     audio: AudioConfigSchema
   }),
+  app: z
+    .object({
+      default_host: z.enum(["web", "cli"]).default("web"),
+    })
+    .default({ default_host: "web" }),
+  local_web: z
+    .object({
+      host: z.string().min(1).default("127.0.0.1"),
+      port: z.number().int().min(0).max(65535).default(0),
+      open_browser: z.boolean().default(true),
+      controller_limit: z.number().int().min(1).max(8).default(1),
+    })
+    .default({
+      host: "127.0.0.1",
+      port: 0,
+      open_browser: true,
+      controller_limit: 1,
+    }),
+  characters: z.record(
+    z.string(),
+    z.object({
+      name: z.string().min(1),
+      voice_profile: z.string().min(1),
+    }),
+  ).default({}),
   game: z.object({
     history_events: z.number().int().positive().default(80),
     sessions_dir: z.string().min(1).default("sessions"),
