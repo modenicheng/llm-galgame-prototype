@@ -37,9 +37,9 @@ const voices: VoicesConfig = {
         },
       },
     },
-    narrator_main: {
+    ruoxi_main: {
       semantic: {
-        base_description: "沉稳的旁白",
+        base_description: "温柔的少女声",
         allowed_delivery: [],
         forbidden_delivery: [],
       },
@@ -50,7 +50,7 @@ const voices: VoicesConfig = {
 
 const characters: AudioDescriptorFactoryOptions["characters"] = {
   suyao: { name: "苏遥", voice_profile: "suyao_main" },
-  旁白: { name: "旁白", voice_profile: "narrator_main" },
+  ruoxi: { name: "若曦", voice_profile: "ruoxi_main" },
 };
 
 function makeFactory(overrides: Partial<AudioDescriptorFactoryOptions> = {}): AudioDescriptorFactory {
@@ -111,29 +111,75 @@ describe("AudioDescriptorFactory", () => {
     expect(makeFactory().build(dialogue("ghost", "hi", "l2"), { type: "active" }, "current")).toBeNull();
   });
 
-  it("returns null for narration when no 旁白 profile exists", () => {
-    const factory = makeFactory({ characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } } });
-    expect(factory.build(narration("风雪夜。", "l3"), { type: "active" }, "current")).toBeNull();
+  it("returns null for narration — narration has no voice", () => {
+    // characters: { suyao, ruoxi } (NO 旁白 key), voices v3 with suyao_main.
+    expect(makeFactory().build(narration("风雪夜。", "l3"), { type: "active" }, "current")).toBeNull();
   });
 
-  it("builds narration via the 旁白 character profile", () => {
-    const result = makeFactory().build(narration("风雪夜。", "l3"), { type: "active" }, "active_future");
-
-    expect(result).not.toBeNull();
-    expect(result!.descriptor).toMatchObject({
-      speakerId: "narrator",
-      displaySpeaker: "旁白",
-    });
-    expect(result!.recipe.text).toBe("风雪夜。");
-  });
-
-  it("uses the configured env voice ID and falls back to <unset>", () => {
+  it("uses the configured env voice ID", () => {
     const recipe = makeFactory().build(dialogue("suyao", "hi", "l4"), { type: "active" }, "current")!
       .recipe as InternalAudioRecipe;
     expect(recipe.voiceId).toBe("suyao-voice-001");
-
+    // Missing env is a startup error in dashscope mode (validateDashscopeEnv);
+    // the factory itself resolves to "" rather than inventing a fallback id.
     const unset = makeFactory({ env: {} }).build(dialogue("suyao", "hi", "l4"), { type: "active" }, "current")!;
-    expect(unset.recipe.voiceId).toBe("<unset>");
+    expect(unset.recipe.voiceId).toBe("");
+  });
+
+  it("resolves the voice id from env and passes instruction_mode to the compiler", () => {
+    // binding: { model: "cosyvoice-v3-flash", voice_id_env: "COSYVOICE_VOICE_SUYAO",
+    //            voice_revision: 1, instruction_mode: "fixed_emotion" }
+    const fixedEmotionVoices: VoicesConfig = {
+      version: 3,
+      profiles: {
+        suyao_main: {
+          semantic: {
+            base_description: "温柔的少女声",
+            allowed_delivery: ["gentle"],
+            forbidden_delivery: ["cold"],
+          },
+          providers: {
+            dashscope: {
+              model: "cosyvoice-v3-flash",
+              voice_id_env: "COSYVOICE_VOICE_SUYAO",
+              voice_revision: 1,
+              instruction_mode: "fixed_emotion",
+            },
+          },
+        },
+      },
+    };
+    const seenModes: Array<string | undefined> = [];
+    const factory = makeFactory({
+      voices: fixedEmotionVoices,
+      env: { COSYVOICE_VOICE_SUYAO: "cosyvoice-v3-flash-suyao-abc" },
+      compiler: {
+        compile: (input) => {
+          seenModes.push(input.instructionMode);
+          return {
+            rate: 1,
+            pitch: 1,
+            volume: 1,
+            instruction: `你说话的情感是${input.performance?.emotion}。`,
+            pauseBeforeMs: 0,
+            pauseAfterMs: 0,
+          };
+        },
+      },
+    });
+    const result = factory.build(
+      dialogue("suyao", "今天天气真好。", "l12"),
+      { type: "active" },
+      "current",
+      { emotion: "sad" },
+    )!;
+
+    expect(seenModes).toEqual(["fixed_emotion"]);
+    expect(result.recipe).toMatchObject({
+      voiceId: "cosyvoice-v3-flash-suyao-abc",
+      voiceRevision: 1,
+      instruction: "你说话的情感是sad。",
+    });
   });
 
   it("synthesizes a stable mock binding when provider is mock", () => {
@@ -156,7 +202,7 @@ describe("AudioDescriptorFactory", () => {
   });
 
   it("falls back to a mock binding when the profile has no provider binding", () => {
-    const result = makeFactory().build(narration("旁白内容。", "l6"), { type: "active" }, "current")!;
+    const result = makeFactory().build(dialogue("ruoxi", "你好。", "l6"), { type: "active" }, "current")!;
     expect(result.recipe.model).toBe("cosyvoice_v3_flash");
     expect(result.recipe.voiceRevision).toBe(0);
   });
