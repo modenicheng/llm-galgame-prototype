@@ -186,14 +186,18 @@ export class GameApp {
         },
         this.coordinatorEvents,
       );
-      // AudioWorklet is optional (§10.5): when the environment cannot
-      // create a playback node, degrade to text-only instead of failing
-      // the whole session. Every audio call site is already `?.`-guarded.
+      // AudioWorklet is optional (§10.5): a capability miss (no
+      // createAudioWorkletNode / audioWorklet) degrades to text-only.
+      // But a THROWN init (addModule fetch/CSP/network failure) is a real
+      // bug — surface it instead of silently swallowing into text-only.
       try {
         await this.coordinator.init();
-      } catch {
+      } catch (error) {
         this.coordinator.stop();
         this.coordinator = null;
+        this.startError = error instanceof Error ? error.message : String(error);
+        this.emitState();
+        throw error;
       }
       if (this.coordinator !== null && !this.coordinator.available) {
         this.coordinator = null;

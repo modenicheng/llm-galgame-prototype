@@ -629,7 +629,7 @@ describe("GameApp", () => {
     }
   });
 
-  it("worklet failure degrades to text-only instead of failing the session", async () => {
+  it("addModule failure surfaces as an error, not silent text-only", async () => {
     const failing = makeFakeAudioContext();
     failing.addModule.mockRejectedValue(new Error("worklet module failed"));
     const app = new GameApp({
@@ -640,15 +640,27 @@ describe("GameApp", () => {
       db,
     });
 
-    // The session must still boot: audio degrades, the story continues.
-    await expect(app.start(failing.context)).resolves.toBeUndefined();
+    // A THROWN worklet init is a real bug (build/CSP/network): it must
+    // surface, never be swallowed into a silent text-only session.
+    await expect(app.start(failing.context)).rejects.toThrow("worklet module failed");
+    expect(app.state().startError).toBe("worklet module failed");
+  });
+
+  it("missing AudioWorklet capability degrades to text-only without error", async () => {
+    const { context } = makeFakeAudioContext(true);
+    const app = new GameApp({
+      wsUrl: WS_URL,
+      token: TOKEN,
+      fetchImpl: makeFetchImpl().fetchImpl,
+      webSocketImpl: FakeWebSocket as unknown as WebSocketCtor,
+      db,
+    });
+
+    // Capability miss (no createAudioWorkletNode) is a supported degrade:
+    // the session boots, no error is surfaced, and the story is playable.
+    await expect(app.start(context)).resolves.toBeUndefined();
     expect(app.state().startError).toBeNull();
     expect(FakeWebSocket.last).not.toBeNull();
-
-    // A later retry with a working context restores audio.
-    const { context } = makeFakeAudioContext();
-    await app.start(context);
-    expect(app.state().startError).toBeNull();
   });
 
   it("manual advance during the auto pause window sends only one advance", async () => {
