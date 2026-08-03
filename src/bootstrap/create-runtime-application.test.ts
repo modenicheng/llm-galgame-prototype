@@ -340,7 +340,7 @@ function dashscopeConfig(): AppConfig {
           prompt: "说什么？",
           mode: "input",
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
-          input_bridge: { events: [] },
+          input_bridge: { events: [{ type: "narration", text: "她等着你开口。" }] },
         },
       ],
       state_patch: undefined,

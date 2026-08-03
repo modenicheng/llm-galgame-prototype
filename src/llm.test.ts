@@ -343,6 +343,34 @@ describe("requestEnvelope streaming", () => {
     expect(received).toHaveLength(2);
   });
 
+
+  it("fails with state_patch framing and cause when a bad state_patch follows a published event", async () => {
+    const gen = makeTestGenerator();
+    mockClient(gen, makeStream([
+      '{"type":"narration","text":"第一句。"}',
+      '{"type":"state_patch","patch":{"recent_summary":123}}',
+    ]));
+
+    const received: ModelEvent[] = [];
+    const promise = (gen as any).generateOpening(
+      1,
+      createInitialState(),
+      undefined,
+      { onEvent: (e: ModelEvent) => received.push(e) },
+    );
+
+    // A bad state_patch after publication aborts the stream (like a bad
+    // event line) instead of falling into the batch-parse path: the request
+    // fails with the explicit line framing and the original validation
+    // error chained as `cause` — never a raw Zod error.
+    await expect(promise).rejects.toMatchObject({
+      message: expect.stringMatching(/第 2 行 state_patch 校验失败/),
+      cause: expect.objectContaining({
+        message: expect.stringContaining("recent_summary"),
+      }),
+    });
+    expect(received).toHaveLength(1);
+  });
   it("drops a trailing token-limit fragment instead of failing the stream", async () => {
     const gen = makeTestGenerator();
     mockClient(gen, makeStreamTruncated(
@@ -408,6 +436,74 @@ describe("requestEnvelope streaming", () => {
     const envelope = await (gen as any).generateOpening(1, createInitialState());
     expect(create).toHaveBeenCalledTimes(2);
     expect(envelope.events).toHaveLength(2);
+  });
+
+  it("retries with the explicit state_patch reason when a bad state_patch precedes any event", async () => {
+    const gen = makeTestGenerator({ generation: { repair_attempts: 1 } });
+    const bad = makeStream(['{"type":"state_patch","patch":{"recent_summary":123}}']);
+    const good = makeStream([
+      '{"type":"narration","text":"修复后的开场。"}',
+      '{"type":"end","ending_id":"e","text":"终"}',
+    ]);
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(bad)
+      .mockResolvedValueOnce(good);
+    (gen as any).client = { chat: { completions: { create } } };
+
+    const envelope = await (gen as any).generateOpening(1, createInitialState());
+    expect(create).toHaveBeenCalledTimes(2);
+    // With nothing published, the provider retries — and the repair
+    // instruction carries the explicit state_patch failure reason instead
+    // of an unformatted whole-text parse error.
+    const userContent = create.mock.calls[1]![0].messages[1].content as string;
+    expect(userContent).toContain("第 1 行 state_patch 校验失败");
+    expect(envelope.events).toHaveLength(2);
+  });
+  it("embeds options.repairReason in the user prompt (Game-level repair)", async () => {
+    const gen = makeTestGenerator();
+    mockClient(gen, makeStream([
+      '{"type":"narration","text":"修复后。"}',
+      '{"type":"end","ending_id":"e","text":"终"}',
+    ]));
+
+    const envelope = await (gen as any).generateOpening(
+      1,
+      createInitialState(),
+      undefined,
+      { repairReason: "InteractionPolicy 拒绝：input 不允许。" },
+    );
+
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    const userContent = create.mock.calls[0]![0].messages[1].content as string;
+    expect(userContent).toContain("InteractionPolicy 拒绝：input 不允许。");
+    expect(userContent).toContain("请修正该问题后从失败位置继续，不要重复已输出的内容。");
+    expect(envelope.events).toHaveLength(2);
+  });
+
+  it("chains the original validateEvent error as `cause` when published events fail", async () => {
+    const gen = makeTestGenerator();
+    mockClient(gen, makeStream([
+      '{"type":"narration","text":"第一句。"}',
+      '{"type":"interaction","interaction_id":"int_1","prompt":"p","mode":"input","input":{"kind":"free_text","placeholder":"...","max_length":200},"input_bridge":{"events":[{"type":"narration","text":"b"}]}}',
+    ]));
+
+    const original = new Error("InteractionPolicy 拒绝：input 不允许。");
+    const promise = (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onEvent: () => undefined,
+      validateEvent: (event: ModelEvent) => {
+        // Throw only for the second (interaction) line, AFTER the narration
+        // was already published — the provider must then fail the request
+        // (not retry) and chain the original error as `cause`.
+        if (event.type === "interaction") throw original;
+      },
+    });
+
+    // The wrap thrown to the runtime preserves the original error as `cause`
+    // so error-class detection (instanceof) survives the wrapping.
+    await expect(promise).rejects.toMatchObject({
+      cause: { message: "InteractionPolicy 拒绝：input 不允许。" },
+    });
   });
 });
 

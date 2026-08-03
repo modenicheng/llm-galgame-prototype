@@ -47,6 +47,8 @@ import type {
   StoryContextEvent
 } from "./schema.js";
 import { isPlayableEvent } from "./schema.js";
+import { InteractionPolicy } from "./story/interaction-policy.js";
+import type { InteractionMode } from "./story/types.js";
 import { applyPatch } from "./story/patch.js";
 import { createInitialState } from "./story/state.js";
 import type {
@@ -119,6 +121,17 @@ export class RuntimeShutdownError extends Error {
   }
 }
 
+/** Raised when a generated interaction violates InteractionPolicy (§8.5). */
+export class InteractionPolicyViolationError extends Error {
+  constructor(reason: string) {
+    super(`InteractionPolicy 拒绝：${reason}`);
+    this.name = "InteractionPolicyViolationError";
+  }
+}
+
+/** §8.4: keep only the most recent formally-opened interaction modes. */
+const MAX_INTERACTION_MODE_HISTORY = 8;
+
 export class Game {
   private readonly events: StoredEvent[] = [];
   private readonly buffered = new Map<string, RuntimePlayableEvent>();
@@ -134,6 +147,9 @@ export class Game {
   private readonly bridgeLineIds = new Set<string>();
   /** line_ids of staged input response events (for bridge-cover timing). */
   private readonly responseLineIds = new Set<string>();
+  private readonly interactionPolicy: InteractionPolicy;
+  /** §8.4: modes of formally opened interactions, newest last (cap 8). */
+  private readonly recentInteractionModes: InteractionMode[] = [];
   /** Confirm timestamp awaiting the first response line (E3/G1 metric). */
   private inputConfirmAtMs: number | null = null;
   /** Bridge playback start awaiting the first response line play. */
@@ -161,6 +177,7 @@ export class Game {
     this.ids = ports.ids;
     this.diagnostics = ports.diagnostics ?? silentDiagnosticSink;
     this.sessionId = this.ids.nextSessionId();
+    this.interactionPolicy = new InteractionPolicy(config.interaction);
     this.storyState = createInitialState();
     this.status.subscribe((snapshot) => {
       this.emit({ type: "status_changed", status: snapshot });
@@ -316,11 +333,48 @@ export class Game {
       });
   }
 
+  /**
+   * §8.5/§13.1: enforce InteractionPolicy BEFORE a terminal enters the
+   * formal buffer. A rejection throws, which fails the current generation
+   * attempt and routes it into the repair loop; nothing (buffer, bridge,
+   * BranchManager, interaction_opened) is published for the illegal event.
+   */
+  private assertInteractionPolicy(event: ModelEvent): void {
+    if (event.type !== "interaction" && event.type !== "choice") return;
+    if (
+      event.type === "choice" &&
+      !this.config.interaction.legacy_choice.allow_runtime_compatibility
+    ) {
+      throw new InteractionPolicyViolationError(
+        "旧式 choice 仅兼容模式下允许；请输出 type=interaction、mode=choice。",
+      );
+    }
+    const result = this.interactionPolicy.validate(event, {
+      previousModes: this.recentInteractionModes,
+    });
+    if (!result.accepted) {
+      throw new InteractionPolicyViolationError(result.reason ?? "策略校验失败。");
+    }
+  }
+
+  /**
+   * §8.4: record the mode of a formally opened interaction (newest last).
+   * Only accepted terminals reach this point — unselected candidates,
+   * failed-repair interactions, and input-response fragments never record.
+   */
+  private recordInteractionMode(mode: InteractionMode): void {
+    this.recentInteractionModes.push(mode);
+    if (this.recentInteractionModes.length > MAX_INTERACTION_MODE_HISTORY) {
+      this.recentInteractionModes.shift();
+    }
+  }
+
   private startActiveSegment(
     kind: ActiveSegmentKind,
     turn: number,
     history: StoryContextEvent[],
     prefetchedEvents: StoryContextEvent[],
+    repairReason?: string,
   ): ActiveSegment {
     const queue = new AsyncEventQueue<RuntimeModelEvent>();
     const taskId = this.ids.nextGenerationId(kind === "opening" ? "opening" : `continuation:${turn}`);
@@ -337,6 +391,10 @@ export class Game {
 
     const controller = this.generationScheduler.startActivePath(taskId);
     const onEvent = (draft: ModelEvent): void => {
+      // §8.5/§13.1: policy check FIRST — the illegal terminal never enters
+      // the buffer, never materializes a bridge, never spawns a
+      // BranchManager, and never becomes this segment's terminal.
+      this.assertInteractionPolicy(draft);
       const event = this.materializeEvents([draft])[0]!;
       segment.events.push(event);
       if (isPlayableEvent(event)) {
@@ -362,18 +420,27 @@ export class Game {
       }
     };
 
+    // §8.5: validateEvent runs inside the provider between Schema
+    // validation and onEvent, so a policy rejection with no events
+    // published yet enters the provider's own repair loop (which embeds
+    // the concrete reason in the repair instruction). onEvent above stays
+    // defensive for envelope-format providers that never call validateEvent.
+    const validateEvent = (event: ModelEvent): void => {
+      this.assertInteractionPolicy(event);
+    };
+
     const jobId = kind === "opening" ? "opening" : `continuation:${turn}`;
     const label = kind === "opening" ? "初始剧情" : `第 ${turn} 回合后续`;
     segment.done = this.runTrackedJob(jobId, label, () => {
       const request = kind === "opening"
-        ? this.generator.generateOpening(turn, this.storyState, controller.signal, { onEvent })
+        ? this.generator.generateOpening(turn, this.storyState, controller.signal, { onEvent, validateEvent })
         : this.generator.generateContinuation(
             turn,
             this.storyState,
             history,
             prefetchedEvents,
             controller.signal,
-            { onEvent },
+            { onEvent, validateEvent, ...(repairReason ? { repairReason } : {}) },
           );
 
       return request.then((envelope) => {
@@ -427,7 +494,15 @@ export class Game {
             reason instanceof Error ? reason : new Error(String(reason))
           );
         const playable = segment.events.filter(isPlayableEvent);
-        if (playable.length === 0) {
+        // §8.5: a policy rejection is repairable even without any playable
+        // prefix — the model must simply re-emit a legal interaction. Other
+        // failures with nothing playable have no story to continue from and
+        // stay fatal.
+        const policyRejected =
+          failure instanceof InteractionPolicyViolationError ||
+          failure.cause instanceof InteractionPolicyViolationError ||
+          failure.message.includes("InteractionPolicy 拒绝");
+        if (playable.length === 0 && !policyRejected) {
           this.emit({
             type: "runtime_error",
             code: "segment_failed",
@@ -476,7 +551,7 @@ export class Game {
           : [...priorContext, ...segment.events];
         this.diagnostics.info(
           "Repair",
-          `生成段失败，保留 ${playable.length} 条事件，启动修复续写（剩余 ${repairBudget - 1} 次）`,
+          `生成段失败：${failure.message}，保留 ${playable.length} 条事件，启动修复续写（剩余 ${repairBudget - 1} 次）`,
         );
         this.status.setJob(`repair:${segment.taskId}`, "段失败修复续写", "running");
         try {
@@ -485,6 +560,7 @@ export class Game {
             turn,
             fullContext,
             playable,
+            failure.message,
           );
           void repaired.done.catch(() => undefined);
           const outcome = await this.consumeActiveSegment(
@@ -523,6 +599,13 @@ export class Game {
       this.advanceBufferedEvent(event);
       await this.recordModelEvent(event, turn);
       const context = [...priorContext, ...segment.events];
+      // §8.4: the interaction is now formally opened (policy already passed
+      // in onEvent). Record its mode for consecutive-input tracking; a
+      // legacy choice counts as "choice".
+      this.recordInteractionMode(
+        event.type === "choice" ? "choice" : event.mode,
+      );
+
       if (event.type === "choice") {
         const preview = await this.handleChoice(event, turn, segment.branchManager, context);
         return { type: "choice", nextTurn: turn + 1, ...preview };
@@ -610,7 +693,12 @@ export class Game {
     turn: number,
     context: StoryContextEvent[],
   ): BranchManager | null {
+    // §13.2: a legacy choice only creates a BranchManager while runtime
+    // compatibility is enabled (assertInteractionPolicy rejects it otherwise).
     if (terminal.type === "choice") {
+      if (!this.config.interaction.legacy_choice.allow_runtime_compatibility) {
+        return null;
+      }
       return this.createBranchManager(terminal, turn, context);
     }
     if (terminal.mode === "choice" || terminal.mode === "hybrid") {

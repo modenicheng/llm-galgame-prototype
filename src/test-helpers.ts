@@ -75,6 +75,13 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
       sessions_dir: "sessions",
       show_line_ids: true,
     },
+    interaction: {
+      allowed_modes: ["choice", "hybrid", "input"],
+      default_mode: "hybrid",
+      options: { min_count: 2, max_count: 5 },
+      input: { max_length: 500, max_consecutive_pure_input: 1 },
+      legacy_choice: { allow_runtime_compatibility: true, allow_model_output: false },
+    },
     ...overrides,
   } as AppConfig;
 }
@@ -148,7 +155,7 @@ export class FakeIdGenerator implements IdGeneratorPort {
  * real adapter (e.g. `{ store: new NodeJsonlSessionStore(dir) }`).
  */
 export function makeTestPorts(
-  overrides?: Partial<Pick<GamePorts, "store" | "clock" | "ids">>,
+  overrides?: Partial<Pick<GamePorts, "store" | "clock" | "ids" | "diagnostics">>,
 ): GamePorts {
   return {
     store: new MemorySessionStore(),

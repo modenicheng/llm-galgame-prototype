@@ -29,8 +29,11 @@ import type {
   EndEvent,
   StoredEvent,
   StoryContextEvent,
+  ChoiceEvent,
+  InteractionEvent,
 } from "./schema.js";
 import type { GenerationEnvelope } from "./story/types.js";
+import type { InteractionOpenedOutput } from "./test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2013,5 +2016,425 @@ describe("Narration-only branch handoff", () => {
     // 开场 + 分支两句 + 续写 = 4 段旁白;结局一次。
     expect(controller.countPlayback("narration")).toBe(4);
     expect(controller.ended()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Interaction policy enforcement (§8.5 / §13.1 / §13.2, Commit 4)
+// ---------------------------------------------------------------------------
+
+describe("Interaction policy enforcement", () => {
+  /** Interaction config that forbids free-text input entirely. */
+  function noInputConfig(): AppConfig {
+    return makeTestConfig({
+      interaction: {
+        allowed_modes: ["choice", "hybrid"],
+        default_mode: "choice",
+        options: { min_count: 2, max_count: 5 },
+        input: { max_length: 500, max_consecutive_pure_input: 1 },
+        legacy_choice: { allow_runtime_compatibility: true, allow_model_output: false },
+      },
+    });
+  }
+
+  function inputInteraction(interactionId: string): InteractionEvent {
+    return {
+      type: "interaction",
+      interaction_id: interactionId,
+      prompt: "说什么？",
+      mode: "input",
+      input: { kind: "free_text", placeholder: "...", max_length: 200 },
+      input_bridge: {
+        events: [{ type: "narration", text: "她静静地看着你。" }],
+      },
+    };
+  }
+
+  function choiceInteraction(interactionId: string): InteractionEvent {
+    return {
+      type: "interaction",
+      interaction_id: interactionId,
+      prompt: "怎么选？",
+      mode: "choice",
+      options: [
+        { id: "a", text: "选项A" },
+        { id: "b", text: "选项B" },
+      ],
+    };
+  }
+
+  function hybridInteraction(interactionId: string): InteractionEvent {
+    return {
+      type: "interaction",
+      interaction_id: interactionId,
+      prompt: "怎么做？",
+      mode: "hybrid",
+      options: [
+        { id: "a", text: "选项A" },
+        { id: "b", text: "选项B" },
+      ],
+      input: { kind: "free_text", placeholder: "...", max_length: 200 },
+      input_bridge: {
+        events: [{ type: "narration", text: "她等着你的决定。" }],
+      },
+    };
+  }
+
+  function legacyChoiceEvent(): ChoiceEvent {
+    return {
+      type: "choice",
+      prompt: "怎么选？",
+      options: [
+        { id: "a", text: "选项A" },
+        { id: "b", text: "选项B" },
+      ],
+    };
+  }
+
+  it("rejects an illegal interaction mode before buffering and repairs with a legal terminal", async () => {
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    // Opening streams a narration, then an ILLEGAL input interaction.
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_t, _s, _sig, options) => {
+        options!.onEvent!({ type: "narration", text: "开场。" });
+        options!.onEvent!(inputInteraction("int_illegal"));
+        return envelope([]);
+      },
+    );
+    // Repair continuation emits a LEGAL choice interaction; the post-choice
+    // continuation ends the story.
+    let repairReason: string | undefined;
+    (generator.generateContinuation as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async (_t, _s, _h, _p, _sig, options) => {
+        // The Game-level repair passes the concrete policy reason so the
+        // model sees WHY its previous output was rejected.
+        repairReason = options?.repairReason;
+        return envelope([narrationEvent("修复段。"), choiceInteraction("int_legal")]);
+      })
+      .mockImplementationOnce(async () =>
+        envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+
+    const diagnostics: Array<{ scope: string; message: string }> = [];
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.select(output.interactionId, "a");
+      },
+    });
+    const game = new Game(
+      noInputConfig(),
+      generator,
+      status,
+      media,
+      undefined,
+      makeTestPorts({
+        diagnostics: {
+          info: (scope, message) => diagnostics.push({ scope, message }),
+          warn: () => undefined,
+        },
+      }),
+    );
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // The illegal interaction was never formally opened; only the repaired
+    // (legal) terminal opened. Interaction-mode choices are emitted under
+    // the runtime id `choice_${turn}`.
+    const opened = controller.outputs.filter(
+      (output): output is InteractionOpenedOutput =>
+        output.type === "interaction_opened",
+    );
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.interactionId).toBe("choice_1");
+    expect(
+      opened.some(
+        (output) =>
+          "interaction_id" in output.interaction &&
+          output.interaction.interaction_id === "int_illegal",
+      ),
+    ).toBe(false);
+
+    // Its bridge was never materialized; the only branch prefetches come
+    // from the legal terminal's BranchManager (one per option).
+    expect((game as any).bridgeBuffer.peek("int_illegal")).toBeNull();
+    // Exactly one BranchManager prefetch per option of the LEGAL terminal —
+    // had the illegal terminal leaked into the branch flow, the count would
+    // exceed the 2 options of the repaired choice.
+    expect(generator.generateBranchPrefetch).toHaveBeenCalledTimes(2);
+
+    // The repair loop ran and reported the concrete policy reason.
+    expect(generator.generateContinuation).toHaveBeenCalledTimes(2);
+    expect(
+      diagnostics.some((d) => d.message.includes("InteractionPolicy 拒绝")),
+    ).toBe(true);
+    // The repair continuation carried the concrete policy reason to the
+    // provider (embedded in the user prompt by the generator).
+    expect(repairReason).toContain("InteractionPolicy 拒绝");
+
+    // Only the new terminal is accepted; the story completes normally.
+    expect(controller.ended()).toBe(true);
+  });
+
+  it("repairs an illegal terminal even when it is the first (only) event", async () => {
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    // The opening publishes ONLY the illegal interaction — no playable prefix.
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_t, _s, _sig, options) => {
+        options!.onEvent!(inputInteraction("int_illegal"));
+        return envelope([]);
+      },
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async () =>
+        envelope([narrationEvent("修复段。"), choiceInteraction("int_legal")]),
+      )
+      .mockImplementationOnce(async () =>
+        envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.select(output.interactionId, "a");
+      },
+    });
+    const game = new Game(
+      noInputConfig(),
+      generator,
+      status,
+      media,
+      undefined,
+      makeTestPorts(),
+    );
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    expect(controller.count("interaction_opened")).toBe(1);
+    expect(generator.generateContinuation).toHaveBeenCalledTimes(2);
+    expect(controller.ended()).toBe(true);
+  });
+  it("rejects a second consecutive pure input at the Game level", async () => {
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteraction("int_1")]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    // Continuation #1 tries to open ANOTHER pure input → 2 consecutive →
+    // rejected. Repair #1 emits a choice (non-input), then the post-choice
+    // continuation ends the story.
+    (generator.generateContinuation as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async () =>
+        envelope([narrationEvent("续写。"), inputInteraction("int_2")]),
+      )
+      .mockImplementationOnce(async () =>
+        envelope([narrationEvent("修复段。"), choiceInteraction("int_3")]),
+      )
+      .mockImplementationOnce(async () =>
+        envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        if (output.interactionId === "int_1") {
+          controller.submitInput("int_1", "你好");
+        } else {
+          controller.select(output.interactionId, "a");
+        }
+      },
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    const game = new Game(
+      makeTestConfig(),
+      generator,
+      status,
+      media,
+      undefined,
+      makeTestPorts(),
+    );
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // int_1 (input) and the repaired choice (emitted as `choice_2`) opened;
+    // int_2 was rejected before it could open.
+    const openedIds = controller.outputs
+      .filter((output) => output.type === "interaction_opened")
+      .map((output) => (output as InteractionOpenedOutput).interactionId);
+    expect(openedIds).toEqual(["int_1", "choice_2"]);
+  });
+
+  it("accepts a pure input after a hybrid interaction (streak reset)", async () => {
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), hybridInteraction("int_1")]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    // The continuation opens a pure input AFTER a hybrid: the streak was
+    // broken, so it must be accepted.
+    (generator.generateContinuation as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async () =>
+        envelope([narrationEvent("续写。"), inputInteraction("int_2")]),
+      )
+      .mockImplementationOnce(async () =>
+        envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.submitInput(output.interactionId, "随便说点什么");
+      },
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    const game = new Game(
+      makeTestConfig(),
+      generator,
+      status,
+      media,
+      undefined,
+      makeTestPorts(),
+    );
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const openedIds = controller.outputs
+      .filter((output) => output.type === "interaction_opened")
+      .map((output) => (output as InteractionOpenedOutput).interactionId);
+    expect(openedIds).toEqual(["int_1", "int_2"]);
+    expect(controller.ended()).toBe(true);
+  });
+
+  it("creates no BranchManager for pure input terminals (§13.2)", () => {
+    const generator = makeMockGenerator();
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    const game = new Game(
+      makeTestConfig(),
+      generator,
+      makeMockStatus(),
+      makeMockMedia(),
+      undefined,
+      makeTestPorts(),
+    );
+    const g = game as any;
+
+    expect(g.createBranchManagerForTerminal(inputInteraction("int_1"), 1, [])).toBeNull();
+    expect(g.createBranchManagerForTerminal(hybridInteraction("int_2"), 1, [])).not.toBeNull();
+    expect(g.createBranchManagerForTerminal(choiceInteraction("int_3"), 1, [])).not.toBeNull();
+    expect(g.createBranchManagerForTerminal(legacyChoiceEvent(), 1, [])).not.toBeNull();
+  });
+
+  it("creates a BranchManager for legacy choice only when runtime compatibility is enabled", () => {
+    const generator = makeMockGenerator();
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    const withCompat = new Game(
+      makeTestConfig(),
+      generator,
+      makeMockStatus(),
+      makeMockMedia(),
+      undefined,
+      makeTestPorts(),
+    );
+    const withoutCompat = new Game(
+      makeTestConfig({
+        interaction: {
+          allowed_modes: ["choice", "hybrid", "input"],
+          default_mode: "choice",
+          options: { min_count: 2, max_count: 5 },
+          input: { max_length: 500, max_consecutive_pure_input: 1 },
+          legacy_choice: { allow_runtime_compatibility: false, allow_model_output: false },
+        },
+      }),
+      generator,
+      makeMockStatus(),
+      makeMockMedia(),
+      undefined,
+      makeTestPorts(),
+    );
+
+    expect((withCompat as any).createBranchManagerForTerminal(legacyChoiceEvent(), 1, [])).not.toBeNull();
+    expect((withoutCompat as any).createBranchManagerForTerminal(legacyChoiceEvent(), 1, [])).toBeNull();
+  });
+
+  it("never prefetches branches during a pure input run", async () => {
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteraction("int_1")]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.submitInput(output.interactionId, "你好");
+      },
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    const game = new Game(
+      makeTestConfig(),
+      generator,
+      status,
+      media,
+      undefined,
+      makeTestPorts(),
+    );
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    expect(generator.generateBranchPrefetch).not.toHaveBeenCalled();
+    expect(controller.ended()).toBe(true);
+  });
+  it("caps the recent interaction-mode history at 8, dropping the oldest (§8.4)", () => {
+    const game = new Game(
+      makeTestConfig(),
+      makeMockGenerator(),
+      makeMockStatus(),
+      makeMockMedia(),
+      undefined,
+      makeTestPorts(),
+    );
+    const g = game as any;
+    const pushed = [
+      "input", "hybrid", "choice",
+      "input", "hybrid", "choice",
+      "input", "hybrid", "choice",
+    ];
+    for (const mode of pushed) g.recordInteractionMode(mode);
+    // 9 pushes → cap 8: the oldest (first pushed) is dropped; the remaining
+    // modes keep their order, newest last.
+    expect(g.recentInteractionModes).toHaveLength(8);
+    expect(g.recentInteractionModes).toEqual(pushed.slice(1));
   });
 });

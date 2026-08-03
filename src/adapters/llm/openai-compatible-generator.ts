@@ -63,6 +63,24 @@ function isAbortError(error: unknown): boolean {
 export interface GenerationStreamOptions {
   /** Called as soon as one complete, schema-valid JSONL event arrives. */
   onEvent?: (event: ModelEvent) => void;
+  /**
+   * §8.5: policy hook run AFTER schema validation and BEFORE the event is
+   * accepted (pushed to `events`) or handed to onEvent. Throwing here fails
+   * the current generation attempt and enters the repair loop; the thrown
+   * message becomes the repair instruction on the next attempt.
+   */
+  validateEvent?: (
+    event: ModelEvent,
+    acceptedEvents: readonly ModelEvent[],
+  ) => void;
+  /**
+   * §8.5: concrete reason for a Game-level repair (e.g. an interaction that
+   * violated InteractionPolicy AFTER playable events were already published).
+   * The Game repair loop passes the failing segment's error message here so
+   * the model sees why its previous output was rejected; it is embedded in
+   * the user prompt alongside provider-internal retry instructions.
+   */
+  repairReason?: string;
 }
 
 /** Strip runtime metadata fields that waste tokens when sent to the model. */
@@ -266,8 +284,19 @@ export class StoryGenerator {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
       // On retry: add repair instruction describing the previous failure.
-      const repairInstruction = lastError
-        ? `\n上一份输出出错：${lastError}。请修正该问题后从失败位置继续，不要重复已输出的内容。`
+      // Provider-internal retries set `lastError`; the Game-level repair
+      // path passes a concrete reason via options.repairReason. Both may
+      // apply to the same request, so each reason gets its own instruction.
+      const repairParts = [lastError, options?.repairReason].filter(
+        (reason): reason is string => Boolean(reason),
+      );
+      const repairInstruction = repairParts.length
+        ? `\n${repairParts
+            .map(
+              (reason) =>
+                `上一份输出出错：${reason}。请修正该问题后从失败位置继续，不要重复已输出的内容。`,
+            )
+            .join("\n")}`
         : "";
 
       const callStart = Date.now();
@@ -288,6 +317,10 @@ export class StoryGenerator {
 
       // Parsed JSONL events and in-band state patches.
       const patches: StoryStatePatch[] = [];
+      // Original error behind a mid-stream abort. Chained as the `cause` of
+      // the wrap thrown to the runtime so error-class detection (e.g.
+      // instanceof InteractionPolicyViolationError) survives the wrapping.
+      let streamError: unknown = undefined;
 
       try {
         const stream = await this.client.chat.completions.create(
@@ -359,6 +392,7 @@ export class StoryGenerator {
               patches.push(StatePatchLineSchema.parse(parsed).patch as StoryStatePatch);
             } catch (error) {
               streamAborted = true;
+              streamError = error;
               lastError = `第 ${rawLines.length} 行 state_patch 校验失败：${error instanceof Error ? error.message : String(error)}`;
               controller.abort();
               break;
@@ -368,6 +402,10 @@ export class StoryGenerator {
 
           try {
             const event = ModelEventSchema.parse(parsed) as ModelEvent;
+            // §8.5: order is parse JSON → Schema → validateEvent → onEvent.
+            // validateEvent runs BEFORE the event is accepted so a policy
+            // rejection with nothing published yet retries (repair loop).
+            options?.validateEvent?.(event, events);
             events.push(event);
             options?.onEvent?.(event);
             if (events.length === 1) {
@@ -375,6 +413,7 @@ export class StoryGenerator {
             }
           } catch (error) {
             streamAborted = true;
+            streamError = error;
             lastError = `第 ${rawLines.length} 行事件校验失败：${error instanceof Error ? error.message : String(error)}`;
             controller.abort();
             break;
@@ -400,7 +439,9 @@ export class StoryGenerator {
           // the active playback path. Keep the partial stream and fail it so
           // the runtime can preserve what is already playable.
           if (options?.onEvent && (events.length > 0 || patches.length > 0)) {
-            throw new Error(`JSONL 流在第 ${rawLines.length} 行校验失败：${lastError}`);
+            throw new Error(`JSONL 流在第 ${rawLines.length} 行校验失败：${lastError}`, {
+              cause: streamError,
+            });
           }
           continue;
         }
