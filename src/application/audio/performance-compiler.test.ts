@@ -26,7 +26,7 @@ describe("PerformanceCompilerImpl", () => {
       instruction: BASE,
       rate: 1.0,
       pitch: 1.0,
-      volume: 1.0,
+      volume: 50,
       pauseBeforeMs: 0,
       pauseAfterMs: 0,
     });
@@ -37,7 +37,7 @@ describe("PerformanceCompilerImpl", () => {
     expect(result.instruction).toBeUndefined();
     expect(result.rate).toBe(1.0);
     expect(result.pitch).toBe(1.0);
-    expect(result.volume).toBe(1.0);
+    expect(result.volume).toBe(50);
   });
 
   it("filters forbidden delivery styles and keeps allowed ones", () => {
@@ -85,10 +85,10 @@ describe("PerformanceCompilerImpl", () => {
   });
 
   it("maps volume to volume bounds", () => {
-    expect(compile({ baseDescription: BASE, performance: { volume: "whisper" } }).volume).toBe(0.4);
-    expect(compile({ baseDescription: BASE, performance: { volume: "soft" } }).volume).toBe(0.7);
-    expect(compile({ baseDescription: BASE, performance: { volume: "normal" } }).volume).toBe(1.0);
-    expect(compile({ baseDescription: BASE, performance: { volume: "loud" } }).volume).toBe(1.3);
+    expect(compile({ baseDescription: BASE, performance: { volume: "whisper" } }).volume).toBe(20);
+    expect(compile({ baseDescription: BASE, performance: { volume: "soft" } }).volume).toBe(35);
+    expect(compile({ baseDescription: BASE, performance: { volume: "normal" } }).volume).toBe(50);
+    expect(compile({ baseDescription: BASE, performance: { volume: "loud" } }).volume).toBe(70);
   });
 
   it("passes through pauses", () => {
@@ -152,7 +152,7 @@ describe("PerformanceCompilerImpl", () => {
     const result = compile(garbage);
     expect(result.rate).toBe(1.0);
     expect(result.pitch).toBe(1.0);
-    expect(result.volume).toBe(1.0);
+    expect(result.volume).toBe(50);
     expect(result.pauseBeforeMs).toBe(0);
     expect(result.pauseAfterMs).toBe(0);
     // Base description survives as the default tone; nothing else leaks in.
@@ -166,5 +166,86 @@ describe("PerformanceCompilerImpl", () => {
     ).toBe(1.0);
     expect(compile({ baseDescription: BASE, performance: 42 as unknown as LinePerformance }).rate).toBe(1.0);
     expect(compile(undefined as unknown as PerformanceCompileInput).rate).toBe(1.0);
+  });
+});
+
+describe("instruction modes", () => {
+  const compiler = new PerformanceCompilerImpl();
+
+  it("fixed_emotion emits the DashScope fixed-format emotion instruction", () => {
+    const out = compiler.compile({
+      baseDescription: "年轻女性。",
+      instructionMode: "fixed_emotion",
+      performance: { emotion: "sad", delivery: ["gentle"], intensity: 3 },
+    });
+    expect(out.instruction).toBe("你说话的情感是sad。");
+  });
+
+  it("fixed_emotion maps emotions to the DashScope vocabulary incl. surprised/disgusted", () => {
+    const cases: Array<[string, string]> = [
+      ["neutral", "neutral"],
+      ["happy", "happy"],
+      ["angry", "angry"],
+      ["afraid", "fearful"],
+      ["anxious", "fearful"],
+      ["excited", "happy"],
+      ["surprised", "surprised"],
+      ["disgusted", "disgusted"],
+    ];
+    for (const [from, to] of cases) {
+      const out = compiler.compile({
+        baseDescription: "",
+        instructionMode: "fixed_emotion",
+        performance: { emotion: from as never },
+      });
+      expect(out.instruction).toBe(`你说话的情感是${to}。`);
+    }
+  });
+
+  it("fixed_emotion omits the instruction for unmappable emotions", () => {
+    for (const emotion of ["tired", "sarcastic", "tender", "serious"]) {
+      const out = compiler.compile({
+        baseDescription: "",
+        instructionMode: "fixed_emotion",
+        performance: { emotion: emotion as never },
+      });
+      expect(out.instruction).toBeUndefined();
+    }
+  });
+
+  it("free mode (default) keeps the existing free-form instruction", () => {
+    const out = compiler.compile({
+      baseDescription: "年轻女性。",
+      performance: { emotion: "sad", delivery: ["gentle"] },
+    });
+    expect(out.instruction).toContain("语气：温柔");
+  });
+
+  it("none mode omits the instruction entirely", () => {
+    const out = compiler.compile({
+      baseDescription: "年轻女性。",
+      instructionMode: "none",
+      performance: { emotion: "happy", delivery: ["gentle"] },
+    });
+    expect(out.instruction).toBeUndefined();
+    expect(out.volume).toBe(50);
+  });
+
+  it("truncates the instruction to the 100 weighted-char budget", () => {
+    // 51 汉字 = 102 weighted chars → base alone overflows, truncated to 50.
+    const longBase = "青".repeat(51);
+    const out = compiler.compile({ baseDescription: longBase, instructionMode: "free" });
+    expect(out.instruction).toBe("青".repeat(50));
+  });
+
+  it("drops trailing clauses before truncating the base description", () => {
+    // 48 汉字 base (96) + 语气 clause (8+) overflows → delivery dropped, base kept.
+    const base = "清".repeat(48);
+    const out = compiler.compile({
+      baseDescription: base,
+      instructionMode: "free",
+      performance: { delivery: ["gentle", "firm"] },
+    });
+    expect(out.instruction).toBe(base);
   });
 });
