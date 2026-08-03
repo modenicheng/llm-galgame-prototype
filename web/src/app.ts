@@ -819,7 +819,7 @@ export class GameApp {
   }
 }
 
-function interactionIdOf(value: unknown): string | null {
+export function interactionIdOf(value: unknown): string | null {
   if (value === null || typeof value !== "object") return null;
   const id = (value as { interaction_id?: unknown }).interaction_id;
   return typeof id === "string" && id.length > 0 ? id : null;

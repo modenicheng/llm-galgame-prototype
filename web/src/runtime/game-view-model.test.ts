@@ -5,7 +5,11 @@
 import { describe, expect, it } from "vitest";
 import type { ServerMessage } from "@shared/wire/server-message.js";
 import type { UiProjection } from "@shared/wire/ui-projection.js";
-import { GameViewModel, MAX_RECENT_LINES } from "./game-view-model.js";
+import {
+  GameViewModel,
+  MAX_RECENT_LINES,
+  interactionModeToFrontendMode,
+} from "./game-view-model.js";
 
 function dialogueLine(lineId: string, text: string) {
   return {
@@ -54,6 +58,27 @@ const inputInteractionOpened: ServerMessage = {
       interaction_id: "int-2",
       prompt: "Say something",
       mode: "input",
+      input: { kind: "free_text", placeholder: "…", max_length: 200 },
+      input_bridge: { events: [{ type: "narration", text: "She waits." }] },
+    },
+  },
+};
+
+const hybridInteractionOpened: ServerMessage = {
+  type: "runtime.output",
+  sequence: 12,
+  output: {
+    type: "interaction_opened",
+    interactionId: "int-3",
+    interaction: {
+      type: "interaction",
+      interaction_id: "int-3",
+      prompt: "How to respond?",
+      mode: "hybrid",
+      options: [
+        { id: "o1", text: "Follow her" },
+        { id: "o2", text: "Stay" },
+      ],
       input: { kind: "free_text", placeholder: "…", max_length: 200 },
       input_bridge: { events: [{ type: "narration", text: "She waits." }] },
     },
@@ -111,6 +136,36 @@ describe("GameViewModel", () => {
     vm.applyServerMessage(inputInteractionOpened);
     state = vm.state();
     expect(state.mode).toBe("INPUT_EDITING");
+  });
+
+  it("enters HYBRID_SELECTING for hybrid interactions", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage(hybridInteractionOpened);
+    const state = vm.state();
+    expect(state.mode).toBe("HYBRID_SELECTING");
+    expect(state.currentInteraction).toBeDefined();
+  });
+
+  it("returns to HYBRID_SELECTING after a hybrid preview cancel", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage(hybridInteractionOpened);
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 13,
+      output: { type: "input_preview_opened", previewId: "pv-1", text: "draft" },
+    });
+    expect(vm.state().mode).toBe("INPUT_PREVIEW");
+
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 14,
+      output: { type: "input_preview_canceled", previewId: "pv-1" },
+    });
+    const state = vm.state();
+    expect(state.mode).toBe("HYBRID_SELECTING");
+    expect(state.currentPreview).toBeUndefined();
+    // The original interaction survives the preview round-trip.
+    expect(state.currentInteraction).toBeDefined();
   });
 
   it("normalizes a synthetic choice interaction with the top-level interactionId", () => {
@@ -345,6 +400,24 @@ describe("GameViewModel", () => {
     });
     expect(vm.state().mode).toBe("INPUT_EDITING");
 
+    vm.applyProjection({
+      phase: "running",
+      recentLines: [],
+      currentInteraction: {
+        type: "interaction",
+        interaction_id: "int-3",
+        prompt: "How to respond?",
+        mode: "hybrid",
+        options: [
+          { id: "o1", text: "Follow her" },
+          { id: "o2", text: "Stay" },
+        ],
+        input: { kind: "free_text", placeholder: "…", max_length: 200 },
+        input_bridge: { events: [{ type: "narration", text: "She waits." }] },
+      },
+    });
+    expect(vm.state().mode).toBe("HYBRID_SELECTING");
+
     vm.applyProjection({ phase: "ended", recentLines: [] });
     expect(vm.state().mode).toBe("ENDING");
 
@@ -374,5 +447,33 @@ describe("GameViewModel", () => {
     off();
     vm.applyServerMessage(playbackReady(3, "line_3", "Three"));
     expect(seen).toEqual([1, 2]);
+  });
+});
+
+describe("interactionModeToFrontendMode", () => {
+  it("maps each interaction mode to its frontend mode", () => {
+    expect(
+      interactionModeToFrontendMode({ type: "interaction", mode: "choice" }),
+    ).toBe("CHOICE_SELECTING");
+    expect(
+      interactionModeToFrontendMode({ type: "interaction", mode: "hybrid" }),
+    ).toBe("HYBRID_SELECTING");
+    expect(
+      interactionModeToFrontendMode({ type: "interaction", mode: "input" }),
+    ).toBe("INPUT_EDITING");
+  });
+
+  it("maps a legacy choice event to CHOICE_SELECTING", () => {
+    expect(
+      interactionModeToFrontendMode({ type: "choice", prompt: "?", options: [] }),
+    ).toBe("CHOICE_SELECTING");
+  });
+
+  it("returns ERROR for unknown or malformed interactions", () => {
+    expect(interactionModeToFrontendMode(undefined)).toBe("ERROR");
+    expect(interactionModeToFrontendMode({ type: "interaction", mode: "bogus" })).toBe(
+      "ERROR",
+    );
+    expect(interactionModeToFrontendMode({ type: "end" })).toBe("ERROR");
   });
 });

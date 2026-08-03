@@ -17,6 +17,7 @@ export type FrontendMode =
   | "BOOTSTRAP"
   | "PLAYING"
   | "CHOICE_SELECTING"
+  | "HYBRID_SELECTING"
   | "INPUT_EDITING"
   | "INPUT_PREVIEW"
   | "CONTENT_WAITING"
@@ -57,6 +58,43 @@ export interface ViewModelState {
   /** EndEvent wire. */
   ending?: unknown;
   lastError?: string;
+}
+
+function isInteraction(
+  value: unknown,
+): value is { mode: "choice" | "hybrid" | "input" } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "interaction") return false;
+  return record.mode === "choice" || record.mode === "hybrid" || record.mode === "input";
+}
+
+function isLegacyChoice(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.type === "choice" &&
+    typeof record.prompt === "string" &&
+    Array.isArray(record.options)
+  );
+}
+
+/** Derive the frontend mode for an interaction wire object (§11.2). */
+export function interactionModeToFrontendMode(interaction: unknown): FrontendMode {
+  if (isInteraction(interaction)) {
+    switch (interaction.mode) {
+      case "choice":
+        return "CHOICE_SELECTING";
+      case "hybrid":
+        return "HYBRID_SELECTING";
+      case "input":
+        return "INPUT_EDITING";
+    }
+  }
+  if (isLegacyChoice(interaction)) {
+    return "CHOICE_SELECTING";
+  }
+  return "ERROR";
 }
 
 export const MAX_RECENT_LINES = 8;
@@ -143,15 +181,12 @@ export class GameViewModel {
         this.pushRecentLine(output.event);
         break;
       case "interaction_opened":
-        this.mode =
-          output.interaction?.type === "interaction" && output.interaction.mode === "input"
-            ? "INPUT_EDITING"
-            : "CHOICE_SELECTING";
         // Normalize: the top-level interactionId is the authoritative id.
         // Synthetic choice events (type: "choice") carry no interaction_id,
         // so stamp it on — the UI's asChoiceInteraction and app's
         // interactionIdOf both read interaction_id.
         this.currentInteraction = { ...output.interaction, interaction_id: output.interactionId };
+        this.mode = this.deriveModeFromInteraction(this.currentInteraction);
         this.currentPreview = undefined;
         break;
       case "interaction_resolved":
@@ -168,9 +203,10 @@ export class GameViewModel {
         this.currentPreview = { previewId: output.previewId, text: output.text };
         break;
       case "input_preview_canceled":
-        // The same input interaction reopens for editing.
-        this.mode = "INPUT_EDITING";
+        // The same interaction reopens in its ORIGINAL form — input stays
+        // INPUT_EDITING, hybrid stays HYBRID_SELECTING (§11.6).
         this.currentPreview = undefined;
+        this.mode = this.deriveModeFromInteraction(this.currentInteraction);
         break;
       case "input_committed":
         // Input confirmed; awaiting the LLM response.
@@ -202,17 +238,16 @@ export class GameViewModel {
     }
   }
 
+  private deriveModeFromInteraction(interaction: unknown): FrontendMode {
+    return interactionModeToFrontendMode(interaction);
+  }
+
   private deriveModeFromProjection(projection: UiProjection): FrontendMode {
     if (projection.phase === "ended") return "ENDING";
     if (projection.phase === "error") return "ERROR";
     if (projection.currentPreview !== undefined) return "INPUT_PREVIEW";
     if (projection.currentInteraction !== undefined) {
-      const interaction = projection.currentInteraction as
-        | { type?: string; mode?: string }
-        | undefined;
-      return interaction?.type === "interaction" && interaction?.mode === "input"
-        ? "INPUT_EDITING"
-        : "CHOICE_SELECTING";
+      return interactionModeToFrontendMode(projection.currentInteraction);
     }
     if (projection.currentLine !== undefined) return "PLAYING";
     return projection.phase === "running" ? "CONTENT_WAITING" : "BOOTSTRAP";

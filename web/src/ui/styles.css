@@ -403,15 +403,61 @@ button {
   background: rgba(232, 167, 92, 0.14);
 }
 
-/* ---- choices ---- */
+/* ---- interaction panel (choice / hybrid / input) ---- */
 
-.choices {
-  width: min(760px, 94vw);
+.interaction-panel {
+  width: min(820px, 96vw);
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding-bottom: 22px;
+  animation: rise-in 420ms var(--ease-out) both;
 }
+
+.interaction-panel__prompt {
+  font-size: 16px;
+  letter-spacing: 0.2em;
+  color: var(--paper-dim);
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.interaction-panel__divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 2px 0;
+  font-size: 12px;
+  letter-spacing: 0.3em;
+  color: var(--paper-faint);
+}
+
+.interaction-panel__divider::before,
+.interaction-panel__divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-soft);
+}
+
+.choice:disabled,
+.input-panel__field:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.choice:disabled:hover {
+  transform: none;
+  border-color: rgba(232, 167, 92, 0.16);
+  background: linear-gradient(90deg, rgba(20, 25, 34, 0.86), rgba(13, 16, 22, 0.86));
+  box-shadow: none;
+}
+
+.choice:disabled:hover::after {
+  transform: translateY(-50%) scale(0);
+}
+
+/* ---- choices ---- */
 
 .choices__prompt {
   font-size: 17px;
@@ -477,20 +523,7 @@ button {
   transform: translateY(-50%) scale(1);
 }
 
-/* ---- input panel ---- */
-
-.input-panel {
-  width: min(820px, 96vw);
-  animation: rise-in 420ms var(--ease-out) both;
-}
-
-.input-panel__prompt {
-  font-size: 16px;
-  letter-spacing: 0.2em;
-  color: var(--paper-dim);
-  margin-bottom: 12px;
-  text-align: center;
-}
+/* ---- input field ---- */
 
 .input-panel__field {
   display: block;

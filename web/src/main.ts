@@ -10,13 +10,12 @@
  * `#app` present it boots immediately.
  */
 import type { FrontendMode } from "./runtime/game-view-model.js";
-import type { GameAppState } from "./app.js";
-import { GameApp } from "./app.js";
+import { GameApp, interactionIdOf, type GameAppState } from "./app.js";
 import { buildAppDom, type AppDomRefs } from "./ui/layout.js";
 import { StartScreen } from "./ui/start-screen.js";
 import { DialogueBox } from "./ui/dialogue-box.js";
-import { renderChoices } from "./ui/choices.js";
-import { InputPanel, PreviewPanel } from "./ui/input-panel.js";
+import { InteractionPanel } from "./ui/interaction-panel.js";
+import { PreviewPanel } from "./ui/input-panel.js";
 import { ControlsBar } from "./ui/controls.js";
 import { EndScreen, ErrorBanner } from "./ui/end-screen.js";
 import { show } from "./ui/dom.js";
@@ -75,7 +74,8 @@ export function boot(root?: HTMLElement | null): void {
   const dialogueBox = new DialogueBox(refs.dialogueRoot, {
     onAdvance: () => app.advance(),
   });
-  const inputPanel = new InputPanel(refs.inputRoot, {
+  const interactionPanel = new InteractionPanel(refs.interactionRoot, {
+    onSelect: (optionId) => app.selectChoice(optionId),
     onSubmit: (text) => app.submitInput(text),
   });
   const previewPanel = new PreviewPanel(refs.previewRoot, {
@@ -123,8 +123,12 @@ export function boot(root?: HTMLElement | null): void {
 
   let started = false;
   let lastMode: FrontendMode | null = null;
-  let draft: string | null = null;
   let lastPreviewText: string | null = null;
+  // Draft per interaction: a preview stores its text under the interaction id
+  // so cancel restores it, while a NEW interaction never reuses an old draft
+  // (§11.7).
+  let draftByInteractionId = new Map<string, string>();
+  let lastInteractionId: string | null = null;
 
   const render = (state: GameAppState): void => {
     const view = state.view;
@@ -141,32 +145,46 @@ export function boot(root?: HTMLElement | null): void {
     show(refs.controlsRoot, mode !== "BOOTSTRAP" && mode !== "ENDING");
 
     show(refs.dialogueRoot, mode === "PLAYING");
-    show(refs.choicesRoot, mode === "CHOICE_SELECTING");
-    show(refs.inputRoot, mode === "INPUT_EDITING");
     show(refs.previewRoot, mode === "INPUT_PREVIEW");
     show(refs.waitingEl, mode === "CONTENT_WAITING" || (started && mode === "BOOTSTRAP"));
+
+    const selectingMode =
+      mode === "CHOICE_SELECTING" || mode === "HYBRID_SELECTING" || mode === "INPUT_EDITING";
+
+    if (modeChanged) {
+      if (selectingMode) {
+        const interactionId = interactionIdOf(view.currentInteraction);
+        // A genuinely new interaction supersedes every older draft.
+        if (interactionId !== null && interactionId !== lastInteractionId) {
+          draftByInteractionId.clear();
+          lastInteractionId = interactionId;
+        }
+        const draft =
+          interactionId !== null ? draftByInteractionId.get(interactionId) : undefined;
+        if (draft !== undefined && interactionId !== null) {
+          draftByInteractionId.delete(interactionId);
+          interactionPanel.restoreDraft(draft);
+        } else {
+          interactionPanel.open(view.currentInteraction);
+        }
+      } else {
+        interactionPanel.close();
+      }
+    }
 
     if (mode === "PLAYING") {
       const line = view.currentLine;
       if (line !== undefined) {
         dialogueBox.setLine(line, state.showLineIds);
       }
-    } else if (mode === "CHOICE_SELECTING" && modeChanged) {
-      renderChoices(refs.choicesRoot, view.currentInteraction, (optionId) =>
-        app.selectChoice(optionId),
-      );
-    } else if (mode === "INPUT_EDITING" && modeChanged) {
-      if (draft !== null) {
-        inputPanel.restoreDraft(draft);
-        draft = null;
-      } else {
-        inputPanel.open(view.currentInteraction);
-      }
     } else if (mode === "INPUT_PREVIEW") {
       const text = view.currentPreview?.text ?? "";
       if (modeChanged || text !== lastPreviewText) {
         lastPreviewText = text;
-        draft = text;
+        const interactionId = interactionIdOf(view.currentInteraction);
+        if (interactionId !== null) {
+          draftByInteractionId.set(interactionId, text);
+        }
         previewPanel.show(text);
       }
     } else if (mode === "ENDING" && modeChanged) {

@@ -12,8 +12,7 @@ export interface AppDomRefs {
   hud: HTMLElement;
   scene: HTMLElement;
   dialogueRoot: HTMLElement;
-  choicesRoot: HTMLElement;
-  inputRoot: HTMLElement;
+  interactionRoot: HTMLElement;
   previewRoot: HTMLElement;
   waitingEl: HTMLElement;
   controlsRoot: HTMLElement;
@@ -68,21 +67,27 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   dialogueRoot.append(nameplate, panel);
   scene.append(dialogueRoot);
 
-  // Choice list — rendered dynamically by the choices widget.
-  const choicesRoot = el("section", "choices") as HTMLElement;
-  scene.append(choicesRoot);
-
-  // Free-text input panel.
-  const inputRoot = el("section", "input-panel") as HTMLElement;
+  // Unified choice/hybrid/input form (§11.3). The InteractionPanel owns all
+  // dynamic content; the static skeleton only declares the class hooks.
+  const interactionRoot = el("section", "interaction-panel") as HTMLElement;
+  const interactionChoices = el("section", "interaction-panel__choices") as HTMLElement;
+  const divider = el("div", "interaction-panel__divider") as HTMLDivElement;
+  divider.append(el("span", "", "或者"));
+  const interactionInput = el("section", "interaction-panel__input") as HTMLElement;
   const inputField = el("textarea", "input-panel__field") as HTMLTextAreaElement;
   const inputMeta = el("div", "input-panel__meta") as HTMLDivElement;
   inputMeta.append(
     el("span", "input-panel__count", ""),
     el("span", "input-panel__keys", "Enter 发送"),
   );
-  inputRoot.append(el("p", "input-panel__prompt", ""), inputField, inputMeta);
-  scene.append(inputRoot);
-
+  interactionInput.append(inputField, inputMeta);
+  interactionRoot.append(
+    el("p", "interaction-panel__prompt", ""),
+    interactionChoices,
+    divider,
+    interactionInput,
+  );
+  scene.append(interactionRoot);
   // Preview confirm panel.
   const previewRoot = el("section", "preview") as HTMLElement;
   const previewActions = el("div", "preview__actions") as HTMLDivElement;
@@ -154,8 +159,7 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     hud,
     scene,
     dialogueRoot,
-    choicesRoot,
-    inputRoot,
+    interactionRoot,
     previewRoot,
     waitingEl,
     controlsRoot,

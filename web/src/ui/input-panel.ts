@@ -1,18 +1,15 @@
 /**
- * InputPanel + PreviewPanel — the two-stage free-text flow (§13).
+ * PreviewPanel — the confirm stage of the free-text flow (§13).
  *
- * INPUT_EDITING: a textarea; the first Enter freezes the draft and sends
- * `preview_input` (preview_input is a separate async operation, so during
- * IME composition Enter must NOT submit).
- * INPUT_PREVIEW: the frozen text is shown for confirm; Enter confirms
- * (`confirm_input`), Esc cancels (`cancel_input`) and the interaction
- * reopens for editing.
+ * The editing stage now lives in the unified InteractionPanel
+ * (interaction-panel.ts); this file keeps only the INPUT_PREVIEW surface:
+ * the frozen text is shown for confirm; Enter confirms (`confirm_input`),
+ * Esc cancels (`cancel_input`) and the interaction reopens for editing.
+ *
+ * `asInputInteraction` is shared with the InteractionPanel for parsing the
+ * `input` spec (placeholder / max_length).
  */
 import { asRecord, setText, show } from "./dom.js";
-
-export interface InputPanelHooks {
-  onSubmit(text: string): void;
-}
 
 export interface InputInteractionLike {
   interaction_id: string;
@@ -47,64 +44,6 @@ export function asInputInteraction(value: unknown): InputInteractionLike | null 
         }
       : {}),
   };
-}
-
-export class InputPanel {
-  private readonly root: HTMLElement;
-  private readonly promptEl: HTMLElement;
-  private readonly field: HTMLTextAreaElement;
-  private readonly countEl: HTMLElement;
-  private readonly hooks: InputPanelHooks;
-  private maxLength = 200;
-
-  constructor(root: HTMLElement, hooks: InputPanelHooks) {
-    this.root = root;
-    this.hooks = hooks;
-    this.promptEl = root.querySelector(".input-panel__prompt") as HTMLElement;
-    this.field = root.querySelector(".input-panel__field") as HTMLTextAreaElement;
-    this.countEl = root.querySelector(".input-panel__count") as HTMLElement;
-    this.field.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
-      if (event.isComposing || event.keyCode === 229) return; // IME composition
-      event.preventDefault();
-      this.submit();
-    });
-    this.field.addEventListener("input", () => this.updateCount());
-  }
-
-  /** Open the editor for an input interaction. Returns true when usable. */
-  open(interaction: unknown): boolean {
-    const parsed = asInputInteraction(interaction);
-    if (parsed === null) return false;
-    setText(this.promptEl, parsed.prompt);
-    this.maxLength = Math.min(2000, Math.max(1, parsed.input?.max_length ?? 200));
-    this.field.value = "";
-    this.field.placeholder = parsed.input?.placeholder ?? "在此写下你的回应……";
-    this.field.maxLength = this.maxLength;
-    this.updateCount();
-    show(this.root, true);
-    // Defer focus so the mode-switch render has settled.
-    window.setTimeout(() => this.field.focus(), 0);
-    return true;
-  }
-
-  submit(): void {
-    const text = this.field.value.trim();
-    if (text.length === 0) return;
-    this.hooks.onSubmit(text);
-  }
-
-  /** Restore a draft after preview cancel (Esc returns to editing intact). */
-  restoreDraft(text: string): void {
-    this.field.value = text.slice(0, this.maxLength);
-    this.updateCount();
-    show(this.root, true);
-    window.setTimeout(() => this.field.focus(), 0);
-  }
-
-  private updateCount(): void {
-    setText(this.countEl, `${this.field.value.length} / ${this.maxLength}`);
-  }
 }
 
 export interface PreviewPanelHooks {
