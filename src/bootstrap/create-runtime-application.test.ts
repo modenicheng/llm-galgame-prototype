@@ -124,6 +124,15 @@ describe("createRuntimeApplication", () => {
           "  audio:",
           "    enabled: false",
           "    provider: disabled",
+          "    synthesis:",
+          "      # Explicit: the legacy flat provider field is not the V2",
+          "      # switch — synthesis.provider is. Audio stays off here.",
+          "      provider: disabled",
+          "      max_concurrency: 2",
+          "      model_profile: cosyvoice_v3_flash",
+          "      api_key_env: UNUSED_KEY",
+          "      format: pcm_s16le",
+          "      sample_rate: 22050",
           "game:",
           "  history_events: 80",
           "  sessions_dir: sessions",
@@ -148,6 +157,68 @@ describe("createRuntimeApplication", () => {
       expect(app.config.game.show_line_ids).toBe(true);
       expect(app.config.media.audio.provider).toBe("disabled");
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws at startup when dashscope provider env is incomplete", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-voices-"));
+    const voicesPath = path.join(dir, "voices.yaml");
+    const originalDashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const originalCosyvoiceSuyao = process.env.COSYVOICE_VOICE_SUYAO;
+    process.env.DASHSCOPE_API_KEY = "test-dashscope-key";
+    delete process.env.COSYVOICE_VOICE_SUYAO;
+    try {
+      await writeFile(
+        voicesPath,
+        [
+          "version: 3",
+          "profiles:",
+          "  suyao_main:",
+          "    semantic:",
+          "      base_description: 年轻女性。",
+          "    providers:",
+          "      dashscope:",
+          "        model: cosyvoice-v3-flash",
+          "        voice_id_env: COSYVOICE_VOICE_SUYAO",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      const config = makeTestConfig({
+        media: {
+          audio: {
+            enabled: false,
+            provider: "disabled",
+            active_target_lines: 3,
+            refill_threshold_lines: 2,
+            branch_prefetch_lines: 2,
+            batch_size: 2,
+            max_concurrency: 2,
+            mock_latency_ms: 800,
+            output_dir: "assets/audio",
+            synthesis: {
+              provider: "dashscope",
+              max_concurrency: 2,
+              model_profile: "cosyvoice_v3_flash",
+              api_key_env: "DASHSCOPE_API_KEY",
+              format: "pcm_s16le",
+              sample_rate: 22050,
+            },
+          },
+        },
+        characters: {
+          suyao: { name: "苏遥", voice_profile: "suyao_main" },
+        },
+      });
+      await expect(createRuntimeApplication({ config, voicesPath })).rejects.toThrow(
+        /COSYVOICE_VOICE_SUYAO/,
+      );
+    } finally {
+      if (originalDashscopeKey === undefined) delete process.env.DASHSCOPE_API_KEY;
+      else process.env.DASHSCOPE_API_KEY = originalDashscopeKey;
+      if (originalCosyvoiceSuyao === undefined) delete process.env.COSYVOICE_VOICE_SUYAO;
+      else process.env.COSYVOICE_VOICE_SUYAO = originalCosyvoiceSuyao;
       await rm(dir, { recursive: true, force: true });
     }
   });

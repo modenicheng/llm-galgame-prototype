@@ -1,9 +1,13 @@
-# 角色音色配置 V2（§14.1）
+# 角色音色配置 V3（§14.1）
 #
 # 角色只引用逻辑音色配置（config.yaml characters.voice_profile），
 # 具体供应商参数只存在于本文件，永不进入浏览器。
+#
+# V3 严格模式：version 必须为 3；provider binding 恰好是
+# model + voice_id_env。voice_id_env 指向 .env 中的音色 ID。
+# V2 的 voice_sources（零样本复刻资产注册）已移出运行时配置。
 
-version: 2
+version: 3
 
 profiles:
   suyao_main:
@@ -25,10 +29,4 @@ profiles:
         model: cosyvoice-v3-flash
         voice_id_env: COSYVOICE_VOICE_SUYAO
         voice_revision: 1
-
-# 零样本复刻资产（作者侧一次性注册用，不进入运行时，不发送给浏览器）
-voice_sources:
-  suyao_source:
-    reference_audio: assets/voices/suyao/reference.wav
-    reference_text: 这是一段音色注册参考文本。
-    language: zh
+        instruction_mode: free

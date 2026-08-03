@@ -158,6 +158,7 @@ export class AudioDescriptorFactory {
       model: this.options.modelProfile,
       voice_id_env: `${MOCK_VOICE_ENV_PREFIX}${speakerId}`,
       voice_revision: 0,
+      instruction_mode: "none",
     };
   }
 

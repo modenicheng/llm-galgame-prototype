@@ -34,6 +34,8 @@ export interface RuntimeApplicationOptions {
   sessionDir?: string;
   /** Already-loaded config; skips the disk reload when provided. */
   config?: AppConfig;
+  /** voices.yaml path (default "voices.yaml" in the cwd). */
+  voicesPath?: string;
 }
 
 

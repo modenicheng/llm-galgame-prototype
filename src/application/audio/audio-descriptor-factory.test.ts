@@ -20,7 +20,7 @@ const stubCompiler: PerformanceCompiler = {
 };
 
 const voices: VoicesConfig = {
-  version: 2,
+  version: 3,
   profiles: {
     suyao_main: {
       semantic: {
@@ -33,6 +33,7 @@ const voices: VoicesConfig = {
           model: "cosyvoice-v2",
           voice_id_env: "SUYAO_VOICE_ID",
           voice_revision: 3,
+          instruction_mode: "free",
         },
       },
     },

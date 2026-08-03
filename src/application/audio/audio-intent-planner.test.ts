@@ -22,12 +22,12 @@ const stubCompiler: PerformanceCompiler = {
 };
 
 const voices: VoicesConfig = {
-  version: 2,
+  version: 3,
   profiles: {
     suyao_main: {
       semantic: { base_description: "温柔的少女声", allowed_delivery: [], forbidden_delivery: [] },
       providers: {
-        dashscope: { model: "cosyvoice-v2", voice_id_env: "SUYAO_VOICE_ID", voice_revision: 1 },
+        dashscope: { model: "cosyvoice-v2", voice_id_env: "SUYAO_VOICE_ID", voice_revision: 1, instruction_mode: "free" },
       },
     },
   },
