@@ -62,6 +62,27 @@ export interface AudioCacheConfig {
   candidate_ttl_hours: number;
 }
 
+/** Interaction-mode policy (mode allow-list, option ranges, input limits). */
+export interface InteractionPolicyConfig {
+  allowed_modes: Array<"choice" | "hybrid" | "input">;
+  default_mode: "choice" | "hybrid" | "input";
+
+  options: {
+    min_count: number;
+    max_count: number;
+  };
+
+  input: {
+    max_length: number;
+    max_consecutive_pure_input: number;
+  };
+
+  legacy_choice: {
+    allow_runtime_compatibility: boolean;
+    allow_model_output: boolean;
+  };
+}
+
 interface RefinementContext {
   addIssue(issue: unknown): void;
 }
@@ -100,6 +121,8 @@ export interface AppConfig {
     /** Show the input-response generation state in the preview (debug only). */
     show_generation_status: boolean;
   };
+  /** Interaction-mode policy (mode allow-list, option ranges, input limits). */
+  interaction: InteractionPolicyConfig;
   debug: {
     /** Render runtime status panels even without --debug-runtime. */
     runtime_status: boolean;
@@ -252,6 +275,57 @@ const AudioConfigSchema = z
     }
   });
 
+/** Interaction-mode policy schema; validates like the other sections. */
+const InteractionPolicyConfigSchema = z
+  .object({
+    allowed_modes: z
+      .array(z.enum(["choice", "hybrid", "input"]))
+      .min(1)
+      .default(["choice", "hybrid", "input"]),
+    default_mode: z.enum(["choice", "hybrid", "input"]).default("hybrid"),
+    options: z
+      .object({
+        min_count: z.number().int().min(2).default(2),
+        max_count: z.number().int().max(5).default(5),
+      })
+      .default({ min_count: 2, max_count: 5 }),
+    input: z
+      .object({
+        max_length: z.number().int().min(1).max(2000).default(500),
+        max_consecutive_pure_input: z.number().int().min(0).default(1),
+      })
+      .default({ max_length: 500, max_consecutive_pure_input: 1 }),
+    legacy_choice: z
+      .object({
+        allow_runtime_compatibility: z.boolean().default(true),
+        allow_model_output: z.boolean().default(false),
+      })
+      .default({ allow_runtime_compatibility: true, allow_model_output: false }),
+  })
+  .superRefine((value, context: RefinementContext) => {
+    if (!value.allowed_modes.includes(value.default_mode)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["default_mode"],
+        message: "default_mode 必须存在于 allowed_modes。",
+      });
+    }
+    if (value.options.min_count > value.options.max_count) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["options"],
+        message: "options.min_count 不能大于 options.max_count。",
+      });
+    }
+  })
+  .default({
+    allowed_modes: ["choice", "hybrid", "input"],
+    default_mode: "hybrid",
+    options: { min_count: 2, max_count: 5 },
+    input: { max_length: 500, max_consecutive_pure_input: 1 },
+    legacy_choice: { allow_runtime_compatibility: true, allow_model_output: false },
+  });
+
 const ConfigSchema = z.object({
   api: z.object({
     model: z.string().min(1),
@@ -305,6 +379,7 @@ const ConfigSchema = z.object({
       require_preview_confirmation: true,
       show_generation_status: false,
     }),
+  interaction: InteractionPolicyConfigSchema,
   debug: z
     .object({
       runtime_status: z.boolean().default(false),

@@ -33,6 +33,26 @@ input:
   require_preview_confirmation: true
   show_generation_status: false
 
+interaction:
+  allowed_modes:
+    - choice
+    - hybrid
+    - input
+
+  default_mode: hybrid
+
+  options:
+    min_count: 2
+    max_count: 5
+
+  input:
+    max_length: 500
+    max_consecutive_pure_input: 1
+
+  legacy_choice:
+    allow_runtime_compatibility: true
+    allow_model_output: false
+
 media:
   audio:
     # V1 遗留平面字段：保持默认，CLI 行为不变（enabled=false 不等待音频）。

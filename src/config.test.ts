@@ -91,6 +91,16 @@ describe("loadConfig defaults", () => {
     expect(config.game.history_events).toBe(80);
     expect(config.game.sessions_dir).toBe("sessions");
     expect(config.game.show_line_ids).toBe(true);
+
+    // Interaction policy defaults
+    expect(config.interaction.allowed_modes).toEqual(["choice", "hybrid", "input"]);
+    expect(config.interaction.default_mode).toBe("hybrid");
+    expect(config.interaction.options.min_count).toBe(2);
+    expect(config.interaction.options.max_count).toBe(5);
+    expect(config.interaction.input.max_length).toBe(500);
+    expect(config.interaction.input.max_consecutive_pure_input).toBe(1);
+    expect(config.interaction.legacy_choice.allow_runtime_compatibility).toBe(true);
+    expect(config.interaction.legacy_choice.allow_model_output).toBe(false);
   });
 });
 
@@ -147,6 +157,21 @@ describe("loadConfig with all fields", () => {
       "  history_events: 100",
       "  sessions_dir: my_sessions",
       "  show_line_ids: false",
+      "",
+      "interaction:",
+      "  allowed_modes:",
+      "    - choice",
+      "    - input",
+      "  default_mode: input",
+      "  options:",
+      "    min_count: 3",
+      "    max_count: 4",
+      "  input:",
+      "    max_length: 800",
+      "    max_consecutive_pure_input: 2",
+      "  legacy_choice:",
+      "    allow_runtime_compatibility: false",
+      "    allow_model_output: true",
     ].join("\n");
 
     const filePath = await writeTempYaml("full", yamlContent);
@@ -194,6 +219,16 @@ describe("loadConfig with all fields", () => {
     expect(config.game.history_events).toBe(100);
     expect(config.game.sessions_dir).toBe("my_sessions");
     expect(config.game.show_line_ids).toBe(false);
+
+    // Interaction policy
+    expect(config.interaction.allowed_modes).toEqual(["choice", "input"]);
+    expect(config.interaction.default_mode).toBe("input");
+    expect(config.interaction.options.min_count).toBe(3);
+    expect(config.interaction.options.max_count).toBe(4);
+    expect(config.interaction.input.max_length).toBe(800);
+    expect(config.interaction.input.max_consecutive_pure_input).toBe(2);
+    expect(config.interaction.legacy_choice.allow_runtime_compatibility).toBe(false);
+    expect(config.interaction.legacy_choice.allow_model_output).toBe(true);
   });
 });
 
@@ -465,6 +500,133 @@ describe("loadConfig validation errors", () => {
         "",
         "input:",
         "  kind: voice",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+
+  it("should reject empty interaction.allowed_modes", async () => {
+    const filePath = await writeTempYaml(
+      "bad-interaction-allowed-modes",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test",
+        "  base_url: https://api.example.com",
+        "",
+        "interaction:",
+        "  allowed_modes: []",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+
+  it("should reject default_mode not in allowed_modes", async () => {
+    const filePath = await writeTempYaml(
+      "bad-interaction-default-mode",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test",
+        "  base_url: https://api.example.com",
+        "",
+        "interaction:",
+        "  allowed_modes:",
+        "    - choice",
+        "  default_mode: input",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+
+  it("should reject interaction options min_count < 2", async () => {
+    const filePath = await writeTempYaml(
+      "bad-interaction-min-count",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test",
+        "  base_url: https://api.example.com",
+        "",
+        "interaction:",
+        "  options:",
+        "    min_count: 1",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+
+  it("should reject interaction options max_count > 5", async () => {
+    const filePath = await writeTempYaml(
+      "bad-interaction-max-count",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test",
+        "  base_url: https://api.example.com",
+        "",
+        "interaction:",
+        "  options:",
+        "    max_count: 6",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+
+  it("should reject interaction options min_count > max_count", async () => {
+    const filePath = await writeTempYaml(
+      "bad-interaction-option-range",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test",
+        "  base_url: https://api.example.com",
+        "",
+        "interaction:",
+        "  options:",
+        "    min_count: 5",
+        "    max_count: 3",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+
+  it("should reject interaction input.max_length out of range", async () => {
+    const filePath = await writeTempYaml(
+      "bad-interaction-max-length",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test",
+        "  base_url: https://api.example.com",
+        "",
+        "interaction:",
+        "  input:",
+        "    max_length: 0",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+
+  it("should reject negative max_consecutive_pure_input", async () => {
+    const filePath = await writeTempYaml(
+      "bad-interaction-consecutive-input",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test",
+        "  base_url: https://api.example.com",
+        "",
+        "interaction:",
+        "  input:",
+        "    max_consecutive_pure_input: -1",
       ].join("\n"),
     );
 
