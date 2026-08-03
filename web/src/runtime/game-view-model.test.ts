@@ -425,6 +425,85 @@ describe("GameViewModel", () => {
     expect(vm.state().mode).toBe("ERROR");
   });
 
+  it("reconnect after a resolved hybrid restores CONTENT_WAITING, never the form (§9.6)", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage(hybridInteractionOpened);
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 13,
+      output: { type: "interaction_resolved", interactionId: "int-3", resolution: "choice" },
+    });
+    expect(vm.state().mode).toBe("CONTENT_WAITING");
+
+    // The browser drops before the next playback_ready and reconnects: the
+    // server projection no longer carries the resolved interaction, so the
+    // page must restore CONTENT_WAITING with no form.
+    vm.applyProjection({ phase: "running", recentLines: [] });
+    const state = vm.state();
+    expect(state.mode).toBe("CONTENT_WAITING");
+    expect(state.currentInteraction).toBeUndefined();
+    expect(state.currentPreview).toBeUndefined();
+  });
+
+  it("reconnect during an open input preview restores INPUT_PREVIEW (§9.6)", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage(inputInteractionOpened);
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 12,
+      output: { type: "input_preview_opened", previewId: "pv-1", text: "typed draft" },
+    });
+    expect(vm.state().mode).toBe("INPUT_PREVIEW");
+
+    // Reconnect: the store projection keeps both the open interaction and
+    // the preview, so the editor reopens with the draft intact.
+    vm.applyProjection({
+      phase: "running",
+      recentLines: [],
+      currentInteraction: {
+        type: "interaction",
+        interaction_id: "int-2",
+        prompt: "Say something",
+        mode: "input",
+        input: { kind: "free_text", placeholder: "…", max_length: 200 },
+        input_bridge: { events: [{ type: "narration", text: "She waits." }] },
+      },
+      currentPreview: { previewId: "pv-1", text: "typed draft" },
+    });
+    const state = vm.state();
+    expect(state.mode).toBe("INPUT_PREVIEW");
+    expect(state.currentPreview).toEqual({ previewId: "pv-1", text: "typed draft" });
+    expect(state.currentInteraction).toBeDefined();
+  });
+
+  it("reconnect after a confirmed input restores no form (§9.6)", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage(inputInteractionOpened);
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 12,
+      output: { type: "input_preview_opened", previewId: "pv-1", text: "draft" },
+    });
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 13,
+      output: { type: "interaction_resolved", interactionId: "int-2", resolution: "input" },
+    });
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 14,
+      output: { type: "input_committed", previewId: "pv-1" },
+    });
+    expect(vm.state().mode).toBe("CONTENT_WAITING");
+
+    // Reconnect: neither the interaction nor the old input box is restored.
+    vm.applyProjection({ phase: "running", recentLines: [] });
+    const state = vm.state();
+    expect(state.mode).toBe("CONTENT_WAITING");
+    expect(state.currentInteraction).toBeUndefined();
+    expect(state.currentPreview).toBeUndefined();
+  });
+
   it("caps recentLines at 8, keeping the newest", () => {
     const vm = new GameViewModel();
     for (let i = 1; i <= 10; i++) {

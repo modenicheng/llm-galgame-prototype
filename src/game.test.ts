@@ -34,6 +34,7 @@ import type {
 } from "./schema.js";
 import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
 import type { GenerationEnvelope } from "./story/types.js";
+import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
 import type { InteractionOpenedOutput } from "./test-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -1189,6 +1190,71 @@ describe("Input bridge semantics", () => {
     expect(played[2]!.text).toBe("她等着你的决定。");
     expect(played[3]!.text).toBe("回应。");
   });
+
+  it("hybrid free text discards the prefetched option candidates; bridge and NPC response play", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "interaction",
+          interaction_id: "int_1",
+          prompt: "怎么做？",
+          mode: "hybrid",
+          options: [
+            { id: "a", text: "选项A" },
+            { id: "b", text: "选项B" },
+          ],
+          input: { kind: "free_text", placeholder: "...", max_length: 200 },
+          input_bridge: {
+            events: [{ type: "narration", text: "她等着你的决定。" }],
+          },
+        },
+      ]),
+    );
+    // Both option candidates are prefetched and become ready…
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("候选分支内容。")]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) =>
+        controller.submitInput(output.interactionId, "随便说点什么"),
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // The candidates were prefetched (one per option) but the input path
+    // discards them: their content never plays, the resolution is "input",
+    // and the input response generation runs exactly once.
+    expect(generator.generateBranchPrefetch).toHaveBeenCalledTimes(2);
+    expect(game.getMetrics().prefetch.branches_requested).toBe(2);
+    expect(generator.generateInputResponse).toHaveBeenCalledTimes(1);
+    expect(
+      controller.outputs.filter(
+        (o): o is Extract<RuntimeOutput, { type: "interaction_resolved" }> =>
+          o.type === "interaction_resolved",
+      ),
+    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "input" }]);
+    const played = controller.playbackEvents().map((output) => output.event);
+    const texts = played.map((e) => e.text);
+    expect(texts).not.toContain("候选分支内容。");
+    expect(played[1]!.type).toBe("player_dialogue");
+    expect(played[2]!.text).toBe("她等着你的决定。");
+    expect(played[3]!.text).toBe("回应。");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1388,6 +1454,77 @@ describe("Input response streaming", () => {
       (e as { text?: string }).text,
     );
     expect(storedTexts).not.toContain("迟到事件。");
+  });
+
+  it("never commits a state patch from a stale stream after cancel", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    let emitLine!: (draft: ModelEvent) => void;
+    let completeStale!: (value: GenerationEnvelope) => void;
+    // First call: manually controlled pending stream that outlives the
+    // cancel. Second call: normal response for the re-opened interaction.
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
+        return new Promise((resolve) => {
+          emitLine = (draft) => options?.onEvent?.(draft);
+          completeStale = (value) => resolve(value);
+        });
+      })
+      .mockResolvedValueOnce(envelope([narrationEvent("回应。")]));
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    let previewIndex = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) =>
+        controller.submitInput(output.interactionId, previewIndex === 0 ? "第一次" : "第二次"),
+      onInputPreviewOpened: (output) => {
+        if (previewIndex === 0) {
+          // A line arrives while the preview is open; the player then cancels.
+          emitLine({ type: "narration", text: "暂存行。" });
+          controller.cancel(output.previewId);
+        } else {
+          // The cancel is now processed. The OLD stream's later events must
+          // be dropped and its state patch must never reach the story state
+          // (§17.14 / §17.15).
+          emitLine({ type: "narration", text: "迟到事件。" });
+          completeStale(
+            envelope([], {
+              open_threads: [
+                {
+                  id: "stale_thread",
+                  summary: "来自取消流的线程",
+                  status: "new",
+                  last_touched_turn: 0,
+                },
+              ],
+            }),
+          );
+          controller.confirm(output.previewId);
+        }
+        previewIndex += 1;
+      },
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // Neither the staged line nor the late event rendered; the stale patch
+    // never applied and the late event was dropped at the abort boundary.
+    const played = controller.playbackEvents().map((output) => output.event);
+    const texts = played.map((e) => e.text);
+    expect(texts).not.toContain("暂存行。");
+    expect(texts).not.toContain("迟到事件。");
+    const storyState = (game as any).storyState as { open_threads: Array<{ id: string }> };
+    expect(storyState.open_threads.map((t) => t.id)).not.toContain("stale_thread");
+    expect(game.getMetrics().input.stale_input_event_dropped_count).toBe(1);
   });
 
   it("reuses the bridge across preview cancels", async () => {
@@ -2579,6 +2716,8 @@ describe("Interaction resolution publication", () => {
     // The preset choice discards the bridge; its narration never plays.
     const played = controller.playbackEvents().map((output) => output.event.text);
     expect(played).not.toContain("她等着你的决定。");
+    // The option path never touches the input pipeline: no response request.
+    expect(generator.generateInputResponse).not.toHaveBeenCalled();
   });
 
   it("emits interaction_resolved(input) on confirm, before input_committed", async () => {

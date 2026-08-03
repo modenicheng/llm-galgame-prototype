@@ -12,6 +12,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { AudioCatalogServiceImpl } from "../../application/audio/audio-catalog-service.js";
 import type { TaskStatusEvent } from "../../application/audio/tts-task-service.js";
 import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
+import type { UiProjection } from "../../shared/wire/ui-projection.js";
 import type { ServerMessage } from "../../shared/wire/server-message.js";
 import { isAllowedOrigin } from "./origin-guard.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";
@@ -93,6 +94,7 @@ describe("RuntimeWebSocket", () => {
   let runtimeWs: RuntimeWebSocket;
   let catalog: AudioCatalogServiceImpl;
   let game: ReturnType<typeof makeFakeGame>;
+  let projection: ReturnType<typeof makeFakeProjection>;
   let statusListener: ((event: TaskStatusEvent) => void) | null;
   let startedGame = false;
   const clients: WebSocket[] = [];
@@ -101,8 +103,7 @@ describe("RuntimeWebSocket", () => {
     catalog = new AudioCatalogServiceImpl();
     startedGame = false;
     game = makeFakeGame();
-    const projection = makeFakeProjection();
-    statusListener = null;
+    projection = makeFakeProjection();
 
     server = http.createServer();
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -170,6 +171,62 @@ describe("RuntimeWebSocket", () => {
     const client = await connect();
     const message = await waitForMessage(client.messages, (m) => m.type === "projection.snapshot");
     expect(message).toEqual({ type: "projection.snapshot", projection: { phase: "idle", recentLines: [] } });
+  });
+
+  it("never sends a resolved interaction in the reconnect snapshot (§14.9)", async () => {
+    const opened: UiProjection = {
+      phase: "running",
+      recentLines: [],
+      currentInteraction: {
+        type: "interaction",
+        interaction_id: "int_1",
+        prompt: "怎么做？",
+        mode: "hybrid",
+        options: [
+          { id: "a", text: "选项A" },
+          { id: "b", text: "选项B" },
+        ],
+        input: { kind: "free_text", placeholder: "...", max_length: 200 },
+        input_bridge: { events: [{ type: "narration", text: "她等着你的决定。" }] },
+      },
+    };
+    projection.setSnapshot(opened);
+
+    const first = await connect();
+    const firstSnapshot = await waitForMessage(
+      first.messages,
+      (m) => m.type === "projection.snapshot",
+    );
+    expect(firstSnapshot).toEqual({ type: "projection.snapshot", projection: opened });
+
+    // The interaction resolves; the store projection drops it. Simulate a
+    // browser reconnect: drop the socket and open a fresh one.
+    first.ws.terminate();
+    await waitFor(() => first.ws.readyState === WebSocket.CLOSED);
+    projection.setSnapshot({ phase: "running", recentLines: [] });
+
+    // The single controller slot frees up once the host processes the close;
+    // poll with fresh connects until one is accepted (no fixed sleep).
+    let second: TestClient | null = null;
+    for (let i = 0; i < 200 && second === null; i++) {
+      const candidate = await connect();
+      const outcome = await Promise.race([
+        candidate.closeInfo.then((info) => info),
+        sleep(20).then(() => null),
+      ]);
+      if (outcome !== null && outcome.code === 4001) continue; // slot still held
+      second = candidate;
+    }
+    expect(second).not.toBeNull();
+
+    const secondSnapshot = await waitForMessage(
+      second!.messages,
+      (m) => m.type === "projection.snapshot",
+    );
+    expect(secondSnapshot).toEqual({
+      type: "projection.snapshot",
+      projection: { phase: "running", recentLines: [] },
+    });
   });
 
   it("starts the game on the first controller connection (§10.5)", async () => {
