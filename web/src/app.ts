@@ -186,8 +186,8 @@ export class GameApp {
         },
         this.coordinatorEvents,
       );
-      // AudioWorklet is optional (§10.5): a capability miss (no
-      // createAudioWorkletNode / audioWorklet) degrades to text-only.
+      // AudioWorklet is optional (§10.5): a capability miss (no standard
+      // AudioWorkletNode constructor / audioWorklet) degrades to text-only.
       // But a THROWN init (addModule fetch/CSP/network failure) is a real
       // bug — surface it instead of silently swallowing into text-only.
       try {
@@ -542,6 +542,11 @@ export class GameApp {
     // Text-only mode (§10.5 degrade): no playback node, so no synthesis —
     // the story advances on the reading-time fallback.
     if (this.coordinator === null) return;
+    // Candidate branches are speculative text only. Synthesizing them before
+    // selection creates a request burst across every branch and spends the
+    // provider quota ahead of the path the player actually chooses.
+    if (entry.descriptor.scope.type === "candidate") return;
+
     // §10.3 prefetch headroom: the current line is always on the critical
     // path, but future lines are only fetched while the contiguous buffer
     // has room below the target — bounds every fill burst (P3).
@@ -791,7 +796,7 @@ export class GameApp {
   // -------------------------------------------------------------------------
 
   private async loadConfig(): Promise<PublicWebConfig> {
-    const fetchImpl = this.options.fetchImpl ?? globalThis.fetch;
+    const fetchImpl = this.options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const response = await fetchImpl("/api/config");
     if (!response.ok) {
       throw new Error(`config fetch failed: HTTP ${response.status}`);

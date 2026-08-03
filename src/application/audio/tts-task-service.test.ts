@@ -3,21 +3,20 @@
  * invariant 11), concurrency caps, consumer abort → provider cancel, and
  * provider failure propagation.
  */
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { TtsTaskError, TtsTaskServiceImpl, type TaskStatusEvent } from "./tts-task-service.js";
 import { AudioCatalogServiceImpl } from "./audio-catalog-service.js";
-import type { TtsCompletion, TtsProviderPort, TtsStreamSession } from "../../core/ports/tts-provider-port.js";
+import type { TtsCompletion, TtsProviderPort, TtsStreamSession, TtsSynthesisRequest } from "../../core/ports/tts-provider-port.js";
 import type { AudioFetchRequest } from "../../shared/wire/client-message.js";
 
 class FakeTtsProvider implements TtsProviderPort {
-  calls: Array<{ signal: AbortSignal }> = [];
+  calls: Array<{ request: TtsSynthesisRequest; signal: AbortSignal }> = [];
   failStart = false;
   readonly chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])];
 
-  async start(_request: unknown, signal: AbortSignal): Promise<TtsStreamSession> {
-    this.calls.push({ signal });
+  async start(request: TtsSynthesisRequest, signal: AbortSignal): Promise<TtsStreamSession> {
+    this.calls.push({ request, signal });
     if (this.failStart) throw new Error("provider failure");
-
     let resolveCompletion: (c: TtsCompletion) => void = () => {};
     let rejectCompletion: (error: unknown) => void = () => {};
     const completion = new Promise<TtsCompletion>((resolve, reject) => {
@@ -96,6 +95,52 @@ class ResolvingAbortProvider implements TtsProviderPort {
   }
 }
 
+class RetrySequenceProvider extends FakeTtsProvider {
+  attempts = 0;
+
+  constructor(private readonly errors: unknown[]) {
+    super();
+  }
+
+  override async start(request: TtsSynthesisRequest, signal: AbortSignal): Promise<TtsStreamSession> {
+    this.calls.push({ request, signal });
+    const error = this.errors[this.attempts];
+    this.attempts += 1;
+    if (error !== undefined) throw error;
+    return super.start(request, signal);
+  }
+}
+
+class SynchronizedRateLimitProvider extends FakeTtsProvider {
+  readonly attemptTimes: number[] = [];
+  private readonly attemptsByText = new Map<string, number>();
+  private releaseFirstAttempts: () => void = () => {};
+  private readonly firstAttemptsReleased = new Promise<void>((resolve) => {
+    this.releaseFirstAttempts = resolve;
+  });
+
+  releaseRateLimits(): void {
+    this.releaseFirstAttempts();
+  }
+
+  override async start(
+    request: TtsSynthesisRequest,
+    signal: AbortSignal,
+  ): Promise<TtsStreamSession> {
+    this.attemptTimes.push(Date.now());
+    const attempts = this.attemptsByText.get(request.text) ?? 0;
+    this.attemptsByText.set(request.text, attempts + 1);
+    if (attempts === 0) {
+      await this.firstAttemptsReleased;
+      throw rateLimitError();
+    }
+    return super.start(request, signal);
+  }
+}
+
+const rateLimitError = (): Error & { code: string } =>
+  Object.assign(new Error("rate limited"), { code: "http_429" });
+
 function seedCatalog(catalog: AudioCatalogServiceImpl, lineId: string, cacheKey?: string): string {
   const key = cacheKey ?? `key-${lineId}`;
   catalog.upsertDescriptor(
@@ -111,7 +156,7 @@ function seedCatalog(catalog: AudioCatalogServiceImpl, lineId: string, cacheKey?
     {
       lineId,
       cacheKey: key,
-      text: "你好",
+      text: lineId,
       model: "cosyvoice-v2",
       voiceId: "voice-1",
       voiceRevision: 1,
@@ -131,6 +176,10 @@ function request(lineId: string, cacheKey: string, taskId = "t1"): AudioFetchReq
 }
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("TtsTaskServiceImpl", () => {
   it("streams provider chunks for a valid request and reports finished", async () => {
@@ -441,5 +490,211 @@ describe("TtsTaskServiceImpl", () => {
     );
     expect(statuses.map((s) => s.status)).toContain("failed");
     expect(statuses.find((s) => s.status === "failed")?.error).toBe("provider failure");
+  });
+
+  it("retries provider start after HTTP 429 and emits one successful task", async () => {
+    vi.useFakeTimers();
+    const catalog = new AudioCatalogServiceImpl();
+    const key = seedCatalog(catalog, "l1");
+    const provider = new RetrySequenceProvider([rateLimitError(), rateLimitError()]);
+    const statuses: TaskStatusEvent[] = [];
+    const service = new TtsTaskServiceImpl({
+      catalog,
+      provider,
+      maxConcurrency: 2,
+      onStatus: (event) => statuses.push(event),
+    });
+
+    const pending = service.synthesize(request("l1", key), new AbortController().signal);
+    await vi.runAllTimersAsync();
+    const session = await pending;
+    for await (const _ of session.chunks) {
+      /* drain */
+    }
+    await session.completion;
+    await vi.runAllTimersAsync();
+
+    expect(provider.attempts).toBe(3);
+    expect(statuses.map((event) => event.status)).toEqual(["started", "finished"]);
+  });
+
+  it("cancels a task while it is waiting to retry HTTP 429", async () => {
+    vi.useFakeTimers();
+    const catalog = new AudioCatalogServiceImpl();
+    const key = seedCatalog(catalog, "l1");
+    const provider = new RetrySequenceProvider([rateLimitError()]);
+    const statuses: TaskStatusEvent[] = [];
+    const service = new TtsTaskServiceImpl({
+      catalog,
+      provider,
+      maxConcurrency: 2,
+      onStatus: (event) => statuses.push(event),
+    });
+    const controller = new AbortController();
+
+    const pending = service.synthesize(request("l1", key), controller.signal);
+    const rejection = expect(pending).rejects.toMatchObject({ code: "canceled" });
+    await Promise.resolve();
+    controller.abort();
+    await vi.runAllTimersAsync();
+
+    await rejection;
+    expect(provider.attempts).toBe(1);
+    expect(statuses.map((event) => event.status)).toEqual(["started", "canceled"]);
+  });
+
+  it("spaces provider starts to avoid a request burst", async () => {
+    vi.useFakeTimers();
+    const catalog = new AudioCatalogServiceImpl();
+    const keyA = seedCatalog(catalog, "l1");
+    const keyB = seedCatalog(catalog, "l2");
+    const provider = new FakeTtsProvider();
+    const service = new TtsTaskServiceImpl({
+      catalog,
+      provider,
+      maxConcurrency: 2,
+      onStatus: () => {},
+    });
+
+    const first = service.synthesize(request("l1", keyA, "t1"), new AbortController().signal);
+    const second = service.synthesize(request("l2", keyB, "t2"), new AbortController().signal);
+    await Promise.resolve();
+    expect(provider.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(349);
+    expect(provider.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(provider.calls).toHaveLength(2);
+
+    for (const pending of [first, second]) {
+      const session = await pending;
+      for await (const _ of session.chunks) {
+        /* drain */
+      }
+      await session.completion;
+    }
+  });
+
+  it("keeps synchronized HTTP 429 retries behind the provider start gate", async () => {
+    vi.useFakeTimers();
+    const catalog = new AudioCatalogServiceImpl();
+    const keyA = seedCatalog(catalog, "l1");
+    const keyB = seedCatalog(catalog, "l2");
+    const provider = new SynchronizedRateLimitProvider();
+    const service = new TtsTaskServiceImpl({
+      catalog,
+      provider,
+      maxConcurrency: 2,
+      onStatus: () => {},
+    });
+
+    const first = service.synthesize(request("l1", keyA, "t1"), new AbortController().signal);
+    const second = service.synthesize(request("l2", keyB, "t2"), new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(350);
+    provider.releaseRateLimits();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(provider.attemptTimes).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(349);
+    expect(provider.attemptTimes).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(provider.attemptTimes).toHaveLength(4);
+
+    for (const pending of [first, second]) {
+      const session = await pending;
+      for await (const _ of session.chunks) {
+        /* drain */
+      }
+      await session.completion;
+    }
+  });
+
+  it("lets queued current work bypass a background task during 429 backoff", async () => {
+    vi.useFakeTimers();
+    const catalog = new AudioCatalogServiceImpl();
+    const backgroundKey = seedCatalog(catalog, "background");
+    const currentKey = seedCatalog(catalog, "current");
+    catalog.setPriority("background", "background");
+    catalog.setPriority("current", "current");
+    const provider = new RetrySequenceProvider([rateLimitError()]);
+    const service = new TtsTaskServiceImpl({
+      catalog,
+      provider,
+      maxConcurrency: 1,
+      onStatus: () => {},
+    });
+
+    const background = service.synthesize(
+      request("background", backgroundKey, "t-background"),
+      new AbortController().signal,
+    );
+    await Promise.resolve();
+    const current = service.synthesize(
+      request("current", currentKey, "t-current"),
+      new AbortController().signal,
+    );
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(provider.calls[1]?.request.text).toBe("current");
+    const currentSession = await current;
+    for await (const _ of currentSession.chunks) {
+      /* drain */
+    }
+    await currentSession.completion;
+    await vi.advanceTimersByTimeAsync(1000);
+    const backgroundSession = await background;
+    for await (const _ of backgroundSession.chunks) {
+      /* drain */
+    }
+    await backgroundSession.completion;
+  });
+
+  it("starts a queued current line before queued background work", async () => {
+    vi.useFakeTimers();
+    const catalog = new AudioCatalogServiceImpl();
+    const firstKey = seedCatalog(catalog, "first");
+    const backgroundKey = seedCatalog(catalog, "background");
+    const currentKey = seedCatalog(catalog, "current");
+    catalog.setPriority("background", "background");
+    catalog.setPriority("current", "current");
+    const provider = new FakeTtsProvider();
+    const service = new TtsTaskServiceImpl({
+      catalog,
+      provider,
+      maxConcurrency: 1,
+      onStatus: () => {},
+    });
+
+    const first = await service.synthesize(
+      request("first", firstKey, "t-first"),
+      new AbortController().signal,
+    );
+    const background = service.synthesize(
+      request("background", backgroundKey, "t-background"),
+      new AbortController().signal,
+    );
+    const current = service.synthesize(
+      request("current", currentKey, "t-current"),
+      new AbortController().signal,
+    );
+    for await (const _ of first.chunks) {
+      /* drain */
+    }
+    await first.completion;
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(provider.calls[1]?.request.text).toBe("current");
+    const currentSession = await current;
+    for await (const _ of currentSession.chunks) {
+      /* drain */
+    }
+    await currentSession.completion;
+    await vi.advanceTimersByTimeAsync(350);
+    const backgroundSession = await background;
+    for await (const _ of backgroundSession.chunks) {
+      /* drain */
+    }
+    await backgroundSession.completion;
   });
 });

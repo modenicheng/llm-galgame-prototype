@@ -48,7 +48,7 @@ export class AudioDownloader {
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly options: AudioDownloaderOptions) {
-    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
   /** True while a download for `cacheKey` is in flight (any instance). */

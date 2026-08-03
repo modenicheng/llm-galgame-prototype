@@ -7,7 +7,7 @@
  * when the browser aborts the HTTP request.
  */
 import type { AudioFetchRequest } from "../../shared/wire/client-message.js";
-import type { AudioFormatDescriptor } from "../../shared/wire/audio-descriptor.js";
+import type { AudioFormatDescriptor, AudioPriority } from "../../shared/wire/audio-descriptor.js";
 import type {
   TtsProviderPort,
   TtsStreamSession,
@@ -21,6 +21,26 @@ import { ttsLog } from "./tts-log.js";
 function shortId(id: string): string {
   return id.slice(0, 8);
 }
+
+const DEFAULT_MIN_PROVIDER_START_INTERVAL_MS = 350;
+const RATE_LIMIT_RETRY_DELAYS_MS = [1000, 2000, 4000] as const;
+const PRIORITY_RANK: Record<AudioPriority, number> = {
+  current: 0,
+  next: 1,
+  active_future: 2,
+  candidate_first_line: 3,
+  background: 4,
+};
+
+function isRateLimitError(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "http_429"
+  );
+}
+
 
 export interface TtsTaskService {
   /**
@@ -61,6 +81,8 @@ export interface TtsTaskServiceImplOptions {
   provider: TtsProviderPort | null;
   maxConcurrency: number;
   onStatus: (event: TaskStatusEvent) => void;
+  /** Minimum spacing between provider starts. Default 350ms (below 3 RPS). */
+  minProviderStartIntervalMs?: number;
 }
 
 type TaskStatus = "queued" | "running" | "finished" | "failed" | "canceled";
@@ -76,13 +98,15 @@ interface TaskEntry {
   /** Number of consumers attached (joins included). */
   refcount: number;
   finalized: boolean;
-  /** A consumer aborted and the last joiner left; the task must be canceled. */
   cancelRequested: boolean;
   status: TaskStatus;
   enqueuedAt: number;
   startedAt: number;
   firstByteMs: number | null;
   totalBytes: number;
+  retryAttempt: number;
+  retryAt: number;
+  startedNotified: boolean;
   sessionPromise: Promise<TtsStreamSession>;
   resolveSession: (session: TtsStreamSession) => void;
   rejectSession: (error: unknown) => void;
@@ -104,8 +128,14 @@ export class TtsTaskServiceImpl implements TtsTaskService {
   /** FIFO waiters for the concurrency cap; waiting is never a rejection. */
   private readonly queue: TaskEntry[] = [];
   private activeCount = 0;
+  private readonly minProviderStartIntervalMs: number;
+  private nextProviderStartAt = 0;
+  private pumpTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly options: TtsTaskServiceImplOptions) {}
+  constructor(private readonly options: TtsTaskServiceImplOptions) {
+    this.minProviderStartIntervalMs =
+      options.minProviderStartIntervalMs ?? DEFAULT_MIN_PROVIDER_START_INTERVAL_MS;
+  }
 
   async synthesize(
     request: AudioFetchRequest,
@@ -185,6 +215,9 @@ export class TtsTaskServiceImpl implements TtsTaskService {
       startedAt: 0,
       firstByteMs: null,
       totalBytes: 0,
+      retryAttempt: 0,
+      retryAt: 0,
+      startedNotified: false,
       sessionPromise,
       resolveSession,
       rejectSession,
@@ -202,38 +235,72 @@ export class TtsTaskServiceImpl implements TtsTaskService {
     if (entry.refcount > 0 || entry.finalized) return;
     entry.cancelRequested = true;
     if (entry.status === "queued") {
-      // Not started yet: drop from the FIFO queue and reject the session.
       const index = this.queue.indexOf(entry);
       if (index >= 0) this.queue.splice(index, 1);
       entry.finalized = true;
       entry.status = "canceled";
       this.tasks.delete(entry.cacheKey);
+      this.options.onStatus({ taskId: entry.taskId, lineId: entry.lineId, status: "canceled" });
+      this.pumpQueue();
       this.failSession(entry, new TtsTaskError("canceled", "synthesis canceled before start"));
       return;
     }
-    // Running: abort the provider signal; the monitor reports "canceled".
     entry.providerSignal.abort();
   }
 
   private pumpQueue(): void {
+    if (this.pumpTimer !== null) {
+      clearTimeout(this.pumpTimer);
+      this.pumpTimer = null;
+    }
     while (this.activeCount < this.options.maxConcurrency && this.queue.length > 0) {
-      const entry = this.queue.shift();
-      if (!entry || entry.finalized) continue;
+      const now = Date.now();
+      const eligible = this.queue.filter((entry) => entry.retryAt <= now);
+      if (eligible.length === 0) {
+        const nextRetryAt = Math.min(...this.queue.map((entry) => entry.retryAt));
+        this.pumpTimer = setTimeout(() => {
+          this.pumpTimer = null;
+          this.pumpQueue();
+        }, Math.max(0, nextRetryAt - now));
+        return;
+      }
+      const delay = Math.max(0, this.nextProviderStartAt - now);
+      if (delay > 0) {
+        this.pumpTimer = setTimeout(() => {
+          this.pumpTimer = null;
+          this.pumpQueue();
+        }, delay);
+        return;
+      }
+      eligible.sort((a, b) => this.priorityOf(a) - this.priorityOf(b) || a.enqueuedAt - b.enqueuedAt);
+      const entry = eligible[0];
+      if (!entry) return;
+      const index = this.queue.indexOf(entry);
+      if (index >= 0) this.queue.splice(index, 1);
+      this.nextProviderStartAt = Date.now() + this.minProviderStartIntervalMs;
       void this.runTask(entry);
     }
+  }
+
+  private priorityOf(entry: TaskEntry): number {
+    const priority = this.options.catalog.get(entry.lineId)?.priority ?? "background";
+    return PRIORITY_RANK[priority];
   }
 
   private async runTask(entry: TaskEntry): Promise<void> {
     const provider = this.options.provider;
     if (provider === null) return; // unreachable: synthesize rejects earlier
     entry.status = "running";
-    entry.startedAt = Date.now();
+    entry.startedAt = entry.startedAt || Date.now();
     this.activeCount += 1;
-    this.options.onStatus({
-      taskId: entry.taskId,
-      lineId: entry.lineId,
-      status: "started",
-    });
+    if (!entry.startedNotified) {
+      entry.startedNotified = true;
+      this.options.onStatus({
+        taskId: entry.taskId,
+        lineId: entry.lineId,
+        status: "started",
+      });
+    }
     ttsLog(
       "running",
       entry.lineId,
@@ -242,13 +309,24 @@ export class TtsTaskServiceImpl implements TtsTaskService {
 
     let session: TtsStreamSession;
     try {
-      session = await provider.start(
-        this.buildSynthesisRequest(entry),
-        entry.providerSignal.signal,
-      );
+      session = await provider.start(this.buildSynthesisRequest(entry), entry.providerSignal.signal);
     } catch (error) {
-      // `finish`/`failSession` are idempotent, so this is safe even if a
-      // concurrent consumer abort already finalized the entry.
+      const retryDelay = RATE_LIMIT_RETRY_DELAYS_MS[entry.retryAttempt];
+      if (!entry.cancelRequested && isRateLimitError(error) && retryDelay !== undefined) {
+        entry.retryAttempt += 1;
+        entry.retryAt = Date.now() + retryDelay;
+        entry.enqueuedAt = Date.now();
+        entry.status = "queued";
+        this.activeCount = Math.max(0, this.activeCount - 1);
+        this.queue.push(entry);
+        ttsLog(
+          "provider-retry",
+          entry.lineId,
+          `task=${shortId(entry.taskId)} attempt=${entry.retryAttempt} delay=${retryDelay}ms`,
+        );
+        this.pumpQueue();
+        return;
+      }
       this.finish(
         entry,
         entry.cancelRequested ? "canceled" : "failed",
@@ -258,10 +336,6 @@ export class TtsTaskServiceImpl implements TtsTaskService {
       return;
     }
 
-    // If the consumer aborted while the provider was starting, the provider
-    // signal was already aborted: completion will reject and the monitor
-    // reports "canceled". The session is still handed out so no promise is
-    // left hanging.
     this.settleSession(entry, {
       metadata: session.metadata,
       chunks: this.wrapChunks(entry, session.chunks),
@@ -269,6 +343,7 @@ export class TtsTaskServiceImpl implements TtsTaskService {
     });
     void this.monitor(entry, session);
   }
+
 
   private async monitor(entry: TaskEntry, session: TtsStreamSession): Promise<void> {
     try {

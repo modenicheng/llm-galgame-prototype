@@ -30,7 +30,7 @@
 version: 3
 
 profiles:
-  # 复刻音色示例（voice-id 在 .env 的 COSYVOICE_VOICE_SUYAO）
+  # 系统音色配置（voice-id 在 .env 的 COSYVOICE_VOICE_SUYAO）
   suyao_main:
     semantic:
       base_description: 年轻女性，音色清亮偏冷，表达克制，句子较短。
@@ -46,19 +46,40 @@ profiles:
 
     providers:
       dashscope:
-        model: cosyvoice-v3-flash
+        model: cosyvoice-v3.5-flash
         voice_id_env: COSYVOICE_VOICE_SUYAO
+        instruction_mode: free
+
+  # 林澈（玩家角色）音色配置（voice-id 在 .env 的 COSYVOICE_VOICE_LINCHE）
+  linche_main:
+    semantic:
+      base_description: 年轻男性，声线自然偏沉，语气平淡随性，句子简短。
+      allowed_delivery:
+        - restrained
+        - hesitant
+        - gentle
+        - firm
+      forbidden_delivery:
+        - exaggerated
+        - childish
+        - announcer
+
+    providers:
+      dashscope:
+        model: cosyvoice-v3.5-flash
+        voice_id_env: COSYVOICE_VOICE_LINCHE
+        instruction_mode: free
 
   # 系统音色示例：直接使用预设音色（voice-id = longanyang，放入 .env）
   # longanyang 支持 Instruct（固定格式），故用 fixed_emotion 演示情绪指令；
   # 不支持 Instruct 的音色（多数 v3-flash 系统音色）则用 none。
   # 注意：启动时会校验本文件中所有 dashscope 绑定的音色变量（含此示例），
   # 未在 config.yaml 引用的 profile 也需在 .env 中设好对应变量。
-  example_system_voice:
-    semantic:
-      base_description: 阳光大男孩，语速略快。
-    providers:
-      dashscope:
-        model: cosyvoice-v3-flash
-        voice_id_env: COSYVOICE_VOICE_SYSTEM_SAMPLE
-        instruction_mode: fixed_emotion
+  # example_system_voice:
+  #   semantic:
+  #     base_description: 阳光大男孩，语速略快。
+  #   providers:
+  #     dashscope:
+  #       model: cosyvoice-v3-flash
+  #       voice_id_env: COSYVOICE_VOICE_SYSTEM_SAMPLE
+  #       instruction_mode: fixed_emotion

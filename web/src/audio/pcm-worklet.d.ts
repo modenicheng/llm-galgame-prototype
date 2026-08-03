@@ -12,11 +12,14 @@
 
 export declare class PcmWorkletProcessor extends AudioWorkletProcessor {
   static get parameterDescriptors(): readonly unknown[];
-  buffer: Float32Array;
-  writeIndex: number;
-  readIndex: number;
+  chunks: Array<ArrayBufferView>;
+  headChunk: number;
+  headOffset: number;
   queued: number;
-  constructor();
+  phase: number;
+  sourceRate: number;
+  outputRate: number;
+  constructor(options?: AudioWorkletNodeOptions);
   handlePortMessage(event: MessageEvent): void;
   process(
     inputs?: Float32Array[][],
@@ -24,5 +27,7 @@ export declare class PcmWorkletProcessor extends AudioWorkletProcessor {
     parameters?: Record<string, Float32Array>,
   ): boolean;
   enqueue(samples: ArrayBufferView): void;
+  sampleAt(offset: number): number;
+  consume(count: number): void;
   resetRing(): void;
 }

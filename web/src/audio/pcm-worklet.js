@@ -17,7 +17,7 @@
  * not exist outside the worklet scope.
  */
 
-const RING_SIZE = 44100; // 1s at 22050 Hz
+const DEFAULT_SAMPLE_RATE = 22050;
 
 /** Base class: the real worklet base in scope, a minimal stand-in in Node. */
 const AudioWorkletProcessorBase =
@@ -34,13 +34,23 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
     return [];
   }
 
-  buffer = new Float32Array(RING_SIZE);
-  writeIndex = 0;
-  readIndex = 0;
+  chunks = [];
+  headChunk = 0;
+  headOffset = 0;
   queued = 0;
+  phase = 0;
+  sourceRate = DEFAULT_SAMPLE_RATE;
+  outputRate = DEFAULT_SAMPLE_RATE;
 
-  constructor() {
-    super();
+  constructor(options = {}) {
+    super(options);
+    const configuredSourceRate = options.processorOptions?.sourceRate;
+    this.sourceRate =
+      typeof configuredSourceRate === "number" && configuredSourceRate > 0
+        ? configuredSourceRate
+        : DEFAULT_SAMPLE_RATE;
+    this.outputRate =
+      typeof sampleRate === "number" && sampleRate > 0 ? sampleRate : this.sourceRate;
     this.port.onmessage = (event) => {
       this.handlePortMessage(event);
     };
@@ -67,14 +77,21 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
       return true;
     }
     let underrun = false;
+    const step = this.sourceRate / this.outputRate;
     for (let i = 0; i < output.length; i++) {
-      if (this.queued > 0) {
-        output[i] = this.buffer[this.readIndex];
-        this.readIndex = (this.readIndex + 1) % RING_SIZE;
-        this.queued--;
-      } else {
+      if (this.queued === 0) {
         output[i] = 0;
         underrun = true;
+        continue;
+      }
+      const current = this.sampleAt(0);
+      const next = this.queued > 1 ? this.sampleAt(1) : current;
+      output[i] = current + (next - current) * this.phase;
+      this.phase += step;
+      const consumed = Math.floor(this.phase);
+      if (consumed > 0) {
+        this.phase -= consumed;
+        this.consume(consumed);
       }
     }
     if (underrun) {
@@ -84,23 +101,53 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
   }
 
   enqueue(samples) {
-    const isInt16 = samples instanceof Int16Array;
-    for (let i = 0; i < samples.length; i++) {
-      // Int16 → Float32 scale; Float32Array passes through as-is.
-      const value = isInt16 ? samples[i] / 32768 : samples[i];
-      if (this.queued >= RING_SIZE) {
-        return; // ring full — drop the remainder rather than lag the timeline
+    if (samples.length === 0) return;
+    this.chunks.push(samples);
+    this.queued += samples.length;
+  }
+
+  sampleAt(offset) {
+    let chunkIndex = this.headChunk;
+    let sampleIndex = this.headOffset + offset;
+    while (chunkIndex < this.chunks.length) {
+      const chunk = this.chunks[chunkIndex];
+      if (sampleIndex < chunk.length) {
+        const value = chunk[sampleIndex];
+        return chunk instanceof Int16Array ? value / 32768 : value;
       }
-      this.buffer[this.writeIndex] = value;
-      this.writeIndex = (this.writeIndex + 1) % RING_SIZE;
-      this.queued++;
+      sampleIndex -= chunk.length;
+      chunkIndex++;
+    }
+    return 0;
+  }
+
+  consume(count) {
+    let remaining = Math.min(count, this.queued);
+    this.queued -= remaining;
+    while (remaining > 0) {
+      const chunk = this.chunks[this.headChunk];
+      const available = chunk.length - this.headOffset;
+      if (remaining < available) {
+        this.headOffset += remaining;
+        remaining = 0;
+      } else {
+        remaining -= available;
+        this.headChunk++;
+        this.headOffset = 0;
+      }
+    }
+    if (this.headChunk > 32 && this.headChunk * 2 >= this.chunks.length) {
+      this.chunks = this.chunks.slice(this.headChunk);
+      this.headChunk = 0;
     }
   }
 
   resetRing() {
-    this.writeIndex = 0;
-    this.readIndex = 0;
+    this.chunks = [];
+    this.headChunk = 0;
+    this.headOffset = 0;
     this.queued = 0;
+    this.phase = 0;
   }
 }
 

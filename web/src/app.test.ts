@@ -466,6 +466,40 @@ describe("GameApp", () => {
     expect(asset?.totalBytes).toBe(22050 * 2);
   });
 
+  it("binds the default browser fetch receiver for config and synthesis", async () => {
+    const synthesizeCalls: unknown[] = [];
+    const defaultFetch = vi.fn(function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+      expect(this).toBe(globalThis);
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/config") {
+        return Promise.resolve(new Response(JSON.stringify(CONFIG), { status: 200 }));
+      }
+      if (url === "/api/audio/synthesize") {
+        synthesizeCalls.push(JSON.parse(String(init?.body)));
+        return Promise.resolve(streamResponse([pcmChunk(22050)]));
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("fetch", defaultFetch);
+
+    const app = new GameApp({
+      wsUrl: WS_URL,
+      token: TOKEN,
+      webSocketImpl: FakeWebSocket as unknown as WebSocketCtor,
+      db,
+    });
+    await app.start(makeFakeAudioContext().context);
+    const ws = FakeWebSocket.last!;
+    ws.open();
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+
+    await vi.waitFor(() => {
+      expect(synthesizeCalls).toHaveLength(1);
+      expect(app.state().audioPlaying).toBe(true);
+    });
+  });
+
   it("dedups concurrent downloads for the same cacheKey", async () => {
     const { app, ws, synthesizeCalls } = await setupApp();
     ws.receive(descriptorMsg("line-1", "cache-x"));
@@ -757,6 +791,30 @@ describe("GameApp", () => {
     ws.receive(descriptorMsg("line-3", "cache-3"));
     await flush();
     expect(synthCalls).toHaveLength(1); // only line-1 was fetched
+  });
+
+  it("does not synthesize candidate audio until the branch is activated", async () => {
+    const { ws, synthesizeCalls } = await setupApp();
+    ws.receive(
+      descriptorMsg("candidate-1", "cache-candidate", {
+        scope: { type: "candidate", branchId: "branch-a" },
+        priority: "candidate_first_line",
+      }),
+    );
+    await flush();
+    expect(synthesizeCalls).toHaveLength(0);
+
+    ws.receive(
+      descriptorMsg("candidate-1", "cache-candidate", {
+        scope: { type: "active" },
+        priority: "current",
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(synthesizeCalls).toEqual([
+        expect.objectContaining({ lineId: "candidate-1", cacheKey: "cache-candidate" }),
+      ]);
+    });
   });
 
   it("start degrades to text-only when AudioWorklet is unsupported", async () => {

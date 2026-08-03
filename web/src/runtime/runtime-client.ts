@@ -229,7 +229,10 @@ export class RuntimeClient {
       capabilities: {
         audioWorklet:
           typeof AudioContext !== "undefined" &&
-          typeof AudioContext.prototype.createAudioWorkletNode === "function",
+          (typeof (
+            AudioContext.prototype as AudioContext & { createAudioWorkletNode?: unknown }
+          ).createAudioWorkletNode === "function" ||
+            typeof AudioWorkletNode !== "undefined"),
         indexedDb: typeof indexedDB !== "undefined",
       },
     };

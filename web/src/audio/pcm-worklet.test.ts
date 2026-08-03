@@ -1,15 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PcmWorkletProcessor } from "./pcm-worklet.js";
 
-const RING_SIZE = 44100;
+const OLD_RING_SIZE = 44100;
 
 interface FakePort {
   postMessage: ReturnType<typeof vi.fn>;
   onmessage: ((event: MessageEvent) => void) | null;
 }
 
-function makeProcessor(): { proc: PcmWorkletProcessor; port: FakePort } {
-  const proc = new PcmWorkletProcessor();
+function makeProcessor(sourceRate = 22050, outputRate = 22050): { proc: PcmWorkletProcessor; port: FakePort } {
+  vi.stubGlobal("sampleRate", outputRate);
+  const proc = new PcmWorkletProcessor({ processorOptions: { sourceRate } });
   const port: FakePort = { postMessage: vi.fn(), onmessage: null };
   Object.defineProperty(proc, "port", { value: port, configurable: true, writable: true });
   return { proc, port };
@@ -25,6 +26,10 @@ function processBlock(proc: PcmWorkletProcessor, frames: number): Float32Array {
   return output;
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("PcmWorkletProcessor", () => {
   it("converts Int16Array messages to Float32 samples on output", () => {
     const { proc, port } = makeProcessor();
@@ -36,29 +41,24 @@ describe("PcmWorkletProcessor", () => {
     expect(output[3]).toBeCloseTo(-1000 / 32768, 5);
     expect(port.postMessage).not.toHaveBeenCalled();
   });
-  it("wraps the ring buffer across the boundary", () => {
+  it("preserves queued audio beyond the old fixed ring capacity", () => {
     const { proc, port } = makeProcessor();
-    // Fill the ring exactly, then drain it fully so readIndex wraps to 0.
-    post(proc, new Int16Array(RING_SIZE).fill(1000));
-    const drained = processBlock(proc, RING_SIZE);
-    expect(port.postMessage).not.toHaveBeenCalled(); // exact fill → no underrun
-    expect(drained[0]).toBeCloseTo(1000 / 32768, 5);
-    expect(drained[RING_SIZE - 1]).toBeCloseTo(1000 / 32768, 5);
-    // Second generation of samples still plays correctly after the wrap.
-    post(proc, new Int16Array([16384]));
-    const output = processBlock(proc, 1);
-    expect(output[0]).toBeCloseTo(0.5, 5);
+    const samples = new Int16Array(OLD_RING_SIZE + 1000).fill(1000);
+    post(proc, samples);
+    const output = processBlock(proc, samples.length);
+    expect(port.postMessage).not.toHaveBeenCalled();
+    expect(output[output.length - 1]).toBeCloseTo(1000 / 32768, 5);
   });
 
-  it("drops overflow when the ring is full", () => {
-    const { proc, port } = makeProcessor();
-    post(proc, new Int16Array(RING_SIZE + 1000).fill(1000));
-    const output = processBlock(proc, RING_SIZE);
-    // Only the first 44100 samples fit; no underrun while draining the fill.
+  it("resamples 22050 Hz PCM to a 48000 Hz output without changing duration", () => {
+    const { proc, port } = makeProcessor(22050, 48000);
+    const source = new Int16Array(22051);
+    source.fill(16384);
+    post(proc, source);
+    const output = processBlock(proc, 48000);
     expect(port.postMessage).not.toHaveBeenCalled();
-    expect(output[RING_SIZE - 1]).toBeCloseTo(1000 / 32768, 5); // ring held samples to the end
-    const after = processBlock(proc, 1);
-    expect(after[0]).toBe(0); // overflowed samples were dropped
+    expect(output[0]).toBeCloseTo(0.5, 5);
+    expect(output[47999]).toBeCloseTo(0.5, 5);
   });
 
   it("posts a single underrun message when the ring runs dry", () => {

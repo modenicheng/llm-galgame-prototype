@@ -75,7 +75,7 @@ characters:
     voice_profile: suyao_main
   林澈:
     name: 林澈
-    voice_profile: suyao_main
+    voice_profile: linche_main
 
 game:
   history_events: 80

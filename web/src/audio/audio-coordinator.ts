@@ -72,8 +72,13 @@ export class AudioCoordinator {
     // webviews may expose AudioContext without AudioWorklet support. Only
     // THIS genuinely missing capability degrades to text-only — a failing
     // addModule is a build/network bug and must not be silently hidden.
+    const contextNodeFactory = (
+      this.context as AudioContext & {
+        createAudioWorkletNode?: (name: string, options?: AudioWorkletNodeOptions) => AudioWorkletNode;
+      }
+    ).createAudioWorkletNode;
     if (
-      typeof this.context.createAudioWorkletNode !== "function" ||
+      (typeof contextNodeFactory !== "function" && typeof AudioWorkletNode === "undefined") ||
       this.context.audioWorklet === undefined
     ) {
       return;
@@ -86,11 +91,16 @@ export class AudioCoordinator {
     const workletUrl = URL.createObjectURL(blob);
     try {
       await this.context.audioWorklet.addModule(workletUrl);
-      const node = this.context.createAudioWorkletNode("pcm-playback", {
+      const options: AudioWorkletNodeOptions = {
         numberOfInputs: 0,
         numberOfOutputs: 1,
         outputChannelCount: [1],
-      });
+        processorOptions: { sourceRate: this.sampleRate },
+      };
+      const node =
+        typeof contextNodeFactory === "function"
+          ? contextNodeFactory.call(this.context, "pcm-playback", options)
+          : new AudioWorkletNode(this.context, "pcm-playback", options);
       const gain = this.context.createGain();
       gain.gain.value = this.muted ? 0 : this.volume;
       node.connect(gain);

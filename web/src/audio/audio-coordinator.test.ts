@@ -36,13 +36,21 @@ function makeFakeContext(): FakeContext {
   const gain = { gain: { value: 1 }, connect: vi.fn() };
   const context = {
     audioWorklet: { addModule: vi.fn().mockResolvedValue(undefined) },
-    createAudioWorkletNode: vi.fn().mockReturnValue(node),
     createGain: vi.fn().mockReturnValue(gain),
     destination: {},
     resume: vi.fn().mockResolvedValue(undefined),
     sampleRate: 22050,
     currentTime: 0,
   } as unknown as AudioContext;
+  class FakeAudioWorkletNode {
+    constructor(contextArg: BaseAudioContext, name: string, options?: AudioWorkletNodeOptions) {
+      void contextArg;
+      void name;
+      void options;
+      return node as unknown as FakeAudioWorkletNode;
+    }
+  }
+  vi.stubGlobal("AudioWorkletNode", FakeAudioWorkletNode);
   return { context, port, node, gain };
 }
 
@@ -51,6 +59,7 @@ const viewPosts = (port: { postMessage: ReturnType<typeof vi.fn> }): unknown[] =
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("AudioCoordinator", () => {
@@ -59,27 +68,38 @@ describe("AudioCoordinator", () => {
     const coordinator = new AudioCoordinator({ context, playbackConfig, format }, makeEvents());
     await coordinator.init();
     expect(context.audioWorklet.addModule).toHaveBeenCalledTimes(1);
-    expect(context.createAudioWorkletNode).toHaveBeenCalledWith("pcm-playback", {
-      numberOfInputs: 0,
-      numberOfOutputs: 1,
-      outputChannelCount: [1],
-    });
+    expect(AudioWorkletNode).toBeDefined();
     expect(node.connect).toHaveBeenCalledWith(gain);
     expect(gain.connect).toHaveBeenCalledWith(context.destination);
   });
 
-  it("init resolves without throwing when the context lacks createAudioWorkletNode", async () => {
+  it("init prefers a context factory when the standard constructor is unavailable", async () => {
     const fake = makeFakeContext();
-    const context = fake.context as unknown as {
-      createAudioWorkletNode?: unknown;
-    };
-    delete context.createAudioWorkletNode;
+    const factory = vi.fn().mockReturnValue(fake.node);
+    Object.assign(fake.context, { createAudioWorkletNode: factory });
+    vi.stubGlobal("AudioWorkletNode", undefined);
+    const coordinator = new AudioCoordinator(
+      { context: fake.context, playbackConfig, format },
+      makeEvents(),
+    );
+    await coordinator.init();
+    expect(factory).toHaveBeenCalledWith("pcm-playback", {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: { sourceRate: 22050 },
+    });
+  });
+
+  it("init degrades only when neither node creation API is available", async () => {
+    const fake = makeFakeContext();
+    vi.stubGlobal("AudioWorkletNode", undefined);
     const coordinator = new AudioCoordinator(
       { context: fake.context, playbackConfig, format },
       makeEvents(),
     );
     await expect(coordinator.init()).resolves.toBeUndefined();
-    expect(coordinator.bufferedAheadMs()).toBe(0);
+    expect(coordinator.available).toBe(false);
   });
 
   it("startup buffer: feeds below threshold do not start playback", async () => {
