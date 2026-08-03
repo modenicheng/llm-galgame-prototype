@@ -150,11 +150,13 @@ line_<session_id>_<monotonic_sequence>
 
 ### 5.1 交互协议
 
-`interaction` 事件按 `mode` 区分为三种（Zod discriminated union）：
+`interaction` 事件按 `mode` 区分为三种（Zod discriminated union），`mode` 是唯一权威的表单类型字段——禁止新增与 `mode` 平行的表单字段（如 `form_type`、`allow_input`）。字段规则：
 
-- `choice`：仅 options；不允许携带 `input_bridge`。
-- `input`：必须携带 input 与 `input_bridge`。
-- `hybrid`：必须携带 options、input 与 `input_bridge`。
+- `choice`：仅 `options`（2–5 个，`id` 非空且互不重复）；禁止携带 `input` 与 `input_bridge`。
+- `input`：必须携带 `input` 与 `input_bridge`；禁止携带 `options`。
+- `hybrid`：必须携带 `options`（2–5 个）、`input` 与 `input_bridge`；页面同时显示选项与输入框。
+
+结构约束由 Zod Schema 强制，运行时另有 `InteractionPolicy` 二次校验（允许的模式、选项数范围、`input.max_length` 上限、连续纯 input 次数上限均可在配置中调整）；非法 interaction 在进入播放缓冲前被拒绝并进入修复流程。
 
 `input_bridge` 是 1-2 条 narration，作为玩家确认输入后、NPC 正式回应前的场景过渡：
 
@@ -167,6 +169,15 @@ bridge 规则（写入 `prompts/instructions.yaml`）：
 - 只描写环境、表情、动作、氛围；不回答或预判玩家输入。
 - 不引入新事实、不修改状态、不创建新的交互点。
 - 结尾自然衔接 NPC 回应；避免固定模板和重复"沉默片刻"。
+
+Bridge 时序契约：
+
+- Bridge 随 interaction 由模型预生成，不读取、不复述、不预判玩家输入；运行时在 interaction 到达时即为其分配稳定 `line_id` 并存入 `InputBridgeBuffer`。
+- 确认输入后只消费一次（`take`），按 玩家台词 → bridge → NPC 回应 顺序播放；消费后即失效。
+- hybrid 选择预设选项时 `discard` 丢弃，永远不播放。
+- 取消输入预览时保留（`peek`），供同一互动再次预览复用。
+- Bridge 仅以文本呈现，不进入媒体/TTS 调度。
+- Bridge 永不写入正式事件日志。
 
 ### 5.2 流式回应与两阶段确认
 
@@ -203,6 +214,23 @@ Esc（`cancel_input`）：abort 生成、会话标记 canceled、清空事件、
 ```
 
 每条仍按推进键等待，正常阅读节奏本身就覆盖了剩余生成时间；bridge 播完而回应首行未到时保持当前画面静默等待（`input.response_underrun_count` 计数一次）。CLI 不显示任何生成状态、Spinner 或加载提示。
+
+### 5.4 交互关闭事件与表单生命周期
+
+每个互动只能成功解决一次。运行时在以下时刻发布 `interaction_resolved`（携带 `interactionId` 与 `resolution: "choice" | "input"`）：
+
+- 选择预设选项（choice 或 hybrid 的选项路径）：选项存在、采纳分支前发布 `resolution: "choice"`。
+- 确认自由输入（input 或 hybrid 的输入路径）：确认时、`input_committed` 之前发布 `resolution: "input"`。
+服务端投影（`UiProjectionStore`）在收到匹配 `interactionId` 的 `interaction_resolved` 时清空 `currentInteraction`；未提交的 `currentPreview` 在 `input_committed` / `input_preview_canceled` 时清空；进入播放（`playback_ready`）时互动与预览表单都会被防御性清理。因此已解决的互动不会再显示任何表单；WebSocket 重连时浏览器通过投影快照恢复页面，已解决互动的旧表单不会恢复，运行时也会在播放开始时清除遗留的互动/预览作用域。
+
+### 5.5 陈旧命令与重复提交
+
+运行时以"当前活跃互动/预览"为命令作用域：`interaction_opened` 记录 `activeInteractionId`，`select_choice` / `preview_input` 必须指向它；`input_preview_opened` 记录 `activePreviewId`，`confirm_input` / `cancel_input` 必须指向它。
+
+- 指向已解决互动的陈旧命令（如重连客户端重发的选择）在入口即被丢弃，不会推迟到后续互动的等待者。
+- 互动或预览一旦解决，作用域立即释放：重复选择、选项与输入双路径并发提交只接受第一条。
+- 第二次 Enter 不创建第二个回应请求：确认时原地提升现有 `InputResponseSession`，未完成流直接进入正式播放路径（见 5.2 live promotion）。
+- 取消输入后旧流迟到事件与未确认状态补丁被会话校验丢弃，不能进入正式路径。
 
 ## 6. 两种模型输出模式
 
