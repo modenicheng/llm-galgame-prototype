@@ -113,6 +113,65 @@ describe("GameViewModel", () => {
     expect(state.mode).toBe("INPUT_EDITING");
   });
 
+  it("normalizes a synthetic choice interaction with the top-level interactionId", () => {
+    const vm = new GameViewModel();
+    const syntheticChoiceOpened: ServerMessage = {
+      type: "runtime.output",
+      sequence: 12,
+      output: {
+        type: "interaction_opened",
+        interactionId: "choice_2",
+        // The Game converts mode:choice interactions into a synthetic
+        // `choice` event with NO interaction_id (src/game.ts handleChoice).
+        interaction: {
+          type: "choice",
+          prompt: "What now?",
+          options: [
+            { id: "o1", text: "Go left" },
+            { id: "o2", text: "Go right" },
+          ],
+        },
+      },
+    };
+
+    vm.applyServerMessage(syntheticChoiceOpened);
+    const interaction = vm.state().currentInteraction as {
+      type: string;
+      interaction_id?: string;
+      options: Array<{ id: string }>;
+    };
+    expect(interaction.interaction_id).toBe("choice_2"); // stamped from top-level id
+    expect(interaction.type).toBe("choice");
+    expect(interaction.options).toHaveLength(2);
+
+    // The interaction (and its id) clears once the line plays.
+    vm.applyServerMessage(playbackReady(13, "line_5", "Next."));
+    expect(vm.state().currentInteraction).toBeUndefined();
+  });
+
+  it("restores a normalized interaction from a projection after reconnect", () => {
+    const vm = new GameViewModel();
+    // The store normalizes on interaction_opened, so a reconnecting browser
+    // receives a currentInteraction that already carries interaction_id.
+    vm.applyProjection({
+      phase: "running",
+      recentLines: [],
+      // The store stamps interaction_id onto synthetic choices; mirror that
+      // shape here (the union cast mirrors the store's own cast).
+      currentInteraction: {
+        type: "choice",
+        interaction_id: "choice_2",
+        prompt: "What now?",
+        options: [
+          { id: "o1", text: "Go left" },
+          { id: "o2", text: "Go right" },
+        ],
+      } as NonNullable<UiProjection["currentInteraction"]>,
+    });
+    const interaction = vm.state().currentInteraction as { interaction_id?: string };
+    expect(interaction.interaction_id).toBe("choice_2");
+  });
+
   it("enters INPUT_PREVIEW on input_preview_opened", () => {
     const vm = new GameViewModel();
     vm.applyServerMessage({

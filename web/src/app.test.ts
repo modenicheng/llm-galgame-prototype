@@ -183,6 +183,31 @@ function choiceOpened(sequence: number, interactionId: string): string {
   });
 }
 
+/**
+ * An interaction_opened whose interaction is a synthetic `choice` event —
+ * the Game converts mode:choice interactions into `{ type: "choice", … }`
+ * with NO interaction_id field before emitting (src/game.ts handleChoice).
+ * The top-level interactionId is the only source of the id.
+ */
+function syntheticChoiceOpened(sequence: number, interactionId: string): string {
+  return JSON.stringify({
+    type: "runtime.output",
+    sequence,
+    output: {
+      type: "interaction_opened",
+      interactionId,
+      interaction: {
+        type: "choice",
+        prompt: "你要怎么做？",
+        options: [
+          { id: "a", text: "跟上她" },
+          { id: "b", text: "留在原地" },
+        ],
+      },
+    },
+  });
+}
+
 function inputOpened(sequence: number, interactionId: string): string {
   return JSON.stringify({
     type: "runtime.output",
@@ -305,6 +330,17 @@ describe("GameApp", () => {
     expect(sentCommands(ws)).toEqual([
       expect.objectContaining({
         command: { type: "select_choice", interactionId: "inter-1", optionId: "b" },
+      }),
+    ]);
+  });
+
+  it("selectChoice sends select_choice for a synthetic choice using the top-level interactionId", async () => {
+    const { app, ws } = await setupApp();
+    ws.receive(syntheticChoiceOpened(2, "choice_2"));
+    app.selectChoice("b");
+    expect(sentCommands(ws)).toEqual([
+      expect.objectContaining({
+        command: { type: "select_choice", interactionId: "choice_2", optionId: "b" },
       }),
     ]);
   });

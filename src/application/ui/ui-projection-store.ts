@@ -6,7 +6,10 @@
  * Game: `projection.snapshot` is sent on WebSocket connect.
  */
 import type { UiProjection } from "../../shared/wire/ui-projection.js";
-import type { RuntimeOutput } from "../../core/runtime/runtime-output.js";
+import type {
+  RuntimeInteractionEvent,
+  RuntimeOutput,
+} from "../../core/runtime/runtime-output.js";
 
 export interface UiProjectionStore {
   /** Feed one runtime output into the projection. */
@@ -55,7 +58,14 @@ export class UiProjectionStoreImpl implements UiProjectionStore {
         ];
         break;
       case "interaction_opened":
-        next.currentInteraction = output.interaction;
+        // Normalize: the top-level interactionId is the authoritative id.
+        // Synthetic choice events (type: "choice") carry no interaction_id,
+        // so stamp it on so the browser can render and address the
+        // interaction after a reconnect.
+        next.currentInteraction = {
+          ...output.interaction,
+          interaction_id: output.interactionId,
+        } as RuntimeInteractionEvent;
         break;
       case "input_preview_opened":
         next.currentPreview = { previewId: output.previewId, text: output.text };
