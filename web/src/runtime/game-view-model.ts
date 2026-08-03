@@ -147,7 +147,11 @@ export class GameViewModel {
           output.interaction?.type === "interaction" && output.interaction.mode === "input"
             ? "INPUT_EDITING"
             : "CHOICE_SELECTING";
-        this.currentInteraction = output.interaction;
+        // Normalize: the top-level interactionId is the authoritative id.
+        // Synthetic choice events (type: "choice") carry no interaction_id,
+        // so stamp it on — the UI's asChoiceInteraction and app's
+        // interactionIdOf both read interaction_id.
+        this.currentInteraction = { ...output.interaction, interaction_id: output.interactionId };
         this.currentPreview = undefined;
         break;
       case "input_preview_opened":
