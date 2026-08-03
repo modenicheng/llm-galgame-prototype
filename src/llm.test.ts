@@ -271,7 +271,7 @@ describe("requestEnvelope streaming", () => {
       '{"type":"narration","text":"雨停了。"}',
       '{"type":"state_patch","patch":{"recent_summary":"雨中相遇。"}}',
       '{"type":"dialogue","speaker":"老板","text":"再来一杯？"}',
-      '{"type":"choice","prompt":"怎么答？","options":[{"id":"a","text":"好"},{"id":"b","text":"不"}]}',
+      '{"type":"interaction","interaction_id":"int_1","prompt":"怎么答？","mode":"choice","options":[{"id":"a","text":"好"},{"id":"b","text":"不"}]}',
     ]));
 
     const received: ModelEvent[] = [];
@@ -286,7 +286,7 @@ describe("requestEnvelope streaming", () => {
     expect(received[0]!.type).toBe("narration");
     expect(received[1]!.type).toBe("dialogue");
     expect(envelope.events).toHaveLength(3);
-    expect(envelope.events[2]!.type).toBe("choice");
+    expect(envelope.events[2]!.type).toBe("interaction");
     expect(envelope.state_patch.recent_summary).toBe("雨中相遇。");
   });
 

@@ -9,9 +9,29 @@ output_protocol: |
   1. 事件行（每行一个）：
      - 旁白：{"type":"narration","text":"..."}
      - 台词：{"type":"dialogue","speaker":"角色名","text":"...","portrait":{"character":"角色标识","expression":"表情标识","position":"left|center|right"}}
-     - 选择：{"type":"choice","prompt":"请选择：","options":[{"id":"稳定且唯一的短标识","text":"选项文本"}]}
-     - 交互：{"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本","mode":"choice|input|hybrid","options":[{"id":"...","text":"..."}],"input":{"kind":"free_text|guided_text|question|action|short_answer","placeholder":"占位提示","max_length":200},"input_bridge":{"events":[{"type":"narration","text":"场景过渡旁白"}]}}
+     - 互动：{"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本", ...}（mode 三选一，完整结构见下方"互动结构"）
      - 结束：{"type":"end","ending_id":"ending_xxx","text":"结束说明"}
+
+  互动结构（mode 三选一，结构互不相同，必须严格按对应模式输出）：
+
+  mode=choice（纯选项）：
+  {"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本","mode":"choice","options":[{"id":"稳定且唯一的短标识","text":"选项文本"}]}
+  - 必须包含 options。
+  - options 数量为 2–5。
+  - 禁止包含 input。
+  - 禁止包含 input_bridge。
+
+  mode=hybrid（选项+自由输入）：
+  {"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本","mode":"hybrid","options":[{"id":"稳定且唯一的短标识","text":"选项文本"}],"input":{"kind":"free_text|guided_text|question|action|short_answer","placeholder":"占位提示","max_length":200},"input_bridge":{"events":[{"type":"narration","text":"场景过渡旁白"}]}}
+  - 必须包含 options。
+  - 必须包含 input。
+  - 必须包含 input_bridge。
+
+  mode=input（纯自由输入）：
+  {"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本","mode":"input","input":{"kind":"free_text|guided_text|question|action|short_answer","placeholder":"占位提示","max_length":200},"input_bridge":{"events":[{"type":"narration","text":"场景过渡旁白"}]}}
+  - 禁止包含 options。
+  - 必须包含 input。
+  - 必须包含 input_bridge。
 
   2. 状态更新行（可选，需要更新故事状态时输出，可出现在任意位置，建议放在最后）：
      {"type":"state_patch","patch":{...}}
@@ -43,6 +63,14 @@ output_protocol: |
   - 应当适当使用 `input|hybrid` 类型的交互提升剧情的随机性；但是当剧情相较于作者提供的大纲差距较大的时候，只得使用 `choice` 类型作为交互方式，不可随意引导玩家。
   - 在已经构建好的场景或任务中，如果需要与玩家进行互动，应优先使用 `choice` 的交互类型来推进剧情，以免大幅度偏离预定计划
 
+  表单选择规则：
+  - 普通角色交流默认优先 hybrid。
+  - 关键行动、不可逆节点和需要剧情收束时使用 choice。
+  - 只有任意合理输入都能承接时才使用 input。
+  - 不得连续滥用 input。
+  - 玩家输入不自动成为世界事实。
+  - 当作者剧情约束较强时，应优先 choice。
+
   演出控制（可选，仅 dialogue/narration 行）：
   - 可在台词或旁白行附加 "performance" 对象，用于指定本句的语音表演；字段全部可选：
     - emotion: neutral|happy|sad|angry|anxious|afraid|excited|tired|sarcastic|tender|serious|surprised|disgusted
@@ -57,8 +85,9 @@ output_protocol: |
   - 不得输出 voice ID、provider、模型名或原始 instruction；这些由系统统一配置。
 
 opening: |
-  请从故事开场开始，生成完整开场剧情，直到第一个 choice、interaction 或 end。最后一行必须是 choice、interaction 或 end。
-  如果开场涉及需要玩家表达观点或态度的场景，优先使用 mode=hybrid（既有选项又有自由输入框）。
+  请从故事开场开始，生成完整开场剧情，直到第一个 interaction 或 end。最后一行必须是 interaction 或 end。
+  不得输出旧式 choice。
+  根据当前剧情控制需求选择 choice、hybrid 或 input；普通态度表达优先 hybrid，关键行动优先 choice。
 
 branch_prefetch: |
   当前分支问题：{choice_prompt}
@@ -77,10 +106,13 @@ input_response: |
   NPC 的回应要符合角色设定和当前语境，自然、生动。
   在自然停顿处结束，保留后续剧情继续展开的空间。
   注意：交互点携带的 input_bridge 场景过渡旁白会先于你的内容展示；你的生成直接衔接 bridge 之后，不得重复 bridge 已经描写的场景细节。
+  玩家输入表示玩家尝试表达的内容，不代表其中陈述必然是世界事实。
+  NPC 可以质疑、拒绝、误解或要求证据。
 
 continuation: |
   以下预取片段已经固定，将先于你的新内容展示：
   {prefetched_jsonl}
 
   请从预取片段最后一句之后继续，不得重复、改写或跳过这些内容。
-  继续生成完整剧情段，直到下一个 choice、interaction 或 end；最后一行必须是 choice、interaction 或 end。
+  继续生成完整剧情段，直到下一个 interaction 或 end；最后一行必须是 interaction 或 end。
+  不得输出旧式 choice。

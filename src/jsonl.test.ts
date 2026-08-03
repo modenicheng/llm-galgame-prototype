@@ -11,18 +11,43 @@ import {
 describe("parseTerminalModelJsonl", () => {
   const MAX_EVENTS = 12;
 
-  // --- backward compat: choice event ---
+  // --- backward compat: legacy choice accepted only on session-read paths ---
 
-  it("parses valid terminal JSONL with choice event (backward compat)", () => {
+  it("parses valid terminal JSONL with legacy choice event when allowLegacyChoice=true", () => {
     const text = [
       '{"type":"narration","text":"天亮了。"}',
       '{"type":"dialogue","speaker":"小樱","text":"早上好！"}',
       '{"type":"choice","prompt":"如何回答？","options":[{"id":"greet","text":"早上好"},{"id":"ignore","text":"无视她"}]}'
     ].join("\n");
 
-    const { events } = parseTerminalModelJsonl(text);
+    const { events } = parseTerminalModelJsonl(text, { allowLegacyChoice: true });
     expect(events).toHaveLength(3);
     expect(events[2]!.type).toBe("choice");
+  });
+
+  // --- gate: new model calls must not emit legacy choice ---
+
+  it("rejects legacy choice terminal by default (new model calls)", () => {
+    const text = [
+      '{"type":"narration","text":"天亮了。"}',
+      '{"type":"dialogue","speaker":"小樱","text":"早上好！"}',
+      '{"type":"choice","prompt":"如何回答？","options":[{"id":"greet","text":"早上好"},{"id":"ignore","text":"无视她"}]}'
+    ].join("\n");
+
+    expect(() => parseTerminalModelJsonl(text)).toThrow(
+      "模型不得再输出旧式 choice；请输出 type=interaction、mode=choice。"
+    );
+  });
+
+  it("rejects legacy choice terminal when allowLegacyChoice=false explicitly", () => {
+    const text = [
+      '{"type":"narration","text":"天亮了。"}',
+      '{"type":"choice","prompt":"如何回答？","options":[{"id":"greet","text":"早上好"},{"id":"ignore","text":"无视她"}]}'
+    ].join("\n");
+
+    expect(() => parseTerminalModelJsonl(text, { allowLegacyChoice: false })).toThrow(
+      "模型不得再输出旧式 choice；请输出 type=interaction、mode=choice。"
+    );
   });
 
   // --- end event ---
@@ -172,6 +197,17 @@ describe("parseTerminalModelJsonl", () => {
     const text = [
       '{"type":"narration","text":"事件。"}',
       '{"type":"interaction","interaction_id":"int_bad","prompt":"？","mode":"hybrid","options":[{"id":"a","text":"A"}]}'
+    ].join("\n");
+
+    expect(() => parseTerminalModelJsonl(text)).toThrow();
+  });
+
+  // --- reject: interaction with illegal mode ---
+
+  it("rejects interaction with illegal mode", () => {
+    const text = [
+      '{"type":"narration","text":"事件。"}',
+      '{"type":"interaction","interaction_id":"int_bad","prompt":"？","mode":"bogus","options":[{"id":"a","text":"A"},{"id":"b","text":"B"}]}'
     ].join("\n");
 
     expect(() => parseTerminalModelJsonl(text)).toThrow();

@@ -67,7 +67,22 @@ function isTerminalEvent(event: ModelEvent): boolean {
   return event.type === "choice" || event.type === "end" || event.type === "interaction";
 }
 
-export function parseTerminalModelJsonl(text: string): ParsedJsonl {
+/** Options controlling terminal-segment parsing. */
+export interface TerminalParseOptions {
+  /**
+   * Accept a legacy `choice` event as the terminal event. New model calls
+   * must leave this false; only session-read/load paths replaying old
+   * events may enable it.
+   */
+  allowLegacyChoice?: boolean;
+}
+
+
+export function parseTerminalModelJsonl(
+  text: string,
+  options: TerminalParseOptions = {},
+): ParsedJsonl {
+  const { allowLegacyChoice = false } = options;
   const { events, patches } = parseLines(text);
   const terminalIndexes = events
     .map((event, index) => (isTerminalEvent(event) ? index : -1))
@@ -79,6 +94,11 @@ export function parseTerminalModelJsonl(text: string): ParsedJsonl {
 
   if (events.length < 2) {
     throw new Error("完整剧情段至少需要一条可播放文本和一个 choice/interaction/end 事件。");
+  }
+
+  const lastEvent = events[events.length - 1]!;
+  if (lastEvent.type === "choice" && !allowLegacyChoice) {
+    throw new Error("模型不得再输出旧式 choice；请输出 type=interaction、mode=choice。");
   }
 
   return { events, patches };

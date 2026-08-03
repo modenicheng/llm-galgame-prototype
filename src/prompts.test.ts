@@ -3,6 +3,7 @@ import { loadPrompts } from "./prompts.js";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const MINIMAL_INSTRUCTIONS_YAML = [
   "output_protocol: '你是互动视觉小说的剧情生成器。'",
@@ -125,5 +126,36 @@ describe("loadPrompts", () => {
     await writeFile(path.join(dir, "instructions.yaml"), "opening: 'only one field'", "utf8");
 
     await expect(loadPrompts(dir)).rejects.toThrow();
+  });
+
+  it("real instructions.yaml makes interaction the sole model form protocol", async () => {
+    const repoPrompts = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "prompts",
+    );
+    const { instructions } = await loadPrompts(repoPrompts);
+
+    // Legacy choice example removed from the protocol list.
+    expect(instructions.output_protocol).not.toContain('选择：{"type":"choice"');
+    // Unified interaction with three explicit mode structures.
+    expect(instructions.output_protocol).toContain('互动：{"type":"interaction"');
+    expect(instructions.output_protocol).toContain("mode=choice");
+    expect(instructions.output_protocol).toContain("mode=hybrid");
+    expect(instructions.output_protocol).toContain("mode=input");
+    expect(instructions.output_protocol).toContain("禁止包含 input_bridge");
+    expect(instructions.output_protocol).toContain("禁止包含 options");
+    // Compressed form-selection rules.
+    expect(instructions.output_protocol).toContain("普通角色交流默认优先 hybrid");
+    // Opening and continuation forbid legacy choice.
+    expect(instructions.opening).toContain("不得输出旧式 choice");
+    expect(instructions.continuation).toContain("不得输出旧式 choice");
+    // Input-response additions.
+    expect(instructions.input_response).toContain(
+      "玩家输入表示玩家尝试表达的内容",
+    );
+    expect(instructions.input_response).toContain(
+      "NPC 可以质疑、拒绝、误解或要求证据",
+    );
   });
 });
