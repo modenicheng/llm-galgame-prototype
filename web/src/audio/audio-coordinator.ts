@@ -54,6 +54,8 @@ export class AudioCoordinator {
   private fedForCurrentLine = 0;
   private playbackStartMs = 0;
   private finishTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Pending start (voice_delay_ms) — playback begins only after it fires. */
+  private startTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: AudioCoordinatorOptions, events: AudioCoordinatorEvents) {
     this.context = options.context;
@@ -138,7 +140,7 @@ export class AudioCoordinator {
     if (!this.playbackStarted) {
       this.startupSamples += samples.length;
       if (this.startupSamples >= this.startupThresholdSamples()) {
-        this.beginPlayback();
+        this.armPlaybackStart();
       }
     } else {
       this.flushPending(lineId);
@@ -162,6 +164,7 @@ export class AudioCoordinator {
 
   /** Halt current line playback (silent — no finished event). */
   stop(): void {
+    this.cancelStartTimer();
     this.cancelFinishTimer();
     this.postWorkletMessage({ type: "clear" });
     this.currentLineId = null;
@@ -169,7 +172,6 @@ export class AudioCoordinator {
     this.startupSamples = 0;
     this.fedForCurrentLine = 0;
   }
-
   /**
    * Remove a line entirely (§12.5 invalidation): its timeline segment,
    * queued sample count and any not-yet-fed pending PCM. When the line is
@@ -178,6 +180,7 @@ export class AudioCoordinator {
    */
   dropLine(lineId: string): void {
     if (lineId === this.currentLineId) {
+      this.cancelStartTimer();
       this.cancelFinishTimer();
       this.postWorkletMessage({ type: "clear" });
       this.currentLineId = null;
@@ -216,7 +219,9 @@ export class AudioCoordinator {
   }
 
   isPlaying(): boolean {
-    return this.playbackStarted && this.currentLineId !== null;
+    // The start-timer window counts as playing: a scene change or choice
+    // interaction during voice_delay_ms must halt the pending start too.
+    return (this.playbackStarted || this.startTimer !== null) && this.currentLineId !== null;
   }
 
   private switchToLine(lineId: string): void {
@@ -226,6 +231,7 @@ export class AudioCoordinator {
     if (lineId === this.currentLineId && this.playbackStarted) {
       return; // already playing this line — restarting would drop audio mid-line
     }
+    this.cancelStartTimer();
     this.cancelFinishTimer();
     this.postWorkletMessage({ type: "clear" });
     this.currentLineId = lineId;
@@ -243,8 +249,27 @@ export class AudioCoordinator {
     this.startupSamples = pending;
     this.fedForCurrentLine = pending;
     if (pending >= this.startupThresholdSamples()) {
-      this.beginPlayback();
+      this.armPlaybackStart();
     }
+  }
+  /** Start the voice_delay_ms countdown; playback begins when it fires. */
+  private armPlaybackStart(): void {
+    if (this.playbackStarted || this.startTimer !== null) {
+      return; // already started or already counting down
+    }
+    const lineId = this.currentLineId;
+    if (lineId === null) {
+      return;
+    }
+    const delayMs = this.playbackConfig.voice_delay_ms ?? 0;
+    if (delayMs <= 0) {
+      this.beginPlayback();
+      return;
+    }
+    this.startTimer = setTimeout(() => {
+      this.startTimer = null;
+      this.beginPlayback();
+    }, delayMs);
   }
 
   private beginPlayback(): void {
@@ -259,6 +284,13 @@ export class AudioCoordinator {
     void this.context.resume().catch(() => {});
     this.scheduleFinish();
     this.events.onLinePlaybackStarted(lineId);
+  }
+
+  private cancelStartTimer(): void {
+    if (this.startTimer !== null) {
+      clearTimeout(this.startTimer);
+      this.startTimer = null;
+    }
   }
 
   private finishLine(lineId: string): void {

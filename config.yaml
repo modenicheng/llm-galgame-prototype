@@ -44,6 +44,9 @@ media:
       max_active_future_lines: 4
 
     playback:
+      # 每句角色音频开播前的固定延迟，用于同步视觉与听觉（0 = 不延迟）。
+      # 若发现配音比字幕快/慢，可在此微调。
+      voice_delay_ms: 500
       startup_buffer_ms: 350
       critical_watermark_ms: 500
       low_watermark_ms: 2500

@@ -52,6 +52,7 @@ function makeConfig() {
           critical_watermark_ms: 500,
           low_watermark_ms: 2500,
           target_buffer_ms: 6500,
+          voice_delay_ms: 0,
         },
         synthesis: {
           provider: "mock",

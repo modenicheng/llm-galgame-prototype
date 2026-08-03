@@ -21,7 +21,7 @@ const TOKEN = "test-token";
 
 const publicConfig: PublicWebConfig = {
   audio: {
-    playback: { startup_buffer_ms: 350, critical_watermark_ms: 500, low_watermark_ms: 2500, target_buffer_ms: 6500 },
+    playback: { startup_buffer_ms: 350, critical_watermark_ms: 500, low_watermark_ms: 2500, target_buffer_ms: 6500, voice_delay_ms: 0 },
     cache: { write_batch_bytes: 262_144, write_flush_interval_ms: 300 },
     format: { encoding: "pcm_s16le", sampleRate: 22050, channels: 1, bitDepth: 16 },
   },

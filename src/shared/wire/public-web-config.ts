@@ -14,6 +14,8 @@ export interface PublicWebConfig {
       critical_watermark_ms: number;
       low_watermark_ms: number;
       target_buffer_ms: number;
+      /** 每句角色音频开播前的固定延迟（ms；0 = 不延迟）。 */
+      voice_delay_ms: number;
     };
     cache: {
       write_batch_bytes: number;

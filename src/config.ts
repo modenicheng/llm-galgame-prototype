@@ -38,6 +38,8 @@ export interface AudioPlaybackConfig {
   critical_watermark_ms: number;
   low_watermark_ms: number;
   target_buffer_ms: number;
+  /** 每句角色音频开播前的固定延迟（同步视觉与听觉；0 = 不延迟）。 */
+  voice_delay_ms: number;
 }
 
 /** V2 synthesis provider settings (Node-side only; never serialized to web). */
@@ -143,12 +145,14 @@ const AudioPlaybackConfigSchema = z
     critical_watermark_ms: z.number().int().min(0).max(60_000).default(500),
     low_watermark_ms: z.number().int().min(0).max(120_000).default(2500),
     target_buffer_ms: z.number().int().min(0).max(300_000).default(6500),
+    voice_delay_ms: z.number().int().min(0).max(60_000).default(0),
   })
   .default({
     startup_buffer_ms: 350,
     critical_watermark_ms: 500,
     low_watermark_ms: 2500,
     target_buffer_ms: 6500,
+    voice_delay_ms: 0,
   });
 
 const AudioSynthesisConfigSchema = z

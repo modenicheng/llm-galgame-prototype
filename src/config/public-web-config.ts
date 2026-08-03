@@ -17,6 +17,7 @@ export function toPublicWebConfig(config: AppConfig): PublicWebConfig {
         critical_watermark_ms: playback?.critical_watermark_ms ?? 500,
         low_watermark_ms: playback?.low_watermark_ms ?? 2500,
         target_buffer_ms: playback?.target_buffer_ms ?? 6500,
+        voice_delay_ms: playback?.voice_delay_ms ?? 0,
       },
       cache: {
         write_batch_bytes: cache?.write_batch_bytes ?? 262_144,

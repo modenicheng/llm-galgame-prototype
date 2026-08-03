@@ -7,6 +7,7 @@ const playbackConfig: PublicWebConfig["audio"]["playback"] = {
   critical_watermark_ms: 500,
   low_watermark_ms: 2500,
   target_buffer_ms: 6500,
+  voice_delay_ms: 0,
 };
 const format: PublicWebConfig["audio"]["format"] = {
   encoding: "pcm_s16le",
@@ -137,6 +138,67 @@ describe("AudioCoordinator", () => {
     vi.advanceTimersByTime(1000 + 150);
     expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-1");
     expect(coordinator.isPlaying()).toBe(false);
+  });
+
+  it("voice_delay_ms defers playback start and finished until the delay elapses", async () => {
+    vi.useFakeTimers();
+    const { context } = makeFakeContext();
+    const events = makeEvents();
+    const delayed = new AudioCoordinator(
+      { context, playbackConfig: { ...playbackConfig, voice_delay_ms: 500 }, format },
+      events,
+    );
+    await delayed.init();
+    delayed.enqueueLine("line-1", "cache-1", 0, 0);
+    delayed.start("line-1");
+    delayed.feedPcm("line-1", new Int16Array(22050)); // 1s of audio
+    expect(delayed.isPlaying()).toBe(true); // the pending start counts as playing
+    expect(events.onLinePlaybackStarted).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(499);
+    expect(events.onLinePlaybackStarted).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(events.onLinePlaybackStarted).toHaveBeenCalledWith("line-1");
+    // The 1s audio plays after the 0.5s lead-in.
+    vi.advanceTimersByTime(1000);
+    expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-1");
+    expect(delayed.isPlaying()).toBe(false);
+  });
+
+  it("stop during the voice delay cancels the pending start", async () => {
+    vi.useFakeTimers();
+    const { context } = makeFakeContext();
+    const events = makeEvents();
+    const delayed = new AudioCoordinator(
+      { context, playbackConfig: { ...playbackConfig, voice_delay_ms: 500 }, format },
+      events,
+    );
+    await delayed.init();
+    delayed.enqueueLine("line-1", "cache-1", 0, 0);
+    delayed.start("line-1");
+    delayed.feedPcm("line-1", new Int16Array(22050));
+    delayed.stop();
+    vi.advanceTimersByTime(600);
+    expect(events.onLinePlaybackStarted).not.toHaveBeenCalled();
+    expect(delayed.isPlaying()).toBe(false);
+  });
+
+  it("switchToLine during the voice delay cancels the pending start", async () => {
+    vi.useFakeTimers();
+    const { context } = makeFakeContext();
+    const events = makeEvents();
+    const delayed = new AudioCoordinator(
+      { context, playbackConfig: { ...playbackConfig, voice_delay_ms: 500 }, format },
+      events,
+    );
+    await delayed.init();
+    delayed.enqueueLine("line-1", "cache-1", 0, 0);
+    delayed.enqueueLine("line-2", "cache-2", 0, 0);
+    delayed.start("line-1");
+    delayed.feedPcm("line-1", new Int16Array(22050));
+    delayed.skip("line-2");
+    vi.advanceTimersByTime(600);
+    expect(events.onLinePlaybackStarted).not.toHaveBeenCalled();
+    expect(delayed.isPlaying()).toBe(false);
   });
 
   it("manual mode finishes without waiting pause_after_ms", async () => {
