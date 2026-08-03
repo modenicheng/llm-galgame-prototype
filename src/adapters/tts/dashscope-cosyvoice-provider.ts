@@ -2,17 +2,17 @@
  * DashScopeCosyVoiceProvider — streaming CosyVoice synthesis over DashScope HTTP SSE.
  *
  * Implements `TtsProviderPort`. PCM chunks are streamed as they arrive over the
- * DashScope multimodal-generation SSE endpoint; no file is written and no
+ * DashScope SpeechSynthesizer SSE endpoint; no file is written and no
  * audio URL is downloaded — PCM stays on the wire (V2 semantics). This module
  * is Node-only: it never imports IndexedDB or any browser API.
  *
  * Wire shape (verified against Alibaba Cloud Model Studio docs; see report):
- *   POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
+ *   POST https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer
  *   Authorization: Bearer <apiKey>
  *   Content-Type: application/json
  *   X-DashScope-Data-Inspector: enable   (inspection header per design contract)
  *   X-DashScope-SSE: enable              (documented streaming enabler for this endpoint)
- *   body: { model, input: { text, voice }, parameters: { format: "pcm", sample_rate, ... } }
+ *   body: { model, input: { text, voice, format: "pcm", sample_rate, rate, pitch, volume, seed, instruction? } }
  *   events: `data: { "output": { "audio": { ...base64 pcm... }, "finish_reason": ... } }`
  *
  * The base64 field is read from `output.audio.audio_data` first (legacy name
@@ -38,12 +38,12 @@ import type {
 } from "../../core/ports/tts-provider-port.js";
 
 export const DASHSCOPE_DEFAULT_BASE_URL =
-  "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+  "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer";
 export const DASHSCOPE_DEFAULT_TIMEOUT_MS = 120_000;
 
 export interface DashScopeCosyVoiceProviderOptions {
   apiKey: string;
-  /** DashScope generation endpoint. Defaults to the multimodal-generation endpoint. */
+  /** DashScope SpeechSynthesizer endpoint. Defaults to the official TTS service URL. */
   baseUrl?: string;
   /** First-chunk deadline in ms. Default 120000. */
   timeoutMs?: number;
@@ -264,7 +264,13 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
     signal.addEventListener("abort", () => controller.abort(), { once: true });
     if (signal.aborted) controller.abort();
 
-    const parameters: Record<string, unknown> = {
+    // Official CosyVoice HTTP API: synthesis params live inside `input`
+    // (not a separate `parameters` object), Beijing region. No SSML this
+    // round — plain text only (see plan: SSML deferred with pronunciation
+    // markers).
+    const input: Record<string, unknown> = {
+      text: request.text,
+      voice: request.voiceId,
       format: "pcm",
       sample_rate: request.sampleRate,
       rate: request.rate,
@@ -273,12 +279,11 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
       seed: request.seed,
     };
     if (request.instruction !== undefined) {
-      parameters.instruction = request.instruction;
+      input.instruction = request.instruction;
     }
     const body = {
       model: request.model,
-      input: { text: request.text, voice: request.voiceId },
-      parameters,
+      input,
     };
 
     let response: Response;
