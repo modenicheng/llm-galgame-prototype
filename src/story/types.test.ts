@@ -72,6 +72,7 @@ describe("type exports", () => {
       mode: "hybrid",
       options: [
         { id: "a", text: "Knock on the door" },
+        { id: "b", text: "Wait and listen" },
       ],
       input: {
         kind: "action",
@@ -92,7 +93,10 @@ describe("type exports", () => {
       interaction_id: "int-003",
       prompt: "Choose!",
       mode: "choice",
-      options: [{ id: "a", text: "Go" }],
+      options: [
+        { id: "a", text: "Go" },
+        { id: "b", text: "Stay" },
+      ],
     };
     expect(event.mode).toBe("choice");
     expect("input" in event).toBe(false);
@@ -168,7 +172,10 @@ describe("type exports", () => {
           interaction_id: "int-001",
           prompt: "Enter the room?",
           mode: "choice",
-          options: [{ id: "yes", text: "Yes" }],
+          options: [
+            { id: "yes", text: "Yes" },
+            { id: "no", text: "No" },
+          ],
         },
       ],
       state_patch: {
@@ -209,7 +216,10 @@ describe("InteractionEventSchema", () => {
       interaction_id: "int-1",
       prompt: "What now?",
       mode: "choice",
-      options: [{ id: "a", text: "Fight" }],
+      options: [
+        { id: "a", text: "Fight" },
+        { id: "b", text: "Flee" },
+      ],
     });
     expect(result.success).toBe(true);
   });
@@ -238,7 +248,10 @@ describe("InteractionEventSchema", () => {
       interaction_id: "int-6",
       prompt: "Choose or speak.",
       mode: "hybrid",
-      options: [{ id: "a", text: "Ask" }],
+      options: [
+        { id: "a", text: "Ask" },
+        { id: "b", text: "Wait" },
+      ],
       input: {
         kind: "free_text",
         placeholder: "Or say anything...",
@@ -284,6 +297,126 @@ describe("InteractionEventSchema", () => {
       interaction_id: "int-5",
       prompt: "How?",
       mode: "unknown_mode",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // --- §14.2: choice option count, id uniqueness, forbidden fields ---
+
+  it("should parse a choice interaction with the maximum of 5 options", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int-7",
+      prompt: "Pick one.",
+      mode: "choice",
+      options: [
+        { id: "a", text: "A" },
+        { id: "b", text: "B" },
+        { id: "c", text: "C" },
+        { id: "d", text: "D" },
+        { id: "e", text: "E" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("should reject a choice interaction with only 1 option", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int-8",
+      prompt: "Pick one.",
+      mode: "choice",
+      options: [{ id: "a", text: "A" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("should reject a choice interaction with 6 options", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int-9",
+      prompt: "Pick one.",
+      mode: "choice",
+      options: [
+        { id: "a", text: "A" },
+        { id: "b", text: "B" },
+        { id: "c", text: "C" },
+        { id: "d", text: "D" },
+        { id: "e", text: "E" },
+        { id: "f", text: "F" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("should reject a choice interaction with duplicate option ids", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int-10",
+      prompt: "Pick one.",
+      mode: "choice",
+      options: [
+        { id: "ask", text: "Ask" },
+        { id: "ask", text: "Ask again" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("should treat option ids case-sensitively", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int-13",
+      prompt: "Pick one.",
+      mode: "choice",
+      options: [
+        { id: "ask", text: "Ask" },
+        { id: "Ask", text: "Ask (uppercase)" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("should trim and reject whitespace-only option ids", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int-14",
+      prompt: "Pick one.",
+      mode: "choice",
+      options: [
+        { id: "   ", text: "Blank" },
+        { id: "ask", text: "Ask" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("should reject a choice interaction carrying an input field", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int-11",
+      prompt: "Pick one.",
+      mode: "choice",
+      options: [
+        { id: "a", text: "A" },
+        { id: "b", text: "B" },
+      ],
+      input: { kind: "free_text", placeholder: "...", max_length: 100 },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("should reject a choice interaction carrying an input_bridge field", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int-12",
+      prompt: "Pick one.",
+      mode: "choice",
+      options: [
+        { id: "a", text: "A" },
+        { id: "b", text: "B" },
+      ],
+      input_bridge: { events: [{ type: "narration", text: "..." }] },
     });
     expect(result.success).toBe(false);
   });

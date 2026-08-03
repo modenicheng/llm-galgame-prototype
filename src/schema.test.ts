@@ -520,7 +520,10 @@ describe("InteractionEventSchema union", () => {
       interaction_id: "int1",
       prompt: "Choose!",
       mode: "choice",
-      options: [{ id: "a", text: "Option A" }],
+      options: [
+        { id: "a", text: "Option A" },
+        { id: "b", text: "Option B" },
+      ],
     });
     expect(result.success).toBe(true);
   });
@@ -559,7 +562,10 @@ describe("InteractionEventSchema union", () => {
       interaction_id: "int1",
       prompt: "Choose or type!",
       mode: "hybrid",
-      options: [{ id: "a", text: "Option A" }],
+      options: [
+        { id: "a", text: "Option A" },
+        { id: "b", text: "Option B" },
+      ],
       input: {
         kind: "free_text",
         placeholder: "Type...",
@@ -685,6 +691,102 @@ describe("InteractionEventSchema union", () => {
           { type: "state_patch", patch: { recent_summary: "nope" } },
         ],
       },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // --- §14.2: hybrid id uniqueness / bridge bounds ---
+
+  it("rejects hybrid mode with duplicate option ids", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int1",
+      prompt: "Choose or type!",
+      mode: "hybrid",
+      options: [
+        { id: "a", text: "A" },
+        { id: "a", text: "A again" },
+      ],
+      input: {
+        kind: "free_text",
+        placeholder: "Type...",
+        max_length: 200,
+      },
+      input_bridge: BRIDGE,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects hybrid mode with an empty bridge", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int1",
+      prompt: "Choose or type!",
+      mode: "hybrid",
+      options: [
+        { id: "a", text: "A" },
+        { id: "b", text: "B" },
+      ],
+      input: {
+        kind: "free_text",
+        placeholder: "Type...",
+        max_length: 200,
+      },
+      input_bridge: { events: [] },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // --- §14.2: input forbidden fields / InputSpec limits ---
+
+  it("rejects input mode carrying options", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int1",
+      prompt: "Type something!",
+      mode: "input",
+      options: [
+        { id: "a", text: "A" },
+        { id: "b", text: "B" },
+      ],
+      input: {
+        kind: "free_text",
+        placeholder: "Your answer...",
+        max_length: 100,
+      },
+      input_bridge: BRIDGE,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects input mode with max_length 0", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int1",
+      prompt: "Type something!",
+      mode: "input",
+      input: {
+        kind: "free_text",
+        placeholder: "Your answer...",
+        max_length: 0,
+      },
+      input_bridge: BRIDGE,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects input mode with max_length above 2000", () => {
+    const result = InteractionEventSchema.safeParse({
+      type: "interaction",
+      interaction_id: "int1",
+      prompt: "Type something!",
+      mode: "input",
+      input: {
+        kind: "free_text",
+        placeholder: "Your answer...",
+        max_length: 2001,
+      },
+      input_bridge: BRIDGE,
     });
     expect(result.success).toBe(false);
   });

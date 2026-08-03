@@ -99,7 +99,7 @@ describe("parseTerminalModelJsonl", () => {
   it("rejects JSONL with interaction in the middle", () => {
     const text = [
       '{"type":"narration","text":"第一段。"}',
-      '{"type":"interaction","interaction_id":"int_bad","prompt":"？","mode":"choice","options":[{"id":"x","text":"选"}]}',
+      '{"type":"interaction","interaction_id":"int_bad","prompt":"？","mode":"choice","options":[{"id":"x","text":"选"},{"id":"y","text":"等"}]}',
       '{"type":"dialogue","speaker":"A","text":"第二段。"}'
     ].join("\n");
 
@@ -114,7 +114,7 @@ describe("parseTerminalModelJsonl", () => {
     const text = [
       '{"type":"narration","text":"事件一。"}',
       '{"type":"choice","prompt":"选","options":[{"id":"a","text":"A"},{"id":"b","text":"B"}]}',
-      '{"type":"interaction","interaction_id":"int_bad","prompt":"？","mode":"choice","options":[{"id":"x","text":"X"}]}'
+      '{"type":"interaction","interaction_id":"int_bad","prompt":"？","mode":"choice","options":[{"id":"x","text":"X"},{"id":"y","text":"Y"}]}'
     ].join("\n");
 
     expect(() => parseTerminalModelJsonl(text)).toThrow(
@@ -181,7 +181,7 @@ describe("parseTerminalModelJsonl", () => {
 
   it("rejects segment without at least one playable event", () => {
     const text = [
-      '{"type":"interaction","interaction_id":"int_001","prompt":"？","mode":"choice","options":[{"id":"a","text":"A"}]}'
+      '{"type":"interaction","interaction_id":"int_001","prompt":"？","mode":"choice","options":[{"id":"a","text":"A"},{"id":"b","text":"B"}]}'
     ].join("\n");
 
     expect(() => parseTerminalModelJsonl(text)).toThrow(
@@ -257,7 +257,7 @@ describe("parsePrefetchModelJsonl", () => {
     const text = [
       '{"type":"narration","text":"Narr"}',
       '{"type":"dialogue","speaker":"A","text":"Hi"}',
-      '{"type":"interaction","interaction_id":"int_001","prompt":"？","mode":"choice","options":[{"id":"a","text":"A"}]}'
+      '{"type":"interaction","interaction_id":"int_001","prompt":"？","mode":"choice","options":[{"id":"a","text":"A"},{"id":"b","text":"B"}]}'
     ].join("\n");
 
     expect(() =>

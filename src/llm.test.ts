@@ -168,7 +168,7 @@ describe("parseGenerationEnvelope", () => {
       '{"type":"narration","text":"雨停了。"}',
       '{"type":"state_patch","patch":{"recent_summary":"冒险者与老板交谈了几句。"}}',
       '{"type":"dialogue","speaker":"老板","text":"再来一杯？"}',
-      '{"type":"interaction","interaction_id":"int_1","prompt":"点什么？","mode":"choice","options":[{"id":"a","text":"啤酒"}]}',
+      '{"type":"interaction","interaction_id":"int_1","prompt":"点什么？","mode":"choice","options":[{"id":"a","text":"啤酒"},{"id":"b","text":"果汁"}]}',
     ].join("\n");
 
     const result = (gen as any).parseGenerationEnvelope(

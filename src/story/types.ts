@@ -376,41 +376,68 @@ const InputSpecSchema = z.object({
     "action",
     "short_answer",
   ]),
-  placeholder: z.string().min(1),
-  max_length: z.number().int().positive(),
+  placeholder: z.string().trim().min(1),
+  max_length: z.number().int().min(1).max(2000),
 });
 
 const InteractionOptionSchema = z.object({
-  id: z.string().min(1),
-  text: z.string().min(1),
+  id: z.string().trim().min(1),
+  text: z.string().trim().min(1),
 });
 
-const ChoiceInteractionSchema = z.object({
-  type: z.literal("interaction"),
-  interaction_id: z.string().min(1),
-  prompt: z.string().min(1),
-  mode: z.literal("choice"),
-  options: z.array(InteractionOptionSchema).min(1),
-});
+/**
+ * §6.3: option ids within one interaction must be unique (case-sensitive).
+ * Shared by choice and hybrid schemas.
+ */
+function validateUniqueOptionIds(
+  value: { options: Array<{ id: string }> },
+  ctx: z.RefinementCtx,
+): void {
+  const ids = new Set<string>();
 
-const InputInteractionSchema = z.object({
+  value.options.forEach((option, index) => {
+    if (ids.has(option.id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["options", index, "id"],
+        message: `选项 id 重复：${option.id}`,
+      });
+    }
+
+    ids.add(option.id);
+  });
+}
+
+const ChoiceInteractionSchema = z
+  .strictObject({
+    type: z.literal("interaction"),
+    interaction_id: z.string().trim().min(1),
+    prompt: z.string().trim().min(1),
+    mode: z.literal("choice"),
+    options: z.array(InteractionOptionSchema).min(2).max(5),
+  })
+  .superRefine(validateUniqueOptionIds);
+
+const InputInteractionSchema = z.strictObject({
   type: z.literal("interaction"),
-  interaction_id: z.string().min(1),
-  prompt: z.string().min(1),
+  interaction_id: z.string().trim().min(1),
+  prompt: z.string().trim().min(1),
   mode: z.literal("input"),
   input: InputSpecSchema,
   input_bridge: InputBridgeSchema,
 });
 
-const HybridInteractionSchema = z.object({
-  type: z.literal("interaction"),
-  interaction_id: z.string().min(1),
-  prompt: z.string().min(1),
-  mode: z.literal("hybrid"),
-  options: z.array(InteractionOptionSchema).min(1),
-  input: InputSpecSchema,
-  input_bridge: InputBridgeSchema,
-});
+const HybridInteractionSchema = z
+  .strictObject({
+    type: z.literal("interaction"),
+    interaction_id: z.string().trim().min(1),
+    prompt: z.string().trim().min(1),
+    mode: z.literal("hybrid"),
+    options: z.array(InteractionOptionSchema).min(2).max(5),
+    input: InputSpecSchema,
+    input_bridge: InputBridgeSchema,
+  })
+  .superRefine(validateUniqueOptionIds);
 
 export const InteractionEventSchema = z.discriminatedUnion("mode", [
   ChoiceInteractionSchema,

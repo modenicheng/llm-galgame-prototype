@@ -16,6 +16,7 @@
     "start:cli": "node dist/node/entrypoints/cli.js",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "verify:voice-guide": "node scripts/verify-voice-guide.mjs",
+    "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
