@@ -225,6 +225,28 @@ describe("parseTerminalModelJsonl", () => {
     );
   });
 
+  // --- reject: legacy choice gates BEFORE the playable-length check ---
+
+  it("rejects a lone legacy choice with the legacy gate message, not the length message", () => {
+    const text =
+      '{"type":"choice","prompt":"如何回答？","options":[{"id":"a","text":"好"},{"id":"b","text":"不"}]}';
+
+    expect(() => parseTerminalModelJsonl(text)).toThrow(
+      "模型不得再输出旧式 choice；请输出 type=interaction、mode=choice。",
+    );
+  });
+
+  it("rejects [narration, legacy choice] with the legacy gate message", () => {
+    const text = [
+      '{"type":"narration","text":"天亮了。"}',
+      '{"type":"choice","prompt":"如何回答？","options":[{"id":"a","text":"好"},{"id":"b","text":"不"}]}',
+    ].join("\n");
+
+    expect(() => parseTerminalModelJsonl(text)).toThrow(
+      "模型不得再输出旧式 choice；请输出 type=interaction、mode=choice。",
+    );
+  });
+
   // --- reject: too many events ---
 
   it("accepts segment exceeding old max events limit", () => {

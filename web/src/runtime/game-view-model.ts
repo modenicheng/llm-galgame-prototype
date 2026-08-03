@@ -58,6 +58,12 @@ export interface ViewModelState {
   /** EndEvent wire. */
   ending?: unknown;
   lastError?: string;
+  /**
+   * Monotonic counter incremented on every projection.snapshot restore.
+   * The UI uses it to detect a reconnect-driven re-projection and force a
+   * panel re-open, which resets the one-shot submit lock (§10.3).
+   */
+  projectionSeq: number;
 }
 
 function isInteraction(
@@ -115,6 +121,8 @@ export class GameViewModel {
   private status: unknown;
   private ending: unknown;
   private lastError: string | undefined;
+  /** Monotonic projection-restore counter (§10.3); 0 until first snapshot. */
+  private projectionSeq = 0;
   private readonly listeners = new Set<(s: ViewModelState) => void>();
 
   applyServerMessage(msg: ServerMessage): void {
@@ -141,6 +149,7 @@ export class GameViewModel {
     this.status = projection.status;
     this.ending = projection.ending;
     this.mode = this.deriveModeFromProjection(projection);
+    this.projectionSeq += 1;
     this.notify();
   }
 
@@ -148,6 +157,7 @@ export class GameViewModel {
     const state: ViewModelState = {
       mode: this.mode,
       recentLines: [...this.recentLines],
+      projectionSeq: this.projectionSeq,
     };
     if (this.sessionId !== undefined) state.sessionId = this.sessionId;
     if (this.currentLine !== undefined) state.currentLine = this.currentLine;

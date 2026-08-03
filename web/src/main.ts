@@ -123,6 +123,7 @@ export function boot(root?: HTMLElement | null): void {
 
   let started = false;
   let lastMode: FrontendMode | null = null;
+  let lastProjectionSeq = 0;
   let lastPreviewText: string | null = null;
   // Draft per interaction: a preview stores its text under the interaction id
   // so cancel restores it, while a NEW interaction never reuses an old draft
@@ -135,6 +136,8 @@ export function boot(root?: HTMLElement | null): void {
     const mode = view.mode;
     const modeChanged = mode !== lastMode;
     lastMode = mode;
+    const projectionRestored = view.projectionSeq !== lastProjectionSeq;
+    lastProjectionSeq = view.projectionSeq;
 
     controls.setConnection(state.connection);
     controls.setAudio(state.audioPlaying, state.bufferedAheadMs);
@@ -151,21 +154,32 @@ export function boot(root?: HTMLElement | null): void {
     const selectingMode =
       mode === "CHOICE_SELECTING" || mode === "HYBRID_SELECTING" || mode === "INPUT_EDITING";
 
-    if (modeChanged) {
+    if (modeChanged || projectionRestored) {
       if (selectingMode) {
         const interactionId = interactionIdOf(view.currentInteraction);
-        // A genuinely new interaction supersedes every older draft.
-        if (interactionId !== null && interactionId !== lastInteractionId) {
-          draftByInteractionId.clear();
-          lastInteractionId = interactionId;
-        }
-        const draft =
-          interactionId !== null ? draftByInteractionId.get(interactionId) : undefined;
-        if (draft !== undefined && interactionId !== null) {
-          draftByInteractionId.delete(interactionId);
-          interactionPanel.restoreDraft(draft);
-        } else {
+        if (projectionRestored) {
+          // §10.3: a reconnect projection re-opens the still-open
+          // interaction, which resets the one-shot submit lock — a submit
+          // during the dead socket was dropped by RuntimeClient.
+          if (interactionId !== null && interactionId !== lastInteractionId) {
+            draftByInteractionId.clear();
+            lastInteractionId = interactionId;
+          }
           interactionPanel.open(view.currentInteraction);
+        } else {
+          // A genuinely new interaction supersedes every older draft.
+          if (interactionId !== null && interactionId !== lastInteractionId) {
+            draftByInteractionId.clear();
+            lastInteractionId = interactionId;
+          }
+          const draft =
+            interactionId !== null ? draftByInteractionId.get(interactionId) : undefined;
+          if (draft !== undefined && interactionId !== null) {
+            draftByInteractionId.delete(interactionId);
+            interactionPanel.restoreDraft(draft);
+          } else {
+            interactionPanel.open(view.currentInteraction);
+          }
         }
       } else {
         interactionPanel.close();

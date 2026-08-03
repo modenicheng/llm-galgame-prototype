@@ -202,6 +202,19 @@ describe("InteractionPolicy", () => {
     expect(policy.validate(malformed, state([])).accepted).toBe(false);
   });
 
+  it("choice 错误携带 input_bridge 字段 → 拒绝（防 Schema 改动绕过）", () => {
+    const policy = new InteractionPolicy(makeConfig());
+
+    const malformed = {
+      ...choiceInteraction(OPTIONS_2),
+      input_bridge: { events: [{ type: "narration", text: "她等着。" }] },
+    } as unknown as InteractionEvent;
+
+    const result = policy.validate(malformed, state([]));
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toContain("bridge");
+  });
+
   it("input 错误携带 options 字段 → 拒绝（防 Schema 改动绕过）", () => {
     const policy = new InteractionPolicy(makeConfig());
 

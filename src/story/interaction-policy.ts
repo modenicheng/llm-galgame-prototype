@@ -139,9 +139,12 @@ export class InteractionPolicy {
       }
     }
 
-    // 6. choice 不得错误携带 input 字段
-    if (candidate.mode === "choice" && "input" in interaction) {
-      return { accepted: false, reason: "choice 不得携带 input 字段。" };
+    // 6. choice 不得错误携带 input / input_bridge 字段
+    if (
+      candidate.mode === "choice" &&
+      ("input" in interaction || "input_bridge" in interaction)
+    ) {
+      return { accepted: false, reason: "choice 不得携带 input / input_bridge 字段。" };
     }
 
     // 7. input 不得错误携带 options 字段

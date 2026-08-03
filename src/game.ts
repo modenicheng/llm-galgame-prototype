@@ -83,11 +83,18 @@ interface ChoiceOutcome {
 
 type ChoiceSelection = Pick<ChoiceOutcome, "preview" | "liveSelection">;
 
-/** Result of committing an input: fixed prefix plus optional live stream. */
-interface InputCommitOutcome {
-  preview: RuntimePlayableEvent[];
-  liveResponse?: InputResponseSession;
-}
+/**
+ * Result of committing an input: the committed prefix plus optional live
+ * stream, or — hybrid only — a preview-cancel sentinel that returns control
+ * to the hybrid loop so the full form (options + input) stays armed (§11.7).
+ */
+type InputCommitOutcome =
+  | {
+      type: "committed";
+      preview: RuntimePlayableEvent[];
+      liveResponse?: InputResponseSession;
+    }
+  | { type: "canceled" };
 
 /** Structural contract for live-consumable streams. */
 interface LiveStreamLike {
@@ -660,6 +667,9 @@ export class Game {
       }
 
       const committed = await this.handleInteractionInput(event, turn, segment.branchManager);
+      // A pure input never cancels back out of the commit loop; only the
+      // hybrid path returns the canceled sentinel.
+      if (committed.type !== "committed") throw new RuntimeShutdownError();
       return {
         type: "choice",
         nextTurn: turn + 1,
@@ -671,6 +681,18 @@ export class Game {
 
   private emit(output: RuntimeOutput): void {
     for (const listener of this.listeners) listener(output);
+  }
+
+  /**
+   * Publish `interaction_resolved` for `interactionId` — the interaction
+   * can no longer be submitted from that moment on (§5.4). Callers release
+   * the active interaction scope immediately after.
+   */
+  private resolveInteraction(
+    interactionId: string,
+    resolution: "choice" | "input",
+  ): void {
+    this.emit({ type: "interaction_resolved", interactionId, resolution });
   }
 
   /**
@@ -723,10 +745,12 @@ export class Game {
         acceptedTypes[c.type] === true &&
         c.interactionId === interactionId,
     );
-    if (command.type !== "select_choice" && command.type !== "preview_input") {
-      throw new RuntimeShutdownError();
-    }
-    return command;
+    // The predicate above guarantees the accepted types; the cast narrows
+    // the RuntimeCommand union for the declared return type.
+    return command as Extract<
+      RuntimeCommand,
+      { type: "select_choice" | "preview_input" }
+    >;
   }
 
   /**
@@ -864,11 +888,7 @@ export class Game {
     if (!selected) throw new Error(`未找到选项：${command.optionId}`);
     // The option exists: the interaction is now resolved and can no longer
     // be submitted; browsers close the form immediately.
-    this.emit({
-      type: "interaction_resolved",
-      interactionId,
-      resolution: "choice",
-    });
+    this.resolveInteraction(interactionId, "choice");
     // §10.2 lifecycle: choice accepted → the interaction scope is released.
     this.activeInteractionId = null;
     this.choiceTimestamp = this.clock.nowMs();
@@ -1323,6 +1343,12 @@ export class Game {
         this.activePreviewId = null;
         this.emit({ type: "input_preview_canceled", previewId });
         this.media.discardCandidate(previewId);
+        if (interaction.mode === "hybrid") {
+          // §11.7: a hybrid cancel hands control back to the hybrid loop,
+          // which re-arms BOTH submission paths and re-prefetches the
+          // option branches (the interaction is still open).
+          return { type: "canceled" };
+        }
         continue;
       }
 
@@ -1332,7 +1358,7 @@ export class Game {
       // The input is now resolved and can no longer be submitted; browsers
       // close the form. Emitted before input_committed so a reconnect never
       // restores the resolved interaction.
-      this.emit({ type: "interaction_resolved", interactionId, resolution: "input" });
+      this.resolveInteraction(interactionId, "input");
       // §10.2 lifecycle: confirm releases both the preview and interaction
       // scope — no further confirm/cancel may touch this preview.
       this.activeInteractionId = null;
@@ -1398,6 +1424,7 @@ export class Game {
         this.media.registerActive(responseSession.responseEvents);
         this.status.removeJob("input-response");
         return {
+          type: "committed",
           preview: [playerDialogue, ...bridgeEvents, ...responseSession.responseEvents],
         };
       }
@@ -1413,6 +1440,7 @@ export class Game {
       });
       this.media.registerActive(liveSession.responseEvents);
       return {
+        type: "committed",
         preview: [playerDialogue, ...bridgeEvents, ...liveSession.responseEvents],
         liveResponse: liveSession,
       };
@@ -1541,8 +1569,11 @@ export class Game {
 
   /**
    * Hybrid interaction: player can select a preset option OR type free text.
-   * The runtime opens the interaction once and awaits `select_choice` or
-   * `preview_input`; client-side cancels simply re-prompt without commands.
+   * The interaction scope opens once and accepts `select_choice` /
+   * `preview_input` until one path resolves. A preview cancel does NOT
+   * resolve it — the loop re-opens the full hybrid (§11.6) with both paths
+   * armed again (§11.7: 选项仍可点击) and re-prefetches the option branches
+   * so a later choice has live candidates.
    *
    * Choosing a preset option discards the buffered input bridge; choosing
    * free text keeps it for the confirm → bridge → response playback.
@@ -1553,123 +1584,133 @@ export class Game {
     branchManager: BranchManager | null,
     prefetchContext: StoryContextEvent[]
   ): Promise<SegmentOutcome> {
-    this.status.setPhase("等待选择", "可选择预设选项，或自由输入");
     const interactionId = interaction.interaction_id;
     // §10.2 lifecycle: hybrid opens one interaction scope shared by both
     // submission paths; it is released as soon as either path resolves.
-    this.activeInteractionId = interactionId;
-    this.emit({ type: "interaction_opened", interactionId, interaction });
-    const command = await this.waitForInteractionCommand(
-      interactionId,
-      { select_choice: true, preview_input: true },
-    );
-
-    if (command.type === "preview_input") {
-      branchManager?.discardAll();
-      this.status.clearBranches();
-
-      const committed = await this.handleInteractionInput(
-        interaction,
-        turn,
-        null,
-        command.text,
+    while (true) {
+      this.status.setPhase("等待选择", "可选择预设选项，或自由输入");
+      this.activeInteractionId = interactionId;
+      this.emit({ type: "interaction_opened", interactionId, interaction });
+      const command = await this.waitForInteractionCommand(
+        interactionId,
+        { select_choice: true, preview_input: true },
       );
+
+      if (command.type === "preview_input") {
+        branchManager?.discardAll();
+        this.status.clearBranches();
+
+        const committed = await this.handleInteractionInput(
+          interaction,
+          turn,
+          null,
+          command.text,
+        );
+
+        if (committed.type === "canceled") {
+          // §11.7: cancel restores the FULL hybrid — options clickable
+          // again, input re-editable, bridge preserved. Re-prefetch the
+          // option branches so the choice path is live once more.
+          branchManager = this.createBranchManagerForTerminal(
+            interaction,
+            turn,
+            prefetchContext,
+          );
+          continue;
+        }
+
+        return {
+          type: "choice",
+          nextTurn: turn + 1,
+          preview: committed.preview,
+          ...(committed.liveResponse ? { liveResponse: committed.liveResponse } : {}),
+        };
+      }
+
+      if (command.type !== "select_choice") throw new RuntimeShutdownError();
+
+      const selected = interaction.options.find(
+        (o) => o.id === command.optionId
+      );
+      if (!selected) {
+        throw new Error(`未找到选项：${command.optionId}`);
+      }
+
+      // The preset option resolves the interaction through the branch flow;
+      // the input bridge belongs to the free-text path and is discarded.
+      this.resolveInteraction(interactionId, "choice");
+      // §10.2 lifecycle: choice accepted → the interaction scope is released.
+      this.activeInteractionId = null;
+      this.bridgeBuffer.discard(interactionId);
+
+      await this.recordPlayerChoice(
+        { id: selected.id, text: selected.text },
+        turn
+      );
+      this.choiceTimestamp = this.clock.nowMs();
+      this.diagnostics.info("player", `你选择了：${selected.text}`);
+
+      let preview: RuntimePlayableEvent[];
+      let liveSelection: LiveBranchSelection | undefined;
+
+      if (branchManager) {
+        const syntheticChoice: ChoiceEvent = {
+          type: "choice",
+          prompt: interaction.prompt,
+          options: interaction.options.map((o) => ({
+            id: o.id,
+            text: o.text,
+          })),
+        };
+        const adopted = await this.adoptSelectedBranch(
+          selected,
+          syntheticChoice,
+          turn,
+          branchManager,
+          prefetchContext,
+        );
+        preview = adopted.preview;
+        liveSelection = adopted.liveSelection;
+
+        for (const option of interaction.options) {
+          this.status.removeJob(`branch:${option.id}`);
+        }
+        this.status.clearBranches();
+      } else {
+        this.status.setJob(
+          "on-demand-branch",
+          `生成分支：${selected.text}`,
+          "running"
+        );
+        const syntheticChoice: ChoiceEvent = {
+          type: "choice",
+          prompt: interaction.prompt,
+          options: interaction.options.map((o) => ({
+            id: o.id,
+            text: o.text,
+          })),
+        };
+        const genPromise = this.generator
+          .generateBranchPrefetch(
+            turn + 1,
+            this.storyState,
+            prefetchContext,
+            syntheticChoice,
+            { id: selected.id, text: selected.text }
+          )
+          .then((envelope) => this.materializePlayableEvents(this.filterPlayableEvents(envelope.events)));
+        preview = await genPromise;
+        this.registerBuffered(preview);
+        this.status.removeJob("on-demand-branch");
+      }
 
       return {
         type: "choice",
         nextTurn: turn + 1,
-        preview: committed.preview,
-        ...(committed.liveResponse ? { liveResponse: committed.liveResponse } : {}),
+        preview,
+        ...(liveSelection ? { liveSelection } : {}),
       };
     }
-
-    if (command.type !== "select_choice") throw new RuntimeShutdownError();
-
-    const selected = interaction.options.find(
-      (o) => o.id === command.optionId
-    );
-    if (!selected) {
-      throw new Error(`未找到选项：${command.optionId}`);
-    }
-
-    // The preset option resolves the interaction through the branch flow; the
-    // input bridge belongs to the free-text path and is discarded.
-    this.emit({
-      type: "interaction_resolved",
-      interactionId,
-      resolution: "choice",
-    });
-    // §10.2 lifecycle: choice accepted → the interaction scope is released.
-    this.activeInteractionId = null;
-    this.bridgeBuffer.discard(interactionId);
-
-    await this.recordPlayerChoice(
-      { id: selected.id, text: selected.text },
-      turn
-    );
-    this.choiceTimestamp = this.clock.nowMs();
-    this.diagnostics.info("player", `你选择了：${selected.text}`);
-
-    let preview: RuntimePlayableEvent[];
-    let liveSelection: LiveBranchSelection | undefined;
-
-    if (branchManager) {
-      const syntheticChoice: ChoiceEvent = {
-        type: "choice",
-        prompt: interaction.prompt,
-        options: interaction.options.map((o) => ({
-          id: o.id,
-          text: o.text,
-        })),
-      };
-      const adopted = await this.adoptSelectedBranch(
-        selected,
-        syntheticChoice,
-        turn,
-        branchManager,
-        prefetchContext,
-      );
-      preview = adopted.preview;
-      liveSelection = adopted.liveSelection;
-
-      for (const option of interaction.options) {
-        this.status.removeJob(`branch:${option.id}`);
-      }
-      this.status.clearBranches();
-    } else {
-      this.status.setJob(
-        "on-demand-branch",
-        `生成分支：${selected.text}`,
-        "running"
-      );
-      const syntheticChoice: ChoiceEvent = {
-        type: "choice",
-        prompt: interaction.prompt,
-        options: interaction.options.map((o) => ({
-          id: o.id,
-          text: o.text,
-        })),
-      };
-      const genPromise = this.generator
-        .generateBranchPrefetch(
-          turn + 1,
-          this.storyState,
-          prefetchContext,
-          syntheticChoice,
-          { id: selected.id, text: selected.text }
-        )
-        .then((envelope) => this.materializePlayableEvents(this.filterPlayableEvents(envelope.events)));
-      preview = await genPromise;
-      this.registerBuffered(preview);
-      this.status.removeJob("on-demand-branch");
-    }
-
-    return {
-      type: "choice",
-      nextTurn: turn + 1,
-      preview,
-      ...(liveSelection ? { liveSelection } : {}),
-    };
   }
 
   private countBufferedDialogues(): number {

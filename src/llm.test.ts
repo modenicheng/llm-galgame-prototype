@@ -290,6 +290,33 @@ describe("requestEnvelope streaming", () => {
     expect(envelope.state_patch.recent_summary).toBe("雨中相遇。");
   });
 
+  it("allows a legacy choice terminal from the model path when legacy_choice.allow_model_output is true", async () => {
+    const gen = makeTestGenerator({
+      interaction: { legacy_choice: { allow_model_output: true } },
+    });
+    mockClient(gen, makeStream([
+      '{"type":"narration","text":"天亮了。"}',
+      '{"type":"choice","prompt":"如何回答？","options":[{"id":"a","text":"好"},{"id":"b","text":"不"}]}',
+    ]));
+
+    const envelope = await (gen as any).generateOpening(1, createInitialState());
+
+    expect(envelope.events).toHaveLength(2);
+    expect(envelope.events[1]!.type).toBe("choice");
+  });
+
+  it("rejects a legacy choice terminal from the model path by default (allow_model_output false)", async () => {
+    const gen = makeTestGenerator();
+    mockClient(gen, makeStream([
+      '{"type":"narration","text":"天亮了。"}',
+      '{"type":"choice","prompt":"如何回答？","options":[{"id":"a","text":"好"},{"id":"b","text":"不"}]}',
+    ]));
+
+    await expect((gen as any).generateOpening(1, createInitialState())).rejects.toThrow(
+      /旧式 choice/,
+    );
+  });
+
   it("tolerates markdown fence markers around the JSONL payload", async () => {
     const gen = makeTestGenerator();
     mockClient(gen, makeStream([

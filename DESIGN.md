@@ -156,7 +156,7 @@ line_<session_id>_<monotonic_sequence>
 - `input`：必须携带 `input` 与 `input_bridge`；禁止携带 `options`。
 - `hybrid`：必须携带 `options`（2–5 个）、`input` 与 `input_bridge`；页面同时显示选项与输入框。
 
-结构约束由 Zod Schema 强制，运行时另有 `InteractionPolicy` 二次校验（允许的模式、选项数范围、`input.max_length` 上限、连续纯 input 次数上限均可在配置中调整）；非法 interaction 在进入播放缓冲前被拒绝并进入修复流程。
+结构约束由 Zod Schema 强制，运行时另有 `InteractionPolicy` 二次校验（允许的模式、选项数范围、`input.max_length` 上限、连续纯 input 次数上限均可在配置中调整）；非法 interaction 在进入播放缓冲前被拒绝并进入修复流程。配置项 `interaction.default_mode` 仅做合法性校验（必须存在于 `allowed_modes`），运行时不消费——交互模式始终由模型输出决定，不做静默降级。
 
 `input_bridge` 是 1-2 条 narration，作为玩家确认输入后、NPC 正式回应前的场景过渡：
 

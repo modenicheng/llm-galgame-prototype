@@ -207,6 +207,14 @@ describe("interaction forms", () => {
     );
   }
 
+  function feedProjection(projection: Record<string, unknown>): void {
+    FakeWebSocket.last!.onmessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({ type: "projection.snapshot", projection }),
+      }),
+    );
+  }
+
   /** Runtime commands with the wire envelope unwrapped. */
   function sentCommands(): Array<Record<string, unknown>> {
     return FakeWebSocket.last!.sent.map((raw) => {
@@ -378,6 +386,7 @@ describe("interaction forms", () => {
     feed({ type: "input_preview_opened", previewId: "pv-1", text: "A 的草稿" });
     (document.querySelector(".preview__cancel") as HTMLButtonElement).click();
     feed({ type: "input_preview_canceled", previewId: "pv-1" });
+
     expect(field.value).toBe("A 的草稿");
 
     // A resolves and B opens — A's draft must not leak into B.
@@ -385,5 +394,57 @@ describe("interaction forms", () => {
     feed({ type: "interaction_opened", interactionId: "int-b", interaction: inputInteraction });
     const fieldB = document.querySelector(".interaction-panel textarea") as HTMLTextAreaElement;
     expect(fieldB.value).toBe("");
+  });
+
+  it("re-opens the locked panel and resets the submit lock when a projection restores the same interaction", async () => {
+    await bootStarted();
+    feed({ type: "interaction_opened", interactionId: "int-1", interaction: hybridInteraction });
+
+    // Submit free text while connected — the panel locks one-shot (§10.3).
+    const field = document.querySelector(".interaction-panel textarea") as HTMLTextAreaElement;
+    field.value = "我自己来";
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    expect(
+      sentCommands().some(
+        (cmd) =>
+          cmd.type === "preview_input" && cmd.interactionId === "int-1" && cmd.text === "我自己来",
+      ),
+    ).toBe(true);
+    expect(field.disabled).toBe(true);
+    expect(
+      [...document.querySelectorAll("button.choice")].every(
+        (button) => (button as HTMLButtonElement).disabled,
+      ),
+    ).toBe(true);
+
+    // Reconnect: the server restores the SAME still-open interaction. The
+    // panel must re-open with enabled options and an enabled textarea.
+    feedProjection({
+      phase: "running",
+      recentLines: [],
+      currentInteraction: hybridInteraction,
+    });
+
+    const panel = document.querySelector(".interaction-panel") as HTMLElement;
+    expect(panel.hasAttribute("hidden")).toBe(false);
+    const buttons = [...panel.querySelectorAll("button.choice")] as HTMLButtonElement[];
+    expect(buttons).toHaveLength(2);
+    expect(buttons.every((button) => !button.disabled)).toBe(true);
+    const restored = panel.querySelector("textarea") as HTMLTextAreaElement;
+    expect(restored.disabled).toBe(false);
+
+    // A further submit sends a new command (the lock is gone).
+    restored.value = "重新提交";
+    restored.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    expect(
+      sentCommands().some(
+        (cmd) =>
+          cmd.type === "preview_input" && cmd.interactionId === "int-1" && cmd.text === "重新提交",
+      ),
+    ).toBe(true);
   });
 });

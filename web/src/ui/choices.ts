@@ -64,25 +64,3 @@ export function renderChoiceOptions(
   container.append(list);
 }
 
-export function renderChoices(
-  container: HTMLElement,
-  interaction: unknown,
-  onSelect: (optionId: string) => void,
-): void {
-  clearChildren(container);
-  const parsed = asChoiceInteraction(interaction);
-  if (parsed === null) return;
-
-  container.append(el("p", "choices__prompt", parsed.prompt));
-  const list = el("ul", "choices__list") as HTMLUListElement;
-  parsed.options.forEach((option, index) => {
-    const item = el("li", "choices__item") as HTMLLIElement;
-    item.style.setProperty("--i", String(index));
-    const card = el("button", "choice", option.text) as HTMLButtonElement;
-    card.type = "button";
-    card.addEventListener("click", () => onSelect(option.id));
-    item.append(card);
-    list.append(item);
-  });
-  container.append(list);
-}

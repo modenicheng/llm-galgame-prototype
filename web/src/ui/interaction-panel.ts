@@ -122,7 +122,12 @@ export class InteractionPanel {
     return true;
   }
 
-  /** External lock control (§10.3) — unlock only when the server reopens the form. */
+  /**
+   * External lock control (§10.3) — unlock only when the server reopens the
+   * form. RESERVED for a future rejection-event path (§11.4): the server
+   * currently never publishes an input rejection, so this API is part of
+   * the plan-mandated surface but has no active caller.
+   */
   setSubmitting(submitting: boolean): void {
     this.submitted = submitting;
     this.setOptionsDisabled(submitting);

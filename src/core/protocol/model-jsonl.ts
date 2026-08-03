@@ -77,7 +77,6 @@ export interface TerminalParseOptions {
   allowLegacyChoice?: boolean;
 }
 
-
 export function parseTerminalModelJsonl(
   text: string,
   options: TerminalParseOptions = {},
@@ -92,13 +91,16 @@ export function parseTerminalModelJsonl(
     throw new Error("完整剧情段必须且只能在最后一行出现一个 choice、interaction 或 end 事件。");
   }
 
-  if (events.length < 2) {
-    throw new Error("完整剧情段至少需要一条可播放文本和一个 choice/interaction/end 事件。");
-  }
-
+  // The legacy-choice gate fires before the playable-length check: a segment
+  // whose terminal is a legacy choice must report the legacy violation, not
+  // the length one, so the model's repair hint names the real problem.
   const lastEvent = events[events.length - 1]!;
   if (lastEvent.type === "choice" && !allowLegacyChoice) {
     throw new Error("模型不得再输出旧式 choice；请输出 type=interaction、mode=choice。");
+  }
+
+  if (events.length < 2) {
+    throw new Error("完整剧情段至少需要一条可播放文本和一个 choice/interaction/end 事件。");
   }
 
   return { events, patches };

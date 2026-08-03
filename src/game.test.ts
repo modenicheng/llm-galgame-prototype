@@ -2083,6 +2083,71 @@ describe("Hybrid interaction commands", () => {
     expect(controller.countPlayback("narration")).toBe(3);
     expect(controller.ended()).toBe(true);
   });
+
+  it("after a preview cancel the hybrid re-arms BOTH paths and re-prefetches: a later select_choice is accepted and its branch plays", async () => {
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        hybridFixture(),
+      ]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    // First open: submit free text; the preview is then cancelled. The
+    // re-opened hybrid (second interaction_opened) must accept a
+    // select_choice again — the option path must not be dead (§11.7).
+    let previews = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        if (controller.count("interaction_opened") === 1) {
+          controller.submitInput(output.interactionId, "先试试输入");
+        } else {
+          controller.select(output.interactionId, "a");
+        }
+      },
+      onInputPreviewOpened: (output) => {
+        previews += 1;
+        controller.cancel(output.previewId);
+      },
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // Cancel → interaction re-opened (second open) → option accepted.
+    expect(controller.count("interaction_opened")).toBe(2);
+    expect(controller.count("input_preview_canceled")).toBe(1);
+    // Both branches were prefetched once initially and re-prefetched after
+    // the cancel (one call per option per prefetch round).
+    expect(generator.generateBranchPrefetch).toHaveBeenCalledTimes(4);
+    expect(generator.generateInputResponse).toHaveBeenCalledTimes(1);
+    // Exactly one resolution — the option path — and the selected branch
+    // plays; the cancelled input response never renders.
+    expect(
+      controller.outputs.filter(
+        (o): o is Extract<RuntimeOutput, { type: "interaction_resolved" }> =>
+          o.type === "interaction_resolved",
+      ),
+    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "choice" }]);
+    const played = controller.playbackEvents().map((output) => output.event.text);
+    expect(played).toContain("分支内容。");
+    expect(played).not.toContain("回应。");
+    expect(controller.ended()).toBe(true);
+  });
 });
 
 describe("Narration-only branch handoff", () => {

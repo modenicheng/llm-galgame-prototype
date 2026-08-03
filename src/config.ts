@@ -282,6 +282,8 @@ const InteractionPolicyConfigSchema = z
       .array(z.enum(["choice", "hybrid", "input"]))
       .min(1)
       .default(["choice", "hybrid", "input"]),
+    // Reserved: validated against allowed_modes but not consumed at runtime —
+    // the interaction mode is chosen by the model, never by this default.
     default_mode: z.enum(["choice", "hybrid", "input"]).default("hybrid"),
     options: z
       .object({

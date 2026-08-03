@@ -147,7 +147,10 @@ export class StoryGenerator {
     return this.requestEnvelope(
       "opening",
       buildUserPrompt(turn, ctx, this.instructions.opening),
-      (text) => parseTerminalModelJsonl(text),
+      (text) =>
+        parseTerminalModelJsonl(text, {
+          allowLegacyChoice: this.config.interaction.legacy_choice.allow_model_output,
+        }),
       signal,
       options,
     );
@@ -224,7 +227,10 @@ export class StoryGenerator {
     return this.requestEnvelope(
       "continuation",
       buildUserPrompt(turn, ctx, extra),
-      (text) => parseTerminalModelJsonl(text),
+      (text) =>
+        parseTerminalModelJsonl(text, {
+          allowLegacyChoice: this.config.interaction.legacy_choice.allow_model_output,
+        }),
       signal,
       options,
     );
