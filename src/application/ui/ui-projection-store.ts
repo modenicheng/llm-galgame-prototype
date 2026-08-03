@@ -11,6 +11,16 @@ import type {
   RuntimeOutput,
 } from "../../core/runtime/runtime-output.js";
 
+/** Read the normalized interaction id from a projected interaction. */
+function interactionIdOf(value: RuntimeInteractionEvent | undefined): string | null {
+  if (value === undefined) return null;
+  if ("interaction_id" in value) {
+    const id = value.interaction_id;
+    return typeof id === "string" && id.length > 0 ? id : null;
+  }
+  return null;
+}
+
 export interface UiProjectionStore {
   /** Feed one runtime output into the projection. */
   applyOutput(output: unknown): void;
@@ -35,6 +45,10 @@ export interface UiProjectionStore {
  * - sessionId from `session_started`
  * - phase: running once started, ended on session_ended, error on
  *   runtime_error, idle otherwise
+ * - currentInteraction cleared on `interaction_resolved` (matching id) and
+ *   defensively on `playback_ready`
+ * - currentPreview cleared on `input_committed` / `input_preview_canceled`
+ *   and defensively on `playback_ready`
  */
 export class UiProjectionStoreImpl implements UiProjectionStore {
   private projection: UiProjection = { phase: "idle", recentLines: [] };
@@ -52,6 +66,10 @@ export class UiProjectionStoreImpl implements UiProjectionStore {
         break;
       case "playback_ready":
         next.currentLine = output.event;
+        // Defensive cleanup: entering playback means no form may remain
+        // open; a reconnect restores the play state, not a stale form.
+        delete next.currentInteraction;
+        delete next.currentPreview;
         next.recentLines = [
           ...next.recentLines.slice(-(UiProjectionStoreImpl.RECENT_LINES_LIMIT - 1)),
           output.event,
@@ -66,6 +84,17 @@ export class UiProjectionStoreImpl implements UiProjectionStore {
           ...output.interaction,
           interaction_id: output.interactionId,
         } as RuntimeInteractionEvent;
+        break;
+      case "interaction_resolved":
+        // The interaction can no longer be submitted; a reconnect must not
+        // restore its form. Do NOT clear on input_preview_opened: cancelling
+        // the preview reopens the same interaction.
+        if (
+          next.currentInteraction &&
+          interactionIdOf(next.currentInteraction) === output.interactionId
+        ) {
+          delete next.currentInteraction;
+        }
         break;
       case "input_preview_opened":
         next.currentPreview = { previewId: output.previewId, text: output.text };

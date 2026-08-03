@@ -2438,3 +2438,252 @@ describe("Interaction policy enforcement", () => {
     expect(g.recentInteractionModes).toEqual(pushed.slice(1));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Interaction resolution publication (§9.3)
+// ---------------------------------------------------------------------------
+
+describe("Interaction resolution publication", () => {
+  it("emits interaction_resolved(choice) once a choice option exists, before adopting the branch", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "choice",
+          prompt: "怎么选？",
+          options: [
+            { id: "a", text: "选项A" },
+            { id: "b", text: "选项B" },
+          ],
+        },
+      ]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.select(output.interactionId, "a"),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const resolved = controller.outputs.filter(
+      (output) => output.type === "interaction_resolved",
+    );
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toEqual({
+      type: "interaction_resolved",
+      interactionId: "choice_1",
+      resolution: "choice",
+    });
+    // Published between opening the form and playing the adopted branch.
+    const order = controller.outputs.map((output) => output.type);
+    expect(order.indexOf("interaction_opened")).toBeLessThan(
+      order.indexOf("interaction_resolved"),
+    );
+    expect(order.indexOf("interaction_resolved")).toBeLessThan(
+      order.lastIndexOf("playback_ready"),
+    );
+  });
+
+  it("emits no interaction_resolved and errors on an unknown choice option", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "choice",
+          prompt: "怎么选？",
+          options: [
+            { id: "a", text: "选项A" },
+            { id: "b", text: "选项B" },
+          ],
+        },
+      ]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.select(output.interactionId, "zzz"),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).rejects.toThrow(/未找到选项/);
+    expect(
+      controller.outputs.filter((output) => output.type === "interaction_resolved"),
+    ).toHaveLength(0);
+  });
+
+  it("emits interaction_resolved(choice) for a hybrid preset option and discards the bridge", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "interaction",
+          interaction_id: "int_1",
+          prompt: "怎么做？",
+          mode: "hybrid",
+          options: [
+            { id: "a", text: "选项A" },
+            { id: "b", text: "选项B" },
+          ],
+          input: { kind: "free_text", placeholder: "...", max_length: 200 },
+          input_bridge: {
+            events: [{ type: "narration", text: "她等着你的决定。" }],
+          },
+        },
+      ]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.select(output.interactionId, "a"),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    expect(
+      controller.outputs.filter((output) => output.type === "interaction_resolved"),
+    ).toEqual([
+      {
+        type: "interaction_resolved",
+        interactionId: "int_1",
+        resolution: "choice",
+      },
+    ]);
+    // The preset choice discards the bridge; its narration never plays.
+    const played = controller.playbackEvents().map((output) => output.event.text);
+    expect(played).not.toContain("她等着你的决定。");
+  });
+
+  it("emits interaction_resolved(input) on confirm, before input_committed", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+    const order = controller.outputs.map((output) => output.type);
+    expect(order.indexOf("input_preview_opened")).toBeLessThan(
+      order.indexOf("interaction_resolved"),
+    );
+    expect(order.indexOf("interaction_resolved")).toBeLessThan(
+      order.indexOf("input_committed"),
+    );
+  });
+
+  it("emits no interaction_resolved on Esc; the interaction stays valid and can reopen", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    let previews = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => {
+        previews += 1;
+        // Esc on the first preview; the reopened interaction proceeds to
+        // confirm on the second preview.
+        if (previews === 1) controller.cancel(output.previewId);
+        else controller.confirm(output.previewId);
+      },
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // The first preview was cancelled (no resolved emitted), then the
+    // reopened interaction was auto-confirmed by the default handler.
+    expect(controller.count("input_preview_canceled")).toBe(1);
+    expect(controller.count("interaction_opened")).toBe(2);
+    expect(
+      controller.outputs.filter((output) => output.type === "interaction_resolved"),
+    ).toHaveLength(1);
+  });
+
+  it("auto-confirm: first Enter resolves the interaction when confirmation is disabled", async () => {
+    const config = makeTestConfig({ input: { require_preview_confirmation: false } });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const resolved = controller.outputs.filter(
+      (output) => output.type === "interaction_resolved",
+    );
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toEqual({
+      type: "interaction_resolved",
+      interactionId: "int_1",
+      resolution: "input",
+    });
+    expect(controller.count("input_committed")).toBe(1);
+  });
+});

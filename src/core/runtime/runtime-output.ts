@@ -25,6 +25,12 @@ export type RuntimeOutput =
       interactionId: string;
       interaction: RuntimeInteractionEvent;
     }
+  /** The interaction can no longer be submitted; browsers close the form. */
+  | {
+      type: "interaction_resolved";
+      interactionId: string;
+      resolution: "choice" | "input";
+    }
   /** Input draft frozen; the response generation is running in the background. */
   | { type: "input_preview_opened"; previewId: string; text: string }
   /** The preview was cancelled; the same interaction may reopen. */

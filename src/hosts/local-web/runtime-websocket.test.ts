@@ -204,6 +204,28 @@ describe("RuntimeWebSocket", () => {
     expect(second.type).toBe("runtime.output");
   });
 
+  it("forwards interaction_resolved outputs unchanged", async () => {
+    const client = await connect();
+    game.emit({
+      type: "interaction_resolved",
+      interactionId: "int_1",
+      resolution: "choice",
+    });
+    const message = await waitForMessage(
+      client.messages,
+      (m) => m.type === "runtime.output",
+    );
+    expect(message).toEqual({
+      type: "runtime.output",
+      sequence: 1,
+      output: {
+        type: "interaction_resolved",
+        interactionId: "int_1",
+        resolution: "choice",
+      },
+    });
+  });
+
   it("uses an independent sequence per connection", async () => {
     const multi = await startMultiServer(2);
     const a = await connectClient(`ws://127.0.0.1:${multi.port}/ws/runtime?token=${TOKEN}`, `http://127.0.0.1:${multi.port}`);

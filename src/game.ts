@@ -790,6 +790,13 @@ export class Game {
     if (command.type !== "select_choice") throw new RuntimeShutdownError();
     const selected = choice.options.find((option) => option.id === command.optionId);
     if (!selected) throw new Error(`未找到选项：${command.optionId}`);
+    // The option exists: the interaction is now resolved and can no longer
+    // be submitted; browsers close the form immediately.
+    this.emit({
+      type: "interaction_resolved",
+      interactionId,
+      resolution: "choice",
+    });
     this.choiceTimestamp = this.clock.nowMs();
     await this.recordPlayerChoice(selected, turn);
     this.diagnostics.info("player", `你选择了：${selected.text}`);
@@ -1238,6 +1245,10 @@ export class Game {
       // Confirm — commit the session.
       this.inputEngine.commit(session);
       responseSession.commit();
+      // The input is now resolved and can no longer be submitted; browsers
+      // close the form. Emitted before input_committed so a reconnect never
+      // restores the resolved interaction.
+      this.emit({ type: "interaction_resolved", interactionId, resolution: "input" });
       this.emit({ type: "input_committed", previewId });
       this.bridgeBuffer.take(interactionId);
 
@@ -1485,16 +1496,21 @@ export class Game {
 
     if (command.type !== "select_choice") throw new RuntimeShutdownError();
 
-    // A preset option resolves the interaction through the branch flow; the
-    // input bridge belongs to the free-text path and is discarded.
-    this.bridgeBuffer.discard(interactionId);
-
     const selected = interaction.options.find(
       (o) => o.id === command.optionId
     );
     if (!selected) {
       throw new Error(`未找到选项：${command.optionId}`);
     }
+
+    // The preset option resolves the interaction through the branch flow; the
+    // input bridge belongs to the free-text path and is discarded.
+    this.emit({
+      type: "interaction_resolved",
+      interactionId,
+      resolution: "choice",
+    });
+    this.bridgeBuffer.discard(interactionId);
 
     await this.recordPlayerChoice(
       { id: selected.id, text: selected.text },

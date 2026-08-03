@@ -210,6 +210,45 @@ describe("GameViewModel", () => {
     expect(vm.state().mode).toBe("CONTENT_WAITING");
   });
 
+  it("enters CONTENT_WAITING on interaction_resolved and drops the form", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage(choiceInteractionOpened);
+    expect(vm.state().mode).toBe("CHOICE_SELECTING");
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 11,
+      output: { type: "interaction_resolved", interactionId: "int-1", resolution: "choice" },
+    });
+    const state = vm.state();
+    expect(state.mode).toBe("CONTENT_WAITING");
+    expect(state.currentInteraction).toBeUndefined();
+  });
+
+  it("keeps INPUT_PREVIEW until input_committed after interaction_resolved", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage(inputInteractionOpened);
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 12,
+      output: { type: "input_preview_opened", previewId: "pv-1", text: "draft" },
+    });
+    // The Game emits interaction_resolved before input_committed; the form
+    // must not flip to CONTENT_WAITING behind an open preview mid-flight.
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 13,
+      output: { type: "interaction_resolved", interactionId: "int-2", resolution: "input" },
+    });
+    expect(vm.state().mode).toBe("INPUT_PREVIEW");
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 14,
+      output: { type: "input_committed", previewId: "pv-1" },
+    });
+    expect(vm.state().mode).toBe("CONTENT_WAITING");
+    expect(vm.state().currentInteraction).toBeUndefined();
+  });
+
   it("enters ENDING on session_ended and ERROR on runtime_error", () => {
     const vm = new GameViewModel();
     vm.applyServerMessage({

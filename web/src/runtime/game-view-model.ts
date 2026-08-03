@@ -154,6 +154,15 @@ export class GameViewModel {
         this.currentInteraction = { ...output.interaction, interaction_id: output.interactionId };
         this.currentPreview = undefined;
         break;
+      case "interaction_resolved":
+        // The form can no longer be submitted; close it. If a preview is
+        // still on screen (resolved is emitted before input_committed), keep
+        // INPUT_PREVIEW until the commit lands.
+        this.currentInteraction = undefined;
+        if (this.mode !== "INPUT_PREVIEW") {
+          this.mode = "CONTENT_WAITING";
+        }
+        break;
       case "input_preview_opened":
         this.mode = "INPUT_PREVIEW";
         this.currentPreview = { previewId: output.previewId, text: output.text };
