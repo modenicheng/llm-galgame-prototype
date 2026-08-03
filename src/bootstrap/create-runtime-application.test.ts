@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRuntimeApplication } from "./create-runtime-application.js";
 import { makeTestConfig, MemoryController } from "../test-helpers.js";
+import type { AppConfig } from "../config.js";
 import type { ModelEvent } from "../schema.js";
 
 // The TTS providers (Task B) and the performance compiler impl (Task H)
@@ -26,7 +27,11 @@ vi.mock("../adapters/tts/mock-streaming-tts-provider.js", () => ({
   MockStreamingTtsProvider: class {},
 }));
 vi.mock("../adapters/tts/dashscope-cosyvoice-provider.js", () => ({
-  DashScopeCosyVoiceProvider: class {},
+  DashScopeCosyVoiceProvider: class {
+    constructor(opts: Record<string, unknown>) {
+      dashscopeProviderState.instances.push(opts);
+    }
+  },
 }));
 vi.mock("../application/audio/performance-compiler.js", () => ({
   PerformanceCompilerImpl: class {
@@ -39,6 +44,10 @@ vi.mock("../application/audio/performance-compiler.js", () => ({
 /** Mutable envelopes the mocked StoryGenerator returns (per test). */
 const generatorState = vi.hoisted(() => ({
   opening: { events: [] as ModelEvent[], state_patch: undefined as unknown },
+}));
+/** Constructor opts captured from the mocked DashScope provider. */
+const dashscopeProviderState = vi.hoisted(() => ({
+  instances: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("../adapters/llm/openai-compatible-generator.js", () => ({
@@ -72,7 +81,6 @@ describe("createRuntimeApplication", () => {
     const config = makeTestConfig({
       characters: {
         suyao: { name: "苏遥", voice_profile: "suyao_main" },
-        旁白: { name: "旁白", voice_profile: "narrator" },
       },
     });
     const app = await createRuntimeApplication({ config });
@@ -161,59 +169,69 @@ describe("createRuntimeApplication", () => {
     }
   });
 
+/** Write a minimal voices.yaml with a single suyao_main dashscope binding. */
+async function writeDashscopeVoices(dir: string): Promise<string> {
+  const voicesPath = path.join(dir, "voices.yaml");
+  await writeFile(
+    voicesPath,
+    [
+      "version: 3",
+      "profiles:",
+      "  suyao_main:",
+      "    semantic:",
+      "      base_description: 年轻女性。",
+      "    providers:",
+      "      dashscope:",
+      "        model: cosyvoice-v3-flash",
+      "        voice_id_env: COSYVOICE_VOICE_SUYAO",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  return voicesPath;
+}
+
+/** config with media.audio.synthesis.provider = dashscope. */
+function dashscopeConfig(): AppConfig {
+  return makeTestConfig({
+    media: {
+      audio: {
+        enabled: false,
+        provider: "disabled",
+        active_target_lines: 3,
+        refill_threshold_lines: 2,
+        branch_prefetch_lines: 2,
+        batch_size: 2,
+        max_concurrency: 2,
+        mock_latency_ms: 800,
+        output_dir: "assets/audio",
+        synthesis: {
+          provider: "dashscope",
+          max_concurrency: 2,
+          model_profile: "cosyvoice_v3_flash",
+          api_key_env: "DASHSCOPE_API_KEY",
+          format: "pcm_s16le",
+          sample_rate: 22050,
+        },
+      },
+    },
+    characters: {
+      suyao: { name: "苏遥", voice_profile: "suyao_main" },
+    },
+  });
+}
+
   it("throws at startup when dashscope provider env is incomplete", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "galgame-voices-"));
-    const voicesPath = path.join(dir, "voices.yaml");
+    const voicesPath = await writeDashscopeVoices(dir);
     const originalDashscopeKey = process.env.DASHSCOPE_API_KEY;
     const originalCosyvoiceSuyao = process.env.COSYVOICE_VOICE_SUYAO;
     process.env.DASHSCOPE_API_KEY = "test-dashscope-key";
     delete process.env.COSYVOICE_VOICE_SUYAO;
     try {
-      await writeFile(
-        voicesPath,
-        [
-          "version: 3",
-          "profiles:",
-          "  suyao_main:",
-          "    semantic:",
-          "      base_description: 年轻女性。",
-          "    providers:",
-          "      dashscope:",
-          "        model: cosyvoice-v3-flash",
-          "        voice_id_env: COSYVOICE_VOICE_SUYAO",
-          "",
-        ].join("\n"),
-        "utf8",
-      );
-      const config = makeTestConfig({
-        media: {
-          audio: {
-            enabled: false,
-            provider: "disabled",
-            active_target_lines: 3,
-            refill_threshold_lines: 2,
-            branch_prefetch_lines: 2,
-            batch_size: 2,
-            max_concurrency: 2,
-            mock_latency_ms: 800,
-            output_dir: "assets/audio",
-            synthesis: {
-              provider: "dashscope",
-              max_concurrency: 2,
-              model_profile: "cosyvoice_v3_flash",
-              api_key_env: "DASHSCOPE_API_KEY",
-              format: "pcm_s16le",
-              sample_rate: 22050,
-            },
-          },
-        },
-        characters: {
-          suyao: { name: "苏遥", voice_profile: "suyao_main" },
-        },
-      });
-      await expect(createRuntimeApplication({ config, voicesPath })).rejects.toThrow(
-        /COSYVOICE_VOICE_SUYAO/,
-      );
+      await expect(
+        createRuntimeApplication({ config: dashscopeConfig(), voicesPath }),
+      ).rejects.toThrow(/COSYVOICE_VOICE_SUYAO/);
     } finally {
       if (originalDashscopeKey === undefined) delete process.env.DASHSCOPE_API_KEY;
       else process.env.DASHSCOPE_API_KEY = originalDashscopeKey;
@@ -223,11 +241,57 @@ describe("createRuntimeApplication", () => {
     }
   });
 
+  it("throws at startup when the dashscope API key env is missing", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-voices-"));
+    const voicesPath = await writeDashscopeVoices(dir);
+    const originalDashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const originalCosyvoiceSuyao = process.env.COSYVOICE_VOICE_SUYAO;
+    delete process.env.DASHSCOPE_API_KEY;
+    process.env.COSYVOICE_VOICE_SUYAO = "cosyvoice-v3-flash-suyao-test";
+    try {
+      await expect(
+        createRuntimeApplication({ config: dashscopeConfig(), voicesPath }),
+      ).rejects.toThrow(/DASHSCOPE_API_KEY/);
+    } finally {
+      if (originalDashscopeKey === undefined) delete process.env.DASHSCOPE_API_KEY;
+      else process.env.DASHSCOPE_API_KEY = originalDashscopeKey;
+      if (originalCosyvoiceSuyao === undefined) delete process.env.COSYVOICE_VOICE_SUYAO;
+      else process.env.COSYVOICE_VOICE_SUYAO = originalCosyvoiceSuyao;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards DASHSCOPE_TTS_BASE_URL to the provider when set, omits it when absent", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-voices-"));
+    const voicesPath = await writeDashscopeVoices(dir);
+    const originalDashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const originalCosyvoiceSuyao = process.env.COSYVOICE_VOICE_SUYAO;
+    const originalBaseUrl = process.env.DASHSCOPE_TTS_BASE_URL;
+    process.env.DASHSCOPE_API_KEY = "test-dashscope-key";
+    process.env.COSYVOICE_VOICE_SUYAO = "cosyvoice-v3-flash-suyao-test";
+    try {
+      process.env.DASHSCOPE_TTS_BASE_URL = "https://custom.example.com/tts";
+      await createRuntimeApplication({ config: dashscopeConfig(), voicesPath });
+      expect(dashscopeProviderState.instances.at(-1)?.baseUrl).toBe("https://custom.example.com/tts");
+
+      delete process.env.DASHSCOPE_TTS_BASE_URL;
+      await createRuntimeApplication({ config: dashscopeConfig(), voicesPath });
+      expect(dashscopeProviderState.instances.at(-1)?.baseUrl).toBeUndefined();
+    } finally {
+      if (originalDashscopeKey === undefined) delete process.env.DASHSCOPE_API_KEY;
+      else process.env.DASHSCOPE_API_KEY = originalDashscopeKey;
+      if (originalCosyvoiceSuyao === undefined) delete process.env.COSYVOICE_VOICE_SUYAO;
+      else process.env.COSYVOICE_VOICE_SUYAO = originalCosyvoiceSuyao;
+      if (originalBaseUrl === undefined) delete process.env.DASHSCOPE_TTS_BASE_URL;
+      else process.env.DASHSCOPE_TTS_BASE_URL = originalBaseUrl;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("drives a session end-to-end with the MemoryController and the run loop exits", async () => {
     const config = makeTestConfig({
       characters: {
         suyao: { name: "苏遥", voice_profile: "suyao_main" },
-        旁白: { name: "旁白", voice_profile: "narrator" },
       },
     });
     const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-session-"));
@@ -263,7 +327,6 @@ describe("createRuntimeApplication", () => {
     const config = makeTestConfig({
       characters: {
         suyao: { name: "苏遥", voice_profile: "suyao_main" },
-        旁白: { name: "旁白", voice_profile: "narrator" },
       },
     });
     const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-session-"));

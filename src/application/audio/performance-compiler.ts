@@ -201,12 +201,18 @@ function buildInstruction(
 /** CosyVoice instruction budget: ≤ 100 chars, CJK counts 2. */
 const INSTRUCTION_BUDGET = 100;
 
-/** Weighted length: CJK (incl. CJK punctuation) counts 2, other chars 1. */
+/**
+ * Weighted length matching the DashScope counting rule: 汉字 (incl. CJK
+ * Extension A) count 2; everything else — punctuation, letters, digits,
+ * kana, Hangul — counts 1. This is ≥ the vendor's count for every input
+ * (never undercounts), so an instruction we deem ≤ 100 never exceeds the
+ * vendor limit.
+ */
 function weightedLength(text: string): number {
   let n = 0;
   for (const ch of text) {
     const code = ch.codePointAt(0) ?? 0;
-    n += code >= 0x2e80 && code <= 0x9fff ? 2 : 1;
+    n += code >= 0x3400 && code <= 0x9fff ? 2 : 1;
   }
   return n;
 }

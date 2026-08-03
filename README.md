@@ -34,6 +34,13 @@ npm run dev
 npm run dev -- --debug-runtime
 ```
 
+## TTS 语音（可选）
+
+默认 `config.yaml` 的 `media.audio.synthesis.provider: dashscope` 会启用 DashScope 语音合成，
+启动时需要 `.env` 中已配置 `DASHSCOPE_API_KEY` 及 `voices.yaml` 引用的音色变量
+（创建与绑定方法见 [docs/agents/TTS-音色配置指南.md](./docs/agents/TTS-音色配置指南.md)）。
+不配置 TTS 时，把 `synthesis.provider` 改为 `disabled` 即可纯文本运行（CLI 同理）。
+
 ## 验证媒体调度
 
 默认只运行文本模式。若需观察音频提前量、批量补充和分支取消逻辑，将 `config.yaml` 改为：

@@ -248,4 +248,22 @@ describe("instruction modes", () => {
     });
     expect(out.instruction).toBe(base);
   });
+
+  it("counts 汉字 as 2 and other chars as 1 at the budget boundary", () => {
+    // 50 汉字 = exactly 100 weighted → kept untruncated.
+    const exactly = "青".repeat(50);
+    expect(
+      compiler.compile({ baseDescription: exactly, instructionMode: "free" }).instruction,
+    ).toBe(exactly);
+    // 50 汉字 + fullwidth comma (U+FF0C, counts 1) = 101 → trailing char cut.
+    const overflow = "青".repeat(50) + "，";
+    expect(
+      compiler.compile({ baseDescription: overflow, instructionMode: "free" }).instruction,
+    ).toBe("青".repeat(50));
+    // 49 汉字 + 2 punct (，=1, 、=1) = exactly 100 → kept.
+    const withPunct = "青".repeat(49) + "，、";
+    expect(
+      compiler.compile({ baseDescription: withPunct, instructionMode: "free" }).instruction,
+    ).toBe(withPunct);
+  });
 });

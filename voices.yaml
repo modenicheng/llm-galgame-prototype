@@ -50,6 +50,10 @@ profiles:
         voice_id_env: COSYVOICE_VOICE_SUYAO
 
   # 系统音色示例：直接使用预设音色（voice-id = longanyang，放入 .env）
+  # longanyang 支持 Instruct（固定格式），故用 fixed_emotion 演示情绪指令；
+  # 不支持 Instruct 的音色（多数 v3-flash 系统音色）则用 none。
+  # 注意：启动时会校验本文件中所有 dashscope 绑定的音色变量（含此示例），
+  # 未在 config.yaml 引用的 profile 也需在 .env 中设好对应变量。
   example_system_voice:
     semantic:
       base_description: 阳光大男孩，语速略快。
@@ -57,4 +61,4 @@ profiles:
       dashscope:
         model: cosyvoice-v3-flash
         voice_id_env: COSYVOICE_VOICE_SYSTEM_SAMPLE
-        instruction_mode: none
+        instruction_mode: fixed_emotion
