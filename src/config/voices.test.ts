@@ -119,4 +119,8 @@ describe("validateDashscopeEnv", () => {
     expect(validateDashscopeEnv({ version: 3, profiles: {} }, { DASHSCOPE_TTS_BASE_URL: "not-a-url" })).toHaveLength(1);
     expect(validateDashscopeEnv({ version: 3, profiles: {} }, { DASHSCOPE_TTS_BASE_URL: "https://example.com" })).toEqual([]);
   });
+
+  it("flags an empty base override (absent = undefined, empty = invalid)", () => {
+    expect(validateDashscopeEnv({ version: 3, profiles: {} }, { DASHSCOPE_TTS_BASE_URL: "" })).toHaveLength(1);
+  });
 });

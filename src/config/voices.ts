@@ -133,7 +133,7 @@ export function validateDashscopeEnv(
     }
   }
   const baseUrl = env.DASHSCOPE_TTS_BASE_URL;
-  if (baseUrl !== undefined && baseUrl !== "" && !/^https?:\/\//.test(baseUrl)) {
+  if (baseUrl !== undefined && !/^https?:\/\//.test(baseUrl)) {
     missing.push("DASHSCOPE_TTS_BASE_URL must be an http(s) URL");
   }
   return missing;

@@ -6,6 +6,9 @@
 # V3 严格模式：version 必须为 3；provider binding 恰好是
 # model + voice_id_env。voice_id_env 指向 .env 中的音色 ID。
 # V2 的 voice_sources（零样本复刻资产注册）已移出运行时配置。
+# 历史资产（已从运行时配置移除，仅存档）：
+#   suyao_source.reference_audio: assets/voices/suyao/reference.wav
+#   suyao_source.reference_text: 这是一段音色注册参考文本。
 
 version: 3
 
