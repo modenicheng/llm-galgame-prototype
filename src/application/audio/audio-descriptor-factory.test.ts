@@ -110,6 +110,15 @@ describe("AudioDescriptorFactory", () => {
   it("returns null for an unknown speaker", () => {
     expect(makeFactory().build(dialogue("ghost", "hi", "l2"), { type: "active" }, "current")).toBeNull();
   });
+  it("resolves a speaker by display name when the speaker is not a config key", () => {
+    // LLM emits speaker as the display name (苏遥), while config keys are ids
+    // (suyao). The factory must fall back to matching character.name.
+    const result = makeFactory().build(dialogue("苏遥", "你好。", "l2b"), { type: "active" }, "current");
+    expect(result).not.toBeNull();
+    expect(result!.descriptor.displaySpeaker).toBe("苏遥");
+    expect(result!.recipe.voiceId).toBe("suyao-voice-001");
+  });
+
 
   it("returns null for narration — narration has no voice", () => {
     // Even with a 旁白-keyed character that resolves to a real voice profile

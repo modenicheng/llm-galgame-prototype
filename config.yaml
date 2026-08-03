@@ -67,9 +67,14 @@ media:
       candidate_ttl_hours: 1
 
 # 角色 → 逻辑音色配置映射（V2）
+# key 用角色显示名（LLM 的 speaker 输出），value.name 用于展示。
+# 缺任一角色 → 该角色台词静音（build-skip no-character）。
 characters:
-  suyao:
+  苏遥:
     name: 苏遥
+    voice_profile: suyao_main
+  林澈:
+    name: 林澈
     voice_profile: suyao_main
 
 game:

@@ -70,12 +70,15 @@ export class AudioDescriptorFactory {
     // Narration has no voice by design (no log — expected); a speaker
     // without a character/profile is an anomaly worth surfacing.
     if (event.type === "narration") return null;
-    if (this.options.characters[event.speaker] === undefined) {
-      ttsLog("build-skip", event.line_id, `reason=no-character speaker=${event.speaker}`);
+    const character = this.resolveCharacter(event);
+    if (!character) {
+      ttsLog(
+        "build-skip",
+        event.line_id,
+        `reason=no-character speaker=${event.speaker}`,
+      );
       return null;
     }
-    const character = this.resolveCharacter(event);
-    if (!character) return null;
     const profile = this.options.voices.profiles[character.voiceProfile];
 
     if (!profile) {
@@ -145,7 +148,10 @@ export class AudioDescriptorFactory {
   ): { voiceProfile: string; speakerId: string; displayName: string } | null {
     // Narration has no voice by design — only character lines are synthesized.
     if (event.type === "narration") return null;
-    const character = this.options.characters[event.speaker];
+    const bySpeaker = this.options.characters[event.speaker];
+    const character =
+      bySpeaker ??
+      Object.values(this.options.characters).find((c) => c.name === event.speaker);
     if (!character) return null;
     return {
       voiceProfile: character.voice_profile,
