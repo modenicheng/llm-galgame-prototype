@@ -297,6 +297,13 @@ export class StoryGenerator {
             ...(this.config.api.token_limit_field === "max_tokens"
               ? { max_tokens: maxTokens }
               : { max_completion_tokens: maxTokens }),
+            // DeepSeek reasoning models (deepseek-v4-*) think by default on
+            // complex prompts. The official docs require the toggle as a
+            // TOP-LEVEL body field — the openai SDK (7.x) serializes
+            // `extra_body` as a literal key and the API ignores it. Other
+            // OpenAI-compatible providers drop unknown fields, so this is
+            // safe to send unconditionally.
+            ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
             messages: [
               { role: "system" as const, content: this.systemPrompt },
               { role: "user" as const, content: `${userPrompt}${repairInstruction}` },
