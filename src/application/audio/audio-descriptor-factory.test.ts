@@ -112,8 +112,16 @@ describe("AudioDescriptorFactory", () => {
   });
 
   it("returns null for narration — narration has no voice", () => {
-    // characters: { suyao, ruoxi } (NO 旁白 key), voices v3 with suyao_main.
-    expect(makeFactory().build(narration("风雪夜。", "l3"), { type: "active" }, "current")).toBeNull();
+    // Even with a 旁白-keyed character that resolves to a real voice profile
+    // (suyao_main), narration must produce no descriptor. A narrator-mapping
+    // factory would resolve 旁白 → suyao_main and return a descriptor, so this
+    // assertion pins the "narration has no voice" constraint.
+    const withNarratorCharacter = makeFactory({
+      characters: { ...characters, 旁白: { name: "旁白", voice_profile: "suyao_main" } },
+    });
+    expect(
+      withNarratorCharacter.build(narration("风雪夜。", "l3"), { type: "active" }, "current"),
+    ).toBeNull();
   });
 
   it("uses the configured env voice ID", () => {
