@@ -36,6 +36,7 @@ import type {
   TtsSynthesisRequest,
   TtsStreamSession,
 } from "../../core/ports/tts-provider-port.js";
+import { ttsLog } from "../../application/audio/tts-log.js";
 
 export const DASHSCOPE_DEFAULT_BASE_URL =
   "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer";
@@ -285,6 +286,16 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
       model: request.model,
       input,
     };
+    // Correlation id: same key in provider-post / provider-first-chunk /
+    // provider-done so one synthesis can be followed across events.
+    const corr = request.text.slice(0, 16).replace(/\s+/g, "");
+    ttsLog(
+      "provider-post",
+      corr,
+      `url=${baseUrl} model=${request.model} voice=${request.voiceId} ` +
+        `text=${request.text.length}chars instr=${request.instruction === undefined ? "none" : "yes"} ` +
+        `rate=${request.rate} pitch=${request.pitch} volume=${request.volume} seed=${request.seed}`,
+    );
 
     let response: Response;
     try {
@@ -313,6 +324,7 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
       } catch {
         // best effort — the status code is the primary signal
       }
+      ttsLog("provider-http", String(response.status), `detail=${detail}`);
       throw new TtsProviderError(
         `http_${response.status}`,
         `DashScope TTS request failed with HTTP ${response.status}${detail === "" ? "" : `: ${detail}`}`,
@@ -330,6 +342,7 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
     let settled = false;
     let firstChunkTimer: NodeJS.Timeout | undefined;
     const completion = deferred<TtsCompletion>();
+    const startedAt = Date.now();
 
     const onAbort = (): void => {
       controller.abort();
@@ -382,6 +395,7 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
             if (!sawFirstChunk) {
               sawFirstChunk = true;
               clearTimeout(firstChunkTimer);
+              ttsLog("provider-first-chunk", corr, `ttfb=${Date.now() - startedAt}ms`);
             }
             const bytes = decode(payload);
             await queue.waitForSpace();
@@ -402,6 +416,11 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
           throw new TtsProviderError("sse_parse", "DashScope TTS stream ended without any audio chunks");
         }
         queue.finish();
+        ttsLog(
+          "provider-done",
+          corr,
+          `bytes=${bytesSent} elapsed=${Date.now() - startedAt}ms req=${providerRequestId ?? "none"}`,
+        );
         const result: TtsCompletion = {
           totalBytes: bytesSent,
           durationMs: estimatePcmDurationMs(bytesSent, request.sampleRate),

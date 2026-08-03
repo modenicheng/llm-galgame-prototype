@@ -11,6 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { TtsTaskService } from "../../application/audio/tts-task-service.js";
 import { TtsTaskError } from "../../application/audio/tts-task-service.js";
 import type { AudioCatalogService } from "../../application/audio/audio-catalog-service.js";
+import { ttsLog } from "../../application/audio/tts-log.js";
 import { AudioFetchRequestSchema } from "../../shared/wire/schemas.js";
 import type { AudioFetchRequest } from "../../shared/wire/client-message.js";
 import type { TtsStreamSession } from "../../core/ports/tts-provider-port.js";
@@ -115,6 +116,7 @@ export class AudioStreamRoute {
       this.sendError(res, 404, "unknown line or stale cache key");
       return;
     }
+    ttsLog("http-recv", request.lineId, `task=${request.taskId.slice(0, 8)} cache=${request.cacheKey.slice(0, 8)}`);
     // The task service joins concurrent synthesize() calls by cacheKey onto
     // the SAME single-iteration session, so the route allows only one
     // consumer per cacheKey; a second concurrent fetch is rejected (§22
@@ -209,6 +211,8 @@ export class AudioStreamRoute {
     completion: { ended: boolean },
   ): Promise<void> {
     const { metadata } = session;
+    const startedAt = Date.now();
+    let streamedBytes = 0;
     res.writeHead(200, {
       "Content-Type": "application/octet-stream",
       "X-Audio-Encoding": metadata.encoding,
@@ -218,11 +222,13 @@ export class AudioStreamRoute {
       "X-Audio-Task-Id": taskId,
       "Cache-Control": "no-store",
     });
+    ttsLog("http-stream", taskId.slice(0, 8), "start");
+
 
     for await (const chunk of session.chunks) {
       if (res.destroyed || res.writableEnded) break;
+      streamedBytes += chunk.byteLength;
       if (!res.write(chunk)) {
-        // Backpressure: wait for drain, but never hang if the peer vanishes.
         await new Promise<void>((resolve) => {
           const onDrain = () => resolve();
           const onAbort = () => {
@@ -242,6 +248,11 @@ export class AudioStreamRoute {
       completion.ended = true;
       res.end();
     }
+    ttsLog(
+      "http-stream",
+      taskId.slice(0, 8),
+      `end bytes=${streamedBytes} elapsed=${Date.now() - startedAt}ms`,
+    );
   }
 
   private sendError(res: ServerResponse, status: number, message: string): void {

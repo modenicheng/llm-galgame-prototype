@@ -141,7 +141,7 @@ export class AudioDownloader {
       bitDepth: 16,
       scopeAtCreation: descriptor.scope.type,
     });
-
+    console.log(`[tts-web] fetch ${lineId} task=${taskId.slice(0, 8)} cache=${cacheKey.slice(0, 8)}`);
     const response = await this.fetchImpl(SYNTHESIZE_PATH, {
       method: "POST",
       headers: {
@@ -152,6 +152,7 @@ export class AudioDownloader {
       signal,
     });
     if (!response.ok) {
+      console.log(`[tts-web] http-fail ${lineId} status=${response.status}`);
       throw new Error(`TTS synthesis failed: HTTP ${response.status}`);
     }
     const body = response.body;
@@ -165,15 +166,19 @@ export class AudioDownloader {
         this.options.onPcm(consumer, samples);
       }
     };
+    let bytes = 0;
+    console.log(`[tts-web] stream-start ${lineId}`);
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       if (value !== undefined && value.byteLength > 0) {
+        bytes += value.byteLength;
         // Raw bytes to the cache (fire-and-forget), decoded samples to playback.
         this.options.writer.append(cacheKey, value);
         feed(decoder.push(value));
       }
     }
     feed(decoder.flush());
+    console.log(`[tts-web] stream-done ${lineId} bytes=${bytes}`);
   }
 }

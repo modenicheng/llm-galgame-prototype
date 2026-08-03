@@ -15,6 +15,12 @@ import type {
 } from "../../core/ports/tts-provider-port.js";
 import type { AudioCatalogService } from "./audio-catalog-service.js";
 import type { InternalAudioRecipe } from "./internal-audio-recipe.js";
+import { ttsLog } from "./tts-log.js";
+
+/** Short stable id for log context (task ids are UUIDs). */
+function shortId(id: string): string {
+  return id.slice(0, 8);
+}
 
 export interface TtsTaskService {
   /**
@@ -107,26 +113,36 @@ export class TtsTaskServiceImpl implements TtsTaskService {
   ): Promise<TtsStreamSession> {
     const descriptor = this.options.catalog.validateFetchRequest(request);
     if (!descriptor) {
+      ttsLog("reject", request.lineId, "code=invalid_line reason=no-descriptor");
       throw new TtsTaskError(
         "invalid_line",
         `no valid audio descriptor for line ${request.lineId}`,
       );
     }
     if (signal.aborted) {
+      ttsLog("reject", request.lineId, "code=canceled reason=aborted-before-start");
       throw new TtsTaskError("canceled", "synthesis aborted before start");
     }
     if (this.options.provider === null) {
+      ttsLog("reject", request.lineId, "code=audio_disabled reason=provider-null");
       throw new TtsTaskError("audio_disabled", "audio synthesis disabled");
     }
     const recipe = this.options.catalog.getRecipe(request.lineId);
     if (!recipe) {
+      ttsLog("reject", request.lineId, "code=invalid_line reason=no-recipe");
       throw new TtsTaskError("invalid_line", `no synthesis recipe for line ${request.lineId}`);
     }
+
 
     const existing = this.tasks.get(recipe.cacheKey);
     if (existing) {
       existing.refcount += 1;
       this.attachAbort(existing, signal);
+      ttsLog(
+        "join",
+        request.lineId,
+        `task=${shortId(existing.taskId)} cache=${recipe.cacheKey.slice(0, 8)} consumers=${existing.refcount}`,
+      );
       return existing.sessionPromise;
     }
 
@@ -134,6 +150,11 @@ export class TtsTaskServiceImpl implements TtsTaskService {
     this.tasks.set(recipe.cacheKey, entry);
     this.attachAbort(entry, signal);
     this.queue.push(entry);
+    ttsLog(
+      "queued",
+      request.lineId,
+      `task=${shortId(entry.taskId)} cache=${recipe.cacheKey.slice(0, 8)} active=${this.activeCount}/${this.options.maxConcurrency}`,
+    );
     this.pumpQueue();
     return entry.sessionPromise;
   }
@@ -213,6 +234,11 @@ export class TtsTaskServiceImpl implements TtsTaskService {
       lineId: entry.lineId,
       status: "started",
     });
+    ttsLog(
+      "running",
+      entry.lineId,
+      `task=${shortId(entry.taskId)} active=${this.activeCount}/${this.options.maxConcurrency}`,
+    );
 
     let session: TtsStreamSession;
     try {
@@ -299,6 +325,12 @@ export class TtsTaskServiceImpl implements TtsTaskService {
       status,
     };
     if (error !== undefined) event.error = error;
+    ttsLog(
+      status,
+      entry.lineId,
+      `task=${shortId(entry.taskId)}${totalBytes !== undefined ? ` bytes=${totalBytes}` : ""}` +
+        (error !== undefined ? ` err=${error}` : ""),
+    );
     if (totalBytes !== undefined) event.totalBytes = totalBytes;
     this.options.onStatus(event);
     this.pumpQueue();

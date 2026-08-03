@@ -27,6 +27,7 @@ import type {
   LinePerformance,
   PerformanceCompiler,
 } from "./performance-compiler.js";
+import { ttsLog } from "./tts-log.js";
 
 export interface AudioDescriptorFactoryOptions {
   characters: Record<string, { name: string; voice_profile: string }>;
@@ -66,11 +67,21 @@ export class AudioDescriptorFactory {
     priority: AudioPriority,
     performance?: LinePerformance,
   ): BuildAudioResult | null {
+    // Narration has no voice by design (no log — expected); a speaker
+    // without a character/profile is an anomaly worth surfacing.
+    if (event.type === "narration") return null;
+    if (this.options.characters[event.speaker] === undefined) {
+      ttsLog("build-skip", event.line_id, `reason=no-character speaker=${event.speaker}`);
+      return null;
+    }
     const character = this.resolveCharacter(event);
     if (!character) return null;
-
     const profile = this.options.voices.profiles[character.voiceProfile];
-    if (!profile) return null;
+
+    if (!profile) {
+      ttsLog("build-skip", event.line_id, `reason=no-profile profile=${character.voiceProfile}`);
+      return null;
+    }
 
     const binding = this.resolveBinding(character.voiceProfile, character.speakerId);
     const voiceId = resolveVoiceId(binding, this.options.env) ?? "";
@@ -85,6 +96,12 @@ export class AudioDescriptorFactory {
     const seed = this.options.seedFor(event.line_id);
     const cacheKey = cacheKeyFromRecipe(
       this.cacheKeyRecipe(binding, voiceId, event.text, compiled, seed),
+    );
+    ttsLog(
+      "build",
+      event.line_id,
+      `speaker=${character.displayName} model=${binding.model} voice=${voiceId} ` +
+        `rev=${binding.voice_revision} mode=${binding.instruction_mode} cache=${cacheKey.slice(0, 8)}`,
     );
 
     const recipe: InternalAudioRecipe = {
