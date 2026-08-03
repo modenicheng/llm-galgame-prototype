@@ -45,7 +45,7 @@ output_protocol: |
 
   演出控制（可选，仅 dialogue/narration 行）：
   - 可在台词或旁白行附加 "performance" 对象，用于指定本句的语音表演；字段全部可选：
-    - emotion: neutral|happy|sad|angry|anxious|afraid|excited|tired|sarcastic|tender|serious
+    - emotion: neutral|happy|sad|angry|anxious|afraid|excited|tired|sarcastic|tender|serious|surprised|disgusted
     - intensity: 0|1|2|3（情绪强调程度，2-3 用于明显高潮）
     - pace: very_slow|slow|normal|fast|very_fast
     - energy: very_low|low|normal|high|very_high

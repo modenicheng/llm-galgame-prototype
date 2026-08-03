@@ -18,6 +18,7 @@ import type { InternalAudioRecipe } from "./internal-audio-recipe.js";
 import { cacheKeyFromRecipe, type CacheKeyRecipe } from "./cache-key.js";
 import {
   resolveVoiceBinding,
+  resolveVoiceId,
   type VoiceProviderBinding,
   type VoicesConfig,
 } from "../../config/voices.js";
@@ -47,8 +48,6 @@ export interface BuildAudioResult {
   recipe: InternalAudioRecipe;
 }
 
-/** The narrator is addressed through the reserved character key "旁白". */
-const NARRATOR_CHARACTER_KEY = "旁白";
 /** Env var namespace for synthesized mock voice IDs. */
 const MOCK_VOICE_ENV_PREFIX = "MOCK_VOICE_";
 
@@ -57,8 +56,9 @@ export class AudioDescriptorFactory {
 
   /**
    * Build the descriptor + recipe for one line.
-   * Returns null when the event has no resolvable voice (no character
-   * profile for the speaker, no 旁白 profile for narration).
+   * Returns null when the event has no resolvable voice — narration has
+   * no voice by design, and a speaker without a character profile is a
+   * programming error at runtime.
    */
   build(
     event: RuntimePlayableEvent,
@@ -73,11 +73,12 @@ export class AudioDescriptorFactory {
     if (!profile) return null;
 
     const binding = this.resolveBinding(character.voiceProfile, character.speakerId);
-    const voiceId = this.options.env[binding.voice_id_env] ?? "<unset>";
+    const voiceId = resolveVoiceId(binding, this.options.env) ?? "";
     const compiled = this.options.compiler.compile({
       baseDescription: profile.semantic.base_description,
       allowedDelivery: profile.semantic.allowed_delivery,
       forbiddenDelivery: profile.semantic.forbidden_delivery,
+      instructionMode: binding.instruction_mode,
       ...(performance !== undefined ? { performance } : {}),
     });
 
@@ -125,15 +126,8 @@ export class AudioDescriptorFactory {
   private resolveCharacter(
     event: RuntimePlayableEvent,
   ): { voiceProfile: string; speakerId: string; displayName: string } | null {
-    if (event.type === "narration") {
-      const character = this.options.characters[NARRATOR_CHARACTER_KEY];
-      if (!character) return null;
-      return {
-        voiceProfile: character.voice_profile,
-        speakerId: "narrator",
-        displayName: character.name,
-      };
-    }
+    // Narration has no voice by design — only character lines are synthesized.
+    if (event.type === "narration") return null;
     const character = this.options.characters[event.speaker];
     if (!character) return null;
     return {
@@ -158,6 +152,7 @@ export class AudioDescriptorFactory {
       model: this.options.modelProfile,
       voice_id_env: `${MOCK_VOICE_ENV_PREFIX}${speakerId}`,
       voice_revision: 0,
+      instruction_mode: "none",
     };
   }
 

@@ -306,7 +306,9 @@ export interface LinePerformance {
     | "tired"
     | "sarcastic"
     | "tender"
-    | "serious";
+    | "serious"
+    | "surprised"
+    | "disgusted";
   intensity?: 0 | 1 | 2 | 3;
   pace?: "very_slow" | "slow" | "normal" | "fast" | "very_fast";
   energy?: "very_low" | "low" | "normal" | "high" | "very_high";
@@ -326,7 +328,7 @@ export interface LinePerformance {
 }
 
 export const LinePerformanceSchema = z.object({
-  emotion: z.enum(["neutral","happy","sad","angry","anxious","afraid","excited","tired","sarcastic","tender","serious"]).optional(),
+  emotion: z.enum(["neutral","happy","sad","angry","anxious","afraid","excited","tired","sarcastic","tender","serious","surprised","disgusted"]).optional(),
   intensity: z.union([z.literal(0),z.literal(1),z.literal(2),z.literal(3)]).optional(),
   pace: z.enum(["very_slow","slow","normal","fast","very_fast"]).optional(),
   energy: z.enum(["very_low","low","normal","high","very_high"]).optional(),

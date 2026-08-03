@@ -9,7 +9,7 @@
  */
 import { loadApiKey, loadAuthorConfig, loadConfig } from "../config.js";
 import type { AppConfig } from "../config.js";
-import { loadVoices } from "../config/voices.js";
+import { loadVoices, validateDashscopeEnv } from "../config/voices.js";
 import { Game } from "../game.js";
 import { StoryGenerator } from "../adapters/llm/openai-compatible-generator.js";
 import { NodeJsonlSessionStore } from "../adapters/storage/node-jsonl-session-store.js";
@@ -56,7 +56,7 @@ export async function createRuntimeApplication(
     options.config ?? (await loadConfig(options.configPath ?? "config.yaml"));
   const authorConfig = await loadAuthorConfig("prompts/author.yaml");
   const { bundle, instructions } = await loadPrompts("prompts");
-  const voices = await loadVoices("voices.yaml");
+  const voices = await loadVoices(options.voicesPath ?? "voices.yaml");
   const apiKey = loadApiKey(config);
 
   const status = new RuntimeStatus();
@@ -77,8 +77,19 @@ export async function createRuntimeApplication(
   const synthesis = config.media.audio.synthesis;
   let provider: TtsProviderPort | null;
   if (synthesis?.provider === "dashscope") {
+    const apiKey = process.env[synthesis.api_key_env] ?? "";
+    if (apiKey === "") {
+      throw new Error(`DashScope TTS API key missing: set ${synthesis.api_key_env} in .env`);
+    }
+    const missing = validateDashscopeEnv(voices, process.env);
+    if (missing.length > 0) {
+      throw new Error(`DashScope TTS env incomplete — missing: ${missing.join(", ")}`);
+    }
     provider = new DashScopeCosyVoiceProvider({
-      apiKey: process.env[synthesis.api_key_env] ?? "",
+      apiKey,
+      ...(process.env.DASHSCOPE_TTS_BASE_URL !== undefined
+        ? { baseUrl: process.env.DASHSCOPE_TTS_BASE_URL }
+        : {}),
       timeoutMs: config.api.timeout_ms,
     });
   } else if (synthesis?.provider === "mock") {

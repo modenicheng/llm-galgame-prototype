@@ -6,6 +6,7 @@
  * in cacheKey generation, so a prompt/mapping/voice-version change
  * naturally invalidates old audio caches.
  */
+import type { InstructionMode } from "../../config/voices.js";
 
 /** Restricted performance intent the LLM may attach to a line. */
 export interface LinePerformance {
@@ -20,7 +21,9 @@ export interface LinePerformance {
     | "tired"
     | "sarcastic"
     | "tender"
-    | "serious";
+    | "serious"
+    | "surprised"
+    | "disgusted";
   intensity?: 0 | 1 | 2 | 3;
   pace?: "very_slow" | "slow" | "normal" | "fast" | "very_fast";
   energy?: "very_low" | "low" | "normal" | "high" | "very_high";
@@ -59,6 +62,9 @@ export interface PerformanceCompileInput {
   forbiddenDelivery?: string[];
   /** Optional LLM-provided performance intent for this line. */
   performance?: LinePerformance;
+  /** DashScope instruction policy: free-form (cloned/designed voices —
+   *  default), fixed_emotion (system voices), or none. */
+  instructionMode?: InstructionMode;
 }
 
 export interface PerformanceCompiler {
@@ -100,25 +106,30 @@ const ENERGY_PITCH: Record<NonNullable<LinePerformance["energy"]>, number> = {
 };
 
 const VOLUME_LEVEL: Record<NonNullable<LinePerformance["volume"]>, number> = {
-  whisper: 0.4,
-  soft: 0.7,
-  normal: 1.0,
-  loud: 1.3,
+  whisper: 20,
+  soft: 35,
+  normal: 50,
+  loud: 70,
 };
 
 /** Identity parameters — ordinary lines compile to exactly these. */
 const IDENTITY_PARAMS = {
   rate: 1.0,
   pitch: 1.0,
-  volume: 1.0,
+  volume: 50,
   pauseBeforeMs: 0,
   pauseAfterMs: 0,
 } as const;
 
-/** Lookup a numeric bound; unknown/absent keys fall back to 1.0. */
-function lookup<T extends string>(table: Record<T, number>, key: T | undefined): number {
-  if (key === undefined) return 1.0;
-  return table[key] ?? 1.0;
+/** Lookup a numeric bound; unknown/absent keys fall back to the identity
+ *  value for that parameter (rate/pitch 1.0, volume 50). */
+function lookup<T extends string>(
+  table: Record<T, number>,
+  key: T | undefined,
+  identity: number,
+): number {
+  if (key === undefined) return identity;
+  return table[key] ?? identity;
 }
 
 function clampPause(value: unknown): number {
@@ -159,8 +170,10 @@ function filterDelivery(
 /**
  * Compose the provider instruction: the character's base description is the
  * voice anchor; surviving delivery tags are appended as `语气：…。`;
- * high intensity (2–3) adds `情绪强烈。`. Empty result → undefined so the
- * caller can omit the field (cacheKey distinguishes absence vs. "").
+ * high intensity (2–3) adds `情绪强烈。`. Trailing clauses are dropped
+ * first, then the base is truncated, to stay within the vendor's weighted
+ * 100-char budget. Deterministic — identical inputs produce identical
+ * output, which is what makes the result cacheKey-safe.
  */
 function buildInstruction(
   base: string,
@@ -175,8 +188,65 @@ function buildInstruction(
   if (intensity === 2 || intensity === 3) {
     parts.push("情绪强烈。");
   }
+  while (parts.length > 1 && weightedLength(parts.join("")) > INSTRUCTION_BUDGET) {
+    parts.pop();
+  }
+  if (parts.length === 0) return undefined;
   const text = parts.join("");
-  return text.length > 0 ? text : undefined;
+  if (weightedLength(text) <= INSTRUCTION_BUDGET) return text;
+  const kept = truncateWeighted(base, INSTRUCTION_BUDGET);
+  return kept.length > 0 ? kept : undefined;
+}
+
+/** CosyVoice instruction budget: ≤ 100 chars, CJK counts 2. */
+const INSTRUCTION_BUDGET = 100;
+
+/** Weighted length: CJK (incl. CJK punctuation) counts 2, other chars 1. */
+function weightedLength(text: string): number {
+  let n = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    n += code >= 0x2e80 && code <= 0x9fff ? 2 : 1;
+  }
+  return n;
+}
+
+/** Weighted truncation at the budget boundary (never splits a surrogate pair). */
+function truncateWeighted(text: string, budget: number): string {
+  let kept = "";
+  let n = 0;
+  for (const ch of text) {
+    const w = weightedLength(ch);
+    if (n + w > budget) break;
+    kept += ch;
+    n += w;
+  }
+  return kept;
+}
+
+/**
+ * LinePerformance.emotion → DashScope fixed-format emotion vocabulary
+ * (docs: 你说话的情感是<emotion>。 with neutral/fearful/angry/sad/
+ * surprised/happy/disgusted). Emotions without a faithful mapping are
+ * dropped so we never emit an invalid fixed instruction.
+ */
+const FIXED_EMOTION: Record<string, string> = {
+  neutral: "neutral",
+  happy: "happy",
+  sad: "sad",
+  angry: "angry",
+  afraid: "fearful",
+  anxious: "fearful",
+  excited: "happy",
+  surprised: "surprised",
+  disgusted: "disgusted",
+};
+
+/** Fixed-format instruction (system voices): emotion clause only. */
+function buildFixedEmotionInstruction(perf: LinePerformance | undefined): string | undefined {
+  const emotion = perf?.emotion;
+  const mapped = typeof emotion === "string" ? FIXED_EMOTION[emotion] : undefined;
+  return mapped !== undefined ? `你说话的情感是${mapped}。` : undefined;
 }
 
 /**
@@ -194,14 +264,20 @@ export class PerformanceCompilerImpl implements PerformanceCompiler {
       const validPerf = perf !== null && typeof perf === "object" ? perf : undefined;
       const kept = validPerf ? filterDelivery(input, validPerf) : [];
 
+      const mode: InstructionMode = input.instructionMode ?? "free";
+      let instruction: string | undefined;
+      if (mode === "fixed_emotion") {
+        instruction = buildFixedEmotionInstruction(validPerf);
+      } else if (mode === "free") {
+        instruction = buildInstruction(base, kept, validPerf?.intensity);
+      }
       const result: CompiledPerformance = {
-        rate: lookup(PACE_RATE, validPerf?.pace),
-        pitch: lookup(ENERGY_PITCH, validPerf?.energy),
-        volume: lookup(VOLUME_LEVEL, validPerf?.volume),
+        rate: lookup(PACE_RATE, validPerf?.pace, IDENTITY_PARAMS.rate),
+        pitch: lookup(ENERGY_PITCH, validPerf?.energy, IDENTITY_PARAMS.pitch),
+        volume: lookup(VOLUME_LEVEL, validPerf?.volume, IDENTITY_PARAMS.volume),
         pauseBeforeMs: clampPause(validPerf?.pause_before_ms),
         pauseAfterMs: clampPause(validPerf?.pause_after_ms),
       };
-      const instruction = buildInstruction(base, kept, validPerf?.intensity);
       if (instruction !== undefined) result.instruction = instruction;
       return result;
     } catch {

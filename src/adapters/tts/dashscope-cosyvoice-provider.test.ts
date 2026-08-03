@@ -54,59 +54,52 @@ function controlledStream(): {
 }
 
 describe("DashScopeCosyVoiceProvider", () => {
-  it("posts the expected body and headers, and decodes SSE audio chunks", async () => {
-    let capturedInit: RequestInit | undefined;
-    let capturedUrl: unknown;
-    const fetchImpl = ((input: unknown, init?: RequestInit) => {
-      capturedUrl = input;
-      capturedInit = init;
-      return Promise.resolve(
-        sseResponse([
-          'data:{"output":{"audio":{"audio_data":"AQIDBA=="},"finish_reason":"null"},"request_id":"req-1"}\n\n',
-          'data:{"output":{"audio":{"audio_data":"BQYHCA=="},"finish_reason":"stop"},"request_id":"req-1"}\n\n',
-        ]),
-      );
+  it("posts the official SpeechSynthesizer body — params inside input — and decodes SSE audio", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (url: string, init: RequestInit): Promise<Response> => {
+      seen.push({ url, init });
+      return sseResponse([
+        'data: {"output":{"finish_reason":"null","type":"sentence-begin"}}\n\n',
+        'data: {"output":{"finish_reason":"null","type":"sentence-synthesis","audio":{"data":"AAECAwQ="}}}\n\n',
+        'data: {"output":{"finish_reason":"stop","type":"sentence-end"}}\n\n',
+      ]);
     }) as unknown as typeof fetch;
-
-    const provider = new DashScopeCosyVoiceProvider({ apiKey: "sk-test", fetchImpl });
-    const session = await provider.start(makeRequest({ instruction: "用温柔的语气读" }), new AbortController().signal);
-
+    const provider = new DashScopeCosyVoiceProvider({ apiKey: "k", fetchImpl });
+    const req = makeRequest({ instruction: "语气：温柔。", volume: 50, rate: 1.05, pitch: 1.0, seed: 7 });
+    const session = await provider.start(req, new AbortController().signal);
     const chunks: Uint8Array[] = [];
     for await (const chunk of session.chunks) chunks.push(chunk);
-    const completion = await session.completion;
-
-    expect(capturedInit?.method).toBe("POST");
-    expect(capturedUrl).toBe(DASHSCOPE_DEFAULT_BASE_URL);
-    expect(capturedInit?.headers).toMatchObject({
-      Authorization: "Bearer sk-test",
+    const body = JSON.parse(String(seen[0]!.init.body)) as {
+      model: string;
+      input: Record<string, unknown>;
+    };
+    expect(seen[0]!.url).toBe(
+      "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer",
+    );
+    expect(body.model).toBe("cosyvoice-v3-flash");
+    expect(body.input).toEqual({
+      text: "你好，世界",
+      voice: "longxiaochun_v3",
+      format: "pcm",
+      sample_rate: 22050,
+      rate: 1.05,
+      pitch: 1.0,
+      volume: 50,
+      seed: 7,
+      instruction: "语气：温柔。",
+    });
+    expect(seen[0]!.init.headers).toMatchObject({
+      Authorization: "Bearer k",
       "Content-Type": "application/json",
       "X-DashScope-Data-Inspector": "enable",
       "X-DashScope-SSE": "enable",
     });
-    expect(capturedInit?.signal).toBeInstanceOf(AbortSignal);
-    expect(JSON.parse(capturedInit?.body as string)).toEqual({
-      model: "cosyvoice-v3-flash",
-      input: { text: "你好，世界", voice: "longxiaochun_v3" },
-      parameters: {
-        format: "pcm",
-        sample_rate: 22050,
-        rate: 1.1,
-        pitch: 1.05,
-        volume: 90,
-        seed: 42,
-        instruction: "用温柔的语气读",
-      },
-    });
-
-    expect(chunks).toHaveLength(2);
-    expect(Array.from(chunks[0] as Uint8Array)).toEqual([1, 2, 3, 4]);
-    expect(Array.from(chunks[1] as Uint8Array)).toEqual([5, 6, 7, 8]);
-    expect(completion.totalBytes).toBe(8);
-    expect(completion.providerRequestId).toBe("req-1");
-    expect(completion.durationMs).toBeTypeOf("number");
+    expect(seen[0]!.init.signal).toBeInstanceOf(AbortSignal);
+    expect(chunks.length).toBe(1);
+    expect(Buffer.concat(chunks).equals(Buffer.from("AAECAwQ=", "base64"))).toBe(true);
   });
 
-  it("omits instruction from parameters when the request has none", async () => {
+  it("omits instruction from input when the request has none", async () => {
     let capturedBody: string | undefined;
     const fetchImpl = ((_input: unknown, init?: RequestInit) => {
       capturedBody = init?.body as string;
@@ -119,8 +112,8 @@ describe("DashScopeCosyVoiceProvider", () => {
       // drain
     }
 
-    const body = JSON.parse(capturedBody as string) as { parameters: Record<string, unknown> };
-    expect(body.parameters).not.toHaveProperty("instruction");
+    const body = JSON.parse(capturedBody as string) as { input: Record<string, unknown> };
+    expect(body.input).not.toHaveProperty("instruction");
   });
 
   it("accepts the current official field name output.audio.data", async () => {
@@ -206,9 +199,9 @@ describe("DashScopeCosyVoiceProvider", () => {
     controlled.close();
   });
 
-  it("defaults to the multimodal-generation endpoint", () => {
+  it("defaults to the official SpeechSynthesizer endpoint", () => {
     expect(DASHSCOPE_DEFAULT_BASE_URL).toBe(
-      "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+      "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer",
     );
   });
 });

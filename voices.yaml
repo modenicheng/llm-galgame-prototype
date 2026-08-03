@@ -1,15 +1,39 @@
-# 角色音色配置 V2（§14.1）
+# 角色音色配置 V3（严格）
 #
-# 角色只引用逻辑音色配置（config.yaml characters.voice_profile），
-# 具体供应商参数只存在于本文件，永不进入浏览器。
+# 每个角色通过 config.yaml characters.<key>.voice_profile 引用一个逻辑音色。
+# dashscope 绑定只有两个核心字段：
+#   - model:         CosyVoice 模型名（与音色匹配，如 cosyvoice-v3-flash）
+#   - voice_id_env:  存放 voice-id 的环境变量名（voice-id 放 .env，像 API key 一样，
+#                     各协作者可各自复刻/设计自己的音色，互不串扰）
+#
+# voice-id 三种来源，全部只需复制 id 填入 .env，无需本地调用：
+#   1. 系统音色：音色列表中的字面量（如 longanyang、longxiaochun_v3）
+#   2. 声音复刻：百炼控制台 → 选择模型 → 复刻音色 → 上传 10~20 秒音频 → 得到 voice-id
+#   3. 声音设计：百炼控制台 → 设计音色 → 填写声音描述 → 得到 voice-id
+#   CosyVoice 系列复刻/设计免费。本项目合成走北京地域的 SpeechSynthesizer 端点。
+#
+# 旁白（narration）不配音：只有角色行会合成语音。
+#
+# V2 的 voice_sources（零样本复刻资产注册）已移出运行时配置。
+# 历史资产（已从运行时配置移除，仅存档）：
+#   suyao_source.reference_audio: assets/voices/suyao/reference.wav
+#   suyao_source.reference_text: 这是一段音色注册参考文本。
+#
+# 可选字段：
+#   - voice_revision:   缓存失效版本号（默认 1）。在控制台重新复刻同一音色后 +1。
+#   - instruction_mode: 指令格式（默认 free）。
+#       free          → 复刻/设计音色，支持任意自然语言指令（≤100 字符，汉字按 2 字符计）
+#       fixed_emotion → 系统音色（支持 Instruct 时），格式「你说话的情感是<emotion>。」
+#                       emotion: neutral/fearful/angry/sad/surprised/happy/disgusted
+#       none          → 音色不支持 Instruct
 
-version: 2
+version: 3
 
 profiles:
+  # 复刻音色示例（voice-id 在 .env 的 COSYVOICE_VOICE_SUYAO）
   suyao_main:
     semantic:
-      base_description: >
-        年轻女性，音色清亮偏冷，表达克制，句子较短。
+      base_description: 年轻女性，音色清亮偏冷，表达克制，句子较短。
       allowed_delivery:
         - restrained
         - hesitant
@@ -24,11 +48,13 @@ profiles:
       dashscope:
         model: cosyvoice-v3-flash
         voice_id_env: COSYVOICE_VOICE_SUYAO
-        voice_revision: 1
 
-# 零样本复刻资产（作者侧一次性注册用，不进入运行时，不发送给浏览器）
-voice_sources:
-  suyao_source:
-    reference_audio: assets/voices/suyao/reference.wav
-    reference_text: 这是一段音色注册参考文本。
-    language: zh
+  # 系统音色示例：直接使用预设音色（voice-id = longanyang，放入 .env）
+  example_system_voice:
+    semantic:
+      base_description: 阳光大男孩，语速略快。
+    providers:
+      dashscope:
+        model: cosyvoice-v3-flash
+        voice_id_env: COSYVOICE_VOICE_SYSTEM_SAMPLE
+        instruction_mode: none
