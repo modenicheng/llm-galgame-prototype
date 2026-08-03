@@ -32,6 +32,7 @@ import type {
   ChoiceEvent,
   InteractionEvent,
 } from "./schema.js";
+import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
 import type { GenerationEnvelope } from "./story/types.js";
 import type { InteractionOpenedOutput } from "./test-helpers.js";
 
@@ -2685,5 +2686,321 @@ describe("Interaction resolution publication", () => {
       resolution: "input",
     });
     expect(controller.count("input_committed")).toBe(1);
+  });
+});
+// ---------------------------------------------------------------------------
+// Interaction command scoping (§10.2 / §14.5): stale & double-submit commands
+// ---------------------------------------------------------------------------
+
+function choiceFixture(
+  options = [
+    { id: "a", text: "选项A" },
+    { id: "b", text: "选项B" },
+  ],
+) {
+  return { type: "choice" as const, prompt: "怎么选？", options };
+}
+
+function hybridFixture(interactionId = "int_1", bridgeText = "她等着你的决定。") {
+  return {
+    type: "interaction" as const,
+    interaction_id: interactionId,
+    prompt: "怎么做？",
+    mode: "hybrid" as const,
+    options: [
+      { id: "a", text: "选项A" },
+      { id: "b", text: "选项B" },
+    ],
+    input: { kind: "free_text" as const, placeholder: "...", max_length: 200 },
+    input_bridge: { events: [{ type: "narration" as const, text: bridgeText }] },
+  };
+}
+
+/**
+ * Test-only window into Game internals used by the scoping assertions.
+ * Private fields are erased at runtime, so the shape is structural — the
+ * unchecked cast documents exactly which internals the tests rely on.
+ */
+interface GameScopingInternals {
+  events: StoredEvent[];
+  deferredCommands: RuntimeCommand[];
+  activeInteractionId: string | null;
+  activePreviewId: string | null;
+}
+
+describe("Interaction command scoping (stale / double-submit)", () => {
+  it("choice flow: resolves once, records player_choice once, cancels unselected branches, plays the selected branch", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    vi.mocked(generator.generateOpening).mockResolvedValue(
+      envelope([narrationEvent("开场。"), choiceFixture()]),
+    );
+    vi.mocked(generator.generateBranchPrefetch).mockImplementation(
+      async (_turn, _state, _context, _choice, option: { id: string }) =>
+        envelope([narrationEvent(option.id === "a" ? "分支A。" : "分支B。")]),
+    );
+    vi.mocked(generator.generateContinuation).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.select(output.interactionId, "a"),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const g = game as unknown as GameScopingInternals;
+    expect(
+      controller.outputs.filter((o) => o.type === "interaction_resolved"),
+    ).toEqual([{ type: "interaction_resolved", interactionId: "choice_1", resolution: "choice" }]);
+    const playerChoices = g.events.filter((e) => e.type === "player_choice");
+    expect(playerChoices).toHaveLength(1);
+    expect(playerChoices[0]!).toMatchObject({ choice_id: "a" });
+    // Only the selected branch plays; the unselected branch is canceled.
+    const played = controller.playbackEvents().map((o) => o.event.text);
+    expect(played).toContain("分支A。");
+    expect(played).not.toContain("分支B。");
+    // No stale interaction commands linger and the scope is fully released.
+    expect(g.deferredCommands).toHaveLength(0);
+    expect(g.activeInteractionId).toBeNull();
+  });
+
+  it("input flow: preview → response generation started → confirm → resolved(input) → committed → player line → bridge → NPC response", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    vi.mocked(generator.generateOpening).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    vi.mocked(generator.generateInputResponse).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    vi.mocked(generator.generateContinuation).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const g = game as unknown as GameScopingInternals;
+    // The NPC response generation started exactly once (no second request).
+    expect(generator.generateInputResponse).toHaveBeenCalledTimes(1);
+    expect(
+      controller.outputs.filter((o) => o.type === "interaction_resolved"),
+    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "input" }]);
+    expect(controller.count("input_preview_opened")).toBe(1);
+    expect(controller.count("input_committed")).toBe(1);
+    const played = controller.playbackEvents().map((o) => o.event);
+    // 开场。 → player line → bridge → NPC response.
+    expect(played[1]!.type).toBe("player_dialogue");
+    expect(played[2]!.text).toBe("她等着你开口。");
+    expect(played[3]!.text).toBe("回应。");
+    const playerInputs = g.events.filter((e) => e.type === "player_input");
+    expect(playerInputs).toHaveLength(1);
+    expect(playerInputs[0]!).toMatchObject({ text: "你好" });
+    expect(g.deferredCommands).toHaveLength(0);
+    expect(g.activeInteractionId).toBeNull();
+    expect(g.activePreviewId).toBeNull();
+  });
+
+  it("race: select_choice then preview_input in the same tick — only the first wins, the second is dropped, deferredCommands stays empty", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    vi.mocked(generator.generateOpening).mockResolvedValue(
+      envelope([narrationEvent("开场。"), hybridFixture()]),
+    );
+    vi.mocked(generator.generateBranchPrefetch).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    vi.mocked(generator.generateInputResponse).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    vi.mocked(generator.generateContinuation).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    // Both entrances submit in the same tick, the option click first.
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.select(output.interactionId, "a");
+        controller.submitInput(output.interactionId, "竞态输入");
+      },
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const g = game as unknown as GameScopingInternals;
+    expect(
+      controller.outputs.filter((o) => o.type === "interaction_resolved"),
+    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "choice" }]);
+    const playerBehaviors = g.events.filter(
+      (e) => e.type === "player_choice" || e.type === "player_input",
+    );
+    expect(playerBehaviors).toHaveLength(1);
+    expect(playerBehaviors[0]!.type).toBe("player_choice");
+    // The input path never runs: no response request, no bridge, no response.
+    expect(generator.generateInputResponse).not.toHaveBeenCalled();
+    const played = controller.playbackEvents().map((o) => o.event.text);
+    expect(played).not.toContain("她等着你的决定。");
+    expect(played).not.toContain("回应。");
+    expect(g.deferredCommands).toHaveLength(0);
+  });
+
+  it("race: preview_input then select_choice in the same tick — only the first wins, the second is dropped, deferredCommands stays empty", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    vi.mocked(generator.generateOpening).mockResolvedValue(
+      envelope([narrationEvent("开场。"), hybridFixture()]),
+    );
+    vi.mocked(generator.generateBranchPrefetch).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    vi.mocked(generator.generateInputResponse).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    vi.mocked(generator.generateContinuation).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    // Both entrances submit in the same tick, the input first.
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.submitInput(output.interactionId, "竞态输入");
+        controller.select(output.interactionId, "a");
+      },
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const g = game as unknown as GameScopingInternals;
+    expect(
+      controller.outputs.filter((o) => o.type === "interaction_resolved"),
+    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "input" }]);
+    const playerBehaviors = g.events.filter(
+      (e) => e.type === "player_choice" || e.type === "player_input",
+    );
+    expect(playerBehaviors).toHaveLength(1);
+    expect(playerBehaviors[0]!.type).toBe("player_input");
+    expect(controller.count("input_committed")).toBe(1);
+    // The choice path never runs: no branch events play.
+    const played = controller.playbackEvents().map((o) => o.event.text);
+    expect(played).toContain("回应。");
+    expect(played).not.toContain("分支内容。");
+    expect(g.deferredCommands).toHaveLength(0);
+  });
+
+  it("repeated submit: the same option clicked twice records once, adopts one branch, starts no second continuation", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    vi.mocked(generator.generateOpening).mockResolvedValue(
+      envelope([narrationEvent("开场。"), choiceFixture()]),
+    );
+    vi.mocked(generator.generateBranchPrefetch).mockImplementation(
+      async (_turn, _state, _context, _choice, option: { id: string }) =>
+        envelope([narrationEvent(option.id === "a" ? "分支A。" : "分支B。")]),
+    );
+    vi.mocked(generator.generateContinuation).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.select(output.interactionId, "a");
+        controller.select(output.interactionId, "a");
+      },
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const g = game as unknown as GameScopingInternals;
+    const playerChoices = g.events.filter((e) => e.type === "player_choice");
+    expect(playerChoices).toHaveLength(1);
+    expect(
+      controller.outputs.filter((o) => o.type === "interaction_resolved"),
+    ).toHaveLength(1);
+    const played = controller.playbackEvents().map((o) => o.event.text);
+    expect(played).toContain("分支A。");
+    expect(played).not.toContain("分支B。");
+    // Exactly one continuation was started, not a second one.
+    expect(generator.generateContinuation).toHaveBeenCalledTimes(1);
+    expect(g.deferredCommands).toHaveLength(0);
+  });
+
+  it("stale preview: a late confirm for the cancelled preview is dropped; the new preview stays valid", async () => {
+    const config = makeTestConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    vi.mocked(generator.generateOpening).mockResolvedValue(
+      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    vi.mocked(generator.generateInputResponse).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    vi.mocked(generator.generateContinuation).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    let cancelledPreviewId: string | null = null;
+    let committedPreviewId: string | null = null;
+    let previewCount = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => {
+        previewCount += 1;
+        if (previewCount === 1) {
+          cancelledPreviewId = output.previewId;
+          controller.cancel(output.previewId);
+        } else {
+          committedPreviewId = output.previewId;
+          // A late confirm for the cancelled preview A, then confirm B.
+          controller.confirm(cancelledPreviewId!);
+          controller.confirm(output.previewId);
+        }
+      },
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    const g = game as unknown as GameScopingInternals;
+    expect(controller.count("input_preview_opened")).toBe(2);
+    expect(controller.count("input_preview_canceled")).toBe(1);
+    // Only preview B was committed; the late confirm A was dropped.
+    expect(controller.count("input_committed")).toBe(1);
+    expect(
+      controller.outputs.find((o) => o.type === "input_committed"),
+    ).toMatchObject({ previewId: committedPreviewId });
+    expect(
+      controller.outputs.filter((o) => o.type === "interaction_resolved"),
+    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "input" }]);
+    expect(g.deferredCommands).toHaveLength(0);
+    expect(g.activePreviewId).toBeNull();
+    expect(g.activeInteractionId).toBeNull();
   });
 });

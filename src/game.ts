@@ -161,6 +161,16 @@ export class Game {
   private readonly generationScheduler = new GenerationScheduler();
   private readonly commands = new AsyncEventQueue<RuntimeCommand>();
   private readonly deferredCommands: RuntimeCommand[] = [];
+  /**
+   * §10.2: interaction currently open for commands, set on
+   * `interaction_opened` and cleared when the interaction resolves.
+   */
+  private activeInteractionId: string | null = null;
+  /**
+   * §10.2: input preview currently open for confirm/cancel, set on
+   * `input_preview_opened` and cleared on cancel/confirm.
+   */
+  private activePreviewId: string | null = null;
   private readonly listeners = new Set<(output: RuntimeOutput) => void>();
 
   constructor(
@@ -183,16 +193,36 @@ export class Game {
       this.emit({ type: "status_changed", status: snapshot });
     });
   }
+  /** Send a command to the runtime. Safe to call from output listeners. */
+  dispatch(command: RuntimeCommand): void {
+    // §10.2: drop obviously stale interaction commands at the door so a
+    // resolved interaction can never accumulate commands. The authoritative
+    // check still happens at the consumption point (waitForCommand), which
+    // covers commands dispatched before this scope check observed the
+    // resolution (e.g. two submissions in the same tick).
+    if (this.isStaleInteractionCommand(command)) return;
+    this.commands.push(command);
+  }
 
+  /**
+   * §10.2: a command is stale when it addresses an interaction or preview
+   * that is no longer the active one. Stale commands are dropped instead of
+   * being parked in deferredCommands, so they cannot leak into a later
+   * interaction's waiters.
+   */
+  private isStaleInteractionCommand(command: RuntimeCommand): boolean {
+    if (command.type === "select_choice" || command.type === "preview_input") {
+      return command.interactionId !== this.activeInteractionId;
+    }
+    if (command.type === "confirm_input" || command.type === "cancel_input") {
+      return command.previewId !== this.activePreviewId;
+    }
+    return false;
+  }
   /** Register an output listener; returns an unsubscribe function. */
   subscribe(listener: (output: RuntimeOutput) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
-  }
-
-  /** Send a command to the runtime. Safe to call from output listeners. */
-  dispatch(command: RuntimeCommand): void {
-    this.commands.push(command);
   }
 
   /** Return an immutable snapshot of all collected runtime metrics. */
@@ -220,6 +250,10 @@ export class Game {
         ...currentOutcome.preview,
       ];
 
+      // §10.2: playback start defensively clears any lingering interaction
+      // scope, so a reconnecting client can never restore a resolved form.
+      this.activeInteractionId = null;
+      this.activePreviewId = null;
       // The selected branch is already the next active generation task. Its
       // existing events enter the formal buffer now; later events are routed
       // into the same buffer by the live task subscription. No new LLM
@@ -641,15 +675,24 @@ export class Game {
 
   /**
    * Await the next command matching `predicate`. Commands that do not
-   * match (e.g. a stale preview command for an older preview id) are
-   * deferred and re-checked by later waiters.
+   * match are deferred and re-checked by later waiters — except §10.2
+   * stale interaction commands, which are dropped so a resolved
+   * interaction can never accumulate commands for later waiters.
    */
   private async waitForCommand(
     predicate: (command: RuntimeCommand) => boolean,
   ): Promise<RuntimeCommand> {
-    const deferredIndex = this.deferredCommands.findIndex(predicate);
-    if (deferredIndex >= 0) {
-      return this.deferredCommands.splice(deferredIndex, 1)[0]!;
+    // Scan the deferred list: take the first match, dropping any stale
+    // interaction commands encountered on the way.
+    for (let i = 0; i < this.deferredCommands.length; i++) {
+      const command = this.deferredCommands[i]!;
+      if (predicate(command)) {
+        return this.deferredCommands.splice(i, 1)[0]!;
+      }
+      if (this.isStaleInteractionCommand(command)) {
+        this.deferredCommands.splice(i, 1);
+        i -= 1;
+      }
     }
     while (true) {
       const next = await this.commands.next();
@@ -657,8 +700,33 @@ export class Game {
       const command = next.value;
       if (command.type === "shutdown") throw new RuntimeShutdownError();
       if (predicate(command)) return command;
+      // The final judgment lives here: a stale interaction command is
+      // dropped instead of parked in deferredCommands.
+      if (this.isStaleInteractionCommand(command)) continue;
       this.deferredCommands.push(command);
     }
+  }
+
+  /**
+   * §10.2: await the next interaction-scoped command for `interactionId`,
+   * accepting only the given types. Commands that address another
+   * interaction or a resolved interaction are dropped by waitForCommand;
+   * unrelated commands (e.g. advance) are deferred as usual.
+   */
+  private async waitForInteractionCommand(
+    interactionId: string,
+    acceptedTypes: Readonly<Partial<Record<"select_choice" | "preview_input", true>>>,
+  ): Promise<Extract<RuntimeCommand, { type: "select_choice" | "preview_input" }>> {
+    const command = await this.waitForCommand(
+      (c) =>
+        (c.type === "select_choice" || c.type === "preview_input") &&
+        acceptedTypes[c.type] === true &&
+        c.interactionId === interactionId,
+    );
+    if (command.type !== "select_choice" && command.type !== "preview_input") {
+      throw new RuntimeShutdownError();
+    }
+    return command;
   }
 
   /**
@@ -779,13 +847,17 @@ export class Game {
 
     this.status.setPhase("等待选择", "各分支正在并行预取；可随时选择");
     const interactionId = `choice_${turn}`;
+    // §10.2 lifecycle: the interaction is the active command scope from
+    // `interaction_opened` until it resolves.
+    this.activeInteractionId = interactionId;
     this.emit({
       type: "interaction_opened",
       interactionId,
       interaction: choice,
     });
-    const command = await this.waitForCommand(
-      (c) => c.type === "select_choice" && c.interactionId === interactionId,
+    const command = await this.waitForInteractionCommand(
+      interactionId,
+      { select_choice: true },
     );
     if (command.type !== "select_choice") throw new RuntimeShutdownError();
     const selected = choice.options.find((option) => option.id === command.optionId);
@@ -797,6 +869,8 @@ export class Game {
       interactionId,
       resolution: "choice",
     });
+    // §10.2 lifecycle: choice accepted → the interaction scope is released.
+    this.activeInteractionId = null;
     this.choiceTimestamp = this.clock.nowMs();
     await this.recordPlayerChoice(selected, turn);
     this.diagnostics.info("player", `你选择了：${selected.text}`);
@@ -1174,9 +1248,13 @@ export class Game {
       } else {
         this.status.setPhase("等待输入", "等待玩家自由输入");
         this.status.setBuffer(this.buffered.size, this.countBufferedDialogues());
+        // §10.2 lifecycle: (re)opening the interaction re-arms the command
+        // scope; the id survives preview cancels.
+        this.activeInteractionId = interactionId;
         this.emit({ type: "interaction_opened", interactionId, interaction });
-        const command = await this.waitForCommand(
-          (c) => c.type === "preview_input" && c.interactionId === interactionId,
+        const command = await this.waitForInteractionCommand(
+          interactionId,
+          { preview_input: true },
         );
         if (command.type !== "preview_input") throw new RuntimeShutdownError();
         text = command.text.trim().slice(0, interaction.input.max_length);
@@ -1213,6 +1291,9 @@ export class Game {
       void responsePromise.catch(() => undefined);
 
       // Show preview and await confirmation.
+      // §10.2 lifecycle: the preview is the active confirm/cancel scope from
+      // `input_preview_opened` until it is cancelled or confirmed.
+      this.activePreviewId = previewId;
       this.emit({ type: "input_preview_opened", previewId, text });
       let previewCommand: RuntimeCommand;
       if (this.config.input.require_preview_confirmation) {
@@ -1237,6 +1318,9 @@ export class Game {
         this.inputEngine.cancel(session);
         this.status.removeJob("input-response");
         this.status.clearBranches();
+        // §10.2 lifecycle: cancel releases the preview scope only; the
+        // interaction stays open for the next preview.
+        this.activePreviewId = null;
         this.emit({ type: "input_preview_canceled", previewId });
         this.media.discardCandidate(previewId);
         continue;
@@ -1249,6 +1333,10 @@ export class Game {
       // close the form. Emitted before input_committed so a reconnect never
       // restores the resolved interaction.
       this.emit({ type: "interaction_resolved", interactionId, resolution: "input" });
+      // §10.2 lifecycle: confirm releases both the preview and interaction
+      // scope — no further confirm/cancel may touch this preview.
+      this.activeInteractionId = null;
+      this.activePreviewId = null;
       this.emit({ type: "input_committed", previewId });
       this.bridgeBuffer.take(interactionId);
 
@@ -1467,12 +1555,13 @@ export class Game {
   ): Promise<SegmentOutcome> {
     this.status.setPhase("等待选择", "可选择预设选项，或自由输入");
     const interactionId = interaction.interaction_id;
-
+    // §10.2 lifecycle: hybrid opens one interaction scope shared by both
+    // submission paths; it is released as soon as either path resolves.
+    this.activeInteractionId = interactionId;
     this.emit({ type: "interaction_opened", interactionId, interaction });
-    const command = await this.waitForCommand(
-      (c) =>
-        (c.type === "select_choice" || c.type === "preview_input") &&
-        c.interactionId === interactionId,
+    const command = await this.waitForInteractionCommand(
+      interactionId,
+      { select_choice: true, preview_input: true },
     );
 
     if (command.type === "preview_input") {
@@ -1510,6 +1599,8 @@ export class Game {
       interactionId,
       resolution: "choice",
     });
+    // §10.2 lifecycle: choice accepted → the interaction scope is released.
+    this.activeInteractionId = null;
     this.bridgeBuffer.discard(interactionId);
 
     await this.recordPlayerChoice(
