@@ -35,10 +35,22 @@ import type { RuntimePlayableEvent } from "./schema.js";
 
 const CATALOG: AssetCatalog = {
   guidance: "测试素材。",
-  backgrounds: {},
-  bgm: {},
+  backgrounds: {
+    basement: { id: "basement", src: "backgrounds/basement.jpg", description: "地下室" },
+  },
+  bgm: {
+    mystery: { id: "mystery", src: "audio/bgm/mystery.mp3", description: "悬疑" },
+  },
   soundEffects: {},
-  spriteSets: {},
+  spriteSets: {
+    suyao: {
+      id: "suyao",
+      variants: {
+        normal: { id: "normal", src: "characters/suyao/normal.png" },
+        anxious: { id: "anxious", src: "characters/suyao/anxious.png" },
+      },
+    },
+  },
   characters: {
     suyao: {
       characterId: "suyao",

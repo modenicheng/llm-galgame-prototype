@@ -29,6 +29,7 @@ import type { MetricsSnapshot } from "./runtime/metrics.js";
 import { PlaybackBuffer } from "./runtime/playback-buffer.js";
 import { compileEventGroup } from "./core/protocol/gal-dsl/compiler.js";
 import type {
+  AssetDiagnostic,
   DslInteractionDraft,
   EventGroupDraft,
   SegmentEndStatus,
@@ -973,12 +974,18 @@ export class Game {
     cues: StageCue[];
     tailState: VisualState;
   } {
+    const diagnostics: AssetDiagnostic[] = [];
     const compiled = compileEventGroup(draft, {
       registry: this.registry,
       tailState: baseState,
       reduce: this.reduce,
       defaultsFor: this.defaults.defaultFor.bind(this.defaults),
+      ...(this.catalog !== undefined ? { catalog: this.catalog, diagnostics } : {}),
     });
+    for (const diagnostic of diagnostics) {
+      this.metrics.recordAssetDiagnostic(diagnostic.code);
+      console.warn(`[assets] ${diagnostic.code}: ${diagnostic.id}`);
+    }
     const main = compiled.group.main;
     if (main.type === "dialogue") {
       const event: RuntimeDialogueEvent = {

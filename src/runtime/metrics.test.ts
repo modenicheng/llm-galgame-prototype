@@ -446,6 +446,31 @@ describe("Metrics player timing", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Asset diagnostics
+// ---------------------------------------------------------------------------
+
+describe("Metrics asset diagnostics", () => {
+  let m: Metrics;
+
+  beforeEach(() => {
+    m = freshMetrics();
+  });
+
+  it("recordAssetDiagnostic 计数，assetDiagnosticCounts 返回副本", () => {
+    m.recordAssetDiagnostic("UNKNOWN_BACKGROUND");
+    m.recordAssetDiagnostic("UNKNOWN_BACKGROUND");
+    m.recordAssetDiagnostic("UNKNOWN_SPRITE_VARIANT");
+
+    const counts = m.assetDiagnosticCounts();
+    expect(counts.UNKNOWN_BACKGROUND).toBe(2);
+    expect(counts.UNKNOWN_SPRITE_VARIANT).toBe(1);
+    // Mutating the returned copy must not affect internal state.
+    counts.UNKNOWN_BACKGROUND = 999;
+    expect(m.assetDiagnosticCounts().UNKNOWN_BACKGROUND).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Reset
 // ---------------------------------------------------------------------------
 

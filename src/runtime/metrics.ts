@@ -7,6 +7,8 @@
  * the TUI or exported for analysis.
  */
 
+import type { AssetDiagnosticCode } from "../core/protocol/gal-dsl/types.js";
+
 // ---------------------------------------------------------------------------
 // Public interfaces
 // ---------------------------------------------------------------------------
@@ -152,6 +154,9 @@ export class Metrics {
   // --- Player timing ---
   private choiceToNextLineSamples: number[] = [];
 
+  // --- Asset diagnostics (spec §7) ---
+  private readonly assetDiagnostics = new Map<string, number>();
+
   // ------------------------------------------------------------------
   // Recording methods
   // ------------------------------------------------------------------
@@ -258,6 +263,19 @@ export class Metrics {
     this.choiceToNextLineSamples.push(ms);
   }
 
+  /** Count one dropped-cue asset diagnostic (spec §7). */
+  recordAssetDiagnostic(code: AssetDiagnosticCode): void {
+    this.assetDiagnostics.set(code, (this.assetDiagnostics.get(code) ?? 0) + 1);
+  }
+
+  /**
+   * Current asset-diagnostic counts (code → occurrences). Returns a copy;
+   * mutating it never affects internal state.
+   */
+  assetDiagnosticCounts(): Record<string, number> {
+    return Object.fromEntries(this.assetDiagnostics);
+  }
+
   // ------------------------------------------------------------------
   // Snapshot
   // ------------------------------------------------------------------
@@ -346,6 +364,7 @@ export class Metrics {
     this.schemaValidationFailures = 0;
     this.statePatchRejections = 0;
     this.choiceToNextLineSamples = [];
+    this.assetDiagnostics.clear();
   }
 
   // ------------------------------------------------------------------

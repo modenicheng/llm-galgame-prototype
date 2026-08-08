@@ -26,7 +26,9 @@ import type {
   VisualState,
   VisualStateReducer,
 } from "../../presentation/types.js";
+import type { AssetCatalog } from "../../assets/types.js";
 import type {
+  AssetDiagnostic,
   CompileEventGroupsOptions,
   CompileEventGroupsResult,
   CompiledEventGroup,
@@ -154,6 +156,49 @@ function resolveDialogue(
 }
 
 /**
+ * 素材语义校验（spec §7）：未知 id/variant 的 cue 被丢弃（降级为保持现状），
+ * 剧情继续；诊断写入 diagnostics。保持确定性。
+ */
+function filterInvalidCues(
+  cues: StageCue[],
+  state: VisualState,
+  catalog: AssetCatalog,
+  diagnostics: AssetDiagnostic[] | undefined,
+): StageCue[] {
+  const kept: StageCue[] = [];
+  for (const cue of cues) {
+    let keep = true;
+    if (cue.type === "background") {
+      keep = cue.assetId in catalog.backgrounds;
+      if (!keep) diagnostics?.push({ code: "UNKNOWN_BACKGROUND", id: cue.assetId });
+    } else if (cue.type === "bgm") {
+      keep = cue.assetId in catalog.bgm;
+      if (!keep) diagnostics?.push({ code: "UNKNOWN_BGM", id: cue.assetId });
+    } else if (cue.type === "sound_effect") {
+      keep = cue.assetId in catalog.soundEffects;
+      if (!keep) diagnostics?.push({ code: "UNKNOWN_SOUND_EFFECT", id: cue.assetId });
+    } else if (
+      cue.type === "character_patch" &&
+      cue.variant !== undefined &&
+      cue.variant.op === "set"
+    ) {
+      const effectiveSet =
+        cue.spriteSet !== undefined && cue.spriteSet.op === "set"
+          ? cue.spriteSet.value
+          : state.characters[cue.character]?.spriteSet;
+      const variants =
+        effectiveSet !== undefined ? catalog.spriteSets[effectiveSet]?.variants : undefined;
+      if (variants === undefined || !(cue.variant.value in variants)) {
+        keep = false;
+        diagnostics?.push({ code: "UNKNOWN_SPRITE_VARIANT", id: cue.variant.value });
+      }
+    }
+    if (keep) kept.push(cue);
+  }
+  return kept;
+}
+
+/**
  * Compile ONE draft group against the given tail state. Returns the
  * compiled group and the new tail state after applying all cues.
  */
@@ -209,9 +254,13 @@ export function compileEventGroup(
   // `ch` cues written before the line (hide/show/set) take effect AFTER
   // first-touch initialization — a hidden speaker stays hidden (§19).
   const allCues: StageCue[] = dialogueCue ? [dialogueCue, ...prelude] : prelude;
-  const nextState = reduce(tailState, allCues);
+  const filteredCues =
+    options.catalog !== undefined
+      ? filterInvalidCues(allCues, tailState, options.catalog, options.diagnostics)
+      : allCues;
+  const nextState = reduce(tailState, filteredCues);
 
-  return { group: { prelude: allCues, main }, tailState: nextState };
+  return { group: { prelude: filteredCues, main }, tailState: nextState };
 }
 
 /** Compile a whole segment's draft groups, chaining the tail state. */

@@ -4,7 +4,13 @@
  */
 import { describe, it, expect } from "vitest";
 import { compileEventGroup, compileEventGroups } from "./compiler.js";
-import type { DialogueNameSpec, DialogueVisualSpec, EventGroupDraft } from "./types.js";
+import type {
+  AssetDiagnostic,
+  DialogueNameSpec,
+  DialogueVisualSpec,
+  EventGroupDraft,
+} from "./types.js";
+import type { AssetCatalog } from "../../assets/types.js";
 import type {
   CharacterRegistry,
   CharacterRegistryEntry,
@@ -328,5 +334,149 @@ describe("compileEventGroups — tail state chaining", () => {
     // Character already on stage: no init cue, no change; speaker = current display name.
     expect(group.prelude).toEqual([]);
     expect(group.main).toMatchObject({ speaker: "神秘女子" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Asset semantic validation (spec §7) — unknown ids / variants are dropped
+// (graceful degradation: keep current state) and reported as diagnostics.
+// ---------------------------------------------------------------------------
+
+const CATALOG: AssetCatalog = {
+  guidance: "",
+  backgrounds: {
+    basement: { id: "basement", src: "backgrounds/basement.jpg", description: "" },
+  },
+  bgm: {
+    mystery: { id: "mystery", src: "audio/bgm/mystery.mp3", description: "" },
+  },
+  soundEffects: {
+    beep: { id: "beep", src: "audio/se/beep.ogg", description: "" },
+  },
+  spriteSets: {
+    suyao: {
+      id: "suyao",
+      variants: {
+        normal: { id: "normal", src: "characters/suyao/normal.png" },
+        anxious: { id: "anxious", src: "characters/suyao/anxious.png" },
+      },
+    },
+  },
+  characters: {},
+};
+
+function withBackground(background: string): VisualState {
+  return { background, characters: {} };
+}
+
+function withCharacter(
+  characterId: string,
+  state: {
+    spriteSet: string;
+    variant: string;
+    position: "far_left" | "left" | "center" | "right" | "far_right";
+    displayName: string;
+    visible: boolean;
+  },
+): VisualState {
+  return { characters: { [characterId]: state } };
+}
+
+describe("compileEventGroup — asset semantic validation (spec §7)", () => {
+  it("drops an unknown background cue, records UNKNOWN_BACKGROUND, keeps state", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx(withBackground("basement"));
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [{ type: "background", assetId: "nope" }],
+        main: { type: "narration", text: "她推开了那扇门。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toHaveLength(0);
+    expect(tailState.background).toBe("basement");
+    expect(diagnostics).toEqual([{ code: "UNKNOWN_BACKGROUND", id: "nope" }]);
+  });
+
+  it("drops unknown bgm / sound_effect cues (UNKNOWN_BGM / UNKNOWN_SOUND_EFFECT)", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx(withBackground("basement"));
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [
+          { type: "bgm", assetId: "wrong" },
+          { type: "sound_effect", assetId: "buzz" },
+        ],
+        main: { type: "narration", text: "脚步声在走廊里回荡。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toHaveLength(0);
+    expect(tailState.bgm).toBeUndefined();
+    expect(diagnostics).toEqual([
+      { code: "UNKNOWN_BGM", id: "wrong" },
+      { code: "UNKNOWN_SOUND_EFFECT", id: "buzz" },
+    ]);
+  });
+
+  it("drops a character_patch with an unknown variant (=keep), text plays on", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const start = withCharacter("suyao", {
+      spriteSet: "suyao",
+      variant: "normal",
+      position: "left",
+      displayName: "苏遥",
+      visible: true,
+    });
+    const ctx = makeCtx(start);
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [
+          { type: "character_patch", character: "suyao", variant: { op: "set", value: "embarrassed" } },
+        ],
+        main: { type: "narration", text: "她低下头，没有说话。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toHaveLength(0);
+    expect(tailState.characters["suyao"]?.variant).toBe("normal");
+    expect(diagnostics).toEqual([{ code: "UNKNOWN_SPRITE_VARIANT", id: "embarrassed" }]);
+  });
+
+  it("passes valid ids / variants through with no diagnostics", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx();
+    const { group } = compileEventGroup(
+      {
+        prelude: [{ type: "background", assetId: "basement" }],
+        main: {
+          type: "dialogue",
+          speaker: "苏遥",
+          text: "等等。",
+          visual: { hasVisual: true, resetVisual: false, variant: "anxious" },
+          name: { hasName: false, resetName: false },
+        },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude.length).toBeGreaterThan(0);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  it("does not validate when no catalog is passed (backward compatible)", () => {
+    const ctx = makeCtx();
+    const { group } = compileEventGroup(
+      {
+        prelude: [{ type: "background", assetId: "nope" }],
+        main: { type: "narration", text: "她推开了那扇门。" },
+      },
+      ctx,
+    );
+
+    expect(group.prelude).toHaveLength(1); // kept verbatim
   });
 });

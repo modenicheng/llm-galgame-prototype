@@ -19,6 +19,7 @@ import type {
   CharacterRegistry,
   CharacterPresentationState,
 } from "../../presentation/types.js";
+import type { AssetCatalog } from "../../assets/types.js";
 
 export type { StageCue } from "../../presentation/types.js";
 
@@ -202,6 +203,23 @@ export interface CompiledEventGroup {
   main: CompiledMainEvent;
 }
 
+/** 素材语义校验诊断码（spec §7）。 */
+export type AssetDiagnosticCode =
+  | "UNKNOWN_BACKGROUND"
+  | "UNKNOWN_BGM"
+  | "UNKNOWN_SOUND_EFFECT"
+  | "UNKNOWN_SPRITE_VARIANT";
+
+/**
+ * One dropped-cue diagnostic: which asset kind was unknown and the id
+ * the model referenced (spec §7). Recorded by the compiler when an
+ * optional catalog is supplied; the cue is dropped (keep current state).
+ */
+export interface AssetDiagnostic {
+  code: AssetDiagnosticCode;
+  id: string;
+}
+
 export interface CompileEventGroupsOptions {
   registry: CharacterRegistry;
   /**
@@ -213,6 +231,18 @@ export interface CompileEventGroupsOptions {
   reduce: VisualStateReducer;
   /** Character presentation defaults (usually derived from the registry). */
   defaultsFor: (characterId: string) => CharacterPresentationState | undefined;
+  /**
+   * Optional asset catalog enabling semantic validation of prelude cues
+   * (spec §7). When present, cues referencing unknown asset ids / sprite
+   * variants are dropped (graceful degradation) instead of played; when
+   * absent, cues pass through verbatim (backward compatible).
+   */
+  catalog?: AssetCatalog;
+  /**
+   * Optional collector for dropped-cue diagnostics (spec §7). Only
+   * populated when `catalog` is supplied.
+   */
+  diagnostics?: AssetDiagnostic[];
 }
 
 export interface CompileEventGroupsResult {
