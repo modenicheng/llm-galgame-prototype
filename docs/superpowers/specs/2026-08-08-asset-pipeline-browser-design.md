@@ -49,8 +49,8 @@ LLM → 逻辑 id → Core/VisualState → 逻辑 id → 浏览器
 2. **视觉子代理（mimo-v2.5）** 产出命名 + 详细描述：
    - 两个立绘集各 9 个表情 → 英文语义化 variant id（如 `normal`/`happy`/`angry`/`surprised`…）+ 外观/表情/使用时机描述（写入 `resources.yaml` 的 `description`，供模型选表情）。
    - 10 张背景 → 英文 id（`hallway_day`/`clubroom_night_on`/`hideout_on`…）+ 描述。
-   - 3 首 BGM → 英文 id + **实质 guidance**：优先 mimo-v2.5 听音；否则 ffmpeg 信号分析（BPM/响度/频谱特征）结合元数据。`resources.yaml` 中每首 BGM 必须有详细 `description`/guidance（节奏、情绪基调、适用场景、与其它 BGM 的区分度），**不只靠文件名引导 LLM**。
-   - 提出角色↔立绘集映射建议（如旗袍装 ↔ 苏遥），由用户最终确认；据此决定 `placeholder_char` 去留。
+   - 3 首 BGM → 英文 id 由主代理按文件名与元数据提出；`resources.yaml` 中每首 BGM 的详细 `description`/guidance（节奏、情绪基调、适用场景、与其它 BGM 的区分度）由**用户亲自撰写**（子代理不做听音分析）。
+   - 角色↔立绘集映射（如旗袍装 ↔ 苏遥）由子代理描述 + 主代理直接定夺写入；据此决定 `placeholder_char` 去留。**无需用户确认**。
 3. 主代理汇总报告，生成最终目录结构与 `resources.yaml`。
 
 ### 4.3 目录系统
