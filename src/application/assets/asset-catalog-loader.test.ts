@@ -2,8 +2,8 @@
  * Tests for the asset catalog YAML loader (docs §57–§58).
  */
 
-import { afterAll, describe, expect, it } from "vitest";
-import { writeFile, unlink } from "node:fs/promises";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,39 @@ async function writeTempYaml(name: string, content: string): Promise<string> {
   await writeFile(filePath, content, "utf8");
   registerCleanup(filePath);
   return filePath;
+}
+
+// Temp directory helpers (per-test isolation for validation tests)
+
+let tempDirs: string[] = [];
+
+async function makeTempDir(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "catalog-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  const dirs = tempDirs;
+  tempDirs = [];
+  for (const dir of dirs) {
+    try {
+      await rm(dir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  }
+});
+
+/** Write a placeholder asset file inside a temp dir, creating parent dirs. */
+async function writeTempAsset(
+  dir: string,
+  relPath: string,
+  content: string | Buffer = Buffer.from("x"),
+): Promise<void> {
+  const filePath = path.join(dir, relPath);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, content);
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +128,16 @@ characters:
 
 describe("loadAssetCatalog", () => {
   it("maps the snake_case YAML onto the camelCase AssetCatalog", async () => {
-    const filePath = await writeTempYaml("sample", SAMPLE_YAML);
+    const dir = await makeTempDir();
+    // Placeholder files matching SAMPLE_YAML srcs (validation requires real files).
+    await writeTempAsset(dir, "backgrounds/hideout_on.jpg");
+    await writeTempAsset(dir, "backgrounds/hallway_day.jpg");
+    await writeTempAsset(dir, "audio/bgm/relax.mp3");
+    await writeTempAsset(dir, "audio/se/terminal_beep.ogg");
+    await writeTempAsset(dir, "characters/suyao/neutral.png");
+    await writeTempAsset(dir, "characters/suyao/speaking_smile.png");
+    await writeFile(path.join(dir, "resources.yaml"), SAMPLE_YAML, "utf8");
+    const filePath = path.join(dir, "resources.yaml");
     const catalog = await loadAssetCatalog(filePath);
 
     expect(catalog.guidance).toBe("当前素材覆盖校园走廊与地下据点。\n\n背景应尽量复用已有资源。");
@@ -135,8 +177,11 @@ describe("loadAssetCatalog", () => {
   });
 
   it("strips leading/trailing whitespace from descriptions", async () => {
-    const filePath = await writeTempYaml(
-      "trimmed",
+    const dir = await makeTempDir();
+    await writeTempAsset(dir, "backgrounds/a.webp");
+    const filePath = path.join(dir, "resources.yaml");
+    await writeFile(
+      filePath,
       [
         "guidance: ' 指引 '",
         "backgrounds:",
@@ -253,5 +298,95 @@ describe("loadAssetCatalog failures", () => {
   it("throws when the file does not exist", async () => {
     const missing = path.join(tmpdir(), `galgame-assets-missing-${Date.now()}.yaml`);
     await expect(loadAssetCatalog(missing)).rejects.toThrow(/无法读取资产目录/);
+  });
+
+  it("拒绝 characters.sprite_set 引用不存在的 sprite_set", async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
+    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds:",
+        "  a: { src: bg.png, description: d }",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets:",
+        "  good:",
+        "    variants:",
+        "      normal: { src: sprite.png }",
+        "characters:",
+        "  c:",
+        "    script_name: 测试",
+        "    display_name: 测试",
+        "    sprite_set: missing",
+        "    default_variant: normal",
+        "    default_position: left",
+      ].join("\n"),
+    );
+    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/sprite_set/);
+  });
+
+  it("拒绝 default_variant 不存在于 sprite_set", async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
+    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds:",
+        "  a: { src: bg.png, description: d }",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets:",
+        "  good:",
+        "    variants:",
+        "      normal: { src: sprite.png }",
+        "characters:",
+        "  c:",
+        "    script_name: 测试",
+        "    display_name: 测试",
+        "    sprite_set: good",
+        "    default_variant: nope",
+        "    default_position: left",
+      ].join("\n"),
+    );
+    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/default_variant/);
+  });
+
+  it("拒绝 src 逃逸素材根目录", async () => {
+    const dir = await makeTempDir();
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds:",
+        "  a: { src: ../secret.png, description: d }",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets: {}",
+        "characters: {}",
+      ].join("\n"),
+    );
+    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/逃逸|escape/);
+  });
+
+  it("拒绝 src 指向不存在的文件", async () => {
+    const dir = await makeTempDir();
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds:",
+        "  a: { src: missing.png, description: d }",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets: {}",
+        "characters: {}",
+      ].join("\n"),
+    );
+    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/不存在|missing/);
   });
 });

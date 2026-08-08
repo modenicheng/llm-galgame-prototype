@@ -1,5 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
+import { resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 import type {
@@ -98,7 +99,56 @@ export async function loadAssetCatalog(filePath: string): Promise<AssetCatalog> 
     throw new Error(`资产目录校验失败 ${absolutePath}: ${detail}`);
   }
 
-  return mapToCatalog(result.data);
+  const assetRoot = path.dirname(absolutePath);
+  const catalog = mapToCatalog(result.data);
+  await validateCatalog(catalog, assetRoot);
+  return catalog;
+}
+
+// ---------------------------------------------------------------------------
+// Startup validation (cross-references + file existence + path escape)
+// ---------------------------------------------------------------------------
+
+async function validateCatalog(
+  catalog: AssetCatalog,
+  assetRoot: string,
+): Promise<void> {
+  const rootResolved = resolve(assetRoot);
+
+  for (const [characterId, binding] of Object.entries(catalog.characters)) {
+    const set = catalog.spriteSets[binding.spriteSet];
+    if (set === undefined) {
+      throw new Error(
+        `资产目录校验失败: characters.${characterId}.sprite_set "${binding.spriteSet}" 不存在于 sprite_sets`,
+      );
+    }
+    if (!(binding.defaultVariant in set.variants)) {
+      throw new Error(
+        `资产目录校验失败: characters.${characterId}.default_variant "${binding.defaultVariant}" 不存在于 sprite_set "${binding.spriteSet}"`,
+      );
+    }
+  }
+
+  const srcs: Array<{ where: string; src: string }> = [
+    ...Object.entries(catalog.backgrounds).map(([id, a]) => ({ where: `backgrounds.${id}`, src: a.src })),
+    ...Object.entries(catalog.bgm).map(([id, a]) => ({ where: `bgm.${id}`, src: a.src })),
+    ...Object.entries(catalog.soundEffects).map(([id, a]) => ({ where: `sound_effects.${id}`, src: a.src })),
+    ...Object.entries(catalog.spriteSets).flatMap(([id, set]) =>
+      Object.entries(set.variants).map(([v, vv]) => ({ where: `sprite_sets.${id}.variants.${v}`, src: vv.src })),
+    ),
+  ];
+
+  for (const { where, src } of srcs) {
+    const filePath = resolve(rootResolved, src);
+    if (filePath !== rootResolved && !filePath.startsWith(rootResolved + sep)) {
+      throw new Error(`资产目录校验失败: ${where}.src "${src}" 逃逸素材根目录`);
+    }
+    try {
+      await access(filePath);
+    } catch {
+      throw new Error(`资产目录校验失败: ${where}.src 文件不存在: ${filePath}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
