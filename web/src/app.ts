@@ -21,6 +21,7 @@ import { AudioDownloader } from "./audio/audio-downloader.js";
 import { PcmDecoder } from "./audio/pcm-decoder.js";
 import { RuntimeClient, type ConnectionState, type RuntimeCommandWire, type WebSocketCtor } from "./runtime/runtime-client.js";
 import { GameViewModel, type RuntimePlayableEventWire, type ViewModelState } from "./runtime/game-view-model.js";
+import type { BgmController } from "./stage/bgm-controller.js";
 import { AudioDb } from "./storage/audio-db.js";
 import { AudioCacheWriter, type CacheWriteOptions } from "./storage/audio-cache-writer.js";
 import { AudioCacheReader } from "./storage/audio-cache-reader.js";
@@ -71,6 +72,8 @@ export interface GameAppOptions {
   token: string;
   /** Preloaded server config; when omitted the app fetches GET /api/config. */
   config?: PublicWebConfig;
+  /** Optional BGM playback controller; when absent volume/mute stay coordinator-only. */
+  bgmController?: BgmController;
   /** Test seams. */
   fetchImpl?: typeof fetch;
   webSocketImpl?: WebSocketCtor;
@@ -120,6 +123,7 @@ export class GameApp {
   private readonly options: GameAppOptions;
   private readonly viewModel = new GameViewModel();
   private readonly db: AudioDb;
+  private readonly bgmController: BgmController | null;
   private readonly listeners = new Set<(s: GameAppState) => void>();
 
   private client: RuntimeClient | null = null;
@@ -156,6 +160,7 @@ export class GameApp {
   constructor(options: GameAppOptions) {
     this.options = options;
     this.db = options.db ?? new AudioDb();
+    this.bgmController = options.bgmController ?? null;
     this.viewModel.subscribe(() => this.handleViewNotify());
   }
 
@@ -346,12 +351,14 @@ export class GameApp {
   setVolume(v: number): void {
     this.volume = Math.min(1, Math.max(0, v));
     this.coordinator?.setVolume(this.volume);
+    this.bgmController?.setVolume(this.volume);
     this.emitState();
   }
 
   setMuted(muted: boolean): void {
     this.muted = muted;
     this.coordinator?.setMuted(muted);
+    this.bgmController?.setMuted(muted);
     this.emitState();
   }
 
