@@ -263,7 +263,7 @@ const AudioConfigSchema = z
     batch_size: z.number().int().min(1).max(20).default(2),
     max_concurrency: z.number().int().min(1).max(10).default(2),
     mock_latency_ms: z.number().int().min(0).max(60_000).default(800),
-    output_dir: z.string().min(1).default("assets/audio"),
+    output_dir: z.string().min(1).default("assets/.tts-cache"),
     // V2 nested sections (optional; legacy flat fields remain for CLI compat).
     planner: AudioPlannerConfigSchema.optional(),
     playback: AudioPlaybackConfigSchema.optional(),

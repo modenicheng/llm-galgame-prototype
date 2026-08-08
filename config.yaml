@@ -28,7 +28,7 @@ text_buffer:
   refill_threshold_lines: 3
 
 # 资源目录（docs §57）：角色绑定、背景/BGM/立绘等资源描述
-essets:
+assets:
   catalog: assets/resources.yaml
 
 prefetch:

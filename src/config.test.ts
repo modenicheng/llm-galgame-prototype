@@ -94,7 +94,7 @@ describe("loadConfig defaults", () => {
     expect(config.media.audio.batch_size).toBe(2);
     expect(config.media.audio.max_concurrency).toBe(2);
     expect(config.media.audio.mock_latency_ms).toBe(800);
-    expect(config.media.audio.output_dir).toBe("assets/audio");
+    expect(config.media.audio.output_dir).toBe("assets/.tts-cache");
 
     // Game defaults
     expect(config.game.history_events).toBe(80);
