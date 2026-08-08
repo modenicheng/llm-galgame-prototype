@@ -12,6 +12,7 @@ import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import { makeTestConfig } from "../../test-helpers.js";
 import type { RuntimeApplication } from "../../application/runtime-application.js";
+import { makeAssetCatalog } from "../../application/assets/asset-manifest.fixtures.js";
 import type { Metrics } from "../../runtime/metrics.js";
 import type { Game } from "../../game.js";
 import type { UiProjectionStore } from "../../application/ui/ui-projection-store.js";
@@ -30,7 +31,7 @@ import {
 
 const DIST_ENV = "LLM_GALGAME_WEB_DIST_DIR";
 
-function makeConfig() {
+function makeConfig(overrides?: Parameters<typeof makeTestConfig>[0]) {
   return makeTestConfig({
     app: { default_host: "web" },
     local_web: { host: "127.0.0.1", port: 0, open_browser: false, controller_limit: 1 },
@@ -72,6 +73,7 @@ function makeConfig() {
         },
       },
     },
+    ...overrides,
   });
 }
 
@@ -215,6 +217,89 @@ describe("LocalWebHost", () => {
     const result = await request(port, "GET", "/api/nope");
     expect(result.status).toBe(404);
     expect(JSON.parse(result.text)).toEqual({ error: "not found" });
+  });
+
+  it("without an assetCatalog the manifest endpoint returns 404", async () => {
+    // The outer host is built without assetCatalog; the asset service must
+    // stay disabled so pre-existing hosts behave unchanged.
+    const result = await request(port, "GET", "/api/assets/manifest");
+    expect(result.status).toBe(404);
+  });
+
+  describe("asset manifest + /game-assets serving (with assetCatalog)", () => {
+    let assetDir: string;
+    let assetHost: LocalWebHost;
+    let assetPort: number;
+
+    beforeEach(async () => {
+      // Real files under a temp asset root, catalog injected via host
+      // options so tests bypass the YAML loader while /game-assets still
+      // exercises the on-disk file path.
+      assetDir = mkdtempSync(path.join(tmpdir(), "asset-root-"));
+      mkdirSync(path.join(assetDir, "backgrounds"), { recursive: true });
+      mkdirSync(path.join(assetDir, "audio", "bgm"), { recursive: true });
+      mkdirSync(path.join(assetDir, "characters", "suyao"), { recursive: true });
+      writeFileSync(path.join(assetDir, "backgrounds", "basement.jpg"), "jpeg-bytes");
+      writeFileSync(path.join(assetDir, "audio", "bgm", "mystery.mp3"), "mp3-bytes");
+      writeFileSync(path.join(assetDir, "characters", "suyao", "anxious.png"), "png-bytes");
+
+      const assetConfig = makeConfig({
+        assets: { catalog: path.join(assetDir, "resources.yaml") },
+      });
+      assetHost = new LocalWebHost({
+        config: assetConfig,
+        app,
+        dev: false,
+        logger: () => {},
+        assetCatalog: makeAssetCatalog(),
+      });
+      const started = await assetHost.start();
+      assetPort = started.port;
+    });
+
+    afterEach(async () => {
+      await assetHost.shutdown();
+      rmSync(assetDir, { recursive: true, force: true });
+    });
+
+    it("GET /api/assets/manifest returns projected URLs", async () => {
+      const result = await request(assetPort, "GET", "/api/assets/manifest");
+      expect(result.status).toBe(200);
+      const manifest = JSON.parse(result.text) as {
+        backgrounds: Record<string, { url: string }>;
+      };
+      expect(manifest.backgrounds.basement?.url).toBe(
+        "/game-assets/backgrounds/basement.jpg",
+      );
+      expect(result.text).not.toContain("assets/resources.yaml");
+    });
+
+    it("GET /game-assets/... serves the asset file with a content-type", async () => {
+      const result = await request(assetPort, "GET", "/game-assets/backgrounds/basement.jpg");
+      expect(result.status).toBe(200);
+      expect(result.headers["content-type"]).toContain("image/jpeg");
+      expect(result.text).toBe("jpeg-bytes");
+    });
+
+    it("GET /game-assets/../config.yaml rejects traversal", async () => {
+      const result = await request(assetPort, "GET", "/game-assets/../config.yaml");
+      expect(result.status).toBe(403);
+    });
+
+    it("GET /game-assets/%2e%2e/config.yaml rejects encoded traversal", async () => {
+      const result = await request(assetPort, "GET", "/game-assets/%2e%2e/config.yaml");
+      expect(result.status).toBe(403);
+    });
+
+    it("GET /game-assets/missing.png returns 404", async () => {
+      const result = await request(assetPort, "GET", "/game-assets/missing.png");
+      expect(result.status).toBe(404);
+    });
+
+    it("non-GET /game-assets/... is rejected with 405", async () => {
+      const result = await request(assetPort, "POST", "/game-assets/backgrounds/basement.jpg");
+      expect(result.status).toBe(405);
+    });
   });
 
   it("streams synthesized PCM end-to-end with the session token", async () => {

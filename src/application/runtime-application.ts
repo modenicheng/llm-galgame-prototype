@@ -13,6 +13,7 @@ import type { TtsTaskService } from "./audio/tts-task-service.js";
 import type { TaskStatusEvent } from "./audio/tts-task-service.js";
 import type { AppConfig } from "../config.js";
 import type { Metrics } from "../runtime/metrics.js";
+import type { AssetCatalog } from "../core/assets/types.js";
 
 export interface RuntimeApplication {
   game: Game;
@@ -23,6 +24,8 @@ export interface RuntimeApplication {
   config: AppConfig;
   /** Shared metrics collector (also fed to the Game). */
   metrics: Metrics;
+  /** Loaded asset catalog (docs §57–§60); hosts expose it via manifest + /game-assets. */
+  assetCatalog: AssetCatalog;
   shutdown(): Promise<void>;
   /** Subscribe to TTS task status events (hosts bridge these to the browser). */
   taskStatusSubscribe(listener: (event: TaskStatusEvent) => void): () => void;

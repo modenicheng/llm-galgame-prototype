@@ -84,6 +84,18 @@ export interface ModelAssetCatalog {
   >;
 }
 
+/**
+ * Browser-facing projection: logical id → controlled URL (spec §5.2).
+ * No filesystem paths are exposed; `url` is always a root-relative
+ * path under the /game-assets/ prefix.
+ */
+export interface PublicAssetManifest {
+  backgrounds: Record<string, { url: string }>;
+  bgm: Record<string, { url: string }>;
+  soundEffects: Record<string, { url: string }>;
+  spriteSets: Record<string, { variants: Record<string, { url: string }> }>;
+}
+
 export interface AssetResolver {
   resolveBackground(id: string): { src: string } | undefined;
   resolveBgm(id: string): { src: string } | undefined;

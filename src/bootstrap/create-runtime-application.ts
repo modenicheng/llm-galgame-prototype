@@ -157,6 +157,7 @@ export async function createRuntimeApplication(
     projection,
     config,
     metrics,
+    assetCatalog,
     taskStatusSubscribe: (listener) => {
       taskStatusListeners.add(listener);
       return () => taskStatusListeners.delete(listener);

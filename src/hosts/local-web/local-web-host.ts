@@ -17,6 +17,8 @@ import type { AppConfig } from "../../config.js";
 import { toPublicWebConfig } from "../../config/public-web-config.js";
 import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
 import type { RuntimeApplication } from "../../application/runtime-application.js";
+import type { AssetCatalog, PublicAssetManifest } from "../../core/assets/types.js";
+import { buildPublicAssetManifest } from "../../application/assets/asset-manifest.js";
 import { RuntimeShutdownError } from "../../game.js";
 import { isAllowedOrigin } from "./origin-guard.js";
 import { AudioStreamRoute } from "./audio-stream-route.js";
@@ -50,6 +52,8 @@ export interface LocalWebHostOptions {
   app: RuntimeApplication;
   dev: boolean;
   logger?: (line: string) => void;
+  /** Asset catalog for manifest + /game-assets serving. 缺省时不启用资源服务。 */
+  assetCatalog?: AssetCatalog;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -82,6 +86,8 @@ export class LocalWebHost {
   private readonly runtimeWs: RuntimeWebSocket;
   private readonly audioRoute: AudioStreamRoute;
   private readonly distRoot: string;
+  private readonly assetRoot: string | null;
+  private readonly assetManifest: PublicAssetManifest | null;
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private devMiddleware: ViteDevMiddleware | null = null;
@@ -97,6 +103,19 @@ export class LocalWebHost {
     this.distRoot = process.env[WEB_DIST_DIR_ENV]
       ? path.resolve(process.env[WEB_DIST_DIR_ENV])
       : DEFAULT_WEB_DIST_DIR;
+
+    // Explicit options win; fall back to the runtime's catalog so the
+    // web.ts entrypoint (config/app/dev/logger only) keeps working
+    // unchanged — app.assetCatalog is provided by createRuntimeApplication.
+    const assetCatalog = options.assetCatalog ?? this.app.assetCatalog;
+    this.assetRoot =
+      assetCatalog !== undefined
+        ? path.dirname(path.resolve(this.config.assets.catalog))
+        : null;
+    this.assetManifest =
+      assetCatalog !== undefined
+        ? buildPublicAssetManifest(assetCatalog, "/game-assets/")
+        : null;
 
     const host = this.config.local_web.host;
     const port = this.config.local_web.port;
@@ -253,6 +272,22 @@ export class LocalWebHost {
       this.sendJson(res, 200, this.publicConfig);
       return;
     }
+    if (req.method === "GET" && pathname === "/api/assets/manifest") {
+      if (this.assetManifest === null) {
+        this.sendJson(res, 404, { error: "asset catalog unavailable" });
+        return;
+      }
+      this.sendJson(res, 200, this.assetManifest);
+      return;
+    }
+    if (req.method === "GET" && pathname.startsWith("/game-assets/")) {
+      if (this.assetRoot === null) {
+        this.sendJson(res, 404, { error: "asset catalog unavailable" });
+        return;
+      }
+      void serveAssetFile(this.assetRoot, req, res, pathname);
+      return;
+    }
     if (pathname.startsWith("/api/")) {
       this.sendJson(res, 404, { error: "not found" });
       return;
@@ -327,4 +362,68 @@ async function serveFile(rootDir: string, req: IncomingMessage, res: ServerRespo
       res.destroy();
     }
   }
+}
+
+/**
+ * Asset file MIME table: static types plus the media extensions the
+ * asset catalog can reference (webp/jpg/jpeg/ogg/mp3/wav).
+ */
+const ASSET_MIME_TYPES: Record<string, string> = {
+  ...MIME_TYPES,
+  ".webp": "image/webp",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".ogg": "audio/ogg",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+};
+
+/**
+ * Serve one asset file from the catalog root (spec §5.2). Same shape as
+ * serveFile but with NO SPA fallback: an asset id always maps to a real
+ * file or 404. Traversal (raw or percent-encoded) → 403.
+ */
+async function serveAssetFile(
+  assetRoot: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+): Promise<void> {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("method not allowed");
+    return;
+  }
+  let relative: string;
+  try {
+    relative = decodeURIComponent(pathname.slice("/game-assets/".length));
+  } catch {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("bad request");
+    return;
+  }
+  const filePath = path.resolve(assetRoot, relative);
+  const rootResolved = path.resolve(assetRoot);
+  if (filePath !== rootResolved && !filePath.startsWith(rootResolved + path.sep)) {
+    res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("forbidden");
+    return;
+  }
+  let content: Buffer | null = null;
+  try {
+    content = await readFile(filePath);
+  } catch {
+    // fall through to 404
+  }
+  if (content === null) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("not found");
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type":
+      ASSET_MIME_TYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream",
+    "Cache-Control": "no-store",
+  });
+  res.end(req.method === "HEAD" ? undefined : content);
 }
