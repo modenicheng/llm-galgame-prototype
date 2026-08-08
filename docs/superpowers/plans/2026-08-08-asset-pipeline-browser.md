@@ -127,30 +127,31 @@ mkdir -p assets/characters/josei_03 assets/characters/josei_12 assets/background
 7z e assets/raw/josei_12_china.zip -oassets/characters/josei_12 -y
 rm -f assets/characters/josei_03/*.txt assets/characters/josei_12/*.txt   # README 授权文本留 raw 原包即可
 # 背景：日文名 → 英文（内容语义固定，直接定名）
-git mv 待办  # 见下：背景用 cp 后删原文件，见 Step 6 说明
+# raw/ 当前未纳入 git 且须原封不动留作 provenance → 全部用 cp 复制
 ```
 
-背景映射（`assets/raw/*.jpg` → `assets/backgrounds/*.jpg`，cp 后 `git rm` 原文件——raw 属 T1 之后提交，见 Step 6）：
+背景映射（`assets/raw/*.jpg` → `assets/backgrounds/*.jpg`，cp 复制）：
 
-```
-アジト（照明ON）.jpg        → hideout_on.jpg
-アジト（照明OFF）.jpg       → hideout_off.jpg
-学校の廊下（日中）.jpg      → hallway_day.jpg
-学校の廊下（夕方）.jpg      → hallway_evening.jpg
-学校の廊下（夜・照明ON）.jpg → hallway_night_on.jpg
-学校の廊下（夜・照明OFF）.jpg → hallway_night_off.jpg
-文化系の部室（日中）.jpg    → clubroom_day.jpg
-文化系の部室（夕方）.jpg    → clubroom_evening.jpg
-文化系の部室（夜・照明ON）.jpg → clubroom_night_on.jpg
-文化系の部室（夜・照明OFF）.jpg → clubroom_night_off.jpg
+```bash
+cd /mnt/d/code-linux/llm-galgame-prototype
+cp "assets/raw/アジト（照明ON）.jpg" assets/backgrounds/hideout_on.jpg
+cp "assets/raw/アジト（照明OFF）.jpg" assets/backgrounds/hideout_off.jpg
+cp "assets/raw/学校の廊下（日中）.jpg" assets/backgrounds/hallway_day.jpg
+cp "assets/raw/学校の廊下（夕方）.jpg" assets/backgrounds/hallway_evening.jpg
+cp "assets/raw/学校の廊下（夜・照明ON）.jpg" assets/backgrounds/hallway_night_on.jpg
+cp "assets/raw/学校の廊下（夜・照明OFF）.jpg" assets/backgrounds/hallway_night_off.jpg
+cp "assets/raw/文化系の部室（日中）.jpg" assets/backgrounds/clubroom_day.jpg
+cp "assets/raw/文化系の部室（夕方）.jpg" assets/backgrounds/clubroom_evening.jpg
+cp "assets/raw/文化系の部室（夜・照明ON）.jpg" assets/backgrounds/clubroom_night_on.jpg
+cp "assets/raw/文化系の部室（夜・照明OFF）.jpg" assets/backgrounds/clubroom_night_off.jpg
 ```
 
-BGM（`assets/raw/*.mp3` → `assets/audio/bgm/`，源文件名派生 id，guidance 由用户写）：
+BGM（`assets/raw/*.mp3` → `assets/audio/bgm/`，cp 复制；源文件名派生 id，guidance 由用户写）：
 
-```
-andriig-relax-relaxing-background-music-572285.mp3  → relax.mp3
-krasnoshchok-background-music-soft-calm-404429.mp3  → calm.mp3
-the_mountain-background-music-440706.mp3            → mountain.mp3
+```bash
+cp "assets/raw/andriig-relax-relaxing-background-music-572285.mp3" assets/audio/bgm/relax.mp3
+cp "assets/raw/krasnoshchok-background-music-soft-calm-404429.mp3" assets/audio/bgm/calm.mp3
+cp "assets/raw/the_mountain-background-music-440706.mp3" assets/audio/bgm/mountain.mp3
 ```
 
 beep（vorbis/opus 编码器均可用）：
