@@ -446,6 +446,32 @@ describe("compileEventGroup — asset semantic validation (spec §7)", () => {
     expect(diagnostics).toEqual([{ code: "UNKNOWN_SPRITE_VARIANT", id: "embarrassed" }]);
   });
 
+  it("rejects prototype-chain keys (constructor) as variant ids", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const start = withCharacter("suyao", {
+      spriteSet: "suyao",
+      variant: "normal",
+      position: "left",
+      displayName: "苏遥",
+      visible: true,
+    });
+    const ctx = makeCtx(start);
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [
+          { type: "character_patch", character: "suyao", variant: { op: "set", value: "constructor" } },
+        ],
+        main: { type: "narration", text: "她低着头，没有看过来。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    // "constructor" 在 Object.prototype 上，in 会误判为命中；hasOwn 必须拒绝。
+    expect(group.prelude).toHaveLength(0);
+    expect(tailState.characters["suyao"]?.variant).toBe("normal");
+    expect(diagnostics).toEqual([{ code: "UNKNOWN_SPRITE_VARIANT", id: "constructor" }]);
+  });
+
   it("passes valid ids / variants through with no diagnostics", () => {
     const diagnostics: AssetDiagnostic[] = [];
     const ctx = makeCtx();

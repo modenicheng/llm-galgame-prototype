@@ -356,6 +356,62 @@ describe("loadAssetCatalog failures", () => {
     await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/default_variant/);
   });
 
+  it("拒绝原型链键（constructor）作为 default_variant", async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
+    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds:",
+        "  a: { src: bg.png, description: d }",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets:",
+        "  good:",
+        "    variants:",
+        "      normal: { src: sprite.png }",
+        "characters:",
+        "  c:",
+        "    script_name: 测试",
+        "    display_name: 测试",
+        "    sprite_set: good",
+        "    default_variant: constructor",
+        "    default_position: left",
+      ].join("\n"),
+    );
+    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/default_variant/);
+  });
+
+  it("拒绝原型链键（constructor）作为 sprite_set", async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
+    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds:",
+        "  a: { src: bg.png, description: d }",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets:",
+        "  good:",
+        "    variants:",
+        "      normal: { src: sprite.png }",
+        "characters:",
+        "  c:",
+        "    script_name: 测试",
+        "    display_name: 测试",
+        "    sprite_set: constructor",
+        "    default_variant: normal",
+        "    default_position: left",
+      ].join("\n"),
+    );
+    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/sprite_set/);
+  });
+
   it("拒绝 src 逃逸素材根目录", async () => {
     const dir = await makeTempDir();
     await writeFile(

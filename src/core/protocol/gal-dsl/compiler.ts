@@ -188,7 +188,7 @@ function filterInvalidCues(
           : state.characters[cue.character]?.spriteSet;
       const variants =
         effectiveSet !== undefined ? catalog.spriteSets[effectiveSet]?.variants : undefined;
-      if (variants === undefined || !(cue.variant.value in variants)) {
+      if (variants === undefined || !Object.hasOwn(variants, cue.variant.value)) {
         keep = false;
         diagnostics?.push({ code: "UNKNOWN_SPRITE_VARIANT", id: cue.variant.value });
       }

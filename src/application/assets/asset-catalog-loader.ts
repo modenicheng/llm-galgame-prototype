@@ -1,6 +1,5 @@
 import { access, readFile } from "node:fs/promises";
-import path from "node:path";
-import { resolve, sep } from "node:path";
+import path, { resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 import type {
@@ -116,13 +115,14 @@ async function validateCatalog(
   const rootResolved = resolve(assetRoot);
 
   for (const [characterId, binding] of Object.entries(catalog.characters)) {
+    // hasOwn: prototype keys (e.g. "constructor") must not satisfy the lookup.
     const set = catalog.spriteSets[binding.spriteSet];
-    if (set === undefined) {
+    if (set === undefined || !Object.hasOwn(catalog.spriteSets, binding.spriteSet)) {
       throw new Error(
         `资产目录校验失败: characters.${characterId}.sprite_set "${binding.spriteSet}" 不存在于 sprite_sets`,
       );
     }
-    if (!(binding.defaultVariant in set.variants)) {
+    if (!Object.hasOwn(set.variants, binding.defaultVariant)) {
       throw new Error(
         `资产目录校验失败: characters.${characterId}.default_variant "${binding.defaultVariant}" 不存在于 sprite_set "${binding.spriteSet}"`,
       );
