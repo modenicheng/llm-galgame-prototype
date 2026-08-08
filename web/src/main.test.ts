@@ -77,7 +77,7 @@ describe("main bootstrap", () => {
   it("start click unlocks the AudioContext and connects the runtime socket", async () => {
     const { boot } = await import("./main.js");
     document.body.innerHTML = '<div id="app"></div>';
-    boot();
+    await boot();
 
     const startBtn = document.querySelector(".btn--start") as HTMLButtonElement;
     expect(startBtn).not.toBeNull();
@@ -108,7 +108,7 @@ describe("main bootstrap", () => {
     window.history.replaceState(null, "", "/?token=abc123");
     const { boot } = await import("./main.js");
     document.body.innerHTML = '<div id="app"></div>';
-    boot();
+    await boot();
     startGame();
     await vi.waitFor(() => {
       expect(FakeWebSocket.last!.url).toContain("token=abc123");
@@ -121,7 +121,7 @@ describe("main bootstrap", () => {
     window.history.replaceState(null, "", "/");
     const { boot } = await import("./main.js");
     document.body.innerHTML = '<div id="app"></div>';
-    boot();
+    await boot();
     const warning = document.querySelector(".start-warning") as HTMLElement;
     expect(warning.textContent).toContain("令牌");
   });
@@ -184,7 +184,7 @@ describe("interaction forms", () => {
     // module-level auto-boot, so each test controls the boot itself.
     const { boot } = await import("./main.js");
     document.body.innerHTML = '<div id="app"></div>';
-    boot();
+    await boot();
     startGame();
     await vi.waitFor(() => {
       expect(FakeWebSocket.last).not.toBeNull();

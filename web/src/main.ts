@@ -19,6 +19,8 @@ import { PreviewPanel } from "./ui/input-panel.js";
 import { ControlsBar } from "./ui/controls.js";
 import { EndScreen, ErrorBanner } from "./ui/end-screen.js";
 import { StageRenderer } from "./stage/stage-renderer.js";
+import { fetchAssetManifest } from "./stage/asset-manifest-client.js";
+import { BrowserAssetResolver } from "./stage/browser-asset-resolver.js";
 import type { StageVisualState } from "./stage/stage-types.js";
 import { show } from "./ui/dom.js";
 import "./ui/styles.css";
@@ -43,12 +45,14 @@ function createAudioContext(): AudioContext {
   return new AudioCtor();
 }
 
-export function boot(root?: HTMLElement | null): void {
+export async function boot(root?: HTMLElement | null): Promise<void> {
   const appRoot = root ?? document.getElementById("app");
   if (appRoot === null) return;
 
   const refs: AppDomRefs = buildAppDom(appRoot);
-  const stageRenderer = new StageRenderer(refs.stage);
+  const manifest = await fetchAssetManifest();
+  const assetResolver = new BrowserAssetResolver(manifest);
+  const stageRenderer = new StageRenderer(refs.stage, assetResolver);
   const token = tokenFromUrl();
   const app = new GameApp({ wsUrl: wsUrlFromLocation(), token });
 
@@ -234,5 +238,5 @@ export function boot(root?: HTMLElement | null): void {
 }
 
 if (typeof document !== "undefined" && document.getElementById("app") !== null) {
-  boot();
+  void boot();
 }
