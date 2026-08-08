@@ -12,7 +12,7 @@
  */
 import type { ServerMessage } from "@shared/wire/server-message.js";
 import type { UiProjection } from "@shared/wire/ui-projection.js";
-import type { StageVisualState } from "../stage/stage-types.js";
+import type { StageCueWire, StageVisualState } from "../stage/stage-types.js";
 
 export type FrontendMode =
   | "BOOTSTRAP"
@@ -125,6 +125,8 @@ export class GameViewModel {
   private ending: unknown;
   private visualState: StageVisualState | undefined;
   private lastError: string | undefined;
+  /** 暂存的瞬态演出 cues（spec §6.4），一次性取走（consumeCues）。 */
+  private cues: StageCueWire[] = [];
   /** Monotonic projection-restore counter (§10.3); 0 until first snapshot. */
   private projectionSeq = 0;
   private readonly listeners = new Set<(s: ViewModelState) => void>();
@@ -154,6 +156,9 @@ export class GameViewModel {
     this.ending = projection.ending;
     // Structurally compatible with the core VisualState (§86 web).
     this.visualState = projection.visualState;
+    // Reconnect restores the authoritative picture; one-shot cues from the
+    // lost window must not be replayed (§6.4).
+    this.cues = [];
     this.mode = this.deriveModeFromProjection(projection);
     this.projectionSeq += 1;
     this.notify();
@@ -174,6 +179,13 @@ export class GameViewModel {
     if (this.visualState !== undefined) state.visualState = this.visualState;
     if (this.lastError !== undefined) state.lastError = this.lastError;
     return state;
+  }
+
+  /** 取走并清空暂存的瞬态 cues（重渲染不重放，spec §6.4）。 */
+  consumeCues(): StageCueWire[] {
+    const cues = this.cues;
+    this.cues = [];
+    return cues;
   }
 
   subscribe(listener: (s: ViewModelState) => void): () => void {
@@ -198,6 +210,7 @@ export class GameViewModel {
         this.pushRecentLine(output.event);
         if (output.presentation !== undefined) {
           this.visualState = output.presentation.visualState;
+          this.pushCues(output.presentation.cues);
         }
         break;
       case "interaction_opened":
@@ -210,12 +223,16 @@ export class GameViewModel {
         this.currentPreview = undefined;
         if (output.presentation !== undefined) {
           this.visualState = output.presentation.visualState;
+          this.pushCues(output.presentation.cues);
         }
         break;
       case "stage_beat_ready":
         // A bare stage beat (no text) only updates the stage picture; it
         // must NOT change the frontend mode (§65, §107).
-        this.visualState = output.presentation.visualState;
+        if (output.presentation !== undefined) {
+          this.visualState = output.presentation.visualState;
+          this.pushCues(output.presentation.cues);
+        }
         break;
       case "interaction_resolved":
         // The form can no longer be submitted; close it. If a preview is
@@ -257,6 +274,15 @@ export class GameViewModel {
         break;
     }
     this.notify();
+  }
+
+  /**
+   * 追加输出自带 cue 到暂存队列。core StageCue[] 与 wire 镜像结构一致，
+   * 但 character_patch 的 index signature 无法从 core interface 隐式推断，
+   * 在此边界断言一次。
+   */
+  private pushCues(cues: readonly unknown[]): void {
+    this.cues.push(...(cues as StageCueWire[]));
   }
 
   private pushRecentLine(line: RuntimePlayableEventWire): void {

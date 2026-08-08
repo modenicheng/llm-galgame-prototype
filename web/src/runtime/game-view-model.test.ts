@@ -613,6 +613,48 @@ describe("GameViewModel stage visual state (§86)", () => {
     expect(vm.state().visualState).toEqual(visualState);
     expect(vm.state().mode).toBe("CONTENT_WAITING");
   });
+
+  it("presentation.cues 被暂存，consumeCues 一次性取走", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 1,
+      output: {
+        type: "playback_ready",
+        event: dialogueLine("line_1", "…"),
+        presentation: {
+          visualState,
+          cues: [
+            { type: "sound_effect", assetId: "beep" },
+            { type: "background", assetId: "basement" },
+          ],
+        },
+      },
+    });
+    const cues = vm.consumeCues();
+    expect(cues).toHaveLength(2);
+    expect(vm.consumeCues()).toHaveLength(0); // 二次为空
+  });
+
+  it("重连投影恢复时 cues 被清空（不重放）", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 2,
+      output: {
+        type: "playback_ready",
+        event: dialogueLine("line_1", "…"),
+        presentation: {
+          visualState,
+          cues: [{ type: "sound_effect", assetId: "beep" }],
+        },
+      },
+    });
+    // Reconnect restores authoritative visualState; the one-shot cues must
+    // not be replayed (spec §6.4).
+    vm.applyProjection({ phase: "running", recentLines: [], visualState });
+    expect(vm.consumeCues()).toHaveLength(0);
+  });
 });
 
 describe("interactionModeToFrontendMode", () => {

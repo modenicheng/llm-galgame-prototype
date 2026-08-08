@@ -35,3 +35,10 @@ export interface PublicAssetManifest {
   soundEffects: Record<string, { url: string }>;
   spriteSets: Record<string, { variants: Record<string, { url: string }> }>;
 }
+
+/** 瞬态演出 cue 的 wire 镜像（spec §6.4）；SE 是瞬时效果，不入 VisualState。 */
+export type StageCueWire =
+  | { type: "background"; assetId: string }
+  | { type: "bgm"; assetId: string }
+  | { type: "sound_effect"; assetId: string }
+  | { type: "character_patch"; character: string; [key: string]: unknown };
