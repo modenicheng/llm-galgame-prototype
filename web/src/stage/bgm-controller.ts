@@ -46,7 +46,7 @@ export class BgmController {
       return;
     }
     const url = this.resolver.resolveBgm(id);
-    if (url === undefined) return; // 未知/不可用：保持静音
+    if (url === undefined) return; // 未知/不可用：保持当前曲目
     this.audio.src = url;
     this.audio.loop = true;
     this.audio.volume = this.muted ? 0 : this.volume;

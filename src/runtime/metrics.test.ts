@@ -468,6 +468,18 @@ describe("Metrics asset diagnostics", () => {
     counts.UNKNOWN_BACKGROUND = 999;
     expect(m.assetDiagnosticCounts().UNKNOWN_BACKGROUND).toBe(2);
   });
+
+  it("snapshot() 包含 asset_diagnostics 计数", () => {
+    m.recordAssetDiagnostic("UNKNOWN_BACKGROUND");
+    m.recordAssetDiagnostic("UNKNOWN_BACKGROUND");
+    m.recordAssetDiagnostic("UNKNOWN_SPRITE_VARIANT");
+
+    const snap = m.snapshot();
+    expect(snap.asset_diagnostics).toEqual({
+      UNKNOWN_BACKGROUND: 2,
+      UNKNOWN_SPRITE_VARIANT: 1,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

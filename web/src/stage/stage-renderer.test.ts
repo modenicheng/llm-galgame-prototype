@@ -78,6 +78,31 @@ describe("StageRenderer", () => {
     expect(figure?.classList.contains("stage__char--placeholder")).toBe(true);
   });
 
+  it("背景 img 加载失败（error 事件）移除坏图并回退占位色块", () => {
+    const { container, renderer } = setup();
+    renderer.apply(makeState());
+    const img = container.querySelector<HTMLImageElement>(".stage__bg img")!;
+    img.dispatchEvent(new Event("error"));
+    expect(container.querySelector(".stage__bg img")).toBeNull();
+    const item = container.querySelector<HTMLElement>(".stage__bg-item");
+    expect(item).not.toBeNull();
+    expect(item?.dataset.asset).toBe("basement");
+  });
+
+  it("角色 img 加载失败加 placeholder class，后续有效 url 恢复", () => {
+    const { container, renderer } = setup();
+    renderer.apply(makeState());
+    const figure = container.querySelector<HTMLElement>("figure.stage__char")!;
+    const img = figure.querySelector<HTMLImageElement>("img")!;
+    img.dispatchEvent(new Event("error"));
+    expect(figure.classList.contains("stage__char--placeholder")).toBe(true);
+    expect(img.hasAttribute("src")).toBe(false);
+    // 后续 apply 换到有效 url：placeholder 移除、src 重设（重新加载）。
+    renderer.apply(makeState());
+    expect(figure.classList.contains("stage__char--placeholder")).toBe(false);
+    expect(img.getAttribute("src")).toContain("normal.png");
+  });
+
   it("角色离开舞台时移除节点", () => {
     const { container, renderer } = setup();
     renderer.apply(makeState());

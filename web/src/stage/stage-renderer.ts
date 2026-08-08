@@ -65,11 +65,7 @@ export class StageRenderer {
 
     const url = this.resolver.resolveBackground(id);
     if (url === undefined) {
-      const item = el("div", "stage__bg-item");
-      item.dataset.asset = id;
-      item.style.background = `hsl(${deterministicHue(id)}, 30%, 18%)`;
-      item.append(el("span", "stage__bg-label", id));
-      this.bgLayer.append(item);
+      this.renderBackgroundPlaceholder(id);
       return;
     }
 
@@ -78,8 +74,25 @@ export class StageRenderer {
     img.dataset.asset = id;
     img.classList.add("stage__bg-img");
     img.addEventListener("load", () => img.classList.add("stage__bg-img--ready"), { once: true });
+    // 加载失败回退到占位色块（与 url===undefined 分支同呈现），并移除坏图。
+    img.addEventListener(
+      "error",
+      () => {
+        img.remove();
+        this.renderBackgroundPlaceholder(id);
+      },
+      { once: true },
+    );
     img.src = url;
     this.bgLayer.append(img);
+  }
+
+  private renderBackgroundPlaceholder(id: string): void {
+    const item = el("div", "stage__bg-item");
+    item.dataset.asset = id;
+    item.style.background = `hsl(${deterministicHue(id)}, 30%, 18%)`;
+    item.append(el("span", "stage__bg-label", id));
+    this.bgLayer.append(item);
   }
 
   private applyCharacters(characters: Record<string, StageCharacterState>): void {
@@ -120,13 +133,16 @@ export class StageRenderer {
     const url = this.resolver.resolveSprite(character.spriteSet, character.variant);
 
     if (url === undefined) {
-      node.root.classList.add("stage__char--placeholder");
-      node.root.style.background = `hsl(${deterministicHue(key)}, 45%, 35%)`;
-      node.img.removeAttribute("src");
+      this.applyCharacterPlaceholder(node, key);
     } else {
       node.root.classList.remove("stage__char--placeholder");
       node.root.style.background = "";
       if (node.img.getAttribute("src") !== url) {
+        // 换新 src 前挂 once 错误回退：失败则回落占位（与 url===undefined
+        // 分支同呈现）；占位后 src 被移除，下次换到有效 url 会重新加载。
+        node.img.addEventListener("error", () => this.applyCharacterPlaceholder(node, key), {
+          once: true,
+        });
         node.img.src = url;
       }
     }
@@ -136,5 +152,11 @@ export class StageRenderer {
 
     node.root.hidden = !character.visible;
     node.label.textContent = character.displayName;
+  }
+
+  private applyCharacterPlaceholder(node: CharacterNode, key: string): void {
+    node.root.classList.add("stage__char--placeholder");
+    node.root.style.background = `hsl(${deterministicHue(key)}, 45%, 35%)`;
+    node.img.removeAttribute("src");
   }
 }

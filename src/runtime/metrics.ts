@@ -95,6 +95,8 @@ export interface MetricsSnapshot {
   input: InputStats;
   errors: ErrorStats;
   player: PlayerTimingStats;
+  /** Asset diagnostic counts (spec §7), code → occurrences. */
+  asset_diagnostics?: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +336,7 @@ export class Metrics {
       player: {
         choice_to_next_line_ms: [...this.choiceToNextLineSamples],
       },
+      asset_diagnostics: this.assetDiagnosticCounts(),
     };
   }
 

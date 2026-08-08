@@ -655,6 +655,22 @@ describe("GameViewModel stage visual state (§86)", () => {
     vm.applyProjection({ phase: "running", recentLines: [], visualState });
     expect(vm.consumeCues()).toHaveLength(0);
   });
+
+  it("presentation 缺 cues 字段（undefined）不抛错，无 cue 暂存", () => {
+    const vm = new GameViewModel();
+    expect(() =>
+      vm.applyServerMessage({
+        type: "runtime.output",
+        sequence: 3,
+        output: {
+          type: "playback_ready",
+          event: dialogueLine("line_1", "…"),
+          presentation: { cues: undefined as unknown as never[], visualState },
+        },
+      }),
+    ).not.toThrow();
+    expect(vm.consumeCues()).toHaveLength(0);
+  });
 });
 
 describe("interactionModeToFrontendMode", () => {

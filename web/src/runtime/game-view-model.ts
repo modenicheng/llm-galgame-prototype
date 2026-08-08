@@ -281,8 +281,8 @@ export class GameViewModel {
    * 但 character_patch 的 index signature 无法从 core interface 隐式推断，
    * 在此边界断言一次。
    */
-  private pushCues(cues: readonly unknown[]): void {
-    this.cues.push(...(cues as StageCueWire[]));
+  private pushCues(cues: readonly unknown[] | undefined): void {
+    this.cues.push(...((cues ?? []) as StageCueWire[]));
   }
 
   private pushRecentLine(line: RuntimePlayableEventWire): void {
