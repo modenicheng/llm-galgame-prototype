@@ -42,25 +42,25 @@ async function writeTempYaml(name: string, content: string): Promise<string> {
 
 const SAMPLE_YAML = `
 guidance: |
-  当前素材覆盖校园与地下设施。
+  当前素材覆盖校园走廊与地下据点。
 
   背景应尽量复用已有资源。
 
 backgrounds:
-  basement:
-    src: backgrounds/basement.webp
+  hideout_on:
+    src: backgrounds/hideout_on.jpg
     description: |
-      昏暗地下设备间。
-      主要用于旧终端相关剧情。
+      地下据点，顶部吊灯亮起。
+      适合终端相关剧情。
 
-  classroom_day:
-    src: backgrounds/classroom_day.webp
-    description: 白天普通教室。
+  hallway_day:
+    src: backgrounds/hallway_day.jpg
+    description: 校园走廊白天。
 
 bgm:
-  mystery:
-    src: audio/bgm/mystery.ogg
-    description: 轻度悬疑和未知感。
+  relax:
+    src: audio/bgm/relax.mp3
+    description: 来源：andriig-relax（时长约 139s）。
 
 sound_effects:
   terminal_beep:
@@ -72,12 +72,12 @@ sprite_sets:
     description: 苏遥正式立绘。
 
     variants:
-      normal:
-        src: characters/suyao/normal.webp
-        description: 默认冷静状态。
+      neutral:
+        src: characters/suyao/neutral.png
+        description: 双眼睁开，接近平静常态。
 
-      anxious:
-        src: characters/suyao/anxious.webp
+      speaking_smile:
+        src: characters/suyao/speaking_smile.png
 
 characters:
   suyao:
@@ -85,7 +85,7 @@ characters:
     display_name: 苏遥
 
     sprite_set: suyao
-    default_variant: normal
+    default_variant: neutral
     default_position: left
 `;
 
@@ -98,19 +98,19 @@ describe("loadAssetCatalog", () => {
     const filePath = await writeTempYaml("sample", SAMPLE_YAML);
     const catalog = await loadAssetCatalog(filePath);
 
-    expect(catalog.guidance).toBe("当前素材覆盖校园与地下设施。\n\n背景应尽量复用已有资源。");
+    expect(catalog.guidance).toBe("当前素材覆盖校园走廊与地下据点。\n\n背景应尽量复用已有资源。");
 
     // Backgrounds
-    expect(catalog.backgrounds.basement).toEqual({
-      id: "basement",
-      src: "backgrounds/basement.webp",
-      description: "昏暗地下设备间。\n主要用于旧终端相关剧情。",
+    expect(catalog.backgrounds.hideout_on).toEqual({
+      id: "hideout_on",
+      src: "backgrounds/hideout_on.jpg",
+      description: "地下据点，顶部吊灯亮起。\n适合终端相关剧情。",
     });
-    expect(catalog.backgrounds.classroom_day!.description).toBe("白天普通教室。");
+    expect(catalog.backgrounds.hallway_day!.description).toBe("校园走廊白天。");
 
     // BGM / sound effects
-    expect(catalog.bgm.mystery!.src).toBe("audio/bgm/mystery.ogg");
-    expect(catalog.bgm.mystery!.id).toBe("mystery");
+    expect(catalog.bgm.relax!.src).toBe("audio/bgm/relax.mp3");
+    expect(catalog.bgm.relax!.id).toBe("relax");
     expect(catalog.soundEffects.terminal_beep!.src).toBe("audio/se/terminal_beep.ogg");
 
     // Sprite sets (optional description preserved; variant description optional)
@@ -118,8 +118,8 @@ describe("loadAssetCatalog", () => {
       id: "suyao",
       description: "苏遥正式立绘。",
       variants: {
-        normal: { id: "normal", src: "characters/suyao/normal.webp", description: "默认冷静状态。" },
-        anxious: { id: "anxious", src: "characters/suyao/anxious.webp" },
+        neutral: { id: "neutral", src: "characters/suyao/neutral.png", description: "双眼睁开，接近平静常态。" },
+        speaking_smile: { id: "speaking_smile", src: "characters/suyao/speaking_smile.png" },
       },
     });
 
@@ -129,7 +129,7 @@ describe("loadAssetCatalog", () => {
       scriptName: "苏遥",
       displayName: "苏遥",
       spriteSet: "suyao",
-      defaultVariant: "normal",
+      defaultVariant: "neutral",
       defaultPosition: "left",
     });
   });
@@ -162,20 +162,37 @@ describe("loadAssetCatalog", () => {
 
     expect(catalog.guidance).toContain("整体采用偏冷色调");
     expect(Object.keys(catalog.backgrounds)).toEqual([
-      "classroom_day",
-      "classroom_evening",
-      "basement",
+      "hideout_on",
+      "hideout_off",
+      "hallway_day",
+      "hallway_evening",
+      "hallway_night_on",
+      "hallway_night_off",
+      "clubroom_day",
+      "clubroom_evening",
+      "clubroom_night_on",
+      "clubroom_night_off",
     ]);
-    expect(catalog.bgm.mystery!.src).toBe("audio/bgm/mystery.ogg");
+    expect(catalog.bgm.relax!.src).toBe("audio/bgm/relax.mp3");
+    expect(catalog.bgm.calm!.src).toBe("audio/bgm/calm.mp3");
+    expect(catalog.bgm.mountain!.src).toBe("audio/bgm/mountain.mp3");
     expect(catalog.soundEffects.terminal_beep!.src).toBe("audio/se/terminal_beep.ogg");
-    expect(Object.keys(catalog.spriteSets)).toEqual(["suyao", "placeholder_char"]);
+    expect(Object.keys(catalog.spriteSets)).toEqual(["suyao", "mysterious_woman"]);
     expect(catalog.characters.suyao).toEqual({
       characterId: "suyao",
       scriptName: "苏遥",
       displayName: "苏遥",
       spriteSet: "suyao",
-      defaultVariant: "normal",
+      defaultVariant: "neutral",
       defaultPosition: "left",
+    });
+    expect(catalog.characters.mysterious_woman).toEqual({
+      characterId: "mysterious_woman",
+      scriptName: "神秘女子",
+      displayName: "神秘女子",
+      spriteSet: "mysterious_woman",
+      defaultVariant: "gentle_smile",
+      defaultPosition: "right",
     });
   });
 });

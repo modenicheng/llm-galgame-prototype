@@ -1,88 +1,203 @@
 guidance: |
-  当前素材主要覆盖校园、住宅、地下设施和夜间城市场景。
+  当前素材覆盖校园走廊、社团部室和地下据点三类场景。
 
   整体采用偏冷色调的写实二次元风格。
 
   背景应尽量复用已有资源，不要因为轻微视角变化频繁切换。
 
-  角色表情资源有限。
-  anxious 仅用于明显紧张、不安、担忧或试图掩饰信息。
-  普通疑问不应使用 anxious。
+  角色表情资源有限，按情绪强弱谨慎使用。
 
-  placeholder_char 只用于没有正式角色素材的临时人物。
+  每个角色都提供 mysterious_silhouette 黑色剪影立绘：
+  用于"神秘女子"初次出场、身份尚未揭示、或远处无法确认身份的场景；
+  身份揭示后应切换到该角色的彩色表情立绘。
 
 backgrounds:
-  classroom_day:
-    src: backgrounds/classroom_day.webp
+  hideout_on:
+    src: backgrounds/hideout_on.jpg
     description: |
-      白天普通教室。
-      适合正常课堂、放学前和普通校园交流。
+      地下隐秘据点的混凝土房间，有沙发、木桌、地图、旧式电子设备和储物柜。
+      顶部吊灯亮起，照明充足。
+      适合据点内的正式讨论和与旧终端相关的核心剧情。
 
-  classroom_evening:
-    src: backgrounds/classroom_evening.webp
+  hideout_off:
+    src: backgrounds/hideout_off.jpg
     description: |
-      黄昏教室。
-      适合私下交流、安静场景和剧情转折。
+      与 hideout_on 为同一地下据点，但顶部吊灯关闭。
+      整体呈暗蓝绿色，仅保留低亮度环境光。
+      适合安静、警惕或需要隐蔽行动的场面。
 
-  basement:
-    src: backgrounds/basement.webp
+  hallway_day:
+    src: backgrounds/hallway_day.jpg
     description: |
-      昏暗地下设备间。
-      主要用于旧终端相关剧情。
+      校园室内长走廊，左侧有窗户和水槽，右侧是教室、公告栏与楼梯。
+      明亮白天光线。
+      适合普通校园日常场景。
+
+  hallway_evening:
+    src: backgrounds/hallway_evening.jpg
+    description: |
+      同一校园走廊，整体为明显的暖黄色/橙色傍晚光线。
+      适合放学后气氛缓和的交流场景。
+
+  hallway_night_on:
+    src: backgrounds/hallway_night_on.jpg
+    description: |
+      同一走廊，窗外已是夜色，走廊内部仍有照明。
+      画面偏蓝但可见度较高。
+      适合夜间活动仍在继续的场景。
+
+  hallway_night_off:
+    src: backgrounds/hallway_night_off.jpg
+    description: |
+      同一走廊，窗外夜色，室内灯光明显关闭或大幅减弱，整体很暗。
+      适合寂静、紧张或需要隐匿的行动。
+
+  clubroom_day:
+    src: backgrounds/clubroom_day.jpg
+    description: |
+      校园社团活动室/教室，有黑板、书架、长桌、电脑、打印设备和大量椅子。
+      白天窗光明亮。
+      适合社团活动与日常对话。
+
+  clubroom_evening:
+    src: backgrounds/clubroom_evening.jpg
+    description: |
+      同一社团活动室，窗光和室内色调变为暖黄色傍晚光。
+      适合傍晚时分的私下交流。
+
+  clubroom_night_on:
+    src: backgrounds/clubroom_night_on.jpg
+    description: |
+      同一社团活动室，窗外是夜色，室内灯光保持开启，桌椅和书架仍清晰可见。
+      适合夜间仍在继续的社团活动。
+
+  clubroom_night_off:
+    src: backgrounds/clubroom_night_off.jpg
+    description: |
+      同一社团活动室，窗外是夜色，室内照明关闭或显著减弱，整体呈暗蓝色。
+      适合闭门后的寂静场景或紧张剧情。
 
 bgm:
-  quiet_evening:
-    src: audio/bgm/quiet_evening.ogg
+  relax:
+    src: audio/bgm/relax.mp3
     description: |
-      安静、略带距离感。
-      不适合高强度冲突。
+      来源：andriig-relax（时长约 139s）。
+      # USER: 请撰写该 BGM 的详细 guidance（节奏/情绪/适用场景）。
 
-  mystery:
-    src: audio/bgm/mystery.ogg
+  calm:
+    src: audio/bgm/calm.mp3
     description: |
-      轻度悬疑和未知感。
-      适合调查、异常信息和隐藏秘密。
+      来源：krasnoshchok soft-calm（时长约 142s）。
+      # USER: 请撰写该 BGM 的详细 guidance（节奏/情绪/适用场景）。
+
+  mountain:
+    src: audio/bgm/mountain.mp3
+    description: |
+      来源：the_mountain（时长约 135s）。
+      # USER: 请撰写该 BGM 的详细 guidance（节奏/情绪/适用场景）。
 
 sound_effects:
   terminal_beep:
     src: audio/se/terminal_beep.ogg
     description: |
-      旧终端发出的短促电子提示音。
+      旧终端发出的短促电子提示音（合成占位）。
 
 sprite_sets:
   suyao:
     description: |
-      苏遥正式立绘。
+      苏遥正式立绘：深蓝紫色齐肩短发、酒红/粉紫色瞳孔，白色荷叶边短袖上衣与长裙，白色凉鞋。
+      整体气质文静、端庄，带有明显的神秘感；表情克制，适合冷静观察型角色。
 
     variants:
-      normal:
-        src: characters/suyao/normal.webp
-        description: 默认冷静状态。
+      mysterious_silhouette:
+        src: characters/suyao/mysterious_silhouette.png
+        description: 黑色剪影，面部细节和身份完全隐藏。
 
-      anxious:
-        src: characters/suyao/anxious.webp
-        description: |
-          明显紧张、不安、担忧或试图隐瞒事实时使用。
+      neutral:
+        src: characters/suyao/neutral.png
+        description: 双眼睁开，嘴角轻微放松，接近平静常态。
 
-      angry:
-        src: characters/suyao/angry.webp
-        description: |
-          真正生气、受到明显冒犯或严重冲突时使用。
+      speaking_smile:
+        src: characters/suyao/speaking_smile.png
+        description: 睁眼张口微笑，带有温和的说话感。
 
-  placeholder_char:
+      displeased:
+        src: characters/suyao/displeased.png
+        description: 眉眼收紧、嘴唇压低，明显不悦。
+
+      surprised:
+        src: characters/suyao/surprised.png
+        description: 睁眼张口，表现为短暂惊讶或突然反应。
+
+      guarded:
+        src: characters/suyao/guarded.png
+        description: 嘴部略微张开，眼神收敛，像是在谨慎回应。
+
+      uneasy:
+        src: characters/suyao/uneasy.png
+        description: 嘴角轻张、神情不安，像是担心或犹豫。
+
+      content:
+        src: characters/suyao/content.png
+        description: 闭眼微笑，放松而温和。
+
+      joyful:
+        src: characters/suyao/joyful.png
+        description: 闭眼张口笑，情绪明显高于 content。
+
+  mysterious_woman:
     description: |
-      通用临时角色。
-      只在没有正式角色素材时使用。
+      神秘女子立绘：银灰偏淡紫色齐肩长发、明亮浅蓝色眼睛，深海军蓝中式立领短袖上衣，金色滚边和盘扣，白色短裤与过膝袜。
+      双手常藏在身后、身体微微前倾，气质比苏遥更精致、主动、俏皮，具有社交伪装能力。
 
     variants:
-      normal:
-        src: characters/placeholder/normal.webp
+      mysterious_silhouette:
+        src: characters/mysterious_woman/mysterious_silhouette.png
+        description: 黑色剪影，仅能辨认修长身形和前倾姿态。
+
+      gentle_smile:
+        src: characters/mysterious_woman/gentle_smile.png
+        description: 睁眼轻微微笑，显得友好而从容。
+
+      speaking_smile:
+        src: characters/mysterious_woman/speaking_smile.png
+        description: 睁眼张口笑，明显正在愉快说话。
+
+      sly_smile:
+        src: characters/mysterious_woman/sly_smile.png
+        description: 半眯眼张口笑，带有玩味或试探意味。
+
+      annoyed:
+        src: characters/mysterious_woman/annoyed.png
+        description: 眉头下压、张口责问，明显不耐烦。
+
+      serious:
+        src: characters/mysterious_woman/serious.png
+        description: 双眼收紧、嘴角压平，进入严肃状态。
+
+      delighted:
+        src: characters/mysterious_woman/delighted.png
+        description: 闭眼大幅微笑，情绪明亮愉悦。
+
+      surprised:
+        src: characters/mysterious_woman/surprised.png
+        description: 睁眼张口，表现为突然惊讶。
+
+      calm:
+        src: characters/mysterious_woman/calm.png
+        description: 睁眼闭口，神情平稳，略带审视。
 
 characters:
   suyao:
     script_name: 苏遥
     display_name: 苏遥
-
     sprite_set: suyao
-    default_variant: normal
+    default_variant: neutral
     default_position: left
+
+  mysterious_woman:
+    script_name: 神秘女子
+    display_name: 神秘女子
+    sprite_set: mysterious_woman
+    default_variant: gentle_smile
+    default_position: right

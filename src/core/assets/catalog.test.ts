@@ -7,17 +7,17 @@ import type { AssetCatalog, ModelAssetCatalog } from "./types.js";
 import { createAssetResolver, toCharacterRegistry, toModelCatalog } from "./catalog.js";
 
 // ---------------------------------------------------------------------------
-// Fixture
+// Fixture (mirrors the real assets/resources.yaml shape)
 // ---------------------------------------------------------------------------
 
 const catalog: AssetCatalog = {
   guidance: "测试指引：背景应尽量复用。",
   backgrounds: {
-    basement: { id: "basement", src: "backgrounds/basement.webp", description: "昏暗地下设备间。" },
-    classroom_day: { id: "classroom_day", src: "backgrounds/classroom_day.webp", description: "白天普通教室。" },
+    hideout_on: { id: "hideout_on", src: "backgrounds/hideout_on.jpg", description: "地下据点照明开启。" },
+    hallway_day: { id: "hallway_day", src: "backgrounds/hallway_day.jpg", description: "校园走廊白天。" },
   },
   bgm: {
-    mystery: { id: "mystery", src: "audio/bgm/mystery.ogg", description: "轻度悬疑。" },
+    relax: { id: "relax", src: "audio/bgm/relax.mp3", description: "来源：andriig-relax。" },
   },
   soundEffects: {
     terminal_beep: { id: "terminal_beep", src: "audio/se/terminal_beep.ogg", description: "旧终端提示音。" },
@@ -27,14 +27,14 @@ const catalog: AssetCatalog = {
       id: "suyao",
       description: "苏遥正式立绘。",
       variants: {
-        normal: { id: "normal", src: "characters/suyao/normal.webp", description: "默认冷静状态。" },
-        anxious: { id: "anxious", src: "characters/suyao/anxious.webp" },
+        neutral: { id: "neutral", src: "characters/suyao/neutral.png", description: "双眼睁开，接近平静常态。" },
+        speaking_smile: { id: "speaking_smile", src: "characters/suyao/speaking_smile.png" },
       },
     },
-    placeholder_char: {
-      id: "placeholder_char",
+    mysterious_woman: {
+      id: "mysterious_woman",
       variants: {
-        normal: { id: "normal", src: "characters/placeholder/normal.webp" },
+        gentle_smile: { id: "gentle_smile", src: "characters/mysterious_woman/gentle_smile.png" },
       },
     },
   },
@@ -44,8 +44,16 @@ const catalog: AssetCatalog = {
       scriptName: "苏遥",
       displayName: "苏遥",
       spriteSet: "suyao",
-      defaultVariant: "normal",
+      defaultVariant: "neutral",
       defaultPosition: "left",
+    },
+    mysterious_woman: {
+      characterId: "mysterious_woman",
+      scriptName: "神秘女子",
+      displayName: "神秘女子",
+      spriteSet: "mysterious_woman",
+      defaultVariant: "gentle_smile",
+      defaultPosition: "right",
     },
   },
 };
@@ -58,8 +66,10 @@ describe("toModelCatalog", () => {
   it("strips file paths from every section", () => {
     const model = toModelCatalog(catalog);
     const serialized = JSON.stringify(model);
-    expect(serialized).not.toContain(".webp");
+    expect(serialized).not.toContain(".png");
+    expect(serialized).not.toContain(".jpg");
     expect(serialized).not.toContain(".ogg");
+    expect(serialized).not.toContain(".mp3");
     expect(serialized).not.toContain("characters/");
     expect(serialized).not.toContain("audio/");
     expect(serialized).not.toContain("backgrounds/");
@@ -68,8 +78,8 @@ describe("toModelCatalog", () => {
   it("keeps guidance and descriptions", () => {
     const model = toModelCatalog(catalog);
     expect(model.guidance).toBe("测试指引：背景应尽量复用。");
-    expect(model.backgrounds.basement).toEqual({ description: "昏暗地下设备间。" });
-    expect(model.bgm.mystery).toEqual({ description: "轻度悬疑。" });
+    expect(model.backgrounds.hideout_on).toEqual({ description: "地下据点照明开启。" });
+    expect(model.bgm.relax).toEqual({ description: "来源：andriig-relax。" });
     expect(model.soundEffects.terminal_beep).toEqual({ description: "旧终端提示音。" });
   });
 
@@ -78,12 +88,12 @@ describe("toModelCatalog", () => {
     expect(model.spriteSets.suyao).toEqual({
       description: "苏遥正式立绘。",
       variants: {
-        normal: { description: "默认冷静状态。" },
-        anxious: {},
+        neutral: { description: "双眼睁开，接近平静常态。" },
+        speaking_smile: {},
       },
     });
-    expect(model.spriteSets.placeholder_char).toEqual({
-      variants: { normal: {} },
+    expect(model.spriteSets.mysterious_woman).toEqual({
+      variants: { gentle_smile: {} },
     });
   });
 
@@ -93,8 +103,15 @@ describe("toModelCatalog", () => {
       scriptName: "苏遥",
       displayName: "苏遥",
       spriteSet: "suyao",
-      defaultVariant: "normal",
+      defaultVariant: "neutral",
       defaultPosition: "left",
+    });
+    expect(model.characters.mysterious_woman).toEqual({
+      scriptName: "神秘女子",
+      displayName: "神秘女子",
+      spriteSet: "mysterious_woman",
+      defaultVariant: "gentle_smile",
+      defaultPosition: "right",
     });
   });
 });
@@ -112,17 +129,19 @@ describe("toCharacterRegistry", () => {
       scriptName: "苏遥",
       displayName: "苏遥",
       spriteSet: "suyao",
-      defaultVariant: "normal",
+      defaultVariant: "neutral",
       defaultPosition: "left",
     });
   });
 
   it("resolves by internal id", () => {
     expect(registry.resolveById("suyao")?.characterId).toBe("suyao");
+    expect(registry.resolveById("mysterious_woman")?.characterId).toBe("mysterious_woman");
   });
 
   it("resolves by script name via resolveById as a fallback", () => {
     expect(registry.resolveById("苏遥")?.characterId).toBe("suyao");
+    expect(registry.resolveById("神秘女子")?.characterId).toBe("mysterious_woman");
   });
 
   it("returns undefined for unknown ids and script names", () => {
@@ -132,9 +151,11 @@ describe("toCharacterRegistry", () => {
 
   it("lists all entries", () => {
     const entries = registry.entries();
-    expect(entries).toHaveLength(1);
+    expect(entries).toHaveLength(2);
     expect(entries[0]?.characterId).toBe("suyao");
     expect(entries[0]?.scriptName).toBe("苏遥");
+    expect(entries[1]?.characterId).toBe("mysterious_woman");
+    expect(entries[1]?.scriptName).toBe("神秘女子");
   });
 });
 
@@ -146,17 +167,21 @@ describe("createAssetResolver", () => {
   const resolver = createAssetResolver(catalog);
 
   it("resolves a background to its src", () => {
-    expect(resolver.resolveBackground("basement")).toEqual({ src: "backgrounds/basement.webp" });
+    expect(resolver.resolveBackground("hideout_on")).toEqual({ src: "backgrounds/hideout_on.jpg" });
+    expect(resolver.resolveBackground("hallway_day")).toEqual({ src: "backgrounds/hallway_day.jpg" });
   });
 
   it("resolves bgm and sound effects to their src", () => {
-    expect(resolver.resolveBgm("mystery")).toEqual({ src: "audio/bgm/mystery.ogg" });
+    expect(resolver.resolveBgm("relax")).toEqual({ src: "audio/bgm/relax.mp3" });
     expect(resolver.resolveSoundEffect("terminal_beep")).toEqual({ src: "audio/se/terminal_beep.ogg" });
   });
 
   it("resolves a sprite by set + variant", () => {
-    expect(resolver.resolveSprite("suyao", "normal")).toEqual({ src: "characters/suyao/normal.webp" });
-    expect(resolver.resolveSprite("suyao", "anxious")).toEqual({ src: "characters/suyao/anxious.webp" });
+    expect(resolver.resolveSprite("suyao", "neutral")).toEqual({ src: "characters/suyao/neutral.png" });
+    expect(resolver.resolveSprite("suyao", "speaking_smile")).toEqual({ src: "characters/suyao/speaking_smile.png" });
+    expect(resolver.resolveSprite("mysterious_woman", "gentle_smile")).toEqual({
+      src: "characters/mysterious_woman/gentle_smile.png",
+    });
   });
 
   it("returns undefined for missing assets", () => {
@@ -164,6 +189,6 @@ describe("createAssetResolver", () => {
     expect(resolver.resolveBgm("rock")).toBeUndefined();
     expect(resolver.resolveSoundEffect("explosion")).toBeUndefined();
     expect(resolver.resolveSprite("suyao", "happy")).toBeUndefined();
-    expect(resolver.resolveSprite("nobody", "normal")).toBeUndefined();
+    expect(resolver.resolveSprite("nobody", "neutral")).toBeUndefined();
   });
 });
