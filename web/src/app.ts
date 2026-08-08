@@ -22,6 +22,7 @@ import { PcmDecoder } from "./audio/pcm-decoder.js";
 import { RuntimeClient, type ConnectionState, type RuntimeCommandWire, type WebSocketCtor } from "./runtime/runtime-client.js";
 import { GameViewModel, type RuntimePlayableEventWire, type ViewModelState } from "./runtime/game-view-model.js";
 import type { BgmController } from "./stage/bgm-controller.js";
+import type { StageCueWire } from "./stage/stage-types.js";
 import { AudioDb } from "./storage/audio-db.js";
 import { AudioCacheWriter, type CacheWriteOptions } from "./storage/audio-cache-writer.js";
 import { AudioCacheReader } from "./storage/audio-cache-reader.js";
@@ -296,6 +297,14 @@ export class GameApp {
       showLineIds: this.config.game.show_line_ids,
       startError: this.startError,
     };
+  }
+
+  /**
+   * 取走并清空暂存的瞬态演出 cues（spec §6.4）。UI 渲染层在消费
+   * visualState 时调用一次；重连投影恢复不重放（applyProjection 已清空）。
+   */
+  consumeCues(): StageCueWire[] {
+    return this.viewModel.consumeCues();
   }
 
   // -------------------------------------------------------------------------

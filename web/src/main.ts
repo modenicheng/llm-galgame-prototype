@@ -21,6 +21,8 @@ import { EndScreen, ErrorBanner } from "./ui/end-screen.js";
 import { StageRenderer } from "./stage/stage-renderer.js";
 import { fetchAssetManifest } from "./stage/asset-manifest-client.js";
 import { BrowserAssetResolver } from "./stage/browser-asset-resolver.js";
+import { BgmController } from "./stage/bgm-controller.js";
+import { SoundEffectController } from "./stage/sound-effect-controller.js";
 import type { StageVisualState } from "./stage/stage-types.js";
 import { show } from "./ui/dom.js";
 import "./ui/styles.css";
@@ -53,8 +55,10 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   const manifest = await fetchAssetManifest();
   const assetResolver = new BrowserAssetResolver(manifest);
   const stageRenderer = new StageRenderer(refs.stage, assetResolver);
+  const bgmController = new BgmController(assetResolver);
+  const seController = new SoundEffectController(assetResolver);
   const token = tokenFromUrl();
-  const app = new GameApp({ wsUrl: wsUrlFromLocation(), token });
+  const app = new GameApp({ wsUrl: wsUrlFromLocation(), token, bgmController });
 
   const startScreen = new StartScreen(refs.startRoot, {
     onStart: async () => {
@@ -62,6 +66,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
       if (context.state !== "running") {
         await context.resume(); // unlock within the gesture
       }
+      bgmController.unlock(); // 手势内解锁 BGM autoplay 策略
       try {
         await app.start(context); // worklet + cache + WebSocket (+ client.ready)
       } catch (error) {
@@ -225,6 +230,8 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     if (visualState !== undefined && visualState !== lastVisualState) {
       lastVisualState = visualState;
       stageRenderer.apply(visualState);
+      bgmController.apply(visualState.bgm);
+      seController.consume(app.consumeCues());
     }
   };
 
