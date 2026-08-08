@@ -11,6 +11,9 @@ const MINIMAL_INSTRUCTIONS_YAML = [
   "branch_prefetch: '当前分支问题：{choice_prompt}。假设玩家选择：{option_text}。至少 {min_dialogue} 条 dialogue。'",
   "input_response: '交互点：{interaction_prompt}。玩家输入：{player_input}。生成 NPC 回应。'",
   "continuation: '预取片段：{prefetched_jsonl}。继续生成。'",
+  "input_bridge: '交互点：{interaction_prompt}。生成 1–2 条 narration 过渡。'",
+  "recovery: '上一次输出被拒绝：{repair_reason}。请修正后继续。'",
+  "ending: '剧情收束，用 @end {nonce} ending 结束。'",
 ].join("\n");
 
 describe("loadPrompts", () => {
@@ -30,6 +33,7 @@ describe("loadPrompts", () => {
     for (const [name, content] of Object.entries(txts)) {
       await writeFile(path.join(dir, name), content, "utf8");
     }
+    await writeFile(path.join(dir, "dsl-protocol.txt"), "你是互动视觉小说的编剧。输出行式 Gal DSL。", "utf8");
     await writeFile(path.join(dir, "instructions.yaml"), MINIMAL_INSTRUCTIONS_YAML, "utf8");
   }
 
@@ -40,7 +44,7 @@ describe("loadPrompts", () => {
     tempDirs.length = 0;
   });
 
-  it("successfully loads all three prompt files plus instructions from a directory", async () => {
+  it("successfully loads all four prompt files plus instructions from a directory", async () => {
     const dir = await createTempDir();
     await populateTempDir(dir, {
       "characters.txt": "Alice: 勇敢的少女\nBob: 神秘的旅人",
@@ -53,8 +57,12 @@ describe("loadPrompts", () => {
     expect(bundle.characters).toBe("Alice: 勇敢的少女\nBob: 神秘的旅人");
     expect(bundle.storyLine).toBe("这是一个关于冒险的故事。");
     expect(bundle.guideline).toBe("保持角色设定一致性。");
+    expect(bundle.dslProtocol).toContain("行式 Gal DSL");
     expect(instructions.output_protocol).toContain("互动视觉小说");
     expect(instructions.opening).toContain("开场");
+    expect(instructions.input_bridge).toContain("narration");
+    expect(instructions.recovery).toContain("repair_reason");
+    expect(instructions.ending).toContain("ending");
   });
 
   it("throws when a file is missing (ENOENT)", async () => {
@@ -96,6 +104,7 @@ describe("loadPrompts", () => {
       characters: expectedChars,
       storyLine: expectedStory,
       guideline: expectedGuide,
+      dslProtocol: "你是互动视觉小说的编剧。输出行式 Gal DSL。",
     });
     expect(instructions.output_protocol).toBeTruthy();
   });
@@ -128,34 +137,41 @@ describe("loadPrompts", () => {
     await expect(loadPrompts(dir)).rejects.toThrow();
   });
 
-  it("real instructions.yaml makes interaction the sole model form protocol", async () => {
+  it("real instructions.yaml is the DSL task-template set; the protocol spec lives in dsl-protocol.txt", async () => {
     const repoPrompts = path.join(
       path.dirname(fileURLToPath(import.meta.url)),
       "..",
       "prompts",
     );
-    const { instructions } = await loadPrompts(repoPrompts);
+    const { bundle, instructions } = await loadPrompts(repoPrompts);
 
-    // Legacy choice example removed from the protocol list.
-    expect(instructions.output_protocol).not.toContain('选择：{"type":"choice"');
-    // Unified interaction with three explicit mode structures.
-    expect(instructions.output_protocol).toContain('互动：{"type":"interaction"');
-    expect(instructions.output_protocol).toContain("mode=choice");
-    expect(instructions.output_protocol).toContain("mode=hybrid");
-    expect(instructions.output_protocol).toContain("mode=input");
-    expect(instructions.output_protocol).toContain("禁止包含 input_bridge");
-    expect(instructions.output_protocol).toContain("禁止包含 options");
-    // Compressed form-selection rules.
-    expect(instructions.output_protocol).toContain("普通角色交流默认优先 hybrid");
+    // output_protocol is now a short legacy-JSONL pointer, not the full
+    // interaction protocol spec (which moved to dsl-protocol.txt).
+    expect(instructions.output_protocol).toContain("严格 JSONL");
+    expect(instructions.output_protocol).not.toContain('互动：{"type":"interaction"');
+    expect(instructions.output_protocol).not.toContain("mode=hybrid");
+
+    // The full DSL spec lives in prompts/dsl-protocol.txt.
+    expect(bundle.dslProtocol).toContain("行式 Gal DSL");
+    expect(bundle.dslProtocol).toContain("hybrid");
+    expect(bundle.dslProtocol).toContain("@end <nonce> <reason>");
+
     // Opening and continuation forbid legacy choice.
     expect(instructions.opening).toContain("不得输出旧式 choice");
     expect(instructions.continuation).toContain("不得输出旧式 choice");
+
     // Input-response additions.
     expect(instructions.input_response).toContain(
-      "玩家输入表示玩家尝试表达的内容",
+      "玩家输入只是玩家尝试表达的内容",
     );
     expect(instructions.input_response).toContain(
       "NPC 可以质疑、拒绝、误解或要求证据",
     );
+
+    // New DSL task templates exist with their placeholders.
+    expect(instructions.input_bridge).toContain("{interaction_prompt}");
+    expect(instructions.input_bridge).toContain("@end {nonce} buffer");
+    expect(instructions.recovery).toContain("{repair_reason}");
+    expect(instructions.ending).toContain("{nonce}");
   });
 });

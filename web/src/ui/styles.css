@@ -183,6 +183,91 @@ button {
 }
 
 /* --------------------------------------------------------------------------
+   Stage renderer layers (StageRenderer) — placeholder picture of the wire
+   visualState: a tinted background slab + per-character silhouettes on the
+   five positional slots. Appended after the decorative layers (§86).
+   -------------------------------------------------------------------------- */
+
+.stage__bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.stage__bg-item {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 400ms ease;
+}
+
+.stage__bg-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: rgba(242, 236, 223, 0.32);
+}
+
+.stage__chars {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* per-character placeholder silhouette (asset art is out of scope) */
+.stage__char {
+  position: absolute;
+  bottom: 0;
+  width: 200px;
+  aspect-ratio: 3 / 4;
+  transform: translateX(-50%);
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.35);
+  transition: opacity 400ms ease;
+}
+
+/* The global [hidden] rule force-displays none; chars must stay laid out
+   so the 400ms opacity transition actually fades them out. */
+.stage__char[hidden] {
+  display: block !important;
+  opacity: 0;
+}
+
+.stage__char--far_left {
+  left: 12%;
+}
+
+.stage__char--left {
+  left: 28%;
+}
+
+.stage__char--center {
+  left: 50%;
+}
+
+.stage__char--right {
+  left: 72%;
+}
+
+.stage__char--far_right {
+  left: 88%;
+}
+
+.stage__char-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 6px;
+  text-align: center;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: rgba(242, 236, 223, 0.55);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+/* --------------------------------------------------------------------------
    HUD
    -------------------------------------------------------------------------- */
 

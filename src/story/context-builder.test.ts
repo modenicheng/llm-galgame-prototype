@@ -18,6 +18,7 @@ function makePrompts(): PromptBundle {
     characters: "角色A：勇敢的冒险者\n角色B：神秘的向导",
     storyLine: "第一章：进入迷雾森林，寻找失落的圣物。",
     guideline: "保持悬疑氛围，不要使用现代词汇。",
+    dslProtocol: "你是互动视觉小说的编剧。输出行式 Gal DSL。",
   };
 }
 

@@ -35,9 +35,18 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
       token_limit_field: "max_completion_tokens",
     },
     generation: {
+      protocol: "jsonl",
       temperature: 1.0,
       max_tokens: 500,
       repair_attempts: 0,
+    },
+    text_buffer: {
+      start_threshold_lines: 2,
+      target_lines: 6,
+      refill_threshold_lines: 3,
+    },
+    assets: {
+      catalog: "assets/resources.yaml",
     },
     prefetch: {
       branch_dialogue_lines: 2,

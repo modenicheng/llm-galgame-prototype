@@ -11,6 +11,7 @@ import type { RuntimePlayableEvent } from "../../schema.js";
 import type { RuntimeInteractionEvent } from "../../core/runtime/runtime-output.js";
 import type { EndEvent } from "../../schema.js";
 import type { RuntimeStatusSnapshot } from "../../status.js";
+import type { VisualState } from "../../core/presentation/types.js";
 
 export interface UiProjection {
   sessionId?: string;
@@ -22,6 +23,12 @@ export interface UiProjection {
     previewId: string;
     text: string;
   };
+
+  /**
+   * Authoritative stage state — restored on reconnect so the browser does
+   * not have to replay stage cues from the first line (docs §64, §107).
+   */
+  visualState?: VisualState;
 
   recentLines: RuntimePlayableEvent[];
   status?: RuntimeStatusSnapshot;

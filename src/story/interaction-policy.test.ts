@@ -226,7 +226,7 @@ describe("InteractionPolicy", () => {
     expect(policy.validate(malformed, state([])).accepted).toBe(false);
   });
 
-  it("input 缺少合法 Bridge → 拒绝", () => {
+  it("input 不携带 input_bridge → 接受（bridge 由独立 prefetch task 提供）", () => {
     const policy = new InteractionPolicy(makeConfig());
 
     const withoutBridge = {
@@ -237,7 +237,20 @@ describe("InteractionPolicy", () => {
       input: { kind: "free_text" as const, placeholder: "…", max_length: 100 },
     } as unknown as InteractionEvent;
 
-    expect(policy.validate(withoutBridge, state([])).accepted).toBe(false);
+    expect(policy.validate(withoutBridge, state([])).accepted).toBe(true);
+  });
+
+  it("input 携带非法 input_bridge（非 narration） → 拒绝", () => {
+    const policy = new InteractionPolicy(makeConfig());
+
+    const badBridge = {
+      ...inputInteraction(),
+      input_bridge: { events: [{ type: "dialogue" as const, speaker: "X", text: "错" }] },
+    } as unknown as InteractionEvent;
+
+    const result = policy.validate(badBridge, state([]));
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toContain("bridge");
   });
 
   it("旧式 choice 同样受选项数限制", () => {

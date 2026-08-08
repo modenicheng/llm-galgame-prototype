@@ -2347,14 +2347,14 @@ describe("Interaction policy enforcement", () => {
     await expect(game.run()).resolves.toBeUndefined();
 
     // The illegal interaction was never formally opened; only the repaired
-    // (legal) terminal opened. Interaction-mode choices are emitted under
-    // the runtime id `choice_${turn}`.
+    // (legal) terminal opened. Choice-mode interactions are addressed under
+    // their own interaction_id (docs §30).
     const opened = controller.outputs.filter(
       (output): output is InteractionOpenedOutput =>
         output.type === "interaction_opened",
     );
     expect(opened).toHaveLength(1);
-    expect(opened[0]!.interactionId).toBe("choice_1");
+    expect(opened[0]!.interactionId).toBe("int_legal");
     expect(
       opened.some(
         (output) =>
@@ -2476,12 +2476,13 @@ describe("Interaction policy enforcement", () => {
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
-    // int_1 (input) and the repaired choice (emitted as `choice_2`) opened;
-    // int_2 was rejected before it could open.
+    // int_1 (input) and the repaired choice (emitted as int_3) opened;
+    // int_2 was rejected before it could open. Choice-mode interactions
+    // are addressed under their own interaction_id (docs §30).
     const openedIds = controller.outputs
       .filter((output) => output.type === "interaction_opened")
       .map((output) => (output as InteractionOpenedOutput).interactionId);
-    expect(openedIds).toEqual(["int_1", "choice_2"]);
+    expect(openedIds).toEqual(["int_1", "int_3"]);
   });
 
   it("accepts a pure input after a hybrid interaction (streak reset)", async () => {

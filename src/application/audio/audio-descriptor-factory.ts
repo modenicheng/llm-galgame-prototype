@@ -148,14 +148,20 @@ export class AudioDescriptorFactory {
   ): { voiceProfile: string; speakerId: string; displayName: string } | null {
     // Narration has no voice by design — only character lines are synthesized.
     if (event.type === "narration") return null;
+    // Character identity comes from `characterId` when present (docs
+    // llm-outputs-refactor.md §10/§67); legacy events fall back to the
+    // display-name keyed mapping.
+    const characterId = (event as { characterId?: string }).characterId;
+    const byId = characterId ? this.options.characters[characterId] : undefined;
     const bySpeaker = this.options.characters[event.speaker];
-    const character =
-      bySpeaker ??
-      Object.values(this.options.characters).find((c) => c.name === event.speaker);
+    const byName = Object.values(this.options.characters).find(
+      (c) => c.name === event.speaker,
+    );
+    const character = byId ?? bySpeaker ?? byName;
     if (!character) return null;
     return {
       voiceProfile: character.voice_profile,
-      speakerId: event.speaker,
+      speakerId: characterId ?? event.speaker,
       displayName: character.name,
     };
   }

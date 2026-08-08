@@ -11,6 +11,12 @@ export interface PromptBundle {
   characters: string;
   storyLine: string;
   guideline: string;
+  /**
+   * Gal DSL output protocol system prompt (prompts/dsl-protocol.txt).
+   * Used when `generation.protocol === "dsl"`; the JSONL legacy protocol
+   * keeps using `InstructionSet.output_protocol`.
+   */
+  dslProtocol: string;
 }
 
 async function readRequiredFile(filePath: string): Promise<string> {
@@ -36,6 +42,12 @@ export interface InstructionSet {
   input_response: string;
   /** Template for continuation after prefetch playthrough. Placeholder: {prefetched_jsonl} */
   continuation: string;
+  /** Template for input bridge narration (DSL). Placeholder: {interaction_prompt} */
+  input_bridge: string;
+  /** Template for recovery continuation (DSL). Placeholder: {repair_reason} */
+  recovery: string;
+  /** Template for ending wrap-up (DSL). Placeholder: {nonce} */
+  ending: string;
 }
 
 const InstructionSetSchema = z.object({
@@ -44,6 +56,9 @@ const InstructionSetSchema = z.object({
   branch_prefetch: z.string().min(1),
   input_response: z.string().min(1),
   continuation: z.string().min(1),
+  input_bridge: z.string().min(1),
+  recovery: z.string().min(1),
+  ending: z.string().min(1),
 });
 
 // ---------------------------------------------------------------------------
@@ -58,10 +73,11 @@ export interface LoadedPrompts {
 export async function loadPrompts(promptDir = "prompts"): Promise<LoadedPrompts> {
   const root = path.resolve(promptDir);
 
-  const [characters, storyLine, guideline, rawYaml] = await Promise.all([
+  const [characters, storyLine, guideline, dslProtocol, rawYaml] = await Promise.all([
     readRequiredFile(path.join(root, "characters.txt")),
     readRequiredFile(path.join(root, "story_line.txt")),
     readRequiredFile(path.join(root, "guideline.txt")),
+    readRequiredFile(path.join(root, "dsl-protocol.txt")),
     readFile(path.join(root, "instructions.yaml"), "utf8"),
   ]);
 
@@ -69,7 +85,7 @@ export async function loadPrompts(promptDir = "prompts"): Promise<LoadedPrompts>
   const instructions = InstructionSetSchema.parse(parsed) as InstructionSet;
 
   return {
-    bundle: { characters, storyLine, guideline },
+    bundle: { characters, storyLine, guideline, dslProtocol },
     instructions,
   };
 }

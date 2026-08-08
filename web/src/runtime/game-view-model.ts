@@ -12,6 +12,7 @@
  */
 import type { ServerMessage } from "@shared/wire/server-message.js";
 import type { UiProjection } from "@shared/wire/ui-projection.js";
+import type { StageVisualState } from "../stage/stage-types.js";
 
 export type FrontendMode =
   | "BOOTSTRAP"
@@ -57,6 +58,8 @@ export interface ViewModelState {
   status?: unknown;
   /** EndEvent wire. */
   ending?: unknown;
+  /** Stage visual state (docs §64, §86) — rendered by StageRenderer. */
+  visualState?: StageVisualState;
   lastError?: string;
   /**
    * Monotonic counter incremented on every projection.snapshot restore.
@@ -120,6 +123,7 @@ export class GameViewModel {
   private recentLines: RuntimePlayableEventWire[] = [];
   private status: unknown;
   private ending: unknown;
+  private visualState: StageVisualState | undefined;
   private lastError: string | undefined;
   /** Monotonic projection-restore counter (§10.3); 0 until first snapshot. */
   private projectionSeq = 0;
@@ -148,6 +152,8 @@ export class GameViewModel {
     this.recentLines = projection.recentLines.slice(-MAX_RECENT_LINES);
     this.status = projection.status;
     this.ending = projection.ending;
+    // Structurally compatible with the core VisualState (§86 web).
+    this.visualState = projection.visualState;
     this.mode = this.deriveModeFromProjection(projection);
     this.projectionSeq += 1;
     this.notify();
@@ -165,6 +171,7 @@ export class GameViewModel {
     if (this.currentPreview !== undefined) state.currentPreview = this.currentPreview;
     if (this.status !== undefined) state.status = this.status;
     if (this.ending !== undefined) state.ending = this.ending;
+    if (this.visualState !== undefined) state.visualState = this.visualState;
     if (this.lastError !== undefined) state.lastError = this.lastError;
     return state;
   }
@@ -189,6 +196,9 @@ export class GameViewModel {
         this.currentInteraction = undefined;
         this.currentPreview = undefined;
         this.pushRecentLine(output.event);
+        if (output.presentation !== undefined) {
+          this.visualState = output.presentation.visualState;
+        }
         break;
       case "interaction_opened":
         // Normalize: the top-level interactionId is the authoritative id.
@@ -198,6 +208,14 @@ export class GameViewModel {
         this.currentInteraction = { ...output.interaction, interaction_id: output.interactionId };
         this.mode = this.deriveModeFromInteraction(this.currentInteraction);
         this.currentPreview = undefined;
+        if (output.presentation !== undefined) {
+          this.visualState = output.presentation.visualState;
+        }
+        break;
+      case "stage_beat_ready":
+        // A bare stage beat (no text) only updates the stage picture; it
+        // must NOT change the frontend mode (§65, §107).
+        this.visualState = output.presentation.visualState;
         break;
       case "interaction_resolved":
         // The form can no longer be submitted; close it. If a preview is

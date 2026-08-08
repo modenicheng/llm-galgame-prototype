@@ -152,12 +152,17 @@ export class InteractionPolicy {
       return { accepted: false, reason: "input 不得携带 options 字段。" };
     }
 
-    // 8. input/hybrid 必须携带合法 Bridge
-    if (candidate.mode === "input" || candidate.mode === "hybrid") {
+    // 8. input/hybrid 携带了 input_bridge 时必须是合法 Bridge；未携带则放行
+    //    （DSL 重构后 bridge 由独立 prefetch task 提供，docs/llm-outputs-refactor.md
+    //    §32–§34、§92 —— 不再作为 interaction 的强制字段）。
+    if (
+      (candidate.mode === "input" || candidate.mode === "hybrid") &&
+      "input_bridge" in interaction
+    ) {
       if (!isValidBridge(candidate.bridge)) {
         return {
           accepted: false,
-          reason: "input/hybrid 必须携带合法 input_bridge（1–2 条 narration）。",
+          reason: "input/hybrid 携带的 input_bridge 必须合法（1–2 条 narration）。",
         };
       }
     }

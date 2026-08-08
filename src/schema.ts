@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { StageCue } from "./core/presentation/types.js";
 import {
   InteractionEventSchema,
   DialogueDraftEventSchema,
@@ -29,6 +30,8 @@ export {
   LinePerformanceSchema,
 } from "./story/types.js";
 export { InteractionEventSchema } from "./story/types.js";
+/** Pure presentation types for the stage (stage cues attached to events). */
+export type { StageCue } from "./core/presentation/types.js";
 export interface Portrait {
   character: string;
   expression: string;
@@ -69,8 +72,22 @@ export interface EndEvent {
 export type ModelPlayableEvent = DialogueDraftEvent | NarrationDraftEvent;
 export type ModelEvent = ModelPlayableEvent | ChoiceEvent | InteractionEvent | EndEvent;
 
-export type RuntimeDialogueEvent = DialogueDraftEvent & { line_id: string };
-export type RuntimeNarrationEvent = NarrationDraftEvent & { line_id: string };
+export type RuntimeDialogueEvent = DialogueDraftEvent & {
+  line_id: string;
+  /**
+   * Stable character identity for StoryState/TTS/asset binding (docs
+   * llm-outputs-refactor.md §10, §62). Absent on legacy events, which
+   * fall back to `speaker` for voice resolution.
+   */
+  characterId?: string;
+  /** Stage cues applied together with this line (docs §63). */
+  stage?: StageCue[];
+};
+export type RuntimeNarrationEvent = NarrationDraftEvent & {
+  line_id: string;
+  /** Stage cues applied together with this line (docs §63). */
+  stage?: StageCue[];
+};
 
 /**
  * The player's own spoken line, created by the runtime at input confirm.

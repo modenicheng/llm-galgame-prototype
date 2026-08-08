@@ -71,6 +71,15 @@ describe("loadConfig defaults", () => {
     expect(config.generation.temperature).toBe(1.0); // explicit in yaml
     expect(config.generation.max_tokens).toBe(1400); // default
     expect(config.generation.repair_attempts).toBe(2); // default
+    expect(config.generation.protocol).toBe("jsonl"); // default
+
+    // Text buffer defaults (docs §74)
+    expect(config.text_buffer.start_threshold_lines).toBe(2);
+    expect(config.text_buffer.target_lines).toBe(6);
+    expect(config.text_buffer.refill_threshold_lines).toBe(3);
+
+    // Assets defaults (docs §57)
+    expect(config.assets.catalog).toBe("assets/resources.yaml");
 
     // Prefetch defaults (branch_dialogue_lines explicit, rest defaults)
     expect(config.prefetch.branch_dialogue_lines).toBe(3); // explicit
@@ -120,9 +129,18 @@ describe("loadConfig with all fields", () => {
       "  token_limit_field: max_tokens",
       "",
       "generation:",
+      "  protocol: dsl",
       "  temperature: 1.2",
       "  max_tokens: 2000",
       "  repair_attempts: 3",
+      "",
+      "text_buffer:",
+      "  start_threshold_lines: 1",
+      "  target_lines: 8",
+      "  refill_threshold_lines: 4",
+      "",
+      "assets:",
+      "  catalog: custom/resources.yaml",
       "",
       "prefetch:",
       "  branch_dialogue_lines: 5",
@@ -184,9 +202,18 @@ describe("loadConfig with all fields", () => {
     expect(config.api.token_limit_field).toBe("max_tokens");
 
     // Generation
+    expect(config.generation.protocol).toBe("dsl");
     expect(config.generation.temperature).toBe(1.2);
     expect(config.generation.max_tokens).toBe(2000);
     expect(config.generation.repair_attempts).toBe(3);
+
+    // Text buffer
+    expect(config.text_buffer.start_threshold_lines).toBe(1);
+    expect(config.text_buffer.target_lines).toBe(8);
+    expect(config.text_buffer.refill_threshold_lines).toBe(4);
+
+    // Assets
+    expect(config.assets.catalog).toBe("custom/resources.yaml");
 
     // Prefetch
     expect(config.prefetch.branch_dialogue_lines).toBe(5);
@@ -464,6 +491,24 @@ describe("loadConfig validation errors", () => {
         "",
         "generation:",
         "  temperature: 3.0",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+
+  it("should reject text_buffer.refill_threshold_lines >= target_lines", async () => {
+    const filePath = await writeTempYaml(
+      "bad-text-buffer-threshold",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test",
+        "  base_url: https://api.example.com",
+        "",
+        "text_buffer:",
+        "  target_lines: 3",
+        "  refill_threshold_lines: 5",
       ].join("\n"),
     );
 

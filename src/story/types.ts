@@ -28,6 +28,10 @@ import type {
   NarrationDraftEvent,
   EndEvent,
 } from "../schema.js";
+import type {
+  EventGroupDraft,
+  SegmentEndStatus,
+} from "../core/protocol/gal-dsl/types.js";
 
 // ---------------------------------------------------------------------------
 // InteractionEvent — replaces standalone choice/end as the terminal event
@@ -108,8 +112,13 @@ export interface InputInteraction {
   mode: "input";
   /** Open-ended input specification. */
   input: InputSpec;
-  /** Scene-aware lead-in narration played after the player confirms. */
-  input_bridge: InputBridge;
+  /**
+   * Scene-aware lead-in narration played after the player confirms.
+   * Optional since the DSL refactor: the runtime may prefetch the bridge
+   * as a separate task instead of receiving it inline from the model
+   * (docs/llm-outputs-refactor.md §32–§34).
+   */
+  input_bridge?: InputBridge;
 }
 
 export interface HybridInteraction {
@@ -123,8 +132,11 @@ export interface HybridInteraction {
   options: InteractionOption[];
   /** Open-ended input specification. */
   input: InputSpec;
-  /** Scene-aware lead-in narration; discarded when a preset option is chosen. */
-  input_bridge: InputBridge;
+  /**
+   * Scene-aware lead-in narration; discarded when a preset option is chosen.
+   * Optional since the DSL refactor (see InputInteraction.input_bridge).
+   */
+  input_bridge?: InputBridge;
 }
 
 export type InteractionEvent =
@@ -198,6 +210,10 @@ export interface GenerationEnvelope {
   events: GeneratedEvent[];
   /** Partial state updates the runtime applies after loading events. */
   state_patch: StoryStatePatch;
+  /** DSL mode: fully committed groups, in order (docs §36). */
+  groups?: EventGroupDraft[];
+  /** DSL mode: segment end status (docs §44–§51). */
+  segmentEnd?: SegmentEndStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -424,7 +440,7 @@ const InputInteractionSchema = z.strictObject({
   prompt: z.string().trim().min(1),
   mode: z.literal("input"),
   input: InputSpecSchema,
-  input_bridge: InputBridgeSchema,
+  input_bridge: InputBridgeSchema.optional(),
 });
 
 const HybridInteractionSchema = z
@@ -435,7 +451,7 @@ const HybridInteractionSchema = z
     mode: z.literal("hybrid"),
     options: z.array(InteractionOptionSchema).min(2).max(5),
     input: InputSpecSchema,
-    input_bridge: InputBridgeSchema,
+    input_bridge: InputBridgeSchema.optional(),
   })
   .superRefine(validateUniqueOptionIds);
 

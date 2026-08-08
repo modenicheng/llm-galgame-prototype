@@ -97,7 +97,7 @@ describe("parseTerminalModelJsonl", () => {
     expect(terminal.type).toBe("interaction");
     if (terminal.type === "interaction" && terminal.mode === "input") {
       expect(terminal.input).toBeDefined();
-      expect(terminal.input_bridge.events).toHaveLength(1);
+      expect(terminal.input_bridge?.events).toHaveLength(1);
     }
   });
 

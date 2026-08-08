@@ -18,6 +18,8 @@ import { InteractionPanel } from "./ui/interaction-panel.js";
 import { PreviewPanel } from "./ui/input-panel.js";
 import { ControlsBar } from "./ui/controls.js";
 import { EndScreen, ErrorBanner } from "./ui/end-screen.js";
+import { StageRenderer } from "./stage/stage-renderer.js";
+import type { StageVisualState } from "./stage/stage-types.js";
 import { show } from "./ui/dom.js";
 import "./ui/styles.css";
 
@@ -46,6 +48,7 @@ export function boot(root?: HTMLElement | null): void {
   if (appRoot === null) return;
 
   const refs: AppDomRefs = buildAppDom(appRoot);
+  const stageRenderer = new StageRenderer(refs.stage);
   const token = tokenFromUrl();
   const app = new GameApp({ wsUrl: wsUrlFromLocation(), token });
 
@@ -130,6 +133,7 @@ export function boot(root?: HTMLElement | null): void {
   // (§11.7).
   let draftByInteractionId = new Map<string, string>();
   let lastInteractionId: string | null = null;
+  let lastVisualState: StageVisualState | undefined = undefined;
 
   const render = (state: GameAppState): void => {
     const view = state.view;
@@ -207,6 +211,16 @@ export function boot(root?: HTMLElement | null): void {
       }
     } else if (mode === "ERROR" && modeChanged) {
       errorBanner.show(view.lastError ?? "未知错误");
+    }
+
+    // Stage picture (§86): re-render only when the view model hands us a
+    // new visual-state object. Outputs/projections replace it wholesale, so
+    // a reference check is enough — per-keystroke renders with the same
+    // state stay cheap.
+    const visualState = view.visualState;
+    if (visualState !== undefined && visualState !== lastVisualState) {
+      lastVisualState = visualState;
+      stageRenderer.apply(visualState);
     }
   };
 

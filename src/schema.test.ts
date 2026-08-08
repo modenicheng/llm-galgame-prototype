@@ -603,7 +603,7 @@ describe("InteractionEventSchema union", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects input mode without an input_bridge", () => {
+  it("accepts input mode without an input_bridge (bridge is a prefetch task)", () => {
     const result = InteractionEventSchema.safeParse({
       type: "interaction",
       interaction_id: "int1",
@@ -615,23 +615,26 @@ describe("InteractionEventSchema union", () => {
         max_length: 100,
       },
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
-  it("rejects hybrid mode without an input_bridge", () => {
+  it("accepts hybrid mode without an input_bridge (bridge is a prefetch task)", () => {
     const result = InteractionEventSchema.safeParse({
       type: "interaction",
       interaction_id: "int1",
       prompt: "Choose or type!",
       mode: "hybrid",
-      options: [{ id: "a", text: "A" }],
+      options: [
+        { id: "a", text: "A" },
+        { id: "b", text: "B" },
+      ],
       input: {
         kind: "free_text",
         placeholder: "Type...",
         max_length: 200,
       },
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   it("rejects a bridge with more than two events", () => {

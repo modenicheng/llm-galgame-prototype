@@ -1,0 +1,88 @@
+guidance: |
+  当前素材主要覆盖校园、住宅、地下设施和夜间城市场景。
+
+  整体采用偏冷色调的写实二次元风格。
+
+  背景应尽量复用已有资源，不要因为轻微视角变化频繁切换。
+
+  角色表情资源有限。
+  anxious 仅用于明显紧张、不安、担忧或试图掩饰信息。
+  普通疑问不应使用 anxious。
+
+  placeholder_char 只用于没有正式角色素材的临时人物。
+
+backgrounds:
+  classroom_day:
+    src: backgrounds/classroom_day.webp
+    description: |
+      白天普通教室。
+      适合正常课堂、放学前和普通校园交流。
+
+  classroom_evening:
+    src: backgrounds/classroom_evening.webp
+    description: |
+      黄昏教室。
+      适合私下交流、安静场景和剧情转折。
+
+  basement:
+    src: backgrounds/basement.webp
+    description: |
+      昏暗地下设备间。
+      主要用于旧终端相关剧情。
+
+bgm:
+  quiet_evening:
+    src: audio/bgm/quiet_evening.ogg
+    description: |
+      安静、略带距离感。
+      不适合高强度冲突。
+
+  mystery:
+    src: audio/bgm/mystery.ogg
+    description: |
+      轻度悬疑和未知感。
+      适合调查、异常信息和隐藏秘密。
+
+sound_effects:
+  terminal_beep:
+    src: audio/se/terminal_beep.ogg
+    description: |
+      旧终端发出的短促电子提示音。
+
+sprite_sets:
+  suyao:
+    description: |
+      苏遥正式立绘。
+
+    variants:
+      normal:
+        src: characters/suyao/normal.webp
+        description: 默认冷静状态。
+
+      anxious:
+        src: characters/suyao/anxious.webp
+        description: |
+          明显紧张、不安、担忧或试图隐瞒事实时使用。
+
+      angry:
+        src: characters/suyao/angry.webp
+        description: |
+          真正生气、受到明显冒犯或严重冲突时使用。
+
+  placeholder_char:
+    description: |
+      通用临时角色。
+      只在没有正式角色素材时使用。
+
+    variants:
+      normal:
+        src: characters/placeholder/normal.webp
+
+characters:
+  suyao:
+    script_name: 苏遥
+    display_name: 苏遥
+
+    sprite_set: suyao
+    default_variant: normal
+    default_position: left

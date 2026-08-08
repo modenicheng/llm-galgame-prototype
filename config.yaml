@@ -15,9 +15,21 @@ api:
   token_limit_field: max_completion_tokens
 
 generation:
+  # 模型输出协议：dsl（新 Gal DSL）或 jsonl（旧协议，迁移期回滚用）
+  protocol: dsl
   temperature: 0.9
   max_tokens: 1400
   repair_attempts: 2
+
+# 文本缓冲阈值（docs §74）：播放达到两句即可开始；正常保持六句未来内容；只剩三句时启动续写
+text_buffer:
+  start_threshold_lines: 2
+  target_lines: 6
+  refill_threshold_lines: 3
+
+# 资源目录（docs §57）：角色绑定、背景/BGM/立绘等资源描述
+essets:
+  catalog: assets/resources.yaml
 
 prefetch:
   branch_dialogue_lines: 3
@@ -90,12 +102,19 @@ media:
       candidate_ttl_hours: 1
 
 # 角色 → 逻辑音色配置映射（V2）
-# key 用角色显示名（LLM 的 speaker 输出），value.name 用于展示。
+# key 用稳定内部 characterId（resources.yaml characters 的键），也保留
+# 显示名 key 兼容旧会话/旧事件（speaker 回退）。value.name 用于展示。
 # 缺任一角色 → 该角色台词静音（build-skip no-character）。
 characters:
+  suyao:
+    name: 苏遥
+    voice_profile: suyao_main
   苏遥:
     name: 苏遥
     voice_profile: suyao_main
+  linche:
+    name: 林澈
+    voice_profile: linche_main
   林澈:
     name: 林澈
     voice_profile: linche_main

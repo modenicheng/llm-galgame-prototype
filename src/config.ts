@@ -96,9 +96,21 @@ export interface AppConfig {
     token_limit_field: "max_completion_tokens" | "max_tokens";
   };
   generation: {
+    /** Model output protocol: legacy JSONL or the new Gal DSL (docs §87). */
+    protocol: "jsonl" | "dsl";
     temperature: number;
     max_tokens: number;
     repair_attempts: number;
+  };
+  /** Text buffering thresholds (docs §74): when to start/refill playback. */
+  text_buffer: {
+    start_threshold_lines: number;
+    target_lines: number;
+    refill_threshold_lines: number;
+  };
+  /** Asset catalog location (docs §57). */
+  assets: {
+    catalog: string;
   };
   prefetch: {
     branch_dialogue_lines: number;
@@ -339,10 +351,32 @@ const ConfigSchema = z.object({
       .default("max_completion_tokens")
   }),
   generation: z.object({
+    protocol: z.enum(["jsonl", "dsl"]).default("jsonl"),
     temperature: z.number().min(0).max(2).default(0.9),
     max_tokens: z.number().int().positive().default(1400),
     repair_attempts: z.number().int().min(0).max(5).default(2)
   }),
+  text_buffer: z
+    .object({
+      start_threshold_lines: z.number().int().min(0).default(2),
+      target_lines: z.number().int().min(1).default(6),
+      refill_threshold_lines: z.number().int().min(0).default(3),
+    })
+    .superRefine((value, context: RefinementContext) => {
+      if (value.refill_threshold_lines >= value.target_lines) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["refill_threshold_lines"],
+          message: "text_buffer.refill_threshold_lines 必须小于 target_lines。",
+        });
+      }
+    })
+    .default({ start_threshold_lines: 2, target_lines: 6, refill_threshold_lines: 3 }),
+  assets: z
+    .object({
+      catalog: z.string().min(1).default("assets/resources.yaml"),
+    })
+    .default({ catalog: "assets/resources.yaml" }),
   prefetch: z
     .object({
       branch_dialogue_lines: z.number().int().min(1).max(20).default(3),

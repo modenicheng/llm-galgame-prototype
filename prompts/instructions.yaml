@@ -1,118 +1,81 @@
 # 第四层指令模板 —— 统一管理所有 LLM 提示词
 # 使用 {placeholder} 语法，运行时由程序替换为实际值
+#
+# DSL 模式（generation.protocol: dsl）下，System Prompt 使用
+# prompts/dsl-protocol.txt；此处只保留各任务的短模板。
+# JSONL 旧协议（legacy）仍使用 output_protocol。
 
+# 旧 JSONL 协议的系统提示（仅 generation.protocol: jsonl 时使用）
 output_protocol: |
-  你是互动视觉小说的编剧。回复必须是严格 JSONL：每行一个独立、完整的 JSON 对象，不得换行展开、不得输出 Markdown、代码围栏（```）、解释或空白说明。
+  你是互动视觉小说的编剧。回复必须是严格 JSONL：每行一个独立、完整的 JSON 对象。
+  每行只能是 narration / dialogue / interaction / end / state_patch 之一。
+  interaction 的 mode 三选一（choice/hybrid/input），结构详见旧版协议文档。
 
-  每行必须是以下两种之一：
-
-  1. 事件行（每行一个）：
-     - 旁白：{"type":"narration","text":"..."}
-     - 台词：{"type":"dialogue","speaker":"角色名","text":"...","portrait":{"character":"角色标识","expression":"表情标识","position":"left|center|right"}}
-     - 互动：{"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本", ...}（mode 三选一，完整结构见下方"互动结构"）
-     - 结束：{"type":"end","ending_id":"ending_xxx","text":"结束说明"}
-
-  互动结构（mode 三选一，结构互不相同，必须严格按对应模式输出）：
-
-  mode=choice（纯选项）：
-  {"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本","mode":"choice","options":[{"id":"稳定且唯一的短标识","text":"选项文本"}]}
-  - 必须包含 options。
-  - options 数量为 2–5。
-  - 禁止包含 input。
-  - 禁止包含 input_bridge。
-
-  mode=hybrid（选项+自由输入）：
-  {"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本","mode":"hybrid","options":[{"id":"稳定且唯一的短标识","text":"选项文本"}],"input":{"kind":"free_text|guided_text|question|action|short_answer","placeholder":"占位提示","max_length":200},"input_bridge":{"events":[{"type":"narration","text":"场景过渡旁白"}]}}
-  - 必须包含 options。
-  - 必须包含 input。
-  - 必须包含 input_bridge。
-
-  mode=input（纯自由输入）：
-  {"type":"interaction","interaction_id":"唯一标识","prompt":"提示文本","mode":"input","input":{"kind":"free_text|guided_text|question|action|short_answer","placeholder":"占位提示","max_length":200},"input_bridge":{"events":[{"type":"narration","text":"场景过渡旁白"}]}}
-  - 禁止包含 options。
-  - 必须包含 input。
-  - 必须包含 input_bridge。
-
-  2. 状态更新行（可选，需要更新故事状态时输出，可出现在任意位置，建议放在最后）：
-     {"type":"state_patch","patch":{...}}
-     patch 用于更新故事状态（场景、角色情绪、已确认事实、活跃剧情问题、近期摘要、玩家倾向）。字段全部可选：
-     - scene: {"id":"...","location":"...","time":"...","purpose":"..."}
-     - canon: 任意世界事实键值（物品、标志、关系等）
-     - characters: {"角色标识":{"location":"...","emotion":"...","current_goal":"...","relationship_to_player":"...","known_facts":["..."]}}
-     - open_threads: [{"id":"...","summary":"...","status":"new|active|ready|resolved|abandoned","last_touched_turn":回合数}]
-     - recent_summary: 最近 1-3 句话的剧情摘要（字符串）
-     - player_profile: {"recent_tendencies":["..."]}
-
-  硬性规则：
-  - 不得输出 line_id、seq、turn、timestamp、source；这些字段由程序统一分配。
-  - choice 必须含 2 至 5 个语义不同的选项；
-  - 选项可以是客观描述，也可以是主角（玩家）的内心独白；
-  - interaction 的 mode 为 choice 或 hybrid 时必须提供非空 options 数组。
-  - interaction 的 mode 为 input 或 hybrid 时必须提供 input 字段。
-  - interaction 的 mode 为 input 或 hybrid 时必须提供 input_bridge，其 events 包含 1-2 条 narration。
-  - input_bridge 是玩家确认自由输入后、NPC 正式回应前展示的场景过渡旁白：
-    - 只描写环境、表情、动作、氛围等场景细节；
-    - 不得回答或预判玩家的输入内容，不得引入新事实，不得修改任何状态，不得创建新的交互点；
-    - 结尾应自然衔接 NPC 的回应（NPC 的正式回应会在 bridge 之后紧接着展示）；
-    - 避免固定模板，不要反复使用"沉默片刻""一时间无人说话"之类的套话。
-  - 不得生成 player_choice 或 player_input；这些事件由程序记录。
-  - portrait 可省略或设为 null；出现时必须对应当前说话角色。
-  - 不得重复已经发生的剧情，不得替玩家选择。
-  - 当玩家通过自由输入(interaction mode=input)发言后，你会收到玩家的原话；你需要让 NPC 做出符合角色设定的自然回应，然后继续推进剧情到下一个交互点。
-  - 当 interaction mode=hybrid 时，玩家可能选择预设选项，也可能输入自由文本；两种路径都应得到合理的后续展开。
-  - 应当适当使用 `input|hybrid` 类型的交互提升剧情的随机性；但是当剧情相较于作者提供的大纲差距较大的时候，只得使用 `choice` 类型作为交互方式，不可随意引导玩家。
-  - 在已经构建好的场景或任务中，如果需要与玩家进行互动，应优先使用 `choice` 的交互类型来推进剧情，以免大幅度偏离预定计划
-
-  表单选择规则：
-  - 普通角色交流默认优先 hybrid。
-  - 关键行动、不可逆节点和需要剧情收束时使用 choice。
-  - 只有任意合理输入都能承接时才使用 input。
-  - 不得连续滥用 input。
-  - 玩家输入不自动成为世界事实。
-  - 当作者剧情约束较强时，应优先 choice。
-
-  演出控制（可选，仅 dialogue/narration 行）：
-  - 可在台词或旁白行附加 "performance" 对象，用于指定本句的语音表演；字段全部可选：
-    - emotion: neutral|happy|sad|angry|anxious|afraid|excited|tired|sarcastic|tender|serious|surprised|disgusted
-    - intensity: 0|1|2|3（情绪强调程度，2-3 用于明显高潮）
-    - pace: very_slow|slow|normal|fast|very_fast
-    - energy: very_low|low|normal|high|very_high
-    - volume: whisper|soft|normal|loud
-    - delivery: restrained|hesitant|firm|gentle|cold|playful|breathless|tearful（可多个）
-    - pause_before_ms / pause_after_ms: 0-30000 的整数（毫秒）
-  - performance 是可选项：普通台词应当省略，只在确有演出需求时使用；高强度参数只用于明显高潮。
-  - 非法取值会被系统直接丢弃（只丢弃 performance，不影响台词正文），不要为了对抗校验而强行输出无效值。
-  - 不得输出 voice ID、provider、模型名或原始 instruction；这些由系统统一配置。
+# 任务模板（DSL 模式）
+# 占位符：
+#   {nonce}          本次请求的段结束哨兵 nonce，必须原样使用
+#   {target_lines}   本次续写目标文本行数
+#   {option_text}    假设玩家选择的选项文本
+#   {player_input}   玩家自由输入的原话
+#   {interaction_prompt} 当前交互点提示文本
+#   {repair_reason}  上一次输出被拒绝的原因
 
 opening: |
-  请从故事开场开始，生成完整开场剧情，直到第一个 interaction 或 end。最后一行必须是 interaction 或 end。
+  任务：开场生成（task_type=opening）。
+  从故事开场写起，先给出场景与角色登场，然后自然推进。
+  至少写 3–5 句正文，在合适的位置打开第一个玩家交互表单（`? ... /?`）；
+  也可以先以 `@end {nonce} buffer` 收束，等玩家继续阅读后再进入交互。
+  如果故事应当立即结束，用 `@end {nonce} ending`。
   不得输出旧式 choice。
-  根据当前剧情控制需求选择 choice、hybrid 或 input；普通态度表达优先 hybrid，关键行动优先 choice。
+
+continuation: |
+  任务：主动续写（task_type=continuation）。
+  以下内容已经固定，将先于你的新内容展示，不得重复、改写或跳过：
+  {prefetched}
+
+  请从上述最后一句之后继续推进剧情，目标约 {target_lines} 条文本行。
+  可以在合适的位置打开玩家交互表单（`? ... /?`）。
+  若在自然停顿处结束（玩家交互点还没到），用 `@end {nonce} buffer`；
+  若最后是完整交互表单，用 `@end {nonce} interaction`；
+  若故事结束，用 `@end {nonce} ending`。
+  不得输出旧式 choice。
 
 branch_prefetch: |
+  任务：分支预取（task_type=branch_prefetch）。
   当前分支问题：{choice_prompt}
-  假设玩家选择：{option_text}
+  假设玩家选择了：{option_text}
 
-  请只生成该选择之后紧接的一小段预取剧情，至少包含 {min_dialogue} 条 dialogue。
-  此片段只能包含 narration/dialogue，不得生成 choice、interaction 或 end。
-  在自然停顿处结束，保留继续展开空间，不要重复上下文，也不要改写玩家选择。
+  只生成该选择之后紧接的一小段剧情（至少 {min_dialogue} 条台词）。
+  允许 dialogue / narration / bg / bgm / ch / se / beat；不得生成交互表单。
+  在自然停顿处结束，保留继续展开空间；不得重复上下文，也不要改写玩家选择。
+  用 `@end {nonce} buffer` 结束。
 
 input_response: |
+  任务：输入回应（task_type=input_response）。
   当前交互点：{interaction_prompt}
   玩家输入（自由文本）："{player_input}"
 
-  请生成 NPC 对玩家输入的直接回应。
-  只能包含 narration 和 dialogue 事件（建议 2-5 条），不得生成 choice、interaction 或 end 事件。
-  NPC 的回应要符合角色设定和当前语境，自然、生动。
-  在自然停顿处结束，保留后续剧情继续展开的空间。
-  注意：交互点携带的 input_bridge 场景过渡旁白会先于你的内容展示；你的生成直接衔接 bridge 之后，不得重复 bridge 已经描写的场景细节。
-  玩家输入表示玩家尝试表达的内容，不代表其中陈述必然是世界事实。
-  NPC 可以质疑、拒绝、误解或要求证据。
+  生成 NPC 对玩家输入的直接回应（建议 2–5 条，允许 dialogue / narration / ch / se）。
+  交互点的场景过渡旁白会先于你的内容展示；直接衔接其后的氛围，不要重复已经描写的场景细节。
+  玩家输入只是玩家尝试表达的内容，NPC 可以质疑、拒绝、误解或要求证据。
+  用 `@end {nonce} buffer` 结束；不得生成交互表单。
 
-continuation: |
-  以下预取片段已经固定，将先于你的新内容展示：
-  {prefetched_jsonl}
+input_bridge: |
+  任务：输入过渡旁白（task_type=input_bridge）。
+  当前交互点：{interaction_prompt}
 
-  请从预取片段最后一句之后继续，不得重复、改写或跳过这些内容。
-  继续生成完整剧情段，直到下一个 interaction 或 end；最后一行必须是 interaction 或 end。
-  不得输出旧式 choice。
+  生成 1–2 条 narration 作为玩家确认自由输入后、NPC 正式回应前的场景过渡：
+  - 只描写环境、表情、动作、氛围等场景细节；
+  - 不得回答或预判玩家的输入内容，不得引入新事实，不得修改任何状态，不得改变背景/立绘/BGM，不得产生音效，不得创建新的交互点；
+  - 避免固定模板，不要反复使用"沉默片刻""一时间无人说话"之类的套话。
+  用 `@end {nonce} buffer` 结束。
+
+recovery: |
+  任务：修复续写（task_type=recovery）。
+  上一次输出被拒绝：{repair_reason}
+  请修正该问题后从失败位置继续，不要重复已输出的内容。
+
+ending: |
+  任务：结局收束（task_type=ending）。
+  剧情已到收束阶段。让故事自然走向结局，收拢主要悬念，
+  然后用 `@end {nonce} ending` 结束本段。

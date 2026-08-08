@@ -529,6 +529,92 @@ describe("GameViewModel", () => {
   });
 });
 
+describe("GameViewModel stage visual state (§86)", () => {
+  const visualState = {
+    background: "rainy_street",
+    bgm: "rain_loop",
+    characters: {
+      aoi: {
+        spriteSet: "aoi",
+        variant: "normal",
+        position: "left",
+        displayName: "青",
+        visible: true,
+      },
+    },
+  } as const;
+
+  it("mirrors presentation.visualState from playback_ready", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 1,
+      output: {
+        type: "playback_ready",
+        event: dialogueLine("line_1", "Hello."),
+        presentation: { cues: [], visualState },
+      },
+    });
+    const state = vm.state();
+    expect(state.mode).toBe("PLAYING");
+    expect(state.visualState).toEqual(visualState);
+  });
+
+  it("mirrors presentation.visualState from interaction_opened", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 2,
+      output: {
+        type: "interaction_opened",
+        interactionId: "int-1",
+        interaction: {
+          type: "choice",
+          prompt: "What now?",
+          options: [{ id: "o1", text: "Go left" }],
+        },
+        presentation: { cues: [], visualState },
+      },
+    });
+    expect(vm.state().visualState).toEqual(visualState);
+    expect(vm.state().mode).toBe("CHOICE_SELECTING");
+  });
+
+  it("stage_beat_ready updates visualState without changing mode", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 1,
+      output: { type: "playback_ready", event: dialogueLine("line_1", "Hello.") },
+    });
+    expect(vm.state().mode).toBe("PLAYING");
+
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 2,
+      output: {
+        type: "stage_beat_ready",
+        presentation: { cues: [], visualState: { ...visualState, bgm: "silence" } },
+      },
+    });
+    const state = vm.state();
+    expect(state.visualState?.bgm).toBe("silence");
+    // A beat does not change the frontend mode.
+    expect(state.mode).toBe("PLAYING");
+  });
+
+  it("restores visualState from a projection snapshot", () => {
+    const vm = new GameViewModel();
+    vm.applyProjection({
+      phase: "running",
+      recentLines: [],
+      visualState,
+    });
+    expect(vm.state().visualState).toEqual(visualState);
+    expect(vm.state().mode).toBe("CONTENT_WAITING");
+  });
+});
+
 describe("interactionModeToFrontendMode", () => {
   it("maps each interaction mode to its frontend mode", () => {
     expect(

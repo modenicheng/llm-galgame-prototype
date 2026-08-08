@@ -70,10 +70,17 @@ export class UiProjectionStoreImpl implements UiProjectionStore {
         // open; a reconnect restores the play state, not a stale form.
         delete next.currentInteraction;
         delete next.currentPreview;
+        if (output.presentation !== undefined) {
+          next.visualState = output.presentation.visualState;
+        }
         next.recentLines = [
           ...next.recentLines.slice(-(UiProjectionStoreImpl.RECENT_LINES_LIMIT - 1)),
           output.event,
         ];
+        break;
+      case "stage_beat_ready":
+        // A bare stage node updates the visual state without a line.
+        next.visualState = output.presentation.visualState;
         break;
       case "interaction_opened":
         // Normalize: the top-level interactionId is the authoritative id.
@@ -84,6 +91,9 @@ export class UiProjectionStoreImpl implements UiProjectionStore {
           ...output.interaction,
           interaction_id: output.interactionId,
         } as RuntimeInteractionEvent;
+        if (output.presentation !== undefined) {
+          next.visualState = output.presentation.visualState;
+        }
         break;
       case "interaction_resolved":
         // The interaction can no longer be submitted; a reconnect must not

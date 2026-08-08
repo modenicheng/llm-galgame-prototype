@@ -10,21 +10,41 @@ import type {
   RuntimePlayableEvent,
 } from "../../schema.js";
 import type { RuntimeStatusSnapshot } from "../../status.js";
+import type { StageCue, VisualState } from "../presentation/types.js";
 
 /** Interaction surface the runtime exposes to the driver. */
 export type RuntimeInteractionEvent = ChoiceEvent | InteractionEvent;
+
+/**
+ * Stage changes applied together with a playback step (docs
+ * llm-outputs-refactor.md §65). `cues` are the atomic cue set; `visualState`
+ * is the authoritative full state AFTER applying them (reconnect-safe).
+ */
+export interface StagePresentationDelta {
+  cues: StageCue[];
+  visualState: VisualState;
+}
 
 export type RuntimeOutput =
   /** Session storage is ready; includes the host-specific location. */
   | { type: "session_started"; sessionId: string; location: string }
   /** One playable line is ready to be presented; await `advance`. */
-  | { type: "playback_ready"; event: RuntimePlayableEvent }
+  | {
+      type: "playback_ready";
+      event: RuntimePlayableEvent;
+      /** Stage cues that apply together with this line, plus the new state. */
+      presentation?: StagePresentationDelta;
+    }
   /** A choice/input/hybrid interaction is open and awaits a command. */
   | {
       type: "interaction_opened";
       interactionId: string;
       interaction: RuntimeInteractionEvent;
+      /** Stage cues that apply when the form opens, plus the new state. */
+      presentation?: StagePresentationDelta;
     }
+  /** A bare stage node (no text): cues applied, no advance required. */
+  | { type: "stage_beat_ready"; presentation: StagePresentationDelta }
   /** The interaction can no longer be submitted; browsers close the form. */
   | {
       type: "interaction_resolved";

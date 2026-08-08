@@ -35,6 +35,7 @@ import type {
   RuntimeApplication,
   RuntimeApplicationOptions,
 } from "../application/runtime-application.js";
+import { loadAssetCatalog } from "../application/assets/asset-catalog-loader.js";
 
 /**
  * FNV-1a 32-bit hash — a deterministic, session-independent seed per
@@ -58,6 +59,9 @@ export async function createRuntimeApplication(
   const { bundle, instructions } = await loadPrompts("prompts");
   const voices = await loadVoices(options.voicesPath ?? "voices.yaml");
   const apiKey = loadApiKey(config);
+  // Asset catalog (docs §57–§60): resource bindings for the model prompt
+  // (model catalog) and the runtime (character registry + resolver).
+  const assetCatalog = await loadAssetCatalog(config.assets.catalog);
 
   const status = new RuntimeStatus();
   const metrics = new Metrics();
@@ -68,6 +72,7 @@ export async function createRuntimeApplication(
     apiKey,
     authorConfig,
     metrics,
+    assetCatalog,
   );
 
   // TTS provider wiring (§7.6): dashscope → real provider, mock → the
@@ -139,7 +144,7 @@ export async function createRuntimeApplication(
     clock: new SystemClock(),
     ids: new SessionIdGenerator(),
     diagnostics: new ConsoleDiagnosticSink(),
-  });
+  }, assetCatalog);
 
   // Every runtime output feeds the projection (§7.7) so a reconnecting
   // browser can restore the page without restarting the Game.
