@@ -27,3 +27,11 @@ export interface StageVisualState {
   bgm?: string;
   characters: Record<string, StageCharacterState>;
 }
+
+/** Wire mirror of the core PublicAssetManifest (spec §5.2). */
+export interface PublicAssetManifest {
+  backgrounds: Record<string, { url: string }>;
+  bgm: Record<string, { url: string }>;
+  soundEffects: Record<string, { url: string }>;
+  spriteSets: Record<string, { variants: Record<string, { url: string }> }>;
+}
