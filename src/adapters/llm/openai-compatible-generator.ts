@@ -588,7 +588,10 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
 
   generateOpening(request: OpeningRequest): GenerationHandle {
     return createGenerationHandle(`opening:${request.turn}`, (signal, onGroup) =>
-      this.inner.generateOpening(request.turn, request.state, signal, { onGroup }),
+      this.inner.generateOpening(request.turn, request.state, signal, {
+        onGroup,
+        ...(request.brief ? { brief: request.brief } : {}),
+      }),
     );
   }
 
@@ -600,7 +603,10 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         request.history,
         request.prefetchedEvents,
         signal,
-        { onGroup },
+        {
+          onGroup,
+          ...(request.brief ? { brief: request.brief } : {}),
+        },
       ),
     );
   }
@@ -614,7 +620,10 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         request.choice,
         request.option,
         signal,
-        { onGroup },
+        {
+          onGroup,
+          ...(request.brief ? { brief: request.brief } : {}),
+        },
       ),
     );
   }
@@ -628,7 +637,10 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         request.interaction,
         request.playerInput,
         signal,
-        { onGroup },
+        {
+          onGroup,
+          ...(request.brief ? { brief: request.brief } : {}),
+        },
       ),
     );
   }

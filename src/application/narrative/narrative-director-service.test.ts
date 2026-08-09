@@ -1202,6 +1202,137 @@ describe("NarrativeDirectorService", () => {
       expect(consolidator.consolidate).toHaveBeenCalledTimes(2);
     });
 
+    it("requeues overflow oldest events so they consolidate in a later call (watermark does not jump past them)", async () => {
+      // max_events_per_call: 4, observe 10 events (seq 1..10)
+      // → first consolidatePending: port receives only last 4 (seq 7-10)
+      // → episode from=7 to=10; watermark=10; oldest 6 requeued
+      // → second consolidatePending: port receives seq 1-6; episode from=1 to=6
+      const consolidateFn = vi.fn()
+        .mockResolvedValueOnce({
+          episode: {
+            summary: "Batch 1 (seq 7-10)",
+            characters: [],
+            locations: [],
+            threads: [],
+            setups: [],
+            importance: "normal",
+          },
+          threadOps: [],
+          setupOps: [],
+        } satisfies ConsolidationResult)
+        .mockResolvedValueOnce({
+          episode: {
+            summary: "Batch 2 (seq 3-6)",
+            characters: [],
+            locations: [],
+            threads: [],
+            setups: [],
+            importance: "normal",
+          },
+          threadOps: [],
+          setupOps: [],
+        } satisfies ConsolidationResult)
+        .mockResolvedValueOnce({
+          episode: {
+            summary: "Batch 3 (seq 1-2)",
+            characters: [],
+            locations: [],
+            threads: [],
+            setups: [],
+            importance: "normal",
+          },
+          threadOps: [],
+          setupOps: [],
+        } satisfies ConsolidationResult);
+      const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
+
+      const store = new FakeStore(emptyState());
+      const diag = new RecordingDiagnostics();
+      const svc = new NarrativeDirectorService({
+        config: makeConfig({
+          consolidation: {
+            batch_min_events: 999, // suppress auto-schedule
+            max_events_per_call: 4,
+            min_checkpoint_gap_ms: 0,
+          },
+        }),
+        store,
+        consolidator,
+        plan: makePlan(),
+        diagnostics: diag,
+      });
+      await svc.initialize();
+
+      // Observe 10 events (seq 1..10)
+      const events = Array.from({ length: 10 }, (_, i) => makeEvent(i + 1));
+      svc.observeCommitted(events);
+
+      // First consolidation
+      const result1 = await svc.consolidatePending();
+      expect(result1.applied).toBeGreaterThanOrEqual(1);
+
+      // Port must have received exactly events seq 7-10 (last 4)
+      expect(consolidateFn).toHaveBeenCalledTimes(1);
+      const batch1Events = consolidateFn.mock.calls[0]![0]!.events as StoredEvent[];
+      expect(batch1Events.map((e) => e.seq)).toEqual([7, 8, 9, 10]);
+
+      // Episode from=7 to=10
+      const ep1 = store.appendEpisodesCalls[0]![0]!;
+      expect(ep1.fromEventSeq).toBe(7);
+      expect(ep1.toEventSeq).toBe(10);
+
+      // Watermark = 10
+      const brief1 = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      expect(brief1.consolidatedThroughEventSeq).toBe(10);
+
+      // Overflow diagnostic info
+      // The consolidator's "Dropping ... overflow" must NOT fire (batch is already
+      // capped by the director). The director's requeue diagnostic SHOULD fire.
+      expect(diag.infos.some(
+        (i) => i.message.toLowerCase().includes("dropping"),
+      )).toBe(false);
+      expect(diag.infos.some(
+        (i) => i.message.includes("requeued"),
+      )).toBe(true);
+
+      // Second consolidation: the 6 requeued events are also capped to
+      // max_events_per_call=4, so seq 3-6 go out; seq 1-2 requeued again.
+      const result2 = await svc.consolidatePending();
+      expect(result2.applied).toBeGreaterThanOrEqual(1);
+      expect(consolidateFn).toHaveBeenCalledTimes(2);
+      const batch2Events = consolidateFn.mock.calls[1]![0]!.events as StoredEvent[];
+      expect(batch2Events.map((e) => e.seq)).toEqual([3, 4, 5, 6]);
+
+      // Episode from=3 to=6
+      const ep2 = store.appendEpisodesCalls[1]![0]!;
+      expect(ep2.fromEventSeq).toBe(3);
+      expect(ep2.toEventSeq).toBe(6);
+
+      // Watermark = 6
+      const brief2 = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      expect(brief2.consolidatedThroughEventSeq).toBe(6);
+
+      // Third consolidation: remaining seq 1-2
+      const result3 = await svc.consolidatePending();
+      expect(result3.applied).toBeGreaterThanOrEqual(1);
+      expect(consolidateFn).toHaveBeenCalledTimes(3);
+      const batch3Events = consolidateFn.mock.calls[2]![0]!.events as StoredEvent[];
+      expect(batch3Events.map((e) => e.seq)).toEqual([1, 2]);
+
+      // Episode from=1 to=2
+      const ep3 = store.appendEpisodesCalls[2]![0]!;
+      expect(ep3.fromEventSeq).toBe(1);
+      expect(ep3.toEventSeq).toBe(2);
+
+      // Watermark = 2
+      const brief3 = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      expect(brief3.consolidatedThroughEventSeq).toBe(2);
+
+      // No more pending events
+      const result4 = await svc.consolidatePending();
+      expect(result4.applied).toBe(0);
+    });
+
     it("guards against concurrent consolidatePending calls", async () => {
       let resolveConsolidator!: (value: ConsolidationResult) => void;
       const deferred = new Promise<ConsolidationResult>((resolve) => {

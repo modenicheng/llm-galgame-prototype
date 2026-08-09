@@ -3381,6 +3381,72 @@ describe("NarrativeDirector integration", () => {
     ).toBe(true);
   });
 
+  it("fires exactly ONE checkpoint per resolved hybrid interaction (cancel+resubmit does not double-count)", async () => {
+    const director = makeDirectorFake();
+
+    // Opening: narration + hybrid interaction
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        hybridFixture(),
+      ]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支内容。")]),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你开口。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    // Player opens preview, cancels, then selects a preset option.
+    // Exactly ONE checkpoint must be recorded.
+    let previews = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        if (controller.count("interaction_opened") === 1) {
+          controller.submitInput(output.interactionId, "先试试输入");
+        } else {
+          controller.select(
+            output.interactionId,
+            (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+          );
+        }
+      },
+      onInputPreviewOpened: (output) => {
+        previews += 1;
+        controller.cancel(output.previewId);
+      },
+    });
+
+    const game = new Game(
+      config,
+      generator,
+      status,
+      media,
+      undefined,
+      makePortsWithDirector(director),
+    );
+    controller.attach(game);
+    await game.run();
+
+    const checkpoints = director.calls.filter(
+      (c): c is DirectorCall & { type: "checkpoint" } =>
+        c.type === "checkpoint",
+    );
+    const interactionCheckpoints = checkpoints.filter(
+      (c) => c.reason === "interaction_completed",
+    );
+    // ASSERT: exactly one intervention_checkpoint despite preview cancel
+    expect(interactionCheckpoints).toHaveLength(1);
+    expect(controller.ended()).toBe(true);
+  });
+
   it("never delivers prefetch candidate content to observeCommitted", async () => {
     const director = makeDirectorFake();
 

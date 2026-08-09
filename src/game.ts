@@ -1663,7 +1663,6 @@ export class Game {
           { preview_input: true },
         );
         if (command.type !== "preview_input") throw new RuntimeShutdownError();
-        this.narrativeDirector?.checkpoint("interaction_completed");
         text = command.text.trim().slice(0, interaction.input.max_length);
       }
 
@@ -1813,6 +1812,7 @@ export class Game {
         }
         this.media.registerActive(responseSession.responseEvents);
         this.status.removeJob("input-response");
+        this.narrativeDirector?.checkpoint("interaction_completed");
         return {
           type: "committed",
           preview: [playerDialogue, ...bridgeEvents, ...responseSession.responseEvents],
@@ -1829,6 +1829,7 @@ export class Game {
         }
       });
       this.media.registerActive(liveSession.responseEvents);
+      this.narrativeDirector?.checkpoint("interaction_completed");
       return {
         type: "committed",
         preview: [playerDialogue, ...bridgeEvents, ...liveSession.responseEvents],
@@ -2001,7 +2002,6 @@ export class Game {
         interactionId,
         { select_choice: true, preview_input: true },
       );
-      this.narrativeDirector?.checkpoint("interaction_completed");
 
       if (command.type === "preview_input") {
         branchManager?.discardAll();
@@ -2048,6 +2048,7 @@ export class Game {
       this.resolveInteraction(interactionId, "choice");
       // §10.2 lifecycle: choice accepted → the interaction scope is released.
       this.activeInteractionId = null;
+      this.narrativeDirector?.checkpoint("interaction_completed");
       this.bridgeBuffer.discard(interactionId);
       // The preset option resolves the interaction: the bridge belongs to
       // the free-text path and is discarded (docs §35).

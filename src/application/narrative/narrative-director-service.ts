@@ -302,29 +302,53 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         return { applied: 0, rejected: [] };
       }
 
-      // Delegate the pipeline (truncation to max_events_per_call, port
-      // call, validator filtering, episode id generation) to the
-      // MemoryConsolidator. State location/characters are not yet
-      // threaded through (Task 6 passed empty values).
+      // Truncate to max_events_per_call (last N) so the oldest overflow
+      // events are NOT permanently lost. The MemoryConsolidator also caps
+      // internally (defense in depth, now idempotent).
+      const maxEvents = this.config.consolidation.max_events_per_call;
+      const batch =
+        pending.length > maxEvents ? pending.slice(-maxEvents) : pending;
+      const overflow =
+        pending.length > maxEvents ? pending.slice(0, -maxEvents) : [];
+
+      if (overflow.length > 0) {
+        this.diagnostics.info(
+          "NarrativeDirector",
+          `Truncating ${overflow.length} oldest events (batch capped to ${maxEvents}); will requeue on success`,
+        );
+      }
+
+      // Delegate the pipeline (port call, validator filtering, episode id
+      // generation) to the MemoryConsolidator. The batch is already capped.
       const outcome = await this.consolidator.consolidate(
-        pending,
+        batch,
         this.memory,
         "",
         [],
       );
 
-      // Port failure → empty outcome: re-queue the drained batch at the
-      // front so events are not permanently lost on consolidation failure.
+      // Port failure → empty outcome: re-queue the FULL drained batch at
+      // the front so events are not permanently lost on consolidation
+      // failure.
       if (outcome.result === null) {
         this.pendingEvents = [...pending, ...this.pendingEvents];
         return { applied: 0, rejected: [] };
+      }
+
+      // --- Success: requeue overflow (oldest events stay pending) ---
+      if (overflow.length > 0) {
+        this.pendingEvents = [...overflow, ...this.pendingEvents];
+        this.diagnostics.info(
+          "NarrativeDirector",
+          `${overflow.length} overflow events requeued for next consolidation`,
+        );
       }
 
       // --- Apply results (already validated by the consolidator) ---
       const rejected = [...outcome.rejected];
       let applied = 0;
 
-      const batchLastSeq = pending[pending.length - 1]!.seq;
+      const batchLastSeq = batch[batch.length - 1]!.seq;
 
       // 1) Episode
       let newEpisode: EpisodeMemory | undefined;
