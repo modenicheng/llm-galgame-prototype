@@ -9,6 +9,7 @@
  * port call, validator filtering, episode id) lives in MemoryConsolidator.
  */
 
+import { DEFAULT_NARRATIVE_CONFIG } from "../../config.js";
 import type { NarrativeConfig } from "../../config.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
@@ -73,6 +74,30 @@ const ANCHOR_STATUS_ORDER: Record<StoryAnchorState["status"], number> = {
 };
 
 // ---------------------------------------------------------------------------
+// Config normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Deep-merge a (potentially partial) NarrativeConfig with defaults so
+ * getBrief / scheduling never see undefined sub-sections.
+ *
+ * Callers may shallow-merge configs (e.g. `makeTestConfig` does
+ * `{ narrative: DEFAULT_NARRATIVE_CONFIG, ...overrides }`, which
+ * replaces the whole narrative section).  This function fills the gaps.
+ */
+function normalizeNarrativeConfig(raw: NarrativeConfig): NarrativeConfig {
+  const d = DEFAULT_NARRATIVE_CONFIG;
+  return {
+    mode: raw.mode ?? d.mode,
+    story_plan_path: raw.story_plan_path ?? d.story_plan_path,
+    threads: { ...d.threads, ...raw.threads },
+    setups: { ...d.setups, ...raw.setups },
+    consolidation: { ...d.consolidation, ...raw.consolidation },
+    brief: { ...d.brief, ...raw.brief },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // NarrativeDirectorService
 // ---------------------------------------------------------------------------
 
@@ -102,7 +127,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     plan: StoryPlan;
     diagnostics?: DiagnosticSink;
   }) {
-    this.config = opts.config;
+    this.config = normalizeNarrativeConfig(opts.config);
     this.store = opts.store;
     this.plan = opts.plan;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;

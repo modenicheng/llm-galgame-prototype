@@ -957,6 +957,64 @@ describe("NarrativeDirectorService", () => {
   });
 
   // -----------------------------------------------------------------------
+  // config normalization — defense against shallow-merge callers
+  // -----------------------------------------------------------------------
+  describe("config normalization", () => {
+    it("survives a partial config where nested sections are undefined", async () => {
+      // Simulate the shallow-merge bug: only mode is set, everything else
+      // (threads, setups, consolidation, brief) is undefined.
+      const partial = { mode: "longform" as const } as NarrativeConfig;
+      const store = new FakeStore();
+      const svc = new NarrativeDirectorService({
+        config: partial,
+        store,
+        consolidator: undefined,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      // getBrief must not throw TypeError (e.g. "Cannot read
+      // properties of undefined (reading 'max_relevant_episodes')").
+      const brief = svc.getBrief({
+        turn: 1,
+        eventSeq: 10,
+        location: "",
+        characters: [],
+      });
+      expect(brief.revision).toBe(0);
+      expect(brief.activeThreads).toEqual([]);
+    });
+
+    it("partial sub-objects merge with defaults (caller overrides only some keys)", async () => {
+      const partial = {
+        mode: "longform" as const,
+        story_plan_path: "/custom/path.yaml",
+        brief: { max_relevant_episodes: 3 },
+      } as NarrativeConfig;
+      const store = new FakeStore();
+      const svc = new NarrativeDirectorService({
+        config: partial,
+        store,
+        consolidator: undefined,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      // Caller override wins where specified
+      expect((svc as any).config.story_plan_path).toBe("/custom/path.yaml");
+      expect((svc as any).config.brief.max_relevant_episodes).toBe(3);
+      // Unspecified sub-keys fall back to defaults
+      expect((svc as any).config.brief.max_recent_raw_events).toBe(
+        DEFAULT_NARRATIVE_CONFIG.brief.max_recent_raw_events,
+      );
+      // Unspecified sections fall back to defaults entirely
+      expect((svc as any).config.threads.max_major_active).toBe(
+        DEFAULT_NARRATIVE_CONFIG.threads.max_major_active,
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Scheduling thresholds
   // -----------------------------------------------------------------------
   describe("scheduling thresholds", () => {

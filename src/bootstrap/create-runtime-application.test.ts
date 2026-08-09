@@ -486,6 +486,14 @@ function dashscopeConfig(): AppConfig {
       access(path.join(sessionDir, "narrative-state.json")),
     ).resolves.toBeUndefined();
 
+    // narrative-ops.jsonl is only created when there are rejected
+    // consolidation ops.  The mock consolidator returns only valid ops
+    // (empty threadOps/setupOps + a well-formed episode), so nothing
+    // is rejected and the file is never written.
+    await expect(
+      access(path.join(sessionDir, "narrative-ops.jsonl")),
+    ).rejects.toThrow();
+
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -520,30 +528,48 @@ function dashscopeConfig(): AppConfig {
       narrative: {
         ...DEFAULT_NARRATIVE_CONFIG,
         mode: "longform" as const,
+        consolidation: {
+          ...DEFAULT_NARRATIVE_CONFIG.consolidation,
+          batch_min_events: 1,
+          min_checkpoint_gap_ms: 0,
+        },
       },
       game: { sessions_dir: sessionDir },
       characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
     });
+
+    // Same envelope as the longform test: narration groups + segmentEnd
+    // so game.run() completes.  The nonexistent plan yields an empty plan
+    // (loadStoryPlan degrades gracefully), and config normalization
+    // ensures getBrief never sees undefined sub-sections.
     generatorState.opening = {
       events: [],
       groups: [
         { prelude: [], main: { type: "narration", text: "第一幕" } },
+        { prelude: [], main: { type: "narration", text: "第二幕" } },
       ],
       state_patch: undefined,
       segmentEnd: { kind: "complete", nonce: "cccc", reason: "ending" },
     };
 
-    // Should not throw: the missing plan yields an empty plan and the
-    // application starts successfully.
     const app = await createRuntimeApplication({
       config,
       sessionDir,
       storyPlanPath: nonexistentPlan,
     });
     expect((app.game as any).narrativeDirector).toBeDefined();
-    // Does not attempt game.run() — the empty-plan case exercises the
-    // assembly path only; the game-run-with-director integration is
-    // covered by the preceding longform test.
+
+    // game.run() must resolve — proves the TypeError from undefined
+    // brief/consolidation sub-sections is gone (config normalization fix).
+    const controller = new MemoryController();
+    controller.attach(app.game);
+    await expect(app.game.run()).resolves.toBeUndefined();
+
+    // Consolidation runs fire-and-forget; yield the microtask queue.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await expect(
+      access(path.join(sessionDir, "narrative-state.json")),
+    ).resolves.toBeUndefined();
 
     await rm(dir, { recursive: true, force: true });
   });
