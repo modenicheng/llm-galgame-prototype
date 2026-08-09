@@ -548,6 +548,11 @@ export class Game {
       // BranchManager, and never becomes this segment's terminal.
       this.assertInteractionPolicy(draft);
       const event = this.materializeEvents([draft])[0]!;
+      // The segment already produced its terminal (choice/interaction/end);
+      // a late event is the provider's in-flight tail and must never enter
+      // the playback buffer — the run loop has already moved past the
+      // terminal, so enqueueing it would desynchronize advanceBufferedEvent.
+      if (segment.terminal !== null) return;
       segment.events.push(event);
       if (isPlayableEvent(event)) {
         this.registerBuffered([event]);
@@ -1028,6 +1033,12 @@ export class Game {
     draft: EventGroupDraft,
   ): void {
     const { playable, interaction, cues, tailState } = this.compileGroup(draft, this.tailVisualState, turn);
+    // §50: the interaction is the segment's contract boundary. Groups that
+    // arrive afterwards (the model's in-flight tail, streamed between the
+    // form and `@end`) are never meant to play — the run loop already
+    // returned at the terminal, so enqueueing them would desynchronize the
+    // playback buffer and crash advanceBufferedEvent on the next segment.
+    if (segment.terminal !== null) return;
     this.tailVisualState = tailState;
 
     if (playable !== null) {
@@ -1093,6 +1104,7 @@ export class Game {
       ending_id: this.ids.nextGenerationId("ending"),
       text: "故事到此结束。",
     };
+    segment.terminal = endEvent;
     segment.events.push(endEvent);
     this.playbackBuffer.enqueue(endEvent);
     segment.queue.push(endEvent);

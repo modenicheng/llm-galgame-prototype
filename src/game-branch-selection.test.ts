@@ -254,3 +254,238 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
     expect(controller.outputs.some((o) => o.type === "session_ended") || errors.length > 0).toBe(true);
   });
 });
+
+describe("hybrid preview-cancel re-arm then select (real generator)", () => {
+  it("selecting an option after a cancel/re-arm does not corrupt the playback buffer", async () => {
+    const config: AppConfig = makeTestConfig({
+      generation: { protocol: "dsl", repair_attempts: 0 },
+      prefetch: { branch_dialogue_lines: 3 },
+    });
+    const generator = new StoryGenerator(config, makeTestPrompts(), makeTestInstructions(), DUMMY_API_KEY);
+
+    let hybridCalls = 0;
+    (generator as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn(async (request: { messages: Array<{ content: string }> }) => {
+            const user = request.messages[1]!.content as string;
+            const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(user)?.[1] ?? "aaaa";
+            const taskType = /任务类型：([^\n]+)/.exec(user)?.[1] ?? "";
+            if (taskType === "opening") {
+              return dslStream([
+                "苏遥: 别碰那台机器。",
+                "? 怎么回应？",
+                "+ 追问她",
+                "+ 暂时停手",
+                "= 或输入……",
+                "/?",
+                `@end ${nonce} interaction`,
+              ]);
+            }
+            if (taskType === "branch_prefetch") {
+              hybridCalls += 1;
+              return dslStream([
+                "苏遥: 分支内容一。",
+                "苏遥: 分支内容二。",
+                "苏遥: 分支内容三。",
+                `@end ${nonce} buffer`,
+              ]);
+            }
+            if (taskType === "input_bridge") {
+              return dslStream([`@end ${nonce} buffer`]);
+            }
+            if (taskType === "input_response") {
+              return dslStream([`@end ${nonce} buffer`]);
+            }
+            return dslStream(["故事结束。", `@end ${nonce} ending`]);
+          }),
+        },
+      },
+    };
+
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    let first = true;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        if (first) {
+          first = false;
+          controller.submitInput(output.interactionId, "试探一下");
+        } else {
+          controller.select(output.interactionId, `${output.interactionId}_opt_0`);
+        }
+      },
+      onInputPreviewOpened: (output) => controller.cancel(output.previewId),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    controller.attach(game);
+
+    let runError: unknown = null;
+    try {
+      await game.run();
+    } catch (e) {
+      runError = e;
+    }
+    
+    const seq = outputSeq(controller.outputs);
+    
+    // The game must finish (or error) without the buffer-order crash.
+    expect(String(runError ?? "")).not.toContain("播放缓冲顺序");
+    expect(controller.outputs.some((o) => o.type === "session_ended") || controller.outputs.some((o) => o.type === "runtime_error")).toBe(true);
+  });
+});
+
+describe("aborted streamed input response then branch select (buffer race)", () => {
+  it("selecting an option after aborting a streamed input response keeps buffer order", async () => {
+    const config: AppConfig = makeTestConfig({
+      generation: { protocol: "dsl", repair_attempts: 0 },
+      prefetch: { branch_dialogue_lines: 3 },
+    });
+    const generator = new StoryGenerator(config, makeTestPrompts(), makeTestInstructions(), DUMMY_API_KEY);
+
+    (generator as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn(async (request: { messages: Array<{ content: string }> }) => {
+            const user = request.messages[1]!.content as string;
+            const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(user)?.[1] ?? "aaaa";
+            const taskType = /任务类型：([^\n]+)/.exec(user)?.[1] ?? "";
+            if (taskType === "opening") {
+              return dslStream([
+                "苏遥: 别碰那台机器。",
+                "? 怎么回应？",
+                "+ 追问她",
+                "+ 暂时停手",
+                "= 或输入……",
+                "/?",
+                `@end ${nonce} interaction`,
+              ]);
+            }
+            if (taskType === "branch_prefetch") {
+              // Stream the branch lines across separate chunks with a delay —
+              // like a real model streaming over time.
+              return (async function* () {
+                for (const line of ["苏遥: 分支内容一。", "苏遥: 分支内容二。", "苏遥: 分支内容三。"]) {
+                  await new Promise((r) => setTimeout(r, 30));
+                  yield { choices: [{ delta: { content: `${line}\n` } }] };
+                }
+                await new Promise((r) => setTimeout(r, 30));
+                yield { choices: [{ delta: { content: `@end ${nonce} buffer\n` } }] };
+              })();
+            }
+            if (taskType === "input_bridge") {
+              return dslStream([`@end ${nonce} buffer`]);
+            }
+            if (taskType === "input_response") {
+              // Stream two response lines, then keep streaming (aborted on cancel).
+              return (async function* () {
+                for (const line of ["苏遥: 你来了。", "苏遥: 我以为没人会再来。"]) {
+                  await new Promise((r) => setTimeout(r, 30));
+                  yield { choices: [{ delta: { content: `${line}\n` } }] };
+                }
+                await new Promise(() => undefined); // never ends on its own
+              })();
+            }
+            return dslStream(["故事结束。", `@end ${nonce} ending`]);
+          }),
+        },
+      },
+    };
+
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    let first = true;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        if (first) {
+          first = false;
+          controller.submitInput(output.interactionId, "试探一下");
+        } else {
+          controller.select(output.interactionId, `${output.interactionId}_opt_0`);
+        }
+      },
+      onInputPreviewOpened: (output) => controller.cancel(output.previewId),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    controller.attach(game);
+
+    let runError: unknown = null;
+    try {
+      await game.run();
+    } catch (e) {
+      runError = e;
+    }
+    
+    expect(String(runError ?? "")).not.toContain("播放缓冲顺序");
+  });
+});
+
+describe("stray group after the interaction terminal is discarded (docs §50)", () => {
+  it("a dialogue group emitted after the interaction corrupts the buffer", async () => {
+    const config: AppConfig = makeTestConfig({
+      generation: { protocol: "dsl", repair_attempts: 0 },
+      prefetch: { branch_dialogue_lines: 3 },
+    });
+    const generator = new StoryGenerator(config, makeTestPrompts(), makeTestInstructions(), DUMMY_API_KEY);
+
+    (generator as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn(async (request: { messages: Array<{ content: string }> }) => {
+            const user = request.messages[1]!.content as string;
+            const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(user)?.[1] ?? "aaaa";
+            const taskType = /任务类型：([^\n]+)/.exec(user)?.[1] ?? "";
+            if (taskType === "opening") {
+              return dslStream([
+                "苏遥: 别碰那台机器。",
+                "? 怎么回应？",
+                "+ 追问她",
+                "+ 暂时停手",
+                "/?",
+                // In-flight tail BEFORE the sentinel: the model streamed a
+                // stray dialogue between the form and @end (legal DSL).
+                "苏遥: 这句不该出现。",
+                `@end ${nonce} interaction`,
+              ]);
+            }
+            if (taskType === "branch_prefetch") {
+              return dslStream([
+                "苏遥: 分支内容一。",
+                "苏遥: 分支内容二。",
+                "苏遥: 分支内容三。",
+                `@end ${nonce} buffer`,
+              ]);
+            }
+            if (taskType === "input_bridge") {
+              return dslStream([`@end ${nonce} buffer`]);
+            }
+            if (taskType === "input_response") {
+              return dslStream([`@end ${nonce} buffer`]);
+            }
+            return dslStream(["故事结束。", `@end ${nonce} ending`]);
+          }),
+        },
+      },
+    };
+
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const controller = new MemoryController({
+      onInteractionOpened: (output) =>
+        controller.select(output.interactionId, `${output.interactionId}_opt_0`),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    controller.attach(game);
+
+    let runError: unknown = null;
+    try {
+      await game.run();
+    } catch (e) {
+      runError = e;
+    }
+    
+    const seq = outputSeq(controller.outputs);
+    
+    expect(String(runError ?? "")).not.toContain("播放缓冲顺序");
+  });
+});
