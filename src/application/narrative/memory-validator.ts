@@ -22,7 +22,7 @@ import type {
 import type { SetupDirective } from "../../core/narrative/narrative-brief.js";
 import type { NarrativeConfig } from "../../config.js";
 
-/** Thread statuses that count as "active" for the major-thread budget. */
+/** Thread statuses that count as "active" for the thread budgets. */
 const ACTIVE_THREAD_STATUSES: ReadonlySet<PlotThread["status"]> = new Set([
   "open",
   "developing",
@@ -53,16 +53,22 @@ export function validateThreadOp(
         return `线程 ${op.id} 已存在，不能重复创建`;
       }
       let activeMajor = 0;
+      let activeMinor = 0;
       for (const thread of Object.values(memory.threads)) {
-        if (
-          thread.importance === "major" &&
-          ACTIVE_THREAD_STATUSES.has(thread.status)
-        ) {
+        if (!ACTIVE_THREAD_STATUSES.has(thread.status)) {
+          continue;
+        }
+        if (thread.importance === "major") {
           activeMajor += 1;
+        } else if (thread.importance === "minor") {
+          activeMinor += 1;
         }
       }
       if (activeMajor >= config.threads.max_major_active) {
         return `活跃 major 线程数 ${activeMajor} 已达上限 ${config.threads.max_major_active}`;
+      }
+      if (activeMinor >= config.threads.max_minor_active) {
+        return `活跃 minor 线程数 ${activeMinor} 已达上限 ${config.threads.max_minor_active}`;
       }
       return null;
     }

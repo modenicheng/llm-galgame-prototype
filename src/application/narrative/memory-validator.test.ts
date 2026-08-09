@@ -77,6 +77,7 @@ function makeMemory(
 
 function makeConfig(overrides?: {
   maxMajorActive?: number;
+  maxMinorActive?: number;
   maxActive?: number;
 }): NarrativeConfig {
   const base = DEFAULT_NARRATIVE_CONFIG;
@@ -85,6 +86,7 @@ function makeConfig(overrides?: {
     threads: {
       ...base.threads,
       max_major_active: overrides?.maxMajorActive ?? base.threads.max_major_active,
+      max_minor_active: overrides?.maxMinorActive ?? base.threads.max_minor_active,
     },
     setups: {
       ...base.setups,
@@ -131,6 +133,56 @@ describe("validateThreadOp", () => {
     });
     const op: ThreadOp = { type: "create", id: "t-new" };
     expectRejected(validateThreadOp(op, memory, makeConfig({ maxMajorActive: 2 })));
+  });
+
+  it("rejects create when active minor threads reach max_minor_active", () => {
+    const memory = makeMemory({
+      threads: {
+        "t-1": makeThread({ id: "t-1", status: "open", importance: "minor" }),
+        "t-2": makeThread({ id: "t-2", status: "developing", importance: "minor" }),
+        "t-3": makeThread({
+          id: "t-3",
+          status: "ready_to_resolve",
+          importance: "minor",
+        }),
+      },
+    });
+    const op: ThreadOp = { type: "create", id: "t-new" };
+    const reason = validateThreadOp(op, memory, makeConfig({ maxMinorActive: 3 }));
+    expectRejected(reason);
+    expect(reason).toContain("minor");
+  });
+
+  it("counts only active minor threads (and never major ones) for the minor budget", () => {
+    const memory = makeMemory({
+      threads: {
+        "t-major": makeThread({ id: "t-major", importance: "major", status: "open" }),
+        "t-minor-1": makeThread({
+          id: "t-minor-1",
+          importance: "minor",
+          status: "open",
+        }),
+        "t-resolved": makeThread({
+          id: "t-resolved",
+          importance: "minor",
+          status: "resolved",
+        }),
+        "t-abandoned": makeThread({
+          id: "t-abandoned",
+          importance: "minor",
+          status: "abandoned",
+        }),
+      },
+    });
+    const op: ThreadOp = { type: "create", id: "t-new" };
+    // Only t-minor-1 counts as an active minor; budget 2 is free.
+    expectAccepted(
+      validateThreadOp(op, memory, makeConfig({ maxMinorActive: 2 })),
+    );
+    // With budget 1 the single active minor blocks creation.
+    expectRejected(
+      validateThreadOp(op, memory, makeConfig({ maxMinorActive: 1 })),
+    );
   });
 
   it("counts only active (open/developing/ready_to_resolve) major threads", () => {
