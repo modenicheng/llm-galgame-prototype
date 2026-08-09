@@ -357,7 +357,12 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         );
       }
 
-      // --- Apply results (already validated by the consolidator) ---
+      // --- Apply results onto a SHADOW, persist, then swap ---
+      // Copy-on-write (audit finding 6): nothing touches live memory until
+      // every persistence step succeeded. On any failure the full drained
+      // batch is requeued and memory stays untouched; a retry regenerates
+      // the same episode id (revision did not advance) so appendEpisodes
+      // stays idempotent (load() dedupes by id).
       const rejected = [...outcome.rejected];
       let applied = 0;
 
@@ -373,51 +378,75 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       // counter (audit finding 3).
       const nowCheckpoint = this.memory.checkpointCount;
 
+      const shadow = structuredClone(this.memory);
+      const nextEpisodes = [...this.episodes];
+
       // 1) Episode
       let newEpisode: EpisodeMemory | undefined;
       if (outcome.episode !== null) {
         newEpisode = outcome.episode;
-        this.episodes.push(newEpisode);
+        nextEpisodes.push(newEpisode);
         applied += 1;
       }
 
       // 2) Thread ops (shared pure apply; timeline in checkpoint units)
       for (const op of outcome.threadOps) {
-        applyThreadOpToState(this.memory, op, nowCheckpoint);
+        applyThreadOpToState(shadow, op, nowCheckpoint);
         applied += 1;
       }
 
       // 3) Setup ops
       for (const op of outcome.setupOps) {
-        applySetupOpToState(this.memory, op, nowCheckpoint);
+        applySetupOpToState(shadow, op, nowCheckpoint);
         applied += 1;
       }
 
-      // --- Advance state ---
-      this.memory.revision += 1;
-      this.memory.consolidatedThroughEventSeq = newWatermark;
+      // --- Advance state (on the shadow) ---
+      shadow.revision += 1;
+      shadow.consolidatedThroughEventSeq = newWatermark;
 
       // Insert the episode id into recentEpisodeIds (the same id the
       // consolidator generated for the appended episode).
       if (newEpisode) {
-        this.memory.recentEpisodeIds.unshift(newEpisode.id);
-        if (this.memory.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
-          this.memory.recentEpisodeIds = this.memory.recentEpisodeIds.slice(
+        shadow.recentEpisodeIds.unshift(newEpisode.id);
+        if (shadow.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
+          shadow.recentEpisodeIds = shadow.recentEpisodeIds.slice(
             0,
             MAX_RECENT_EPISODE_IDS,
           );
         }
       }
 
-      // Persist
-      await this.store.saveState(this.memory);
-      if (newEpisode) {
-        await this.store.appendEpisodes([newEpisode]);
+      // Persist — saveState is the commit point and goes first. Any
+      // failure: memory untouched, full batch requeued.
+      try {
+        await this.store.saveState(shadow);
+        if (newEpisode) {
+          await this.store.appendEpisodes([newEpisode]);
+        }
+      } catch (err) {
+        this.pendingEvents = [...pending, ...this.pendingEvents];
+        this.diagnostics.warn(
+          "NarrativeDirector",
+          `persist failed, batch requeued: ${String(err)}`,
+        );
+        return { applied: 0, rejected: [] };
       }
       if (rejected.length > 0) {
-        await this.store.appendOps(rejected);
+        try {
+          await this.store.appendOps(rejected);
+        } catch (err) {
+          // Debug log only — not part of the memory commit.
+          this.diagnostics.warn(
+            "NarrativeDirector",
+            `appendOps failed (debug log only): ${String(err)}`,
+          );
+        }
       }
 
+      // Everything persisted → swap in the new state.
+      this.memory = shadow;
+      this.episodes = nextEpisodes;
       this.lastConsolidateAt = Date.now();
 
       return { applied, rejected };

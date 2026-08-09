@@ -77,6 +77,10 @@ class FakeStore implements NarrativeMemoryStorePort {
   appendEpisodesCalls: EpisodeMemory[][] = [];
   appendOpsCalls: RejectedOp[][] = [];
 
+  // failure injection (audit finding 6: persistence failure atomicity)
+  failNextSaveState = false;
+  failNextAppendEpisodes = false;
+
   constructor(initialState?: NarrativeMemoryState, episodes?: EpisodeMemory[]) {
     if (initialState) this.state = initialState;
     if (episodes) this.episodes = episodes;
@@ -87,11 +91,19 @@ class FakeStore implements NarrativeMemoryStorePort {
   }
 
   async saveState(state: NarrativeMemoryState): Promise<void> {
+    if (this.failNextSaveState) {
+      this.failNextSaveState = false;
+      throw new Error("disk write failed (saveState)");
+    }
     this.saveStateCalls.push(state);
     this.state = state;
   }
 
   async appendEpisodes(episodes: EpisodeMemory[]): Promise<void> {
+    if (this.failNextAppendEpisodes) {
+      this.failNextAppendEpisodes = false;
+      throw new Error("disk write failed (appendEpisodes)");
+    }
     this.appendEpisodesCalls.push(episodes);
   }
 
@@ -818,6 +830,105 @@ describe("NarrativeDirectorService", () => {
       });
       expect(brief.revision).toBe(1);
       expect(brief.consolidatedThroughEventSeq).toBe(10);
+    });
+
+    it("persist failure (saveState) is atomic: memory untouched, batch requeued (audit finding 6)", async () => {
+      const store = new FakeStore(emptyState());
+      const plan = makePlan();
+      const consolidateFn = vi.fn().mockResolvedValue({
+        episode: {
+          summary: "Ep",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      } satisfies ConsolidationResult);
+      const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
+      const diag = new RecordingDiagnostics();
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator,
+        plan,
+        diagnostics: diag,
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeEvent(10)]);
+      store.failNextSaveState = true;
+      const result1 = await svc.consolidatePending();
+
+      // Failure: nothing applied, memory untouched, warning emitted.
+      expect(result1.applied).toBe(0);
+      let brief = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      expect(brief.revision).toBe(0);
+      expect(brief.consolidatedThroughEventSeq).toBe(0);
+      // appendEpisodes must NOT have been called.
+      expect(store.appendEpisodesCalls).toHaveLength(0);
+      expect(diag.warns.some((w) => w.message.includes("persist failed"))).toBe(true);
+
+      // Retry succeeds (same revision → same episode id → idempotent).
+      const result2 = await svc.consolidatePending();
+      expect(result2.applied).toBeGreaterThanOrEqual(1);
+      expect(consolidateFn).toHaveBeenCalledTimes(2);
+      brief = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      expect(brief.revision).toBe(1);
+      expect(brief.consolidatedThroughEventSeq).toBe(10);
+      // Exactly one episode appended across both attempts (idempotent id).
+      const allEpisodes = store.appendEpisodesCalls.flat();
+      expect(allEpisodes).toHaveLength(1);
+      expect(allEpisodes[0]!.id).toBe("ep_1_10");
+    });
+
+    it("persist failure (appendEpisodes) is atomic: memory rolled back, batch requeued (audit finding 6)", async () => {
+      const store = new FakeStore(emptyState());
+      const plan = makePlan();
+      const consolidateFn = vi.fn().mockResolvedValue({
+        episode: {
+          summary: "Ep",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      } satisfies ConsolidationResult);
+      const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
+      const diag = new RecordingDiagnostics();
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator,
+        plan,
+        diagnostics: diag,
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeEvent(10)]);
+      store.failNextAppendEpisodes = true;
+      const result1 = await svc.consolidatePending();
+
+      // Failure after saveState: in-memory state must still be rolled back.
+      expect(result1.applied).toBe(0);
+      let brief = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      expect(brief.revision).toBe(0);
+      expect(brief.consolidatedThroughEventSeq).toBe(0);
+      expect(brief.relevantEpisodes).toHaveLength(0);
+
+      // Retry converges: same episode id, single append.
+      const result2 = await svc.consolidatePending();
+      expect(result2.applied).toBeGreaterThanOrEqual(1);
+      brief = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      expect(brief.revision).toBe(1);
+      const allEpisodes = store.appendEpisodesCalls.flat();
+      expect(allEpisodes).toHaveLength(1);
+      expect(allEpisodes[0]!.id).toBe("ep_1_10");
     });
   });
 
