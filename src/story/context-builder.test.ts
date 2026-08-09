@@ -3,8 +3,14 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { buildSystemContext, type ContextInput } from "./context-builder.js";
+import {
+  buildDslUserPrompt,
+  buildSystemContext,
+  type ContextInput,
+  type DslContextInput,
+} from "./context-builder.js";
 import { createInitialState } from "./state.js";
+import type { NarrativeBrief } from "../core/narrative/narrative-brief.js";
 import type { PromptBundle } from "../prompts.js";
 import type { StoryContextEvent } from "../schema.js";
 import type { StoryState } from "./types.js";
@@ -72,6 +78,31 @@ function makeRichState(): StoryState {
       recent_tendencies: ["探索", "谨慎"],
     },
   });
+}
+
+function makeBrief(): NarrativeBrief {
+  return {
+    revision: 2,
+    consolidatedThroughEventSeq: 88,
+    currentEventSeq: 92,
+    checkpointCount: 1,
+    location: "旧图书馆",
+    characters: ["苏遥"],
+    activeThreads: [
+      {
+        id: "thread_suyao",
+        kind: "mystery",
+        summary: "旧终端里藏着苏遥的秘密",
+        status: "developing",
+        importance: "major",
+        lastTouchedAt: 12,
+      },
+    ],
+    setupDirectives: [{ id: "setup_key", action: "reinforce", urgency: "now" }],
+    relevantEpisodes: [],
+    anchors: [],
+    revealLocks: [],
+  };
 }
 
 function makeRecentEvents(): StoryContextEvent[] {
@@ -179,5 +210,47 @@ describe("buildSystemContext", () => {
     expect(system).not.toContain("[Open Threads]");
     expect(system).not.toContain("[Canon]");
     expect(system).not.toContain("[Recent]");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildDslUserPrompt + director brief
+// ---------------------------------------------------------------------------
+
+describe("buildDslUserPrompt", () => {
+  it("renders the director brief between history and stage state", () => {
+    const ctx: DslContextInput = {
+      ...makeDefaultContext(),
+      taskType: "continuation",
+      generationNonce: "b7f2",
+      targetLines: 6,
+      directorBrief: makeBrief(),
+      tailVisualState: { background: "library", characters: {} },
+    };
+
+    const prompt = buildDslUserPrompt(4, ctx);
+    expect(prompt).toContain("导演便签");
+
+    const historyAt = prompt.indexOf("===== 剧情历史 =====");
+    const noteAt = prompt.indexOf("导演便签");
+    const stageAt = prompt.indexOf("===== 当前舞台状态 =====");
+    expect(historyAt).toBeGreaterThanOrEqual(0);
+    expect(noteAt).toBeGreaterThan(historyAt);
+    expect(stageAt).toBeGreaterThan(noteAt);
+    expect(prompt).toContain("记忆已整理至事件 88（当前事件 92）");
+    expect(prompt).toContain("[活跃剧情线]");
+  });
+
+  it("omits the director note entirely without a brief", () => {
+    const ctx: DslContextInput = {
+      ...makeDefaultContext(),
+      taskType: "continuation",
+      generationNonce: "c0de",
+      targetLines: 6,
+    };
+
+    const prompt = buildDslUserPrompt(4, ctx);
+    expect(prompt).not.toContain("导演便签");
+    expect(prompt).not.toContain("记忆已整理至事件");
   });
 });

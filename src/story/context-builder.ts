@@ -7,6 +7,11 @@
  */
 
 import type { AuthorConfig } from "../config.js";
+import {
+  DEFAULT_MAX_RECENT_RAW_EVENTS,
+  renderDirectorNote,
+} from "../application/narrative/narrative-context-builder.js";
+import type { NarrativeBrief } from "../core/narrative/narrative-brief.js";
 import type { ModelAssetCatalog } from "../core/assets/types.js";
 import type { VisualState } from "../core/presentation/types.js";
 import type { PromptBundle } from "../prompts.js";
@@ -27,6 +32,8 @@ export interface ContextInput {
   recentEvents: StoryContextEvent[];
   /** Optional author-enforced constraints. */
   authorConfig?: AuthorConfig;
+  /** Per-turn narrative director brief (rendered as a director note). */
+  directorBrief?: NarrativeBrief;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +215,8 @@ export interface DslContextInput extends ContextInput {
   tailVisualState?: VisualState;
   /** Model-facing asset catalog (logical ids only, docs §59). */
   modelAssetCatalog?: ModelAssetCatalog;
+  /** Raw event window size referenced by the director note (default 40). */
+  maxRecentRawEvents?: number;
 }
 
 /**
@@ -237,6 +246,15 @@ export function buildDslUserPrompt(
       ? serializeStoryContext(input.recentEvents)
       : "（当前没有历史事件。）",
   );
+
+  if (input.directorBrief) {
+    sections.push(
+      renderDirectorNote(
+        input.directorBrief,
+        input.maxRecentRawEvents ?? DEFAULT_MAX_RECENT_RAW_EVENTS,
+      ),
+    );
+  }
 
   if (input.tailVisualState) {
     sections.push("===== 当前舞台状态 =====");
