@@ -86,8 +86,8 @@ function makeThread(overrides: Partial<PlotThread> & { id: string }): PlotThread
     summary: `${overrides.id} summary`,
     status: "open",
     importance: "major",
-    introducedAt: 0,
-    lastTouchedAt: 0,
+    introducedAtCheckpoint: 0,
+    lastTouchedAtCheckpoint: 0,
     source: "author",
     ...overrides,
   };

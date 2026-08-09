@@ -85,8 +85,8 @@ function parseThread(
     return PlotThreadSchema.parse({
       ...fields,
       source: "author",
-      introducedAt: fields.introducedAt ?? 0,
-      lastTouchedAt: fields.lastTouchedAt ?? 0,
+      introducedAtCheckpoint: fields.introducedAtCheckpoint ?? 0,
+      lastTouchedAtCheckpoint: fields.lastTouchedAtCheckpoint ?? 0,
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

@@ -209,7 +209,10 @@ export function validateEpisodeOp(op: EpisodeSummaryOp): string | null {
 /**
  * Decide the directive for one setup at a checkpoint.
  * - paid_off/dropped → undefined (no directive)
- * - payoffBeforeAnchor matches the current anchor → payoff now
+ * - payoffBeforeAnchor matches the current anchor → payoff now (only for
+ *   states the validator accepts a payoff from: seeded|reinforced|ready —
+ *   otherwise the director would issue an instruction the validator
+ *   rejects, audit finding 3)
  * - seeded and untouched for ≥ 2 checkpoints → reinforce soon
  * - otherwise → hold (normal urgency)
  */
@@ -223,12 +226,18 @@ export function classifySetup(
   }
   if (
     item.payoffBeforeAnchor !== undefined &&
-    item.payoffBeforeAnchor === currentAnchorId
+    item.payoffBeforeAnchor === currentAnchorId &&
+    (item.status === "seeded" ||
+      item.status === "reinforced" ||
+      item.status === "ready")
   ) {
     return { id: item.id, action: "payoff", urgency: "now" };
   }
   if (item.status === "seeded") {
-    const lastTouched = item.lastTouchedAt ?? item.seededAt ?? checkpoint;
+    // Timeline fields are checkpoint units (narrative beats), so the age
+    // math below is unit-consistent (audit finding 3).
+    const lastTouched =
+      item.lastTouchedAtCheckpoint ?? item.seededAtCheckpoint ?? checkpoint;
     if (checkpoint - lastTouched >= 2) {
       return { id: item.id, action: "reinforce", urgency: "soon" };
     }

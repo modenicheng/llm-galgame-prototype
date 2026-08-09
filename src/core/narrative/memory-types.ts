@@ -58,8 +58,8 @@ export interface PlotThread {
   summary: string;
   status: PlotThreadStatus;
   importance: "major" | "minor";
-  introducedAt: number;
-  lastTouchedAt: number;
+  introducedAtCheckpoint: number;
+  lastTouchedAtCheckpoint: number;
   nextPressure?: string;
   source: "author" | "runtime";
 }
@@ -72,9 +72,9 @@ export interface SetupPayoff {
   status: SetupStatus;
   threadId?: string;
   reinforcementCount: number;
-  seededAt?: number;
-  lastTouchedAt?: number;
-  payoffAt?: number;
+  seededAtCheckpoint?: number;
+  lastTouchedAtCheckpoint?: number;
+  payoffAtCheckpoint?: number;
   prerequisites: string[];
   payoffBeforeAnchor?: string;
   source: "author" | "runtime";
@@ -128,8 +128,8 @@ export const PlotThreadSchema: z.ZodType<PlotThread> = z.object({
     "abandoned",
   ]),
   importance: z.enum(["major", "minor"]),
-  introducedAt: z.number().int().nonnegative(),
-  lastTouchedAt: z.number().int().nonnegative(),
+  introducedAtCheckpoint: z.number().int().nonnegative(),
+  lastTouchedAtCheckpoint: z.number().int().nonnegative(),
   nextPressure: z.exactOptional(z.string().min(1)),
   source: z.enum(["author", "runtime"]),
 });
@@ -158,9 +158,9 @@ export const SetupPayoffSchema: z.ZodType<SetupPayoff> = z.object({
   ]),
   threadId: z.exactOptional(z.string().min(1)),
   reinforcementCount: z.number().int().nonnegative(),
-  seededAt: z.exactOptional(z.number().int().nonnegative()),
-  lastTouchedAt: z.exactOptional(z.number().int().nonnegative()),
-  payoffAt: z.exactOptional(z.number().int().nonnegative()),
+  seededAtCheckpoint: z.exactOptional(z.number().int().nonnegative()),
+  lastTouchedAtCheckpoint: z.exactOptional(z.number().int().nonnegative()),
+  payoffAtCheckpoint: z.exactOptional(z.number().int().nonnegative()),
   prerequisites: z.array(z.string().min(1)),
   payoffBeforeAnchor: z.exactOptional(z.string().min(1)),
   source: z.enum(["author", "runtime"]),

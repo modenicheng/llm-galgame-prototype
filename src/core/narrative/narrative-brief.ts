@@ -48,7 +48,7 @@ export interface NarrativeBrief {
       | "summary"
       | "status"
       | "importance"
-      | "lastTouchedAt"
+      | "lastTouchedAtCheckpoint"
       | "nextPressure"
     >
   >;
@@ -71,7 +71,7 @@ const ActiveThreadSchema = z.object({
     "abandoned",
   ]),
   importance: z.enum(["major", "minor"]),
-  lastTouchedAt: z.number().int().nonnegative(),
+  lastTouchedAtCheckpoint: z.number().int().nonnegative(),
   nextPressure: z.exactOptional(z.string().min(1)),
 });
 

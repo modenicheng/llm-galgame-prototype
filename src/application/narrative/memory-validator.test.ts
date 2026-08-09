@@ -40,8 +40,8 @@ function makeThread(overrides: Partial<PlotThread> = {}): PlotThread {
     summary: "The lighthouse mystery",
     status: "developing",
     importance: "major",
-    introducedAt: 12,
-    lastTouchedAt: 40,
+    introducedAtCheckpoint: 12,
+    lastTouchedAtCheckpoint: 40,
     source: "runtime",
     ...overrides,
   };
@@ -517,13 +517,13 @@ describe("classifySetup", () => {
     const item = makeSetup({
       status: "paid_off",
       payoffBeforeAnchor: "anchor-x",
-      lastTouchedAt: 0,
+      lastTouchedAtCheckpoint: 0,
     });
     expect(classifySetup(item, 10, "anchor-x")).toBeUndefined();
   });
 
   it("returns undefined for dropped", () => {
-    const item = makeSetup({ status: "dropped", lastTouchedAt: 0 });
+    const item = makeSetup({ status: "dropped", lastTouchedAtCheckpoint: 0 });
     expect(classifySetup(item, 10, undefined)).toBeUndefined();
   });
 
@@ -531,7 +531,7 @@ describe("classifySetup", () => {
     const item = makeSetup({
       status: "seeded",
       payoffBeforeAnchor: "anchor-x",
-      lastTouchedAt: 0,
+      lastTouchedAtCheckpoint: 0,
     });
     expect(classifySetup(item, 10, "anchor-x")).toEqual({
       id: "setup-1",
@@ -545,7 +545,7 @@ describe("classifySetup", () => {
       const item = makeSetup({
         status,
         payoffBeforeAnchor: "anchor-x",
-        lastTouchedAt: 0,
+        lastTouchedAtCheckpoint: 0,
       });
       expect(classifySetup(item, 10, "anchor-x")).toEqual({
         id: "setup-1",
@@ -559,10 +559,10 @@ describe("classifySetup", () => {
     const item = makeSetup({
       status: "seeded",
       payoffBeforeAnchor: "anchor-x",
-      lastTouchedAt: 0,
-      seededAt: 0,
+      lastTouchedAtCheckpoint: 0,
+      seededAtCheckpoint: 0,
     });
-    // checkpoint - lastTouchedAt = 10 >= 2, but the anchor match wins.
+    // checkpoint - lastTouchedAtCheckpoint = 10 >= 2, but the anchor match wins.
     expect(classifySetup(item, 10, "anchor-x")).toEqual({
       id: "setup-1",
       action: "payoff",
@@ -574,7 +574,7 @@ describe("classifySetup", () => {
     const item = makeSetup({
       status: "seeded",
       payoffBeforeAnchor: "anchor-x",
-      lastTouchedAt: 9,
+      lastTouchedAtCheckpoint: 9,
     });
     expect(classifySetup(item, 10, "anchor-y")).toEqual({
       id: "setup-1",
@@ -583,8 +583,33 @@ describe("classifySetup", () => {
     });
   });
 
+  it("never issues payoff/now for a planned setup even when the anchor matches (validator would reject it)", () => {
+    const item = makeSetup({
+      status: "planned",
+      payoffBeforeAnchor: "anchor-x",
+    });
+    expect(classifySetup(item, 10, "anchor-x")).toEqual({
+      id: "setup-1",
+      action: "hold",
+      urgency: "normal",
+    });
+  });
+
+  it("ignores payoffBeforeAnchor when the current anchor is undefined (no anchor reached yet in step 1+2)", () => {
+    const item = makeSetup({
+      status: "seeded",
+      payoffBeforeAnchor: "anchor-x",
+      lastTouchedAtCheckpoint: 9,
+    });
+    expect(classifySetup(item, 10, undefined)).toEqual({
+      id: "setup-1",
+      action: "hold",
+      urgency: "normal",
+    });
+  });
+
   it("returns reinforce/soon for a stale seeded setup (gap >= 2)", () => {
-    const item = makeSetup({ status: "seeded", lastTouchedAt: 8 });
+    const item = makeSetup({ status: "seeded", lastTouchedAtCheckpoint: 8 });
     expect(classifySetup(item, 10, undefined)).toEqual({
       id: "setup-1",
       action: "reinforce",
@@ -592,8 +617,8 @@ describe("classifySetup", () => {
     });
   });
 
-  it("uses seededAt when lastTouchedAt is absent", () => {
-    const item = makeSetup({ status: "seeded", seededAt: 7 });
+  it("uses seededAtCheckpoint when lastTouchedAtCheckpoint is absent", () => {
+    const item = makeSetup({ status: "seeded", seededAtCheckpoint: 7 });
     expect(classifySetup(item, 10, undefined)).toEqual({
       id: "setup-1",
       action: "reinforce",
@@ -602,7 +627,7 @@ describe("classifySetup", () => {
   });
 
   it("returns hold/normal for a fresh seeded setup (gap < 2)", () => {
-    const item = makeSetup({ status: "seeded", lastTouchedAt: 9 });
+    const item = makeSetup({ status: "seeded", lastTouchedAtCheckpoint: 9 });
     expect(classifySetup(item, 10, undefined)).toEqual({
       id: "setup-1",
       action: "hold",
@@ -610,7 +635,7 @@ describe("classifySetup", () => {
     });
   });
 
-  it("returns hold/normal when seededAt and lastTouchedAt are both absent", () => {
+  it("returns hold/normal when seededAtCheckpoint and lastTouchedAtCheckpoint are both absent", () => {
     const item = makeSetup({ status: "seeded" });
     expect(classifySetup(item, 10, undefined)).toEqual({
       id: "setup-1",
@@ -621,7 +646,7 @@ describe("classifySetup", () => {
 
   it("returns hold/normal for non-seeded active statuses even when stale", () => {
     for (const status of ["reinforced", "ready"] as const) {
-      const item = makeSetup({ status, lastTouchedAt: 0 });
+      const item = makeSetup({ status, lastTouchedAtCheckpoint: 0 });
       expect(classifySetup(item, 10, undefined)).toEqual({
         id: "setup-1",
         action: "hold",
@@ -641,7 +666,7 @@ describe("classifySetup", () => {
 
   it("carries the item id through in every directive branch", () => {
     const directive: SetupDirective = classifySetup(
-      makeSetup({ id: "custom-id", status: "seeded", lastTouchedAt: 8 }),
+      makeSetup({ id: "custom-id", status: "seeded", lastTouchedAtCheckpoint: 8 }),
       10,
       undefined,
     ) as SetupDirective;

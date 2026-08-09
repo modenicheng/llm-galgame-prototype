@@ -50,7 +50,7 @@ describe("renderDirectorNote", () => {
           summary: "苏遥对主角隐瞒了旧终端的秘密",
           status: "developing",
           importance: "major",
-          lastTouchedAt: 10,
+          lastTouchedAtCheckpoint: 10,
           nextPressure: "苏遥可能在今晚再次提起旧终端",
         },
         {
@@ -59,7 +59,7 @@ describe("renderDirectorNote", () => {
           summary: "寻找离开旧图书馆的出口",
           status: "open",
           importance: "minor",
-          lastTouchedAt: 9,
+          lastTouchedAtCheckpoint: 9,
         },
       ],
       setupDirectives: [

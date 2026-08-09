@@ -9,12 +9,12 @@
 #   intended_payoff      -> intendedPayoff
 #   thread_id            -> threadId
 #   reinforcement_count  -> reinforcementCount
-#   seeded_at            -> seededAt
-#   last_touched_at      -> lastTouchedAt
-#   payoff_at            -> payoffAt
+#   seeded_at_checkpoint            -> seededAt
+#   last_touched_at_checkpoint      -> lastTouchedAt
+#   payoff_at_checkpoint            -> payoffAt
 #   prerequisites        -> prerequisites
 #   payoff_before_anchor -> payoffBeforeAnchor
-#   introduced_at        -> introducedAt
+#   introduced_at_checkpoint        -> introducedAt
 # ============================================================================
 
 threads:

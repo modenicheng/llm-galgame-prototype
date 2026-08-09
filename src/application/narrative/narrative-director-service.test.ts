@@ -136,8 +136,8 @@ function makeThread(overrides: Partial<PlotThread> & { id: string }): PlotThread
     summary: `${overrides.id} summary`,
     status: "open",
     importance: "major",
-    introducedAt: 0,
-    lastTouchedAt: 0,
+    introducedAtCheckpoint: 0,
+    lastTouchedAtCheckpoint: 0,
     source: "author",
     ...overrides,
   };
@@ -413,10 +413,10 @@ describe("NarrativeDirectorService", () => {
       };
     }
 
-    it("applies valid thread ops: touch updates lastTouchedAt + summary", async () => {
+    it("applies valid thread ops: touch updates lastTouchedAtCheckpoint + summary", async () => {
       const store = new FakeStore(emptyState());
       const plan = makePlan([
-        makeThread({ id: "t1", status: "open", lastTouchedAt: 5 }),
+        makeThread({ id: "t1", status: "open", lastTouchedAtCheckpoint: 5 }),
       ]);
       const svc = new NarrativeDirectorService({
         config: makeConfig(),
@@ -438,20 +438,23 @@ describe("NarrativeDirectorService", () => {
       await svc.initialize();
 
       svc.observeCommitted([makeEvent(10)]);
+      // Timeline fields are checkpoint units: advance the beat first.
+      svc.checkpoint("interaction_completed");
       const result = await svc.consolidatePending();
       expect(result.applied).toBeGreaterThan(0);
 
       // Check that store.saveState was called with updated state
       expect(store.saveStateCalls.length).toBeGreaterThanOrEqual(1);
       const saved = store.saveStateCalls[store.saveStateCalls.length - 1]!;
-      expect(saved.threads["t1"]!.lastTouchedAt).toBe(10);
+      // checkpointCount was 0 → 1 by the checkpoint above.
+      expect(saved.threads["t1"]!.lastTouchedAtCheckpoint).toBe(1);
       expect(saved.threads["t1"]!.summary).toBe("new summary");
     });
 
     it("applies advance: advances thread to next status", async () => {
       const store = new FakeStore(emptyState());
       const plan = makePlan([
-        makeThread({ id: "t1", status: "open", lastTouchedAt: 0 }),
+        makeThread({ id: "t1", status: "open", lastTouchedAtCheckpoint: 0 }),
       ]);
       const svc = new NarrativeDirectorService({
         config: makeConfig(),
@@ -871,7 +874,7 @@ describe("NarrativeDirectorService", () => {
         [],
         [
           makeSetup({ id: "s-paid", status: "paid_off" }),
-          makeSetup({ id: "s-active", status: "seeded", lastTouchedAt: 0 }),
+          makeSetup({ id: "s-active", status: "seeded", lastTouchedAtCheckpoint: 0 }),
         ],
         [makeAnchor({ id: "anchor-x", status: "pending" })],
       );

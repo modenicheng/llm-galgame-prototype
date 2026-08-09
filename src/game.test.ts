@@ -3527,7 +3527,7 @@ describe("NarrativeDirector integration", () => {
           summary: "寻找失踪的妹妹",
           status: "developing" as const,
           importance: "major" as const,
-          lastTouchedAt: 5,
+          lastTouchedAtCheckpoint: 5,
         },
       ],
       setupDirectives: [

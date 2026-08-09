@@ -203,7 +203,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
           summary: string;
           status: PlotThread["status"];
           importance: PlotThread["importance"];
-          lastTouchedAt: number;
+          lastTouchedAtCheckpoint: number;
           nextPressure?: string;
         } = {
           id: t.id,
@@ -211,7 +211,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
           summary: t.summary,
           status: t.status,
           importance: t.importance,
-          lastTouchedAt: t.lastTouchedAt,
+          lastTouchedAtCheckpoint: t.lastTouchedAtCheckpoint,
         };
         if (t.nextPressure !== undefined) {
           entry.nextPressure = t.nextPressure;
@@ -362,6 +362,11 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       // needed — the front only ever moves forward.
       const newWatermark = batchLastSeq;
 
+      // Timeline fields are checkpoint units (narrative beats), not event
+      // seqs: classifySetup's age math compares them against the checkpoint
+      // counter (audit finding 3).
+      const nowCheckpoint = this.memory.checkpointCount;
+
       // 1) Episode
       let newEpisode: EpisodeMemory | undefined;
       if (outcome.episode !== null) {
@@ -372,13 +377,13 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
       // 2) Thread ops
       for (const op of outcome.threadOps) {
-        this.applyThreadOp(op, batchLastSeq);
+        this.applyThreadOp(op, nowCheckpoint);
         applied += 1;
       }
 
       // 3) Setup ops
       for (const op of outcome.setupOps) {
-        this.applySetupOp(op, batchLastSeq);
+        this.applySetupOp(op, nowCheckpoint);
         applied += 1;
       }
 
@@ -441,8 +446,13 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   // -----------------------------------------------------------------------
 
   /**
-   * Find the first pending anchor after the most recent reached/passed
-   * anchor. Returns undefined if no such anchor exists.
+   * Find the first pending anchor AFTER the most recent reached/passed
+   * anchor. Returns undefined when no anchor has been reached yet.
+   *
+   * Anchor progression (reach/pass) is a Step-3 PlotPlanner concern; in
+   * Step 1+2 no anchor can ever become reached, so this returns undefined
+   * and payoffBeforeAnchor directives stay inert — the brief must not
+   * claim a payoff deadline it cannot honor (audit finding 3).
    */
   private computeCurrentAnchorId(): string | undefined {
     // Sort anchors by id for determinism
@@ -459,6 +469,12 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       }
     }
 
+    // No anchor has been reached yet → no "current" anchor exists
+    // (Step 2 has no anchor-progression mechanism).
+    if (lastResolvedIdx === -1) {
+      return undefined;
+    }
+
     // Look for first pending after that index
     for (let i = lastResolvedIdx + 1; i < sorted.length; i++) {
       if (sorted[i]!.status === "pending") {
@@ -473,12 +489,14 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   // Internal: apply ops to in-memory state
   // -----------------------------------------------------------------------
 
-  private applyThreadOp(op: ThreadOp, now: number): void {
+  /** Apply a thread op; `checkpoint` is the current narrative beat
+   *  (checkpointCount), the unit of all timeline fields. */
+  private applyThreadOp(op: ThreadOp, checkpoint: number): void {
     switch (op.type) {
       case "touch": {
         const t = this.memory.threads[op.id];
         if (t) {
-          t.lastTouchedAt = now;
+          t.lastTouchedAtCheckpoint = checkpoint;
           if (op.progress !== undefined) {
             t.summary = op.progress;
           }
@@ -493,7 +511,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
           if (nextStatus) {
             t.status = nextStatus;
           }
-          t.lastTouchedAt = now;
+          t.lastTouchedAtCheckpoint = checkpoint;
         }
         break;
       }
@@ -501,7 +519,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         const t = this.memory.threads[op.id];
         if (t) {
           t.status = "resolved";
-          t.lastTouchedAt = now;
+          t.lastTouchedAtCheckpoint = checkpoint;
         }
         break;
       }
@@ -509,7 +527,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         const t = this.memory.threads[op.id];
         if (t) {
           t.status = "abandoned";
-          t.lastTouchedAt = now;
+          t.lastTouchedAtCheckpoint = checkpoint;
         }
         break;
       }
@@ -520,8 +538,8 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
           summary: op.progress ?? `Thread ${op.id}`,
           status: "open",
           importance: "minor",
-          introducedAt: now,
-          lastTouchedAt: now,
+          introducedAtCheckpoint: checkpoint,
+          lastTouchedAtCheckpoint: checkpoint,
           source: "runtime",
         };
         break;
@@ -529,27 +547,28 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     }
   }
 
-  private applySetupOp(op: SetupOp, now: number): void {
+  /** Apply a setup op; `checkpoint` is the current narrative beat. */
+  private applySetupOp(op: SetupOp, checkpoint: number): void {
     const s = this.memory.setups[op.id];
     if (!s) return;
 
     switch (op.type) {
       case "seed": {
         s.status = "seeded";
-        s.seededAt = now;
-        s.lastTouchedAt = now;
+        s.seededAtCheckpoint = checkpoint;
+        s.lastTouchedAtCheckpoint = checkpoint;
         break;
       }
       case "reinforce": {
         s.status = "reinforced";
         s.reinforcementCount += 1;
-        s.lastTouchedAt = now;
+        s.lastTouchedAtCheckpoint = checkpoint;
         break;
       }
       case "payoff": {
         s.status = "paid_off";
-        s.payoffAt = now;
-        s.lastTouchedAt = now;
+        s.payoffAtCheckpoint = checkpoint;
+        s.lastTouchedAtCheckpoint = checkpoint;
         break;
       }
       case "hold": {

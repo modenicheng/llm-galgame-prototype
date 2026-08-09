@@ -72,8 +72,8 @@ function makeFakeThreads(): PlotThread[] {
       summary: "主线剧情A",
       status: "open",
       importance: "major",
-      introducedAt: 0,
-      lastTouchedAt: 0,
+      introducedAtCheckpoint: 0,
+      lastTouchedAtCheckpoint: 0,
       source: "author",
     },
     {
@@ -82,8 +82,8 @@ function makeFakeThreads(): PlotThread[] {
       summary: "谜团线索B",
       status: "developing",
       importance: "minor",
-      introducedAt: 1,
-      lastTouchedAt: 1,
+      introducedAtCheckpoint: 1,
+      lastTouchedAtCheckpoint: 1,
       source: "author",
     },
   ];

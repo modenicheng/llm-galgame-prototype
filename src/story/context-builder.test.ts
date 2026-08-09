@@ -95,7 +95,7 @@ function makeBrief(): NarrativeBrief {
         summary: "旧终端里藏着苏遥的秘密",
         status: "developing",
         importance: "major",
-        lastTouchedAt: 12,
+        lastTouchedAtCheckpoint: 12,
       },
     ],
     setupDirectives: [{ id: "setup_key", action: "reinforce", urgency: "now" }],
