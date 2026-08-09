@@ -136,7 +136,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     // port yields an empty outcome without calling anything.
     this.consolidator = new MemoryConsolidator({
       port: opts.consolidator,
-      config: opts.config,
+      config: this.config,
       diagnostics: this.diagnostics,
     });
   }

@@ -1012,6 +1012,45 @@ describe("NarrativeDirectorService", () => {
         DEFAULT_NARRATIVE_CONFIG.threads.max_major_active,
       );
     });
+
+    it("normalized config reaches MemoryConsolidator (not raw partial)", async () => {
+      // Regression: the constructor passed opts.config (raw) to
+      // MemoryConsolidator instead of this.config (normalized).
+      // When a caller supplies only { mode: "longform" },
+      // MemoryConsolidator.consolidate() reads
+      // config.consolidation.max_events_per_call → undefined → TypeError.
+      const partial = { mode: "longform" as const } as NarrativeConfig;
+      const store = new FakeStore();
+      const consolidateFn = vi.fn().mockResolvedValue({
+        episode: {
+          summary: "consolidated",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      } satisfies ConsolidationResult);
+      const fakePort: MemoryConsolidatorPort = { consolidate: consolidateFn };
+
+      const svc = new NarrativeDirectorService({
+        config: partial,
+        store,
+        consolidator: fakePort,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      // Push events and call consolidatePending directly.
+      // Must NOT throw TypeError from undefined consolidation config.
+      svc.observeCommitted([makeEvent(1), makeEvent(2)]);
+      const result = await svc.consolidatePending();
+
+      expect(result.applied).toBeGreaterThanOrEqual(1);
+      expect(consolidateFn).toHaveBeenCalled();
+    });
   });
 
   // -----------------------------------------------------------------------
