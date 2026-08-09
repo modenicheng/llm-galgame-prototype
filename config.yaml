@@ -18,7 +18,8 @@ generation:
   # 模型输出协议：dsl（新 Gal DSL）或 jsonl（旧协议，迁移期回滚用）
   protocol: dsl
   temperature: 0.9
-  max_tokens: 1400
+  # 1400 常在长段结尾截断（无 @end）导致整段判失败；2200 给模型足够预算
+  max_tokens: 2200
   repair_attempts: 2
 
 # 文本缓冲阈值（docs §74）：播放达到两句即可开始；正常保持六句未来内容；只剩三句时启动续写
@@ -79,7 +80,9 @@ media:
       # 每句角色音频开播前的固定延迟，用于同步视觉与听觉（0 = 不延迟）。
       # 若发现配音比字幕快/慢，可在此微调。
       voice_delay_ms: 500
-      startup_buffer_ms: 350
+      # 350ms 开播太早，整句要 ~1s 才生成完，播一段等一段造成可感知卡顿；
+      # 1400ms 攒够一句的量再开播（短句仍由 EOF 立即开播逻辑兜底）
+      startup_buffer_ms: 1400
       critical_watermark_ms: 500
       low_watermark_ms: 2500
       target_buffer_ms: 6500

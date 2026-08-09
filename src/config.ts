@@ -353,7 +353,7 @@ const ConfigSchema = z.object({
   generation: z.object({
     protocol: z.enum(["jsonl", "dsl"]).default("jsonl"),
     temperature: z.number().min(0).max(2).default(0.9),
-    max_tokens: z.number().int().positive().default(1400),
+    max_tokens: z.number().int().positive().default(2200),
     repair_attempts: z.number().int().min(0).max(5).default(2)
   }),
   text_buffer: z

@@ -3214,7 +3214,8 @@ Parser 最终仍编译成现有 RuntimeInteractionEvent。
 generation:
   protocol: dsl
   temperature: 0.9
-  max_tokens: 1400
+  # 1400 常在长段结尾截断（无 @end）导致整段判失败；2200 给模型足够预算
+  max_tokens: 2200
   repair_attempts: 2
 
 text_buffer:

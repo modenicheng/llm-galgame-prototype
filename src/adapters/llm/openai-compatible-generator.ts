@@ -478,19 +478,21 @@ export class StoryGenerator {
 
       // On retry: add repair instruction describing the previous failure.
       // Provider-internal retries set `lastError`; the Game-level repair
-      // path passes a concrete reason via options.repairReason. Both may
-      // apply to the same request, so each reason gets its own instruction.
-      const repairParts = [lastError, options?.repairReason].filter(
-        (reason): reason is string => Boolean(reason),
-      );
-      const repairInstruction = repairParts.length
-        ? `\n${repairParts
-            .map(
-              (reason) =>
-                `上一份输出出错：${reason}。请修正该问题后从失败位置继续，不要重复已输出的内容。`,
-            )
-            .join("\n")}`
+      // path passes a concrete reason via options.repairReason. They get
+      // different guidance: an in-stream schema violation means "fix this
+      // output and keep going", while a Game-level repair means the segment
+      // was truncated without a terminal — the model must ONLY close the
+      // segment (interaction form or @end), not write new dialogue.
+      const lastErrorInstruction = lastError
+        ? `\n上一份输出出错：${lastError}。请修正该问题后继续输出，不要重复已输出的内容。`
         : "";
+      const repairReasonInstruction = options?.repairReason
+        ? `\n上一段输出未正常结束：${options.repairReason}。` +
+          `\n你现在只需要**收尾**，不要写新台词或推进剧情：` +
+          `若该让玩家交互，直接输出一个完整交互表单（? ... /?）；` +
+          `否则直接输出 @end 哨兵（buffer 或 ending）。不要重复已输出的内容。`
+        : "";
+      const repairInstruction = lastErrorInstruction + repairReasonInstruction;
 
       const callStart = Date.now();
       let firstLineMs = 0;

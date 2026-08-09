@@ -69,7 +69,7 @@ describe("loadConfig defaults", () => {
     expect(config.api.timeout_ms).toBe(60000); // default
 
     expect(config.generation.temperature).toBe(1.0); // explicit in yaml
-    expect(config.generation.max_tokens).toBe(1400); // default
+    expect(config.generation.max_tokens).toBe(2200); // default
     expect(config.generation.repair_attempts).toBe(2); // default
     expect(config.generation.protocol).toBe("jsonl"); // default
 

@@ -84,7 +84,19 @@ function resolveDialogue(
   state: VisualState,
   registry: CharacterRegistry,
   defaultsFor: (id: string) => CharacterPresentationState | undefined,
+  diagnostics?: AssetDiagnostic[],
 ): ResolvedDialogue {
+  // Display-name overrides must be natural language. ASCII ids like
+  // "mysterious" / "speaking_smile" mean the model confused the display-name
+  // slot with a sprite id — treat the override as absent (stage label falls
+  // back to the default) and diagnose.
+  const displayNameOverride =
+    name.displayName !== undefined && /\p{Script=Han}/u.test(name.displayName)
+      ? name.displayName
+      : undefined;
+  if (name.displayName !== undefined && displayNameOverride === undefined) {
+    diagnostics?.push({ code: "FORBIDDEN_DISPLAY_NAME", id: name.displayName });
+  }
   const entry =
     registry.resolveByScriptName(speakerName) ?? registry.resolveById(speakerName);
   const characterId = entry?.characterId ?? speakerName;
@@ -100,8 +112,8 @@ function resolveDialogue(
   const current = state.characters[characterId];
 
   let speaker: string;
-  if (name.displayName !== undefined) {
-    speaker = name.displayName;
+  if (displayNameOverride !== undefined) {
+    speaker = displayNameOverride;
   } else if (name.resetName) {
     speaker = defaults?.displayName ?? speakerName;
   } else {
@@ -144,8 +156,8 @@ function resolveDialogue(
     }
   }
 
-  if (name.displayName !== undefined) {
-    cue.displayName = setOp(name.displayName);
+  if (displayNameOverride !== undefined) {
+    cue.displayName = setOp(displayNameOverride);
     hasOps = true;
   } else if (name.resetName) {
     cue.displayName = resetOp();
@@ -177,7 +189,8 @@ function filterInvalidCues(
       keep = cue.assetId in catalog.backgrounds;
       if (!keep) diagnostics?.push({ code: "UNKNOWN_BACKGROUND", id: cue.assetId });
     } else if (cue.type === "bgm") {
-      keep = cue.assetId in catalog.bgm;
+      // `bgm stop` is a control cue (reducer clears bgm), not an asset id.
+      keep = cue.assetId === "stop" || cue.assetId in catalog.bgm;
       if (!keep) diagnostics?.push({ code: "UNKNOWN_BGM", id: cue.assetId });
     } else if (cue.type === "sound_effect") {
       keep = cue.assetId in catalog.soundEffects;
@@ -200,7 +213,11 @@ function filterInvalidCues(
         const effectiveSet =
           cue.spriteSet !== undefined && cue.spriteSet.op === "set"
             ? cue.spriteSet.value
-            : state.characters[cue.character]?.spriteSet;
+            : state.characters[cue.character]?.spriteSet ??
+              // Not mounted yet (first touch) — fall back to the character's
+              // registry-bound default set so UNKNOWN_SPRITE_VARIANT is not
+              // raised for a legal variant on a not-yet-on-stage character.
+              registry.resolveById(cue.character)?.spriteSet;
         const variants =
           effectiveSet !== undefined ? catalog.spriteSets[effectiveSet]?.variants : undefined;
         if (variants === undefined || !Object.hasOwn(variants, cue.variant.value)) {
@@ -245,6 +262,7 @@ export function compileEventGroup(
         tailState,
         registry,
         defaultsFor,
+        options.diagnostics,
       );
       main = {
         type: "dialogue",

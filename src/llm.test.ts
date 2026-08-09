@@ -521,7 +521,10 @@ describe("requestEnvelope streaming", () => {
     const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
     const userContent = create.mock.calls[0]![0].messages[1].content as string;
     expect(userContent).toContain("InteractionPolicy 拒绝：input 不允许。");
-    expect(userContent).toContain("请修正该问题后从失败位置继续，不要重复已输出的内容。");
+    // Game-level repair now instructs the model to ONLY close the segment
+    // (interaction form or @end), not to write new dialogue.
+    expect(userContent).toContain("你现在只需要**收尾**");
+    expect(userContent).toContain("不要写新台词或推进剧情");
     expect(envelope.events).toHaveLength(2);
   });
 

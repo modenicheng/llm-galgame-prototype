@@ -704,31 +704,49 @@ describe("JSONL store initialization", () => {
     expect(controller.ended()).toBe(true);
   });
 
-  it("throws when segment repairs are exhausted", async () => {
+  it("keeps repairing after the budget is exhausted (no fatal on truncated tail)", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    // Both the opening and the repair continuation fail after publishing
-    // one event; the budget of one repair must be exhausted.
+    // The opening fails after publishing one event; the repair budget is 1.
+    // Repairs #1 and #2 also fail after publishing a line each (budget
+    // exhausted along the way) — the run must NOT terminate: it keeps
+    // continuing along the last successful line until repair #3 succeeds.
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
       async (_t, _s, _sig, options) => {
         options!.onEvent!({ type: "narration", text: "半句。" });
         throw new Error("open 失败");
       },
     );
+    let repairs = 0;
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
       async (_t, _s, _h, _p, _sig, options) => {
-        options!.onEvent!({ type: "narration", text: "修复段半句。" });
-        throw new Error("修复失败");
+        repairs += 1;
+        // Failures publish a line via onEvent then throw (like a truncated
+        // stream); the successful repair returns a full envelope instead.
+        if (repairs < 3) {
+          options!.onEvent!({ type: "narration", text: `修复段半句${repairs}。` });
+          throw new Error("修复失败");
+        }
+        return envelope([
+          narrationEvent(`修复段收尾${repairs}。`),
+          endEvent("end_1", "Fin."),
+        ]);
       },
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
-    new MemoryController().attach(game);
-    await expect(game.run()).rejects.toThrow(/剧情段连续失败/);
+    const controller = new MemoryController();
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // Two failed repairs were consumed beyond the budget, then the third
+    // succeeded and the game reached its ending instead of crashing.
+    expect(repairs).toBe(3);
+    expect(controller.ended()).toBe(true);
   });
 
   it("routes a repaired segment's choice into the normal branch flow", async () => {

@@ -32,7 +32,7 @@ import { AudioCacheCleaner, type CleanerOptions } from "./storage/audio-cache-cl
 export const DEFAULT_PUBLIC_WEB_CONFIG: PublicWebConfig = {
   audio: {
     playback: {
-      startup_buffer_ms: 350,
+      startup_buffer_ms: 1400,
       critical_watermark_ms: 500,
       low_watermark_ms: 2500,
       target_buffer_ms: 6500,

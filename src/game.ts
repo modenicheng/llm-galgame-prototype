@@ -706,14 +706,16 @@ export class Game {
           });
           throw failure;
         }
-        if (repairBudget <= 0) {
-          const message = `剧情段连续失败（已保留 ${playable.length} 条事件）：${failure.message}`;
-          this.emit({
-            type: "runtime_error",
-            code: "segment_failed",
-            message,
-          });
-          throw new Error(message);
+        // Budget exhausted is NOT fatal (author requirement): as long as
+        // every repair publishes playable events — the truly fatal case (no
+        // playable prefix at all) is handled above — the story keeps moving
+        // along its last successful line instead of the whole run being
+        // killed by a single truncated (no-@end) model output. Warn once.
+        if (repairBudget === 0) {
+          this.diagnostics.warn(
+            "Repair",
+            `修复续写预算已耗尽（${failure.message}）；继续沿最后一条成功事件续写`,
+          );
         }
 
         // The failed segment may already have published a terminal event

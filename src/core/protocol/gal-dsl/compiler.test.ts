@@ -240,6 +240,41 @@ describe("compileEventGroup — dialogue resolution", () => {
     expect(second.group.prelude).toEqual([]);
   });
 
+  it("drops a non-CJK display-name override (model id confusion) but keeps the rest of the patch", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx();
+    const { group } = compileEventGroup(
+      dialogueWith("苏遥", "别动。", {
+        visual: { hasVisual: true, variant: "anxious" },
+        name: { hasName: true, displayName: "mysterious" },
+      }),
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    // speaker falls back to the default display name; the ASCII override is
+    // stripped while the visual variant survives. (First touch still writes
+    // the character's default display name 苏遥 into the patch.)
+    expect(group.main).toMatchObject({ type: "dialogue", characterId: "suyao", speaker: "苏遥" });
+    const cue = group.prelude[0] as { variant?: { op: string; value: string }; displayName?: { op: string; value: string } };
+    expect(cue.variant).toEqual({ op: "set", value: "anxious" });
+    expect(cue.displayName).toEqual({ op: "set", value: "苏遥" });
+    expect(diagnostics).toEqual([{ code: "FORBIDDEN_DISPLAY_NAME", id: "mysterious" }]);
+  });
+
+  it("keeps a CJK display-name override (神秘转学生) as-is", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx();
+    const { group } = compileEventGroup(
+      dialogueWith("苏遥", "同学。", { name: { hasName: true, displayName: "神秘转学生" } }),
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.main).toMatchObject({ speaker: "神秘转学生" });
+    const cue = group.prelude[0] as { displayName?: { op: string; value: string } };
+    expect(cue.displayName).toEqual({ op: "set", value: "神秘转学生" });
+    expect(diagnostics).toEqual([]);
+  });
+
   it("resets the display name with ()", () => {
     const ctx = makeCtx();
     const first = compileEventGroup(
@@ -511,6 +546,41 @@ describe("compileEventGroup — asset semantic validation (spec §7)", () => {
       { code: "UNKNOWN_BGM", id: "wrong" },
       { code: "UNKNOWN_SOUND_EFFECT", id: "buzz" },
     ]);
+  });
+
+  it("keeps the bgm 'stop' cue without consulting the catalog (UNKNOWN_BGM fix)", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx({ ...withBackground("basement"), bgm: "mystery" });
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [{ type: "bgm", assetId: "stop" }],
+        main: { type: "narration", text: "音乐戛然而止。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toEqual([{ type: "bgm", assetId: "stop" }]);
+    expect(tailState.bgm).toBeUndefined();
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("validates a variant against the registry default set when the character has not mounted yet", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx(withBackground("basement")); // no characters mounted
+    const { group } = compileEventGroup(
+      {
+        prelude: [
+          // suyao is registered (spriteSet suyao) but not yet on stage.
+          { type: "character_patch", character: "suyao", variant: { op: "set", value: "anxious" } },
+        ],
+        main: { type: "narration", text: "她放缓了脚步。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    // anxious exists in the suyao set → cue kept, no UNKNOWN diagnostic.
+    expect(group.prelude).toHaveLength(1);
+    expect(diagnostics).toEqual([]);
   });
 
   it("drops a character_patch with an unknown variant (=keep), text plays on", () => {
