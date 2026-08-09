@@ -1852,6 +1852,7 @@ export class Game {
     // state seeded from the current tail (docs §79).
     let responseState = this.tailVisualState;
 
+    const brief = this.makeBrief(turn + 1);
     const promise = this.generator
       .generateInputResponse(
         turn + 1,
@@ -1862,7 +1863,7 @@ export class Game {
         controller.signal,
         {
           tailVisualState: this.tailVisualState,
-          ...(this.makeBrief(turn + 1) ? { brief: this.makeBrief(turn + 1)! } : {}),
+          ...(brief ? { brief } : {}),
           onGroup: (group) => {
             if (controller.signal.aborted) {
               this.metrics.recordStaleInputEventDropped();
