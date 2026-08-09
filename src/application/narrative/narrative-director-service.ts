@@ -278,114 +278,131 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       return { applied: 0, rejected: [] };
     }
 
-    // Take pending events, capped to max_events_per_call (keep last N)
-    const maxEvents = this.config.consolidation.max_events_per_call;
-    const batch =
-      this.pendingEvents.length > maxEvents
-        ? this.pendingEvents.slice(-maxEvents)
-        : [...this.pendingEvents];
-
-    if (batch.length === 0) {
+    // Guard against concurrent calls (safe for both direct and scheduled)
+    if (this.consolidateRunning) {
       return { applied: 0, rejected: [] };
     }
+    this.consolidateRunning = true;
 
-    const batchLastSeq = batch[batch.length - 1]!.seq;
-
-    // Active threads and non-terminal setups for the consolidator
-    const activeThreads = Object.values(this.memory.threads).filter((t) =>
-      ACTIVE_THREAD_STATUSES.has(t.status),
-    );
-    const nonTerminalSetups = Object.values(this.memory.setups).filter((s) =>
-      NON_TERMINAL_SETUP_STATUSES.has(s.status),
-    );
-
-    // --- Call consolidator ---
-    let result: ConsolidationResult;
     try {
-      result = await this.consolidator.consolidate({
-        events: batch,
-        threads: activeThreads,
-        setups: nonTerminalSetups,
-        stateLocation: "",
-        stateCharacters: [],
-      });
-    } catch (err) {
-      this.diagnostics.warn(
-        "NarrativeDirector",
-        `consolidation failed: ${String(err)}`,
-      );
-      return { applied: 0, rejected: [] };
-    }
+      // Atomically drain pending events at the start so observeCommitted
+      // during async consolidation does not lose events.
+      const pending = this.pendingEvents;
+      this.pendingEvents = [];
 
-    // --- Apply results ---
-    const rejected: RejectedOp[] = [];
-    let applied = 0;
-
-    // 1) Episode
-    const epReason = validateEpisodeOp(result.episode);
-    if (epReason === null) {
-      const ep = this.buildEpisode(result.episode, batch);
-      this.episodes.push(ep);
-      applied += 1;
-    } else {
-      rejected.push({ kind: "episode", op: result.episode, reason: epReason });
-    }
-
-    // 2) Thread ops
-    for (const op of result.threadOps) {
-      const reason = validateThreadOp(op, this.memory, this.config);
-      if (reason === null) {
-        this.applyThreadOp(op, batchLastSeq);
-        applied += 1;
-      } else {
-        rejected.push({ kind: "thread", op, reason });
-      }
-    }
-
-    // 3) Setup ops
-    for (const op of result.setupOps) {
-      const reason = validateSetupOp(op, this.memory, this.config);
-      if (reason === null) {
-        this.applySetupOp(op, batchLastSeq);
-        applied += 1;
-      } else {
-        rejected.push({ kind: "setup", op, reason });
-      }
-    }
-
-    // --- Advance state ---
-    this.memory.revision += 1;
-    this.memory.consolidatedThroughEventSeq = batchLastSeq;
-
-    // Build the episode and insert into recentEpisodeIds
-    if (epReason === null) {
-      const epId = this.makeEpisodeId(result.episode, batch);
-      this.memory.recentEpisodeIds.unshift(epId);
-      if (this.memory.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
-        this.memory.recentEpisodeIds = this.memory.recentEpisodeIds.slice(
-          0,
-          MAX_RECENT_EPISODE_IDS,
+      // Take pending events, capped to max_events_per_call (keep last N)
+      const maxEvents = this.config.consolidation.max_events_per_call;
+      let batch: StoredEvent[];
+      if (pending.length > maxEvents) {
+        this.diagnostics.info(
+          "NarrativeDirector",
+          `Dropping ${pending.length - maxEvents} overflow events from batch (max ${maxEvents})`,
         );
+        batch = pending.slice(-maxEvents);
+      } else {
+        batch = pending;
       }
-    }
 
-    // Persist
-    await this.store.saveState(this.memory);
-    if (epReason === null) {
-      const lastEp = this.episodes[this.episodes.length - 1];
-      if (lastEp) {
-        await this.store.appendEpisodes([lastEp]);
+      if (batch.length === 0) {
+        return { applied: 0, rejected: [] };
       }
-    }
-    if (rejected.length > 0) {
-      await this.store.appendOps(rejected);
-    }
 
-    // Clear pending batch
-    this.pendingEvents = [];
-    this.lastConsolidateAt = Date.now();
+      const batchLastSeq = batch[batch.length - 1]!.seq;
 
-    return { applied, rejected };
+      // Active threads and non-terminal setups for the consolidator
+      const activeThreads = Object.values(this.memory.threads).filter((t) =>
+        ACTIVE_THREAD_STATUSES.has(t.status),
+      );
+      const nonTerminalSetups = Object.values(this.memory.setups).filter((s) =>
+        NON_TERMINAL_SETUP_STATUSES.has(s.status),
+      );
+
+      // --- Call consolidator ---
+      let result: ConsolidationResult;
+      try {
+        result = await this.consolidator.consolidate({
+          events: batch,
+          threads: activeThreads,
+          setups: nonTerminalSetups,
+          stateLocation: "",
+          stateCharacters: [],
+        });
+      } catch (err) {
+        this.diagnostics.warn(
+          "NarrativeDirector",
+          `consolidation failed: ${String(err)}`,
+        );
+        return { applied: 0, rejected: [] };
+      }
+
+      // --- Apply results ---
+      const rejected: RejectedOp[] = [];
+      let applied = 0;
+
+      // 1) Episode
+      const epReason = validateEpisodeOp(result.episode);
+      let newEpisode: EpisodeMemory | undefined;
+      if (epReason === null) {
+        newEpisode = this.buildEpisode(result.episode, batch);
+        this.episodes.push(newEpisode);
+        applied += 1;
+      } else {
+        rejected.push({ kind: "episode", op: result.episode, reason: epReason });
+      }
+
+      // 2) Thread ops
+      for (const op of result.threadOps) {
+        const reason = validateThreadOp(op, this.memory, this.config);
+        if (reason === null) {
+          this.applyThreadOp(op, batchLastSeq);
+          applied += 1;
+        } else {
+          rejected.push({ kind: "thread", op, reason });
+        }
+      }
+
+      // 3) Setup ops
+      for (const op of result.setupOps) {
+        const reason = validateSetupOp(op, this.memory, this.config);
+        if (reason === null) {
+          this.applySetupOp(op, batchLastSeq);
+          applied += 1;
+        } else {
+          rejected.push({ kind: "setup", op, reason });
+        }
+      }
+
+      // --- Advance state ---
+      this.memory.revision += 1;
+      this.memory.consolidatedThroughEventSeq = batchLastSeq;
+
+      // Insert the episode id into recentEpisodeIds (use ep.id to avoid
+      // a second makeEpisodeId call that could produce a different id).
+      if (newEpisode) {
+        this.memory.recentEpisodeIds.unshift(newEpisode.id);
+        if (this.memory.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
+          this.memory.recentEpisodeIds = this.memory.recentEpisodeIds.slice(
+            0,
+            MAX_RECENT_EPISODE_IDS,
+          );
+        }
+      }
+
+      // Persist
+      await this.store.saveState(this.memory);
+      if (newEpisode) {
+        await this.store.appendEpisodes([newEpisode]);
+      }
+      if (rejected.length > 0) {
+        await this.store.appendOps(rejected);
+      }
+
+      this.lastConsolidateAt = Date.now();
+
+      return { applied, rejected };
+    } finally {
+      this.consolidateRunning = false;
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -401,17 +418,12 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     const gapMs = Date.now() - this.lastConsolidateAt;
     if (gapMs < this.config.consolidation.min_checkpoint_gap_ms) return;
 
-    this.consolidateRunning = true;
-    void this.consolidatePending()
-      .catch((err: unknown) => {
-        this.diagnostics.warn(
-          "NarrativeDirector",
-          `scheduled consolidation error: ${String(err)}`,
-        );
-      })
-      .finally(() => {
-        this.consolidateRunning = false;
-      });
+    void this.consolidatePending().catch((err: unknown) => {
+      this.diagnostics.warn(
+        "NarrativeDirector",
+        `scheduled consolidation error: ${String(err)}`,
+      );
+    });
   }
 
   // -----------------------------------------------------------------------

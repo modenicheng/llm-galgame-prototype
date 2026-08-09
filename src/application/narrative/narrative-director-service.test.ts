@@ -645,6 +645,9 @@ describe("NarrativeDirectorService", () => {
       const appended = store.appendEpisodesCalls[store.appendEpisodesCalls.length - 1]!;
       expect(appended).toHaveLength(1);
       expect(appended[0]!.summary).toBe("A new episode");
+
+      // CRITICAL: recentEpisodeIds[0] must match the appended episode's id
+      expect(saved.recentEpisodeIds[0]).toBe(appended[0]!.id);
     });
 
     it("rejects invalid ops and records them via appendOps", async () => {
@@ -1008,6 +1011,115 @@ describe("NarrativeDirectorService", () => {
       await new Promise((r) => setTimeout(r, 100));
 
       expect(consolidateFn).toHaveBeenCalled();
+    });
+
+    it("does not lose events observed during in-flight consolidation (atomic drain)", async () => {
+      // Use a deferred consolidator so we can inject observeCommitted
+      // while consolidatePending is still running. Set batch_min_events
+      // high so maybeSchedule never fires — only direct calls matter.
+      let resolveConsolidator!: (value: ConsolidationResult) => void;
+      const deferred = new Promise<ConsolidationResult>((resolve) => {
+        resolveConsolidator = resolve;
+      });
+
+      const consolidateFn = vi.fn().mockReturnValue(deferred);
+      const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
+      const store = new FakeStore(emptyState());
+      const svc = new NarrativeDirectorService({
+        config: makeConfig({ consolidation: { batch_min_events: 999, max_events_per_call: 80, min_checkpoint_gap_ms: 0 } }),
+        store,
+        consolidator,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      // Queue events (maybeSchedule suppressed by high batch_min_events)
+      svc.observeCommitted([makeEvent(1), makeEvent(2)]);
+
+      // Directly start consolidation — it will block on the deferred
+      const p1 = svc.consolidatePending();
+
+      // While in-flight, observe more events
+      svc.observeCommitted([makeEvent(3)]);
+
+      // Resolve the blocking consolidator
+      const batch1Result: ConsolidationResult = {
+        episode: {
+          summary: "Batch 1",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      };
+      resolveConsolidator(batch1Result);
+      await p1;
+
+      // The events from observeCommitted(3) during flight must NOT be lost.
+      // Reset consolidator mock and run again.
+      consolidateFn.mockResolvedValue({
+        episode: {
+          summary: "Batch 2",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      } satisfies ConsolidationResult);
+
+      const result2 = await svc.consolidatePending();
+      // Should process the event observed during flight
+      expect(result2.applied).toBeGreaterThanOrEqual(1);
+      expect(consolidator.consolidate).toHaveBeenCalledTimes(2);
+    });
+
+    it("guards against concurrent consolidatePending calls", async () => {
+      let resolveConsolidator!: (value: ConsolidationResult) => void;
+      const deferred = new Promise<ConsolidationResult>((resolve) => {
+        resolveConsolidator = resolve;
+      });
+
+      const consolidateFn = vi.fn().mockReturnValue(deferred);
+      const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
+      const store = new FakeStore(emptyState());
+      const svc = new NarrativeDirectorService({
+        config: makeConfig({ consolidation: { batch_min_events: 1, max_events_per_call: 80, min_checkpoint_gap_ms: 0 } }),
+        store,
+        consolidator,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeEvent(1)]);
+
+      const p1 = svc.consolidatePending();
+      // Second call while first is running should early-return
+      const result2 = await svc.consolidatePending();
+
+      expect(result2.applied).toBe(0);
+      expect(result2.rejected).toEqual([]);
+      expect(consolidator.consolidate).toHaveBeenCalledTimes(1);
+
+      // Cleanup: resolve the first call
+      resolveConsolidator({
+        episode: {
+          summary: "Done",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      });
+      await p1;
     });
 
     it("checkpoint triggers maybeSchedule after incrementing count", async () => {
