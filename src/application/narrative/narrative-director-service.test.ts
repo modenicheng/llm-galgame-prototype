@@ -1202,11 +1202,12 @@ describe("NarrativeDirectorService", () => {
       expect(consolidator.consolidate).toHaveBeenCalledTimes(2);
     });
 
-    it("requeues overflow oldest events so they consolidate in a later call (watermark does not jump past them)", async () => {
+    it("requeues overflow oldest events so they consolidate in a later call (watermark stays monotonic)", async () => {
       // max_events_per_call: 4, observe 10 events (seq 1..10)
       // → first consolidatePending: port receives only last 4 (seq 7-10)
       // → episode from=7 to=10; watermark=10; oldest 6 requeued
-      // → second consolidatePending: port receives seq 1-6; episode from=1 to=6
+      // → second consolidatePending: port receives seq 3-6; episode from=3 to=6
+      // → watermark stays 10 (Math.max — must not regress below previous)
       const consolidateFn = vi.fn()
         .mockResolvedValueOnce({
           episode: {
@@ -1308,9 +1309,9 @@ describe("NarrativeDirectorService", () => {
       expect(ep2.fromEventSeq).toBe(3);
       expect(ep2.toEventSeq).toBe(6);
 
-      // Watermark = 6
+      // Watermark stays at 10 (monotonic — must not regress)
       const brief2 = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
-      expect(brief2.consolidatedThroughEventSeq).toBe(6);
+      expect(brief2.consolidatedThroughEventSeq).toBe(10);
 
       // Third consolidation: remaining seq 1-2
       const result3 = await svc.consolidatePending();
@@ -1324,9 +1325,9 @@ describe("NarrativeDirectorService", () => {
       expect(ep3.fromEventSeq).toBe(1);
       expect(ep3.toEventSeq).toBe(2);
 
-      // Watermark = 2
+      // Watermark stays at 10 (monotonic — must not regress)
       const brief3 = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
-      expect(brief3.consolidatedThroughEventSeq).toBe(2);
+      expect(brief3.consolidatedThroughEventSeq).toBe(10);
 
       // No more pending events
       const result4 = await svc.consolidatePending();

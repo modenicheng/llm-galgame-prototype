@@ -349,6 +349,13 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       let applied = 0;
 
       const batchLastSeq = batch[batch.length - 1]!.seq;
+      // Monotonic watermark: overflow batches processed later have a
+      // SMALLER last seq than the already-advanced watermark, so never
+      // regress it below its previous value.
+      const newWatermark = Math.max(
+        this.memory.consolidatedThroughEventSeq,
+        batchLastSeq,
+      );
 
       // 1) Episode
       let newEpisode: EpisodeMemory | undefined;
@@ -372,7 +379,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
       // --- Advance state ---
       this.memory.revision += 1;
-      this.memory.consolidatedThroughEventSeq = batchLastSeq;
+      this.memory.consolidatedThroughEventSeq = newWatermark;
 
       // Insert the episode id into recentEpisodeIds (the same id the
       // consolidator generated for the appended episode).
