@@ -160,7 +160,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     const { state: loadedState, episodes: loadedEpisodes } =
       await this.store.load();
 
-    // Build fresh state from loaded + plan seeds (plan wins on id conflicts)
+    // Build fresh state from loaded + plan seeds (loaded wins on id conflicts)
     const seedThreads: Record<string, PlotThread> = {};
     for (const t of this.plan.threads) {
       seedThreads[t.id] = t;
