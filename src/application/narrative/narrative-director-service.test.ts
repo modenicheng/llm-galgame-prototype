@@ -1202,16 +1202,18 @@ describe("NarrativeDirectorService", () => {
       expect(consolidator.consolidate).toHaveBeenCalledTimes(2);
     });
 
-    it("requeues overflow oldest events so they consolidate in a later call (watermark stays monotonic)", async () => {
+    it("consolidates FIFO: oldest events first, watermark advances continuously", async () => {
       // max_events_per_call: 4, observe 10 events (seq 1..10)
-      // → first consolidatePending: port receives only last 4 (seq 7-10)
-      // → episode from=7 to=10; watermark=10; oldest 6 requeued
-      // → second consolidatePending: port receives seq 3-6; episode from=3 to=6
-      // → watermark stays 10 (Math.max — must not regress below previous)
+      // → first consolidatePending: port receives the OLDEST 4 (seq 1-4)
+      // → episode from=1 to=4; watermark=4; newer 6 (seq 5-10) requeued
+      // → second consolidatePending: port receives seq 5-8; episode from=5 to=8
+      // → watermark=8
+      // → third consolidatePending: port receives seq 9-10; episode from=9 to=10
+      // → watermark=10 (continuous: every batch's last seq == new watermark)
       const consolidateFn = vi.fn()
         .mockResolvedValueOnce({
           episode: {
-            summary: "Batch 1 (seq 7-10)",
+            summary: "Batch 1 (seq 1-4)",
             characters: [],
             locations: [],
             threads: [],
@@ -1223,7 +1225,7 @@ describe("NarrativeDirectorService", () => {
         } satisfies ConsolidationResult)
         .mockResolvedValueOnce({
           episode: {
-            summary: "Batch 2 (seq 3-6)",
+            summary: "Batch 2 (seq 5-8)",
             characters: [],
             locations: [],
             threads: [],
@@ -1235,7 +1237,7 @@ describe("NarrativeDirectorService", () => {
         } satisfies ConsolidationResult)
         .mockResolvedValueOnce({
           episode: {
-            summary: "Batch 3 (seq 1-2)",
+            summary: "Batch 3 (seq 9-10)",
             characters: [],
             locations: [],
             threads: [],
@@ -1272,60 +1274,61 @@ describe("NarrativeDirectorService", () => {
       const result1 = await svc.consolidatePending();
       expect(result1.applied).toBeGreaterThanOrEqual(1);
 
-      // Port must have received exactly events seq 7-10 (last 4)
+      // Port must have received exactly events seq 1-4 (oldest 4, FIFO)
       expect(consolidateFn).toHaveBeenCalledTimes(1);
       const batch1Events = consolidateFn.mock.calls[0]![0]!.events as StoredEvent[];
-      expect(batch1Events.map((e) => e.seq)).toEqual([7, 8, 9, 10]);
+      expect(batch1Events.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
 
-      // Episode from=7 to=10
+      // Episode from=1 to=4
       const ep1 = store.appendEpisodesCalls[0]![0]!;
-      expect(ep1.fromEventSeq).toBe(7);
-      expect(ep1.toEventSeq).toBe(10);
+      expect(ep1.fromEventSeq).toBe(1);
+      expect(ep1.toEventSeq).toBe(4);
 
-      // Watermark = 10
+      // Watermark = 4 (continuous front)
       const brief1 = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
-      expect(brief1.consolidatedThroughEventSeq).toBe(10);
+      expect(brief1.consolidatedThroughEventSeq).toBe(4);
 
-      // Overflow diagnostic info
-      // The consolidator's "Dropping ... overflow" must NOT fire (batch is already
-      // capped by the director). The director's requeue diagnostic SHOULD fire.
+      // Deferral diagnostic info
+      // The consolidator's "Dropping ... overflow" must NOT fire (batch is
+      // already capped by the director). The director's deferral diagnostic
+      // SHOULD fire.
       expect(diag.infos.some(
         (i) => i.message.toLowerCase().includes("dropping"),
       )).toBe(false);
       expect(diag.infos.some(
-        (i) => i.message.includes("requeued"),
+        (i) => i.message.includes("deferred"),
       )).toBe(true);
 
       // Second consolidation: the 6 requeued events are also capped to
-      // max_events_per_call=4, so seq 3-6 go out; seq 1-2 requeued again.
+      // max_events_per_call=4, so seq 5-8 go out; seq 9-10 requeued again.
       const result2 = await svc.consolidatePending();
       expect(result2.applied).toBeGreaterThanOrEqual(1);
       expect(consolidateFn).toHaveBeenCalledTimes(2);
       const batch2Events = consolidateFn.mock.calls[1]![0]!.events as StoredEvent[];
-      expect(batch2Events.map((e) => e.seq)).toEqual([3, 4, 5, 6]);
+      expect(batch2Events.map((e) => e.seq)).toEqual([5, 6, 7, 8]);
 
-      // Episode from=3 to=6
+      // Episode from=5 to=8
       const ep2 = store.appendEpisodesCalls[1]![0]!;
-      expect(ep2.fromEventSeq).toBe(3);
-      expect(ep2.toEventSeq).toBe(6);
+      expect(ep2.fromEventSeq).toBe(5);
+      expect(ep2.toEventSeq).toBe(8);
 
-      // Watermark stays at 10 (monotonic — must not regress)
+      // Watermark advances to 8 (continuous front)
       const brief2 = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
-      expect(brief2.consolidatedThroughEventSeq).toBe(10);
+      expect(brief2.consolidatedThroughEventSeq).toBe(8);
 
-      // Third consolidation: remaining seq 1-2
+      // Third consolidation: remaining seq 9-10
       const result3 = await svc.consolidatePending();
       expect(result3.applied).toBeGreaterThanOrEqual(1);
       expect(consolidateFn).toHaveBeenCalledTimes(3);
       const batch3Events = consolidateFn.mock.calls[2]![0]!.events as StoredEvent[];
-      expect(batch3Events.map((e) => e.seq)).toEqual([1, 2]);
+      expect(batch3Events.map((e) => e.seq)).toEqual([9, 10]);
 
-      // Episode from=1 to=2
+      // Episode from=9 to=10
       const ep3 = store.appendEpisodesCalls[2]![0]!;
-      expect(ep3.fromEventSeq).toBe(1);
-      expect(ep3.toEventSeq).toBe(2);
+      expect(ep3.fromEventSeq).toBe(9);
+      expect(ep3.toEventSeq).toBe(10);
 
-      // Watermark stays at 10 (monotonic — must not regress)
+      // Watermark advances to 10 (continuous front)
       const brief3 = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
       expect(brief3.consolidatedThroughEventSeq).toBe(10);
 

@@ -302,19 +302,22 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         return { applied: 0, rejected: [] };
       }
 
-      // Truncate to max_events_per_call (last N) so the oldest overflow
-      // events are NOT permanently lost. The MemoryConsolidator also caps
-      // internally (defense in depth, now idempotent).
+      // FIFO batching: take the OLDEST max_events_per_call events first
+      // (the continuous front of the watermark). Newer overflow events stay
+      // pending and are requeued on success — narrative time order is
+      // preserved and the watermark advances continuously. The
+      // MemoryConsolidator also caps internally (defense in depth, now
+      // idempotent since the director already capped).
       const maxEvents = this.config.consolidation.max_events_per_call;
       const batch =
-        pending.length > maxEvents ? pending.slice(-maxEvents) : pending;
+        pending.length > maxEvents ? pending.slice(0, maxEvents) : pending;
       const overflow =
-        pending.length > maxEvents ? pending.slice(0, -maxEvents) : [];
+        pending.length > maxEvents ? pending.slice(maxEvents) : [];
 
       if (overflow.length > 0) {
         this.diagnostics.info(
           "NarrativeDirector",
-          `Truncating ${overflow.length} oldest events (batch capped to ${maxEvents}); will requeue on success`,
+          `Batch capped to ${maxEvents} oldest events; ${overflow.length} newer events deferred to a later call`,
         );
       }
 
@@ -335,12 +338,12 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         return { applied: 0, rejected: [] };
       }
 
-      // --- Success: requeue overflow (oldest events stay pending) ---
+      // --- Success: defer the newer overflow events to a later call ---
       if (overflow.length > 0) {
         this.pendingEvents = [...overflow, ...this.pendingEvents];
         this.diagnostics.info(
           "NarrativeDirector",
-          `${overflow.length} overflow events requeued for next consolidation`,
+          `${overflow.length} newer events deferred for next consolidation`,
         );
       }
 
@@ -349,13 +352,11 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       let applied = 0;
 
       const batchLastSeq = batch[batch.length - 1]!.seq;
-      // Monotonic watermark: overflow batches processed later have a
-      // SMALLER last seq than the already-advanced watermark, so never
-      // regress it below its previous value.
-      const newWatermark = Math.max(
-        this.memory.consolidatedThroughEventSeq,
-        batchLastSeq,
-      );
+      // FIFO guarantees the batch's last seq is exactly the new continuous
+      // front: every event up to batchLastSeq has now been consolidated
+      // (older events were consolidated in previous calls). No Math.max
+      // needed — the front only ever moves forward.
+      const newWatermark = batchLastSeq;
 
       // 1) Episode
       let newEpisode: EpisodeMemory | undefined;
