@@ -339,6 +339,41 @@ describe("validateSetupOp", () => {
     );
   });
 
+  it("accepts evidence event ids inside the committed range, rejects outside (spec §5)", () => {
+    const memory = makeMemory({ setups: { "setup-1": makeSetup({ status: "planned" }) } });
+    // Batch covers up to seq 10 → evidence 10 is inside, 11 is not.
+    expectAccepted(
+      validateSetupOp(
+        { type: "seed", id: "setup-1", evidenceEventIds: ["10"] },
+        memory,
+        makeConfig(),
+        10,
+      ),
+    );
+    const reason = validateSetupOp(
+      { type: "seed", id: "setup-1", evidenceEventIds: ["11"] },
+      memory,
+      makeConfig(),
+      10,
+    );
+    expectRejected(reason);
+    expect(reason).toContain("不在已提交范围");
+  });
+
+  it("rejects non-numeric or zero evidence event ids", () => {
+    const memory = makeMemory({ setups: { "setup-1": makeSetup({ status: "planned" }) } });
+    for (const id of ["abc", "0", "-3", "10.5"]) {
+      expectRejected(
+        validateSetupOp(
+          { type: "seed", id: "setup-1", evidenceEventIds: [id] },
+          memory,
+          makeConfig(),
+          10,
+        ),
+      );
+    }
+  });
+
   it("counts only active setups (seeded/reinforced/ready) for the seed budget", () => {
     const memory = makeMemory({
       setups: {

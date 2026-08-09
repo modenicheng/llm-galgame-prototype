@@ -116,8 +116,20 @@ export function validateSetupOp(
   op: SetupOp,
   memory: NarrativeMemoryState,
   config: NarrativeConfig,
+  maxEvidenceSeq?: number,
 ): string | null {
   const existing = memory.setups[op.id];
+
+  // Evidence event ids must reference committed events (≤ the current
+  // batch's last seq when the consolidator passes it; spec §5).
+  if (op.evidenceEventIds !== undefined && maxEvidenceSeq !== undefined) {
+    for (const id of op.evidenceEventIds) {
+      const seq = Number(id);
+      if (!Number.isInteger(seq) || seq < 1 || seq > maxEvidenceSeq) {
+        return `证据事件 ${id} 不在已提交范围（≤ ${maxEvidenceSeq}）`;
+      }
+    }
+  }
 
   switch (op.type) {
     case "seed": {

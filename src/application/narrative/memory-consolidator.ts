@@ -214,7 +214,7 @@ export class MemoryConsolidator {
     }
 
     for (const op of result.setupOps) {
-      const reason = validateSetupOp(op, shadow, this.config);
+      const reason = validateSetupOp(op, shadow, this.config, batch[batch.length - 1]!.seq);
       if (reason === null) {
         setupOps.push(op);
         applySetupOpToState(shadow, op, 0); // checkpoint irrelevant for validation
