@@ -5,7 +5,8 @@
  * Owns the in-memory state, exposes a synchronous brief for the model,
  * batches committed events for background (optional) consolidation, and
  * provides a public consolidatePending() for testability and manual
- * integration.
+ * integration. Since Task 8, the consolidation pipeline (truncation,
+ * port call, validator filtering, episode id) lives in MemoryConsolidator.
  */
 
 import type { NarrativeConfig } from "../../config.js";
@@ -31,61 +32,35 @@ import {
 import type {
   ThreadOp,
   SetupOp,
-  EpisodeSummaryOp,
   RejectedOp,
 } from "../../core/narrative/memory-operation.js";
 import type {
   NarrativeBrief,
   NarrativeBriefRequest,
 } from "../../core/narrative/narrative-brief.js";
-import {
-  validateThreadOp,
-  validateSetupOp,
-  validateEpisodeOp,
-  classifySetup,
-} from "./memory-validator.js";
+import { classifySetup } from "./memory-validator.js";
 import { retrieveEpisodes } from "./episode-retriever.js";
+import {
+  MemoryConsolidator,
+  ACTIVE_THREAD_STATUSES,
+  NON_TERMINAL_SETUP_STATUSES,
+} from "./memory-consolidator.js";
+import type { MemoryConsolidatorPort } from "./memory-consolidator.js";
 
 // ---------------------------------------------------------------------------
-// Consolidator port (defined here; implemented by Task 8)
+// Consolidator port (implemented by Task 8 in memory-consolidator.ts;
+// re-exported here so Task 6 imports keep working)
 // ---------------------------------------------------------------------------
 
-export interface ConsolidationRequest {
-  events: StoredEvent[];
-  threads: PlotThread[];
-  setups: SetupPayoff[];
-  stateLocation: string;
-  stateCharacters: string[];
-}
-
-export interface ConsolidationResult {
-  episode: EpisodeSummaryOp;
-  threadOps: ThreadOp[];
-  setupOps: SetupOp[];
-}
-
-export interface MemoryConsolidatorPort {
-  consolidate(request: ConsolidationRequest): Promise<ConsolidationResult>;
-}
+export type {
+  MemoryConsolidatorPort,
+  ConsolidationRequest,
+  ConsolidationResult,
+} from "./memory-consolidator.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Thread statuses that count as "active" for brief and consolidation. */
-const ACTIVE_THREAD_STATUSES: ReadonlySet<PlotThread["status"]> = new Set([
-  "open",
-  "developing",
-  "ready_to_resolve",
-]);
-
-/** Setup statuses that are non-terminal (still relevant). */
-const NON_TERMINAL_SETUP_STATUSES: ReadonlySet<SetupPayoff["status"]> = new Set([
-  "planned",
-  "seeded",
-  "reinforced",
-  "ready",
-]);
 
 /** Maximum episode IDs to retain in the recent list. */
 const MAX_RECENT_EPISODE_IDS = 20;
@@ -104,7 +79,8 @@ const ANCHOR_STATUS_ORDER: Record<StoryAnchorState["status"], number> = {
 export class NarrativeDirectorService implements NarrativeDirectorPort {
   private readonly config: NarrativeConfig;
   private readonly store: NarrativeMemoryStorePort;
-  private readonly consolidator: MemoryConsolidatorPort | undefined;
+  private readonly consolidator: MemoryConsolidator;
+  private readonly hasConsolidator: boolean;
   private readonly plan: StoryPlan;
   private readonly diagnostics: DiagnosticSink;
 
@@ -128,9 +104,16 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   }) {
     this.config = opts.config;
     this.store = opts.store;
-    this.consolidator = opts.consolidator;
     this.plan = opts.plan;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
+    this.hasConsolidator = opts.consolidator !== undefined;
+    // Wrap the optional Task 6 port in a MemoryConsolidator; an absent
+    // port yields an empty outcome without calling anything.
+    this.consolidator = new MemoryConsolidator({
+      port: opts.consolidator,
+      config: opts.config,
+      diagnostics: this.diagnostics,
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -274,7 +257,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     rejected: RejectedOp[];
   }> {
     // No consolidator → nothing to do
-    if (this.consolidator === undefined) {
+    if (!this.hasConsolidator) {
       return { applied: 0, rejected: [] };
     }
 
@@ -290,97 +273,60 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       const pending = this.pendingEvents;
       this.pendingEvents = [];
 
-      // Take pending events, capped to max_events_per_call (keep last N)
-      const maxEvents = this.config.consolidation.max_events_per_call;
-      let batch: StoredEvent[];
-      if (pending.length > maxEvents) {
-        this.diagnostics.info(
-          "NarrativeDirector",
-          `Dropping ${pending.length - maxEvents} overflow events from batch (max ${maxEvents})`,
-        );
-        batch = pending.slice(-maxEvents);
-      } else {
-        batch = pending;
-      }
-
-      if (batch.length === 0) {
+      if (pending.length === 0) {
         return { applied: 0, rejected: [] };
       }
 
-      const batchLastSeq = batch[batch.length - 1]!.seq;
-
-      // Active threads and non-terminal setups for the consolidator
-      const activeThreads = Object.values(this.memory.threads).filter((t) =>
-        ACTIVE_THREAD_STATUSES.has(t.status),
+      // Delegate the pipeline (truncation to max_events_per_call, port
+      // call, validator filtering, episode id generation) to the
+      // MemoryConsolidator. State location/characters are not yet
+      // threaded through (Task 6 passed empty values).
+      const outcome = await this.consolidator.consolidate(
+        pending,
+        this.memory,
+        "",
+        [],
       );
-      const nonTerminalSetups = Object.values(this.memory.setups).filter((s) =>
-        NON_TERMINAL_SETUP_STATUSES.has(s.status),
-      );
 
-      // --- Call consolidator ---
-      let result: ConsolidationResult;
-      try {
-        result = await this.consolidator.consolidate({
-          events: batch,
-          threads: activeThreads,
-          setups: nonTerminalSetups,
-          stateLocation: "",
-          stateCharacters: [],
-        });
-      } catch (err) {
-        this.diagnostics.warn(
-          "NarrativeDirector",
-          `consolidation failed: ${String(err)}`,
-        );
-        // Re-queue the drained batch at the front so events are not
-        // permanently lost on consolidation failure.
+      // Port failure → empty outcome: re-queue the drained batch at the
+      // front so events are not permanently lost on consolidation failure.
+      if (outcome.result === null) {
         this.pendingEvents = [...pending, ...this.pendingEvents];
         return { applied: 0, rejected: [] };
       }
 
-      // --- Apply results ---
-      const rejected: RejectedOp[] = [];
+      // --- Apply results (already validated by the consolidator) ---
+      const rejected = [...outcome.rejected];
       let applied = 0;
 
+      const batchLastSeq = pending[pending.length - 1]!.seq;
+
       // 1) Episode
-      const epReason = validateEpisodeOp(result.episode);
       let newEpisode: EpisodeMemory | undefined;
-      if (epReason === null) {
-        newEpisode = this.buildEpisode(result.episode, batch);
+      if (outcome.episode !== null) {
+        newEpisode = outcome.episode;
         this.episodes.push(newEpisode);
         applied += 1;
-      } else {
-        rejected.push({ kind: "episode", op: result.episode, reason: epReason });
       }
 
       // 2) Thread ops
-      for (const op of result.threadOps) {
-        const reason = validateThreadOp(op, this.memory, this.config);
-        if (reason === null) {
-          this.applyThreadOp(op, batchLastSeq);
-          applied += 1;
-        } else {
-          rejected.push({ kind: "thread", op, reason });
-        }
+      for (const op of outcome.threadOps) {
+        this.applyThreadOp(op, batchLastSeq);
+        applied += 1;
       }
 
       // 3) Setup ops
-      for (const op of result.setupOps) {
-        const reason = validateSetupOp(op, this.memory, this.config);
-        if (reason === null) {
-          this.applySetupOp(op, batchLastSeq);
-          applied += 1;
-        } else {
-          rejected.push({ kind: "setup", op, reason });
-        }
+      for (const op of outcome.setupOps) {
+        this.applySetupOp(op, batchLastSeq);
+        applied += 1;
       }
 
       // --- Advance state ---
       this.memory.revision += 1;
       this.memory.consolidatedThroughEventSeq = batchLastSeq;
 
-      // Insert the episode id into recentEpisodeIds (use ep.id to avoid
-      // a second makeEpisodeId call that could produce a different id).
+      // Insert the episode id into recentEpisodeIds (the same id the
+      // consolidator generated for the appended episode).
       if (newEpisode) {
         this.memory.recentEpisodeIds.unshift(newEpisode.id);
         if (this.memory.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
@@ -413,7 +359,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   // -----------------------------------------------------------------------
 
   private maybeSchedule(): void {
-    if (this.consolidator === undefined) return;
+    if (!this.hasConsolidator) return;
     if (this.consolidateRunning) return;
     if (this.pendingEvents.length < this.config.consolidation.batch_min_events)
       return;
@@ -556,37 +502,4 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // Internal: episode helpers
-  // -----------------------------------------------------------------------
-
-  private makeEpisodeId(
-    _op: EpisodeSummaryOp,
-    batch: StoredEvent[],
-  ): string {
-    const from = batch[0]!.seq;
-    const to = batch[batch.length - 1]!.seq;
-    const ts = Date.now();
-    return `ep-${ts}-${from}-${to}`;
-  }
-
-  private buildEpisode(
-    op: EpisodeSummaryOp,
-    batch: StoredEvent[],
-  ): EpisodeMemory {
-    const from = batch[0]!.seq;
-    const to = batch[batch.length - 1]!.seq;
-    const id = this.makeEpisodeId(op, batch);
-    return {
-      id,
-      fromEventSeq: from,
-      toEventSeq: to,
-      summary: op.summary,
-      characters: op.characters,
-      locations: op.locations,
-      threads: op.threads,
-      setups: op.setups,
-      importance: op.importance,
-    };
-  }
 }
