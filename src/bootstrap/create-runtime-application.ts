@@ -36,6 +36,11 @@ import type {
   RuntimeApplicationOptions,
 } from "../application/runtime-application.js";
 import { loadAssetCatalog } from "../application/assets/asset-catalog-loader.js";
+import { NarrativeDirectorService } from "../application/narrative/narrative-director-service.js";
+import { JsonNarrativeMemoryStore } from "../adapters/storage/json-narrative-memory-store.js";
+import { NarrativeConsolidatorAdapter } from "../adapters/llm/narrative-consolidator-adapter.js";
+import { loadStoryPlan } from "../adapters/static/story-plan-loader.js";
+import type { NarrativeDirectorPort } from "../core/ports/narrative-director-port.js";
 
 /**
  * FNV-1a 32-bit hash — a deterministic, session-independent seed per
@@ -139,11 +144,40 @@ export async function createRuntimeApplication(
   const projection = new UiProjectionStoreImpl();
   const store = new NodeJsonlSessionStore(options.sessionDir ?? config.game.sessions_dir);
 
+  // --- Narrative director assembly (§7.1) ---
+  const diagnostics = new ConsoleDiagnosticSink();
+  let narrativeDirector: NarrativeDirectorPort | undefined;
+  if (config.narrative.mode === "longform") {
+    const plan = await loadStoryPlan(
+      options.storyPlanPath ?? config.narrative.story_plan_path,
+      diagnostics,
+    );
+    const narrativeStore = new JsonNarrativeMemoryStore(
+      options.sessionDir ?? config.game.sessions_dir,
+    );
+    const consolidator = new NarrativeConsolidatorAdapter({
+      apiKey,
+      api: config.api,
+      config: config.narrative,
+      diagnostics,
+    });
+    const service = new NarrativeDirectorService({
+      config: config.narrative,
+      store: narrativeStore,
+      consolidator,
+      plan,
+      diagnostics,
+    });
+    await service.initialize();
+    narrativeDirector = service;
+  }
+
   const game = new Game(config, generator, status, planner, metrics, {
     store,
     clock: new SystemClock(),
     ids: new SessionIdGenerator(),
-    diagnostics: new ConsoleDiagnosticSink(),
+    diagnostics,
+    ...(narrativeDirector ? { narrativeDirector } : {}),
   }, assetCatalog);
 
   // Every runtime output feeds the projection (§7.7) so a reconnecting

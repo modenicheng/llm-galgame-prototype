@@ -39,6 +39,8 @@ export interface RuntimeApplicationOptions {
   config?: AppConfig;
   /** voices.yaml path (default "voices.yaml" in the cwd). */
   voicesPath?: string;
+  /** story-plan.yaml path (default config.narrative.story_plan_path). */
+  storyPlanPath?: string;
 }
 
 

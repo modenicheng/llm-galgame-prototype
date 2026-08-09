@@ -10,11 +10,13 @@
  * envelopes come from `generatorState`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRuntimeApplication } from "./create-runtime-application.js";
 import { makeTestConfig, MemoryController } from "../test-helpers.js";
+import { NarrativeDirectorService } from "../application/narrative/narrative-director-service.js";
+import { DEFAULT_NARRATIVE_CONFIG } from "../config.js";
 import type { AppConfig } from "../config.js";
 import type { GeneratedEvent } from "../story/types.js";
 
@@ -37,6 +39,31 @@ vi.mock("../application/audio/performance-compiler.js", () => ({
   PerformanceCompilerImpl: class {
     compile() {
       return { rate: 1, pitch: 1, volume: 1, pauseBeforeMs: 0, pauseAfterMs: 0 };
+    }
+  },
+}));
+
+// Mock NarrativeConsolidatorAdapter so the composition root never calls the
+// real LLM — the mock succeeds trivially (returns an empty episode with no
+// ops), letting consolidation write state files without network access.
+vi.mock("../adapters/llm/narrative-consolidator-adapter.js", () => ({
+  NarrativeConsolidatorAdapter: class {
+    constructor(_opts: unknown) {
+      /* no-op — never touches the network */
+    }
+    async consolidate(_request: unknown) {
+      return {
+        episode: {
+          summary: "测试剧情片段",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal" as const,
+        },
+        threadOps: [],
+        setupOps: [],
+      };
     }
   },
 }));
@@ -382,5 +409,142 @@ function dashscopeConfig(): AppConfig {
     expect(String(result)).toContain("运行时已收到关闭指令");
 
     await rm(sessionDir, { recursive: true, force: true });
+  });
+
+  // -------------------------------------------------------------------
+  // Narrative director assembly tests (Task 11)
+  // -------------------------------------------------------------------
+
+  /** Write a minimal story-plan.yaml to dir and return its path. */
+  async function writeStoryPlan(dir: string): Promise<string> {
+    const planPath = path.join(dir, "story-plan.yaml");
+    await writeFile(
+      planPath,
+      [
+        "threads:",
+        "  - id: terminal_origin",
+        "    kind: mystery",
+        "    summary: 研究所地下的终端来历成谜。",
+        "    status: developing",
+        "    importance: major",
+        "    next_pressure: 故事推进需要这条线索持续展开。",
+      ].join("\n"),
+      "utf8",
+    );
+    return planPath;
+  }
+
+  it("assembles a NarrativeDirectorService instance for longform mode", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-nd-"));
+    const sessionDir = path.join(dir, "sessions");
+    const storyPlanPath = await writeStoryPlan(dir);
+
+    const config = makeTestConfig({
+      narrative: {
+        ...DEFAULT_NARRATIVE_CONFIG,
+        mode: "longform" as const,
+        consolidation: {
+          ...DEFAULT_NARRATIVE_CONFIG.consolidation,
+          batch_min_events: 1,
+          min_checkpoint_gap_ms: 0,
+        },
+      },
+      game: { sessions_dir: sessionDir },
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+
+    // Two narration lines → two committed events → consolidation fires
+    generatorState.opening = {
+      events: [],
+      groups: [
+        { prelude: [], main: { type: "narration", text: "第一幕" } },
+        { prelude: [], main: { type: "narration", text: "第二幕" } },
+      ],
+      state_patch: undefined,
+      segmentEnd: { kind: "complete", nonce: "aaaa", reason: "ending" },
+    };
+
+    const app = await createRuntimeApplication({ config, sessionDir, storyPlanPath });
+
+    // NarrativeDirectorService is wired into the Game as a private field.
+    expect((app.game as any).narrativeDirector).toBeInstanceOf(
+      NarrativeDirectorService,
+    );
+
+    const controller = new MemoryController();
+    controller.attach(app.game);
+    await app.game.run();
+
+    // Consolidation runs fire-and-forget; yield the microtask queue so the
+    // schedule completes and writes state files.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Verify the store wrote a narrative-state.json file.
+    // The narrative-memory store writes directly into the sessions
+    // base directory (same dir as events.jsonl).
+    await expect(
+      access(path.join(sessionDir, "narrative-state.json")),
+    ).resolves.toBeUndefined();
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("does not assemble a narrative director for event mode", async () => {
+    const config = makeTestConfig({
+      narrative: { mode: "event" },
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+    const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-ev-"));
+    generatorState.opening = {
+      events: [],
+      groups: [
+        { prelude: [], main: { type: "narration", text: "第一幕" } },
+      ],
+      state_patch: undefined,
+      segmentEnd: { kind: "complete", nonce: "bbbb", reason: "ending" },
+    };
+    try {
+      const app = await createRuntimeApplication({ config, sessionDir });
+      expect((app.game as any).narrativeDirector).toBeUndefined();
+    } finally {
+      await rm(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it("tolerates a nonexistent story plan path (empty plan, game runs)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-np-"));
+    const sessionDir = path.join(dir, "sessions");
+    const nonexistentPlan = path.join(dir, "does-not-exist.yaml");
+
+    const config = makeTestConfig({
+      narrative: {
+        ...DEFAULT_NARRATIVE_CONFIG,
+        mode: "longform" as const,
+      },
+      game: { sessions_dir: sessionDir },
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+    generatorState.opening = {
+      events: [],
+      groups: [
+        { prelude: [], main: { type: "narration", text: "第一幕" } },
+      ],
+      state_patch: undefined,
+      segmentEnd: { kind: "complete", nonce: "cccc", reason: "ending" },
+    };
+
+    // Should not throw: the missing plan yields an empty plan and the
+    // application starts successfully.
+    const app = await createRuntimeApplication({
+      config,
+      sessionDir,
+      storyPlanPath: nonexistentPlan,
+    });
+    expect((app.game as any).narrativeDirector).toBeDefined();
+    // Does not attempt game.run() — the empty-plan case exercises the
+    // assembly path only; the game-run-with-director integration is
+    // covered by the preceding longform test.
+
+    await rm(dir, { recursive: true, force: true });
   });
 });
