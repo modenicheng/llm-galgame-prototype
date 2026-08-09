@@ -1,0 +1,72 @@
+# ============================================================================
+# 故事计划示例（story-plan.yaml）
+#
+# 示例设定，请作者替换：这是作者预先设定的静态叙事骨架。运行时引擎会
+# 在此基础上推进剧情，因此本文件的内容应替换为真实作品的故事计划。
+#
+# 键名约定：yaml 键使用 snake_case，与 TS 字段 camelCase 一一对应：
+#   next_pressure        -> nextPressure
+#   intended_payoff      -> intendedPayoff
+#   thread_id            -> threadId
+#   reinforcement_count  -> reinforcementCount
+#   seeded_at            -> seededAt
+#   last_touched_at      -> lastTouchedAt
+#   payoff_at            -> payoffAt
+#   prerequisites        -> prerequisites
+#   payoff_before_anchor -> payoffBeforeAnchor
+#   introduced_at        -> introducedAt
+# ============================================================================
+
+threads:
+  # 主线悬念：终端的来历
+  - id: terminal_origin
+    kind: mystery
+    summary: 研究所地下的终端来历成谜，它与苏遥的记忆之间存在未解的联系。
+    status: developing
+    importance: major
+    next_pressure: 下一次接触研究资料时，应产生一个足以推翻旧推测的新线索
+
+  # 角色线：苏遥的身份
+  - id: suyao_identity
+    kind: character
+    summary: 苏遥对自己过去的记忆并不完整，她的真实身份有待揭示。
+    status: open
+    importance: major
+
+setups:
+  # 伏笔：终端对苏遥的异常响应
+  - id: terminal_reacts_to_suyao
+    kind: foreshadow
+    setup: 终端似乎会对苏遥产生异常响应。
+    intended_payoff: 揭示终端能够识别她记忆中留下的特征。
+    prerequisites:
+      - player_has_questioned_suyao_identity
+    payoff_before_anchor: reveal_suyao_origin
+
+  # 谜团线索：教授的失踪
+  - id: professor_disappearance
+    kind: mystery_clue
+    setup: 苏遥的教授在事故发生前夜失踪，未留下任何交代。
+
+  # 物件：地下室的钥匙
+  - id: key_to_basement
+    kind: object
+    setup: 一把来历不明的地下室钥匙出现在苏遥的旧物之中。
+
+anchors:
+  # 剧情锚点：发现终端
+  - id: discover_terminal
+    purpose: 主角在地下室发现终端，故事由此进入核心谜团。
+    required: true
+
+  # 剧情锚点：对苏遥的身份产生怀疑
+  - id: doubt_suyao_identity
+    purpose: 主角注意到终端对苏遥的异常响应，开始怀疑她的身份。
+    prerequisites:
+      - discover_terminal
+
+  # 剧情锚点：揭示苏遥的来历
+  - id: reveal_suyao_origin
+    purpose: 终端揭示苏遥记忆的真相，主线悬念得到阶段性解答。
+    prerequisites:
+      - doubt_suyao_identity
