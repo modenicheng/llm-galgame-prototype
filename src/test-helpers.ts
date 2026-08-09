@@ -1,4 +1,5 @@
 import type { AppConfig } from "./config.js";
+import { DEFAULT_NARRATIVE_CONFIG } from "./config.js";
 import type { Game, GamePorts } from "./game.js";
 import type { ClockPort } from "./core/ports/clock-port.js";
 import { silentDiagnosticSink } from "./core/ports/diagnostic-sink.js";
@@ -91,6 +92,7 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
       input: { max_length: 500, max_consecutive_pure_input: 1 },
       legacy_choice: { allow_runtime_compatibility: true, allow_model_output: false },
     },
+    narrative: DEFAULT_NARRATIVE_CONFIG,
     ...overrides,
   } as AppConfig;
 }

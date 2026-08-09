@@ -250,6 +250,128 @@ describe("loadConfig with all fields", () => {
 });
 
 // ---------------------------------------------------------------------------
+// loadConfig — narrative section
+// ---------------------------------------------------------------------------
+
+describe("loadConfig narrative section", () => {
+  it("should apply narrative defaults when the section is absent", async () => {
+    const filePath = await writeTempYaml(
+      "narrative-defaults",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    enabled: false",
+        "game:",
+        "  history_events: 80",
+      ].join("\n"),
+    );
+
+    const config = await loadConfig(filePath);
+
+    expect(config.narrative.mode).toBe("longform");
+    expect(config.narrative.threads).toEqual({ max_major_active: 2, max_minor_active: 3 });
+    expect(config.narrative.setups).toEqual({ max_active: 6 });
+    expect(config.narrative.consolidation).toEqual({
+      batch_min_events: 4,
+      max_events_per_call: 80,
+      min_checkpoint_gap_ms: 5000,
+    });
+    expect(config.narrative.brief).toEqual({
+      max_relevant_episodes: 6,
+      max_recent_raw_events: 40,
+    });
+    expect(config.narrative.story_plan_path).toBe("story-plan.yaml");
+  });
+
+  it("should parse explicit narrative values overriding defaults", async () => {
+    const filePath = await writeTempYaml(
+      "narrative-overrides",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    enabled: false",
+        "game:",
+        "  history_events: 80",
+        "",
+        "narrative:",
+        "  mode: event",
+        "  threads:",
+        "    max_major_active: 5",
+        "    max_minor_active: 8",
+        "  setups:",
+        "    max_active: 10",
+        "  consolidation:",
+        "    batch_min_events: 6",
+        "    max_events_per_call: 120",
+        "    min_checkpoint_gap_ms: 10000",
+        "  brief:",
+        "    max_relevant_episodes: 3",
+        "    max_recent_raw_events: 20",
+        "  story_plan_path: custom/story-plan.yaml",
+      ].join("\n"),
+    );
+
+    const config = await loadConfig(filePath);
+
+    expect(config.narrative.mode).toBe("event");
+    expect(config.narrative.threads).toEqual({ max_major_active: 5, max_minor_active: 8 });
+    expect(config.narrative.setups).toEqual({ max_active: 10 });
+    expect(config.narrative.consolidation).toEqual({
+      batch_min_events: 6,
+      max_events_per_call: 120,
+      min_checkpoint_gap_ms: 10000,
+    });
+    expect(config.narrative.brief).toEqual({
+      max_relevant_episodes: 3,
+      max_recent_raw_events: 20,
+    });
+    expect(config.narrative.story_plan_path).toBe("custom/story-plan.yaml");
+  });
+
+  it("should reject an unsupported narrative mode", async () => {
+    const filePath = await writeTempYaml(
+      "bad-narrative-mode",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    enabled: false",
+        "game:",
+        "  history_events: 80",
+        "",
+        "narrative:",
+        "  mode: other",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // loadAuthorConfig — defaults when file missing
 // ---------------------------------------------------------------------------
 

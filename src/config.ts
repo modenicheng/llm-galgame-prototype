@@ -82,6 +82,37 @@ interface RefinementContext {
   addIssue(issue: unknown): void;
 }
 
+// ---------------------------------------------------------------------------
+// Narrative director settings
+// ---------------------------------------------------------------------------
+
+/** Narrative director tuning (threads, setups, consolidation, briefs). */
+export interface NarrativeConfig {
+  mode: "longform" | "event";
+  threads: { max_major_active: number; max_minor_active: number };
+  setups: { max_active: number };
+  consolidation: {
+    batch_min_events: number;
+    max_events_per_call: number;
+    min_checkpoint_gap_ms: number;
+  };
+  brief: { max_relevant_episodes: number; max_recent_raw_events: number };
+  story_plan_path: string;
+}
+
+export const DEFAULT_NARRATIVE_CONFIG: NarrativeConfig = {
+  mode: "longform",
+  threads: { max_major_active: 2, max_minor_active: 3 },
+  setups: { max_active: 6 },
+  consolidation: {
+    batch_min_events: 4,
+    max_events_per_call: 80,
+    min_checkpoint_gap_ms: 5000,
+  },
+  brief: { max_relevant_episodes: 6, max_recent_raw_events: 40 },
+  story_plan_path: "story-plan.yaml",
+};
+
 export interface AppConfig {
   api: {
     model: string;
@@ -128,6 +159,8 @@ export interface AppConfig {
   };
   /** Interaction-mode policy (mode allow-list, option ranges, input limits). */
   interaction: InteractionPolicyConfig;
+  /** Narrative director tuning (threads, setups, consolidation, briefs). */
+  narrative: NarrativeConfig;
   debug: {
     /** Render runtime status panels even without --debug-runtime. */
     runtime_status: boolean;
@@ -326,6 +359,50 @@ const InteractionPolicyConfigSchema = z
     input: { max_length: 500, max_consecutive_pure_input: 1 },
   });
 
+const NarrativeConfigSchema = z
+  .object({
+    mode: z.enum(["longform", "event"]).default("longform"),
+    threads: z
+      .object({
+        max_major_active: z.number().int().min(0).max(20).default(2),
+        max_minor_active: z.number().int().min(0).max(50).default(3),
+      })
+      .default({ max_major_active: 2, max_minor_active: 3 }),
+    setups: z
+      .object({
+        max_active: z.number().int().min(0).max(20).default(6),
+      })
+      .default({ max_active: 6 }),
+    consolidation: z
+      .object({
+        batch_min_events: z.number().int().min(1).max(100).default(4),
+        max_events_per_call: z.number().int().min(1).max(500).default(80),
+        min_checkpoint_gap_ms: z.number().int().min(0).default(5000),
+      })
+      .default({
+        batch_min_events: 4,
+        max_events_per_call: 80,
+        min_checkpoint_gap_ms: 5000,
+      }),
+    brief: z
+      .object({
+        max_relevant_episodes: z.number().int().min(1).max(50).default(6),
+        max_recent_raw_events: z.number().int().min(1).max(200).default(40),
+      })
+      .default({ max_relevant_episodes: 6, max_recent_raw_events: 40 }),
+    story_plan_path: z.string().min(1).default("story-plan.yaml"),
+  })
+  .superRefine((value, context: RefinementContext) => {
+    if (value.consolidation.batch_min_events > value.consolidation.max_events_per_call) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["consolidation"],
+        message: "consolidation.batch_min_events 不能大于 max_events_per_call。",
+      });
+    }
+  })
+  .default(DEFAULT_NARRATIVE_CONFIG);
+
 const ConfigSchema = z.object({
   api: z.object({
     model: z.string().min(1),
@@ -401,6 +478,7 @@ const ConfigSchema = z.object({
       show_generation_status: false,
     }),
   interaction: InteractionPolicyConfigSchema,
+  narrative: NarrativeConfigSchema,
   debug: z
     .object({
       runtime_status: z.boolean().default(false),

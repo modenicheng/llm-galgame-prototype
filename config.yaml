@@ -120,5 +120,22 @@ game:
   sessions_dir: sessions
   show_line_ids: true
 
+# 叙事导演配置（narrative director）：长线剧情线程、场景搭建、记忆整合与简报。
+narrative:
+  mode: longform
+  threads:
+    max_major_active: 2
+    max_minor_active: 3
+  setups:
+    max_active: 6
+  consolidation:
+    batch_min_events: 4
+    max_events_per_call: 80
+    min_checkpoint_gap_ms: 5000
+  brief:
+    max_relevant_episodes: 6
+    max_recent_raw_events: 40
+  story_plan_path: story-plan.yaml
+
 debug:
   runtime_status: true
