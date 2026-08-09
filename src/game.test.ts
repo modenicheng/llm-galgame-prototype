@@ -35,6 +35,12 @@ import type { GenerationEnvelope } from "./story/types.js";
 import type { EventGroupDraft } from "./core/protocol/gal-dsl/types.js";
 import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
 import type { InteractionOpenedOutput } from "./test-helpers.js";
+import type { NarrativeDirectorPort } from "./core/ports/narrative-director-port.js";
+import type {
+  NarrativeBrief,
+  NarrativeBriefRequest,
+} from "./core/narrative/narrative-brief.js";
+import type { GamePorts } from "./game.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3213,5 +3219,327 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     expect(g.deferredCommands).toHaveLength(0);
     expect(g.activePreviewId).toBeNull();
     expect(g.activeInteractionId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NarrativeDirector integration
+// ---------------------------------------------------------------------------
+
+type DirectorCall =
+  | { type: "observeCommitted"; events: readonly StoredEvent[] }
+  | { type: "checkpoint"; reason: string }
+  | { type: "getBrief"; request: NarrativeBriefRequest };
+
+function makeDirectorFake(
+  briefOverrides?: Partial<NarrativeBrief>,
+): NarrativeDirectorPort & { calls: DirectorCall[] } {
+  const calls: DirectorCall[] = [];
+  const baseBrief: NarrativeBrief = {
+    revision: 0,
+    consolidatedThroughEventSeq: 0,
+    currentEventSeq: 0,
+    checkpointCount: 0,
+    location: "",
+    characters: [],
+    activeThreads: [],
+    setupDirectives: [],
+    relevantEpisodes: [],
+    anchors: [],
+    revealLocks: [],
+    ...briefOverrides,
+  };
+  return {
+    calls,
+    getBrief(request: NarrativeBriefRequest): NarrativeBrief {
+      calls.push({ type: "getBrief", request });
+      return {
+        ...baseBrief,
+        currentEventSeq: request.eventSeq,
+        location: request.location,
+        characters: request.characters,
+      };
+    },
+    observeCommitted(events: readonly StoredEvent[]): void {
+      calls.push({ type: "observeCommitted", events: [...events] });
+    },
+    checkpoint(reason: string): void {
+      calls.push({ type: "checkpoint", reason });
+    },
+  };
+}
+
+function makePortsWithDirector(
+  director: NarrativeDirectorPort,
+): GamePorts {
+  const base = makeTestPorts();
+  return { ...base, narrativeDirector: director };
+}
+
+describe("NarrativeDirector integration", () => {
+  let config: AppConfig;
+  let generator: StoryGenerator;
+  let status: RuntimeStatus;
+  let media: MediaPlannerPort;
+
+  beforeEach(() => {
+    config = makeTestConfig();
+    generator = makeMockGenerator();
+    status = makeMockStatus();
+    media = makeMockMedia();
+  });
+
+  it("delivers observeCommitted after a playable line is recorded", async () => {
+    const director = makeDirectorFake();
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场叙事。"),
+        endEvent("end_1", "Fin."),
+      ]),
+    );
+
+    const game = new Game(
+      config,
+      generator,
+      status,
+      media,
+      undefined,
+      makePortsWithDirector(director),
+    );
+    const controller = new MemoryController();
+    controller.attach(game);
+    await game.run();
+
+    // The narration event enters the log via recordModelEvent → record
+    const observed = director.calls.filter(
+      (c): c is DirectorCall & { type: "observeCommitted" } =>
+        c.type === "observeCommitted",
+    );
+    expect(observed.length).toBeGreaterThanOrEqual(1);
+
+    // At least one narration event was committed with a matching seq
+    const allObservedEvents = observed.flatMap((c) => c.events);
+    const narrationObserveds = allObservedEvents.filter(
+      (e) => e.type === "narration",
+    );
+    expect(narrationObserveds.length).toBeGreaterThanOrEqual(1);
+    for (const event of narrationObserveds) {
+      expect(event).toHaveProperty("seq");
+      expect(typeof event.seq).toBe("number");
+    }
+  });
+
+  it("delivers checkpoint('interaction_completed') after a choice is consumed", async () => {
+    const director = makeDirectorFake();
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("选择前。"),
+        {
+          type: "choice",
+          prompt: "怎么走？",
+          options: [
+            { id: "opt_a", text: "左边" },
+            { id: "opt_b", text: "右边" },
+          ],
+        },
+      ]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("分支A。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("续写。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(
+      config,
+      generator,
+      status,
+      media,
+      undefined,
+      makePortsWithDirector(director),
+    );
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        const first = (
+          output.interaction as { options?: Array<{ id: string }> }
+        ).options?.[0]!;
+        controller.select(output.interactionId, first.id);
+      },
+    });
+    controller.attach(game);
+    await game.run();
+
+    const checkpoints = director.calls.filter(
+      (c): c is DirectorCall & { type: "checkpoint" } =>
+        c.type === "checkpoint",
+    );
+    expect(
+      checkpoints.some((c) => c.reason === "interaction_completed"),
+    ).toBe(true);
+  });
+
+  it("never delivers prefetch candidate content to observeCommitted", async () => {
+    const director = makeDirectorFake();
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        {
+          type: "choice",
+          prompt: "怎么走？",
+          options: [
+            { id: "opt_a", text: "左边" },
+            { id: "opt_b", text: "右边" },
+          ],
+        },
+      ]),
+    );
+    // Each branch returns distinct content; the unselected branch must never
+    // appear in observeCommitted.
+    const branchAContent = "这是分支A的专属内容。";
+    const branchBContent = "这是分支B的专属内容，不应该出现。";
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (...args: unknown[]) => {
+        const option = args[4] as { text?: string } | undefined;
+        // Runtime-generated option IDs are unpredictable; identify by text.
+        if (option?.text === "左边") {
+          return envelope([narrationEvent(branchAContent)]);
+        }
+        return envelope([narrationEvent(branchBContent)]);
+      },
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("续写。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(
+      config,
+      generator,
+      status,
+      media,
+      undefined,
+      makePortsWithDirector(director),
+    );
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        const first = (
+          output.interaction as { options?: Array<{ id: string }> }
+        ).options?.[0]!;
+        controller.select(output.interactionId, first.id);
+      },
+    });
+    controller.attach(game);
+    await game.run();
+
+    // The prefetch content should NOT appear in observeCommitted events
+    const observed = director.calls.filter(
+      (c): c is DirectorCall & { type: "observeCommitted" } =>
+        c.type === "observeCommitted",
+    );
+    // The unselected branch B content must never appear in observed events
+    const allObservedTexts = observed.flatMap((c) =>
+      c.events
+        .filter((e) => "text" in e)
+        .map((e) => (e as { text: string }).text),
+    );
+    expect(allObservedTexts).not.toContain(branchBContent);
+    // The selected branch A content should appear (it is played and recorded)
+    expect(allObservedTexts).toContain(branchAContent);
+  });
+
+  it("passes the brief from getBrief into generator options", async () => {
+    const director = makeDirectorFake({
+      revision: 7,
+      checkpointCount: 3,
+      activeThreads: [
+        {
+          id: "thread_1",
+          kind: "main" as const,
+          summary: "寻找失踪的妹妹",
+          status: "developing" as const,
+          importance: "major" as const,
+          lastTouchedAt: 5,
+        },
+      ],
+      setupDirectives: [
+        {
+          id: "setup_1",
+          action: "reinforce" as const,
+          urgency: "soon" as const,
+        },
+      ],
+    });
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        endEvent("end_1", "Fin."),
+      ]),
+    );
+
+    const game = new Game(
+      config,
+      generator,
+      status,
+      media,
+      undefined,
+      makePortsWithDirector(director),
+    );
+    const controller = new MemoryController();
+    controller.attach(game);
+    await game.run();
+
+    expect(generator.generateOpening).toHaveBeenCalled();
+
+    // The 4th argument is the GenerationStreamOptions with brief
+    const callArgs = (
+      generator.generateOpening as ReturnType<typeof vi.fn>
+    ).mock.calls[0] as unknown[];
+    const options = callArgs[3] as Record<string, unknown> | undefined;
+    expect(options).toBeDefined();
+    expect(options!.brief).toBeDefined();
+
+    const brief = options!.brief as NarrativeBrief;
+    expect(brief.revision).toBe(7);
+    expect(brief.checkpointCount).toBe(3);
+    expect(brief.activeThreads).toHaveLength(1);
+    expect(brief.activeThreads[0]!.summary).toBe("寻找失踪的妹妹");
+    expect(brief.setupDirectives).toHaveLength(1);
+    expect(brief.setupDirectives[0]!.action).toBe("reinforce");
+  });
+
+  it("has zero behavioural change when no narrativeDirector is provided", async () => {
+    // Baseline: no director; run must complete normally
+    const ports = makeTestPorts(); // no narrativeDirector
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("开场。"),
+        endEvent("end_1", "Fin."),
+      ]),
+    );
+
+    const game = new Game(
+      config,
+      generator,
+      status,
+      media,
+      undefined,
+      ports,
+    );
+    const controller = new MemoryController();
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    expect(controller.ended()).toBe(true);
+    // No brief in options when director is absent
+    const callArgs = (
+      generator.generateOpening as ReturnType<typeof vi.fn>
+    ).mock.calls[0] as unknown[];
+    const options = callArgs[3] as Record<string, unknown> | undefined;
+    expect(options?.brief).toBeUndefined();
   });
 });

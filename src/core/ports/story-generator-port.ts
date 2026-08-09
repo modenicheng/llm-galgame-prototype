@@ -15,12 +15,14 @@ import type {
 } from "../../schema.js";
 import type { EventGroupDraft } from "../protocol/gal-dsl/types.js";
 import type { GenerationEnvelope, StoryState } from "../../story/types.js";
+import type { NarrativeBrief } from "../narrative/narrative-brief.js";
 import { AsyncEventQueue } from "../runtime/async-event-queue.js";
 
 export interface OpeningRequest {
   turn: number;
   state: StoryState;
   signal?: AbortSignal;
+  brief?: NarrativeBrief;
 }
 
 export interface ContinuationRequest {
@@ -29,6 +31,7 @@ export interface ContinuationRequest {
   history: StoryContextEvent[];
   prefetchedEvents: StoryContextEvent[];
   signal?: AbortSignal;
+  brief?: NarrativeBrief;
 }
 
 export interface BranchPrefetchRequest {
@@ -38,6 +41,7 @@ export interface BranchPrefetchRequest {
   choice: ChoiceEvent;
   option: ChoiceOption;
   signal?: AbortSignal;
+  brief?: NarrativeBrief;
 }
 
 export interface InputResponseRequest {
@@ -47,6 +51,7 @@ export interface InputResponseRequest {
   interaction: InteractionEvent;
   playerInput: string;
   signal?: AbortSignal;
+  brief?: NarrativeBrief;
 }
 
 export interface GenerationHandle {

@@ -21,6 +21,8 @@ import type {
 } from "./core/ports/session-store-port.js";
 import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
+import type { NarrativeDirectorPort } from "./core/ports/narrative-director-port.js";
+import type { NarrativeBrief } from "./core/narrative/narrative-brief.js";
 import { BranchManager } from "./runtime/branch-manager.js";
 import type { LiveBranchSelection } from "./prefetch.js";
 import { GenerationScheduler } from "./runtime/generation-scheduler.js";
@@ -153,6 +155,7 @@ export interface GamePorts {
   clock: ClockPort;
   ids: IdGeneratorPort;
   diagnostics?: DiagnosticSink;
+  narrativeDirector?: NarrativeDirectorPort;
 }
 
 /** Raised when the driver sends `shutdown`. */
@@ -212,6 +215,7 @@ export class Game {
   private storyState: StoryState;
   private readonly metrics: Metrics;
   private choiceTimestamp: number | null = null;
+  private readonly narrativeDirector: NarrativeDirectorPort | undefined;
   private readonly playbackBuffer = new PlaybackBuffer();
   private readonly generationScheduler = new GenerationScheduler();
   private readonly commands = new AsyncEventQueue<RuntimeCommand>();
@@ -266,6 +270,7 @@ export class Game {
     this.clock = ports.clock;
     this.ids = ports.ids;
     this.diagnostics = ports.diagnostics ?? silentDiagnosticSink;
+    this.narrativeDirector = ports.narrativeDirector;
     this.sessionId = this.ids.nextSessionId();
     this.interactionPolicy = new InteractionPolicy(config.interaction);
     this.storyState = createInitialState();
@@ -544,10 +549,12 @@ export class Game {
 
     const jobId = kind === "opening" ? "opening" : `continuation:${turn}`;
     const label = kind === "opening" ? "初始剧情" : `第 ${turn} 回合后续`;
+    const brief = this.makeBrief(turn);
     const dslOptions = {
       onGroup,
       onSegmentEnd,
       tailVisualState: this.tailVisualState,
+      ...(brief ? { brief } : {}),
       ...(repairReason ? { repairReason } : {}),
     };
     segment.done = this.runTrackedJob(jobId, label, () => {
@@ -1050,10 +1057,14 @@ export class Game {
     const controller = new AbortController();
     this.bridgeControllers.set(interactionId, controller);
 
+    const bridgeOptions: Parameters<typeof this.generator.generateInputBridge>[4] = {
+      tailVisualState: this.tailVisualState,
+    };
+    const bridgeBrief = this.makeBrief(turn + 1);
+    if (bridgeBrief) bridgeOptions.brief = bridgeBrief;
+
     const promise = this.generator
-      .generateInputBridge(turn + 1, this.storyState, interaction, controller.signal, {
-        tailVisualState: this.tailVisualState,
-      })
+      .generateInputBridge(turn + 1, this.storyState, interaction, controller.signal, bridgeOptions)
       .then((envelope) => {
         if (controller.signal.aborted) return;
         const groups = envelope.groups ?? [];
@@ -1158,8 +1169,12 @@ export class Game {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.status.setJob("selected-branch-retry", "已选分支重试", "running");
+      const retryOptions: Parameters<typeof this.generator.generateBranchPrefetch>[6] = {};
+      const retryBrief = this.makeBrief(turn + 1);
+      if (retryBrief) retryOptions.brief = retryBrief;
+
       const retryPromise = this.generator
-        .generateBranchPrefetch(turn + 1, this.storyState, prefetchContext, choice, selected)
+        .generateBranchPrefetch(turn + 1, this.storyState, prefetchContext, choice, selected, undefined, retryOptions)
         .then((envelope) => {
           const result = this.materializeDslGroups(envelope.groups ?? [], this.tailVisualState, turn);
           this.branchTailStates.set(selected.id, result.tailState);
@@ -1228,6 +1243,7 @@ export class Game {
       { select_choice: true },
     );
     if (command.type !== "select_choice") throw new RuntimeShutdownError();
+    this.narrativeDirector?.checkpoint("interaction_completed");
     const selected = choice.options.find((option) => option.id === command.optionId);
     if (!selected) throw new Error(`未找到选项：${command.optionId}`);
     // The option exists: the interaction is now resolved and can no longer
@@ -1530,6 +1546,7 @@ export class Game {
         // state seeded from the current tail (docs §56). Unselected
         // branches never execute, so their states stay isolated here.
         let branchState = this.tailVisualState;
+        const prefetchBrief = this.makeBrief(turn + 1);
         const envelope = await this.generator.generateBranchPrefetch(
           turn + 1,
           this.storyState,
@@ -1539,6 +1556,7 @@ export class Game {
           signal,
           {
             tailVisualState: this.tailVisualState,
+            ...(prefetchBrief ? { brief: prefetchBrief } : {}),
             onGroup: (group) => {
               const { playable, tailState } = this.compileGroup(group, branchState, turn);
               branchState = tailState;
@@ -1645,6 +1663,7 @@ export class Game {
           { preview_input: true },
         );
         if (command.type !== "preview_input") throw new RuntimeShutdownError();
+        this.narrativeDirector?.checkpoint("interaction_completed");
         text = command.text.trim().slice(0, interaction.input.max_length);
       }
 
@@ -1843,6 +1862,7 @@ export class Game {
         controller.signal,
         {
           tailVisualState: this.tailVisualState,
+          ...(this.makeBrief(turn + 1) ? { brief: this.makeBrief(turn + 1)! } : {}),
           onGroup: (group) => {
             if (controller.signal.aborted) {
               this.metrics.recordStaleInputEventDropped();
@@ -1980,6 +2000,7 @@ export class Game {
         interactionId,
         { select_choice: true, preview_input: true },
       );
+      this.narrativeDirector?.checkpoint("interaction_completed");
 
       if (command.type === "preview_input") {
         branchManager?.discardAll();
@@ -2078,13 +2099,19 @@ export class Game {
             text: o.text,
           })),
         };
+        const onDemandOptions: Parameters<typeof this.generator.generateBranchPrefetch>[6] = {};
+        const onDemandBrief = this.makeBrief(turn + 1);
+        if (onDemandBrief) onDemandOptions.brief = onDemandBrief;
+
         const genPromise = this.generator
           .generateBranchPrefetch(
             turn + 1,
             this.storyState,
             prefetchContext,
             syntheticChoice,
-            { id: selected.id, text: selected.text }
+            { id: selected.id, text: selected.text },
+            undefined,
+            onDemandOptions,
           )
           .then((envelope) => {
             const result = this.materializeDslGroups(envelope.groups ?? [], this.tailVisualState, turn);
@@ -2160,6 +2187,17 @@ export class Game {
   private async record(event: StoredEvent): Promise<void> {
     this.events.push(event);
     await this.store.append(event);
+    this.narrativeDirector?.observeCommitted([event]);
+  }
+
+  private makeBrief(turn: number): NarrativeBrief | undefined {
+    if (!this.narrativeDirector) return undefined;
+    return this.narrativeDirector.getBrief({
+      turn,
+      eventSeq: this.seq,
+      location: this.storyState.scene.location,
+      characters: Object.keys(this.storyState.characters),
+    });
   }
 
   private async saveCurrentStateSnapshot(): Promise<void> {

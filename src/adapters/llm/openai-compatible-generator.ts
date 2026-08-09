@@ -29,6 +29,7 @@ import type {
   InteractionEvent,
   StoryContextEvent,
 } from "../../schema.js";
+import type { NarrativeBrief } from "../../core/narrative/narrative-brief.js";
 import type { GenerationEnvelope, StoryState, StoryStatePatch } from "../../story/types.js";
 import { mergePatches } from "../../story/patch.js";
 import {
@@ -95,6 +96,11 @@ export interface GenerationStreamOptions {
    * into the user prompt as TAIL_VISUAL_STATE (docs §70).
    */
   tailVisualState?: VisualState;
+  /**
+   * Per-turn narrative director brief injected as a director note section
+   * in the user prompt (docs narrative-director §Task-10).
+   */
+  brief?: NarrativeBrief;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +170,10 @@ export class StoryGenerator {
     };
     if (options?.tailVisualState) {
       ctx.tailVisualState = options.tailVisualState;
+    }
+    if (options?.brief) {
+      ctx.directorBrief = options.brief;
+      ctx.maxRecentRawEvents = this.config.narrative.brief.max_recent_raw_events;
     }
     if (this.modelCatalog) {
       ctx.modelAssetCatalog = this.modelCatalog;
