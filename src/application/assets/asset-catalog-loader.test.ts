@@ -222,7 +222,11 @@ describe("loadAssetCatalog", () => {
     expect(catalog.bgm.calm!.src).toBe("audio/bgm/calm.mp3");
     expect(catalog.bgm.mountain!.src).toBe("audio/bgm/mountain.mp3");
     expect(catalog.soundEffects.terminal_beep!.src).toBe("audio/se/terminal_beep.ogg");
-    expect(Object.keys(catalog.spriteSets)).toEqual(["suyao", "mysterious_woman"]);
+    expect(Object.keys(catalog.spriteSets)).toEqual([
+      "suyao",
+      "mysterious_woman",
+      "linche",
+    ]);
     expect(catalog.characters.suyao).toEqual({
       characterId: "suyao",
       scriptName: "苏遥",
@@ -239,6 +243,18 @@ describe("loadAssetCatalog", () => {
       defaultVariant: "gentle_smile",
       defaultPosition: "right",
     });
+    expect(catalog.characters.linche).toEqual({
+      characterId: "linche",
+      scriptName: "林澈",
+      displayName: "林澈",
+      spriteSet: "linche",
+      defaultVariant: "neutral",
+      defaultPosition: "left",
+    });
+    // The protagonist's placeholder set shares one silhouette file.
+    expect(catalog.spriteSets.linche!.variants.thinking!.src).toBe(
+      "characters/linche/mysterious_silhouette.png",
+    );
   });
 });
 
