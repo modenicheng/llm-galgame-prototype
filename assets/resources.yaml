@@ -8,7 +8,7 @@ guidance: |
   角色表情资源有限，按情绪强弱谨慎使用。
 
   每个角色都提供 mysterious_silhouette 黑色剪影立绘：
-  用于"神秘女子"初次出场、身份尚未揭示、或远处无法确认身份的场景；
+  用于身份尚未揭示、或远处无法确认身份的场景；
   身份揭示后应切换到该角色的彩色表情立绘。
 
   角色只能使用其"可用立绘组"内的素材组（`[spriteSet:立绘]` 换装）；
@@ -155,89 +155,48 @@ sprite_sets:
         src: characters/suyao/joyful.png
         description: 闭眼张口笑，情绪明显高于 content。
 
-  mysterious_woman:
+  linche:
     description: |
-      神秘女子立绘：银灰偏淡紫色齐肩长发、明亮浅蓝色眼睛，深海军蓝中式立领短袖上衣，金色滚边和盘扣，白色短裤与过膝袜。
-      双手常藏在身后、身体微微前倾，气质比苏遥更精致、主动、俏皮，具有社交伪装能力。
+      林澈（主角）立绘：银灰偏淡紫色齐肩长发、明亮浅蓝色眼睛，深海军蓝中式立领短袖上衣，
+      金色滚边和盘扣，白色短裤与过膝袜。双手常藏在身后、身体微微前倾，
+      气质精致、主动、俏皮，兼具社交伪装能力。
 
     variants:
       mysterious_silhouette:
-        src: characters/mysterious_woman/mysterious_silhouette.png
+        src: characters/linche/mysterious_silhouette.png
         description: 黑色剪影，仅能辨认修长身形和前倾姿态。
 
       gentle_smile:
-        src: characters/mysterious_woman/gentle_smile.png
+        src: characters/linche/gentle_smile.png
         description: 睁眼轻微微笑，显得友好而从容。
 
       speaking_smile:
-        src: characters/mysterious_woman/speaking_smile.png
+        src: characters/linche/speaking_smile.png
         description: 睁眼张口笑，明显正在愉快说话。
 
       sly_smile:
-        src: characters/mysterious_woman/sly_smile.png
+        src: characters/linche/sly_smile.png
         description: 半眯眼张口笑，带有玩味或试探意味。
 
       annoyed:
-        src: characters/mysterious_woman/annoyed.png
+        src: characters/linche/annoyed.png
         description: 眉头下压、张口责问，明显不耐烦。
 
       serious:
-        src: characters/mysterious_woman/serious.png
+        src: characters/linche/serious.png
         description: 双眼收紧、嘴角压平，进入严肃状态。
 
       delighted:
-        src: characters/mysterious_woman/delighted.png
+        src: characters/linche/delighted.png
         description: 闭眼大幅微笑，情绪明亮愉悦。
 
       surprised:
-        src: characters/mysterious_woman/surprised.png
+        src: characters/linche/surprised.png
         description: 睁眼张口，表现为突然惊讶。
 
       calm:
-        src: characters/mysterious_woman/calm.png
+        src: characters/linche/calm.png
         description: 睁眼闭口，神情平稳，略带审视。
-
-  linche:
-    description: |
-      林澈（主角）占位立绘：目前为通用人形黑色剪影，全部表情共用同一张图。
-      接入正式立绘后替换 characters/linche/ 下的图片即可，无需改协议。
-
-    variants:
-      mysterious_silhouette:
-        src: characters/linche/mysterious_silhouette.png
-        description: 占位剪影，身份或表情未显式呈现时使用。
-
-      neutral:
-        src: characters/linche/mysterious_silhouette.png
-        description: 占位剪影，默认平静状态。
-
-      thinking:
-        src: characters/linche/mysterious_silhouette.png
-        description: 占位剪影，思考/斟酌时使用。
-
-      uneasy:
-        src: characters/linche/mysterious_silhouette.png
-        description: 占位剪影，不安/犹豫时使用。
-
-      guarded:
-        src: characters/linche/mysterious_silhouette.png
-        description: 占位剪影，谨慎防备时使用。
-
-      serious:
-        src: characters/linche/mysterious_silhouette.png
-        description: 占位剪影，严肃认真时使用。
-
-      speaking_smile:
-        src: characters/linche/mysterious_silhouette.png
-        description: 占位剪影，友好交谈时使用。
-
-      surprised:
-        src: characters/linche/mysterious_silhouette.png
-        description: 占位剪影，惊讶时使用。
-
-      content:
-        src: characters/linche/mysterious_silhouette.png
-        description: 占位剪影，放松满意时使用。
 
 characters:
   suyao:
@@ -247,16 +206,9 @@ characters:
     default_variant: neutral
     default_position: left
 
-  mysterious_woman:
-    script_name: 神秘女子
-    display_name: 神秘女子
-    sprite_set: mysterious_woman
-    default_variant: gentle_smile
-    default_position: center
-
   linche:
     script_name: 林澈
     display_name: 林澈
     sprite_set: linche
-    default_variant: neutral
+    default_variant: calm
     default_position: right

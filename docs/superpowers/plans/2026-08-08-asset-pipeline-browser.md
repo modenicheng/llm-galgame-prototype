@@ -277,6 +277,8 @@ git commit -m "docs: asset vision report (mimo-v2.5 naming + descriptions)"
 
 假设报告建议（以实际报告为准）：立绘集 B（旗袍）→ 苏遥 `suyao`；立绘集 A（白连衣裙）→ 绑定新角色 `mysterious_woman` 或作为 `suyao` 备用——**执行者依据报告外观气质直接定夺**，并在提交说明理由。
 
+> **更正（2026-08-09，作者确认）**：两套立绘分别为**林澈（josei_12 中国风）与苏遥（josei_03 白裙）**，均为女性角色；故事不存在"神秘女子"独立角色。实际落地：`mysterious_woman` 角色与素材组已移除，`linche` 使用 josei_12 真实立绘。
+
 ```bash
 cd /mnt/d/code-linux/llm-galgame-prototype
 git mv assets/characters/josei_12 assets/characters/suyao        # 示例：若映射为苏遥

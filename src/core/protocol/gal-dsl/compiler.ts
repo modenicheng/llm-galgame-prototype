@@ -160,7 +160,7 @@ function resolveDialogue(
  * 剧情继续；诊断写入 diagnostics。保持确定性。
  *
  * §15 sprite-set 禁令：character_patch 显式换用非该角色 allowed_sprite_sets
- * 内的素材组（如 `苏遥[mysterious_woman:gentle_smile]`）会被丢弃——普通角色
+ * 内的素材组（如 `苏遥[linche:calm]`）会被丢弃——普通角色
  * 只能使用自己的素材组，换装/伪装需要角色绑定里显式列 allowed_sprite_sets。
  */
 function filterInvalidCues(

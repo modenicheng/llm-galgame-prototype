@@ -223,11 +223,7 @@ describe("loadAssetCatalog", () => {
     expect(catalog.bgm.calm!.src).toBe("audio/bgm/calm.mp3");
     expect(catalog.bgm.mountain!.src).toBe("audio/bgm/mountain.mp3");
     expect(catalog.soundEffects.terminal_beep!.src).toBe("audio/se/terminal_beep.ogg");
-    expect(Object.keys(catalog.spriteSets)).toEqual([
-      "suyao",
-      "mysterious_woman",
-      "linche",
-    ]);
+    expect(Object.keys(catalog.spriteSets)).toEqual(["suyao", "linche"]);
     expect(catalog.characters.suyao).toEqual({
       characterId: "suyao",
       scriptName: "苏遥",
@@ -237,27 +233,18 @@ describe("loadAssetCatalog", () => {
       defaultPosition: "left",
       allowedSpriteSets: ["suyao"],
     });
-    expect(catalog.characters.mysterious_woman).toEqual({
-      characterId: "mysterious_woman",
-      scriptName: "神秘女子",
-      displayName: "神秘女子",
-      spriteSet: "mysterious_woman",
-      defaultVariant: "gentle_smile",
-      defaultPosition: "center",
-      allowedSpriteSets: ["mysterious_woman"],
-    });
     expect(catalog.characters.linche).toEqual({
       characterId: "linche",
       scriptName: "林澈",
       displayName: "林澈",
       spriteSet: "linche",
-      defaultVariant: "neutral",
+      defaultVariant: "calm",
       defaultPosition: "right",
       allowedSpriteSets: ["linche"],
     });
-    // The protagonist's placeholder set shares one silhouette file.
-    expect(catalog.spriteSets.linche!.variants.thinking!.src).toBe(
-      "characters/linche/mysterious_silhouette.png",
+    // Lin Che's set is the real josei_12 art — distinct files per variant.
+    expect(catalog.spriteSets.linche!.variants.calm!.src).toBe(
+      "characters/linche/calm.png",
     );
   });
 });
