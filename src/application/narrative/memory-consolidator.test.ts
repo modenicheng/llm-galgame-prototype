@@ -316,6 +316,86 @@ describe("MemoryConsolidator", () => {
       expect(outcome.rejected[0]!.reason).toContain("ghost-s");
     });
 
+    it("validates ops transactionally against a shadow: same-batch state changes are visible (audit finding 4)", async () => {
+      const consolidate = vi.fn().mockResolvedValue(
+        makeResult({
+          // Two creates in ONE batch. With max_minor_active: 3 and 2 active
+          // minor threads already, only the first may pass — the second
+          // must see the first's shadow application.
+          threadOps: [
+            { type: "create", id: "rt1" },
+            { type: "create", id: "rt2" },
+          ],
+          // Two seeds of the SAME setup: the second must be rejected
+          // (status is seeded after the first applied to the shadow).
+          setupOps: [
+            { type: "seed", id: "s1" },
+            { type: "seed", id: "s1" },
+          ],
+        }),
+      );
+      const consolidator = makeConsolidator({ consolidate });
+      const memory = emptyState();
+      memory.threads = {
+        existing1: makeThread({ id: "existing1", status: "open", importance: "minor" }),
+        existing2: makeThread({ id: "existing2", status: "open", importance: "minor" }),
+      };
+      memory.setups = { s1: makeSetup({ id: "s1", status: "planned" }) };
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(10)],
+        memory,
+        "",
+        [],
+      );
+
+      // First create passes (2 + 1 = 3, at the cap); second rejected.
+      expect(outcome.threadOps).toEqual([{ type: "create", id: "rt1" }]);
+      expect(outcome.rejected).toHaveLength(2);
+      expect(outcome.rejected[0]!.op).toEqual({ type: "create", id: "rt2" });
+      expect(outcome.rejected[0]!.reason).toContain("上限");
+      // First seed passes; second rejected (s1 is already seeded in shadow).
+      expect(outcome.setupOps).toEqual([{ type: "seed", id: "s1" }]);
+      expect(outcome.rejected[1]!.op).toEqual({ type: "seed", id: "s1" });
+      expect(outcome.rejected[1]!.reason).toContain("只有 planned 可以 seed");
+    });
+
+    it("rejects a setup budget overflow across same-batch seeds", async () => {
+      const consolidate = vi.fn().mockResolvedValue(
+        makeResult({
+          setupOps: [
+            { type: "seed", id: "s1" },
+            { type: "seed", id: "s2" },
+          ],
+        }),
+      );
+      const consolidator = makeConsolidator({ consolidate });
+      const memory = emptyState();
+      // max_active: 6; 5 already active → s1 fits (6), s2 must be rejected.
+      memory.setups = {
+        s1: makeSetup({ id: "s1", status: "planned" }),
+        s2: makeSetup({ id: "s2", status: "planned" }),
+      };
+      for (let i = 0; i < 5; i++) {
+        memory.setups[`active_${i}`] = makeSetup({
+          id: `active_${i}`,
+          status: "seeded",
+        });
+      }
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(10)],
+        memory,
+        "",
+        [],
+      );
+
+      expect(outcome.setupOps).toEqual([{ type: "seed", id: "s1" }]);
+      expect(outcome.rejected).toHaveLength(1);
+      expect(outcome.rejected[0]!.op).toEqual({ type: "seed", id: "s2" });
+      expect(outcome.rejected[0]!.reason).toContain("上限");
+    });
+
     it("rejects an invalid episode op and records it", async () => {
       const badEpisode = makeEpisodeOp({ summary: "" });
       const consolidate = vi
@@ -396,9 +476,9 @@ describe("MemoryConsolidator", () => {
   // Truncation
   // -----------------------------------------------------------------------
   describe("consolidate — event truncation", () => {
-    it("sends at most max_events_per_call events to the port, keeping the LAST N", async () => {
+    it("sends at most max_events_per_call events to the port, keeping the OLDEST N (FIFO)", async () => {
       const consolidate = vi.fn().mockResolvedValue(makeResult());
-      // Cap of 4; 10 events → only seqs 7..10 reach the port
+      // Cap of 4; 10 events → only seqs 1..4 reach the port
       const consolidator = makeConsolidator({ consolidate }, makeConfig({
         consolidation: {
           batch_min_events: 4,
@@ -420,12 +500,12 @@ describe("MemoryConsolidator", () => {
       expect(consolidate).toHaveBeenCalledTimes(1);
       const request = consolidate.mock.calls[0]![0] as ConsolidationRequest;
       expect(request.events).toHaveLength(4);
-      expect(request.events.map((e) => e.seq)).toEqual([7, 8, 9, 10]);
+      expect(request.events.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
       // Overflow drop is reported via diagnostics (Task 6 behavior)
-      expect(diag.infos.some((i) => i.message.includes("Dropping 6 overflow"))).toBe(true);
+      expect(diag.infos.some((i) => i.message.includes("Dropping 6 newer overflow"))).toBe(true);
       // Episode fromSeq is the first seq of the CAPPED batch
-      expect(outcome.episode!.fromEventSeq).toBe(7);
-      expect(outcome.episode!.toEventSeq).toBe(10);
+      expect(outcome.episode!.fromEventSeq).toBe(1);
+      expect(outcome.episode!.toEventSeq).toBe(4);
     });
   });
 

@@ -39,7 +39,11 @@ import type {
   NarrativeBrief,
   NarrativeBriefRequest,
 } from "../../core/narrative/narrative-brief.js";
-import { classifySetup } from "./memory-validator.js";
+import {
+  classifySetup,
+  applyThreadOpToState,
+  applySetupOpToState,
+} from "./memory-validator.js";
 import { retrieveEpisodes } from "./episode-retriever.js";
 import {
   MemoryConsolidator,
@@ -375,15 +379,15 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         applied += 1;
       }
 
-      // 2) Thread ops
+      // 2) Thread ops (shared pure apply; timeline in checkpoint units)
       for (const op of outcome.threadOps) {
-        this.applyThreadOp(op, nowCheckpoint);
+        applyThreadOpToState(this.memory, op, nowCheckpoint);
         applied += 1;
       }
 
       // 3) Setup ops
       for (const op of outcome.setupOps) {
-        this.applySetupOp(op, nowCheckpoint);
+        applySetupOpToState(this.memory, op, nowCheckpoint);
         applied += 1;
       }
 
@@ -485,101 +489,5 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     return undefined;
   }
 
-  // -----------------------------------------------------------------------
-  // Internal: apply ops to in-memory state
-  // -----------------------------------------------------------------------
-
-  /** Apply a thread op; `checkpoint` is the current narrative beat
-   *  (checkpointCount), the unit of all timeline fields. */
-  private applyThreadOp(op: ThreadOp, checkpoint: number): void {
-    switch (op.type) {
-      case "touch": {
-        const t = this.memory.threads[op.id];
-        if (t) {
-          t.lastTouchedAtCheckpoint = checkpoint;
-          if (op.progress !== undefined) {
-            t.summary = op.progress;
-          }
-        }
-        break;
-      }
-      case "advance": {
-        const t = this.memory.threads[op.id];
-        if (t) {
-          const nextStatuses = VALID_THREAD_TRANSITIONS[t.status] ?? [];
-          const nextStatus = nextStatuses[0];
-          if (nextStatus) {
-            t.status = nextStatus;
-          }
-          t.lastTouchedAtCheckpoint = checkpoint;
-        }
-        break;
-      }
-      case "resolve": {
-        const t = this.memory.threads[op.id];
-        if (t) {
-          t.status = "resolved";
-          t.lastTouchedAtCheckpoint = checkpoint;
-        }
-        break;
-      }
-      case "abandon": {
-        const t = this.memory.threads[op.id];
-        if (t) {
-          t.status = "abandoned";
-          t.lastTouchedAtCheckpoint = checkpoint;
-        }
-        break;
-      }
-      case "create": {
-        this.memory.threads[op.id] = {
-          id: op.id,
-          kind: "main",
-          summary: op.progress ?? `Thread ${op.id}`,
-          status: "open",
-          importance: "minor",
-          introducedAtCheckpoint: checkpoint,
-          lastTouchedAtCheckpoint: checkpoint,
-          source: "runtime",
-        };
-        break;
-      }
-    }
-  }
-
-  /** Apply a setup op; `checkpoint` is the current narrative beat. */
-  private applySetupOp(op: SetupOp, checkpoint: number): void {
-    const s = this.memory.setups[op.id];
-    if (!s) return;
-
-    switch (op.type) {
-      case "seed": {
-        s.status = "seeded";
-        s.seededAtCheckpoint = checkpoint;
-        s.lastTouchedAtCheckpoint = checkpoint;
-        break;
-      }
-      case "reinforce": {
-        s.status = "reinforced";
-        s.reinforcementCount += 1;
-        s.lastTouchedAtCheckpoint = checkpoint;
-        break;
-      }
-      case "payoff": {
-        s.status = "paid_off";
-        s.payoffAtCheckpoint = checkpoint;
-        s.lastTouchedAtCheckpoint = checkpoint;
-        break;
-      }
-      case "hold": {
-        // No change
-        break;
-      }
-      case "drop": {
-        s.status = "dropped";
-        break;
-      }
-    }
-  }
 
 }

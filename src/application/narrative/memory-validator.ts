@@ -174,6 +174,119 @@ export function validateSetupOp(
   }
 }
 
+// ---------------------------------------------------------------------------
+// State application (shared by MemoryConsolidator's shadow validation and
+// the director's final apply). Pure: mutates `state` in place.
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply a validated thread op to a state object (mutates in place).
+ * `checkpoint` is the narrative beat used for timeline fields.
+ * Used both for shadow validation (checkpoint irrelevant) and the
+ * director's real apply.
+ */
+export function applyThreadOpToState(
+  state: NarrativeMemoryState,
+  op: ThreadOp,
+  checkpoint: number,
+): void {
+  switch (op.type) {
+    case "touch": {
+      const t = state.threads[op.id];
+      if (t) {
+        t.lastTouchedAtCheckpoint = checkpoint;
+        if (op.progress !== undefined) {
+          t.summary = op.progress;
+        }
+      }
+      break;
+    }
+    case "advance": {
+      const t = state.threads[op.id];
+      if (t) {
+        const nextStatuses = VALID_THREAD_TRANSITIONS[t.status] ?? [];
+        const nextStatus = nextStatuses[0];
+        if (nextStatus) {
+          t.status = nextStatus;
+        }
+        t.lastTouchedAtCheckpoint = checkpoint;
+      }
+      break;
+    }
+    case "resolve": {
+      const t = state.threads[op.id];
+      if (t) {
+        t.status = "resolved";
+        t.lastTouchedAtCheckpoint = checkpoint;
+      }
+      break;
+    }
+    case "abandon": {
+      const t = state.threads[op.id];
+      if (t) {
+        t.status = "abandoned";
+        t.lastTouchedAtCheckpoint = checkpoint;
+      }
+      break;
+    }
+    case "create": {
+      state.threads[op.id] = {
+        id: op.id,
+        kind: "main",
+        summary: op.progress ?? `Thread ${op.id}`,
+        status: "open",
+        importance: "minor",
+        introducedAtCheckpoint: checkpoint,
+        lastTouchedAtCheckpoint: checkpoint,
+        source: "runtime",
+      };
+      break;
+    }
+  }
+}
+
+/**
+ * Apply a validated setup op to a state object (mutates in place).
+ * `checkpoint` is the narrative beat used for timeline fields.
+ */
+export function applySetupOpToState(
+  state: NarrativeMemoryState,
+  op: SetupOp,
+  checkpoint: number,
+): void {
+  const s = state.setups[op.id];
+  if (!s) return;
+
+  switch (op.type) {
+    case "seed": {
+      s.status = "seeded";
+      s.seededAtCheckpoint = checkpoint;
+      s.lastTouchedAtCheckpoint = checkpoint;
+      break;
+    }
+    case "reinforce": {
+      s.status = "reinforced";
+      s.reinforcementCount += 1;
+      s.lastTouchedAtCheckpoint = checkpoint;
+      break;
+    }
+    case "payoff": {
+      s.status = "paid_off";
+      s.payoffAtCheckpoint = checkpoint;
+      s.lastTouchedAtCheckpoint = checkpoint;
+      break;
+    }
+    case "hold": {
+      // No change
+      break;
+    }
+    case "drop": {
+      s.status = "dropped";
+      break;
+    }
+  }
+}
+
 /** Array fields of an episode summary op, all validated identically. */
 const EPISODE_ARRAY_FIELDS = [
   "characters",

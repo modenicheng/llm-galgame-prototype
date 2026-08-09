@@ -30,6 +30,8 @@ import {
   validateThreadOp,
   validateSetupOp,
   validateEpisodeOp,
+  applyThreadOpToState,
+  applySetupOpToState,
 } from "./memory-validator.js";
 
 // ---------------------------------------------------------------------------
@@ -129,15 +131,16 @@ export class MemoryConsolidator {
       return emptyOutcome();
     }
 
-    // Cap events to max_events_per_call (keep last N)
+    // Cap events to max_events_per_call (keep the OLDEST N, FIFO — same
+    // order the director batches in; this cap is defense in depth).
     const maxEvents = this.config.consolidation.max_events_per_call;
     let batch: StoredEvent[];
     if (events.length > maxEvents) {
       this.diagnostics.info(
         "NarrativeDirector",
-        `Dropping ${events.length - maxEvents} overflow events from batch (max ${maxEvents})`,
+        `Dropping ${events.length - maxEvents} newer overflow events from batch (max ${maxEvents})`,
       );
-      batch = events.slice(-maxEvents);
+      batch = events.slice(0, maxEvents);
     } else {
       batch = events;
     }
@@ -170,10 +173,17 @@ export class MemoryConsolidator {
       return emptyOutcome();
     }
 
-    // --- Filter through the validators (Task 6 order: episode → thread → setup) ---
+    // --- Filter through the validators transactionally ---
+    // Ops are validated in OUTPUT order against a SHADOW copy of the
+    // memory: each accepted op is applied to the shadow before the next
+    // one is validated, so budgets and state transitions see the ops that
+    // came before them in the same batch (two creates against a full
+    // budget, seed-then-reinforce, repeated advances...). A rejected op is
+    // NOT applied to the shadow. (Audit finding 4.)
     const rejected: RejectedOp[] = [];
     const threadOps: ThreadOp[] = [];
     const setupOps: SetupOp[] = [];
+    const shadow = structuredClone(memory);
 
     let episode: EpisodeMemory | null = null;
     const epReason = validateEpisodeOp(result.episode);
@@ -194,18 +204,20 @@ export class MemoryConsolidator {
     }
 
     for (const op of result.threadOps) {
-      const reason = validateThreadOp(op, memory, this.config);
+      const reason = validateThreadOp(op, shadow, this.config);
       if (reason === null) {
         threadOps.push(op);
+        applyThreadOpToState(shadow, op, 0); // checkpoint irrelevant for validation
       } else {
         rejected.push({ kind: "thread", op, reason });
       }
     }
 
     for (const op of result.setupOps) {
-      const reason = validateSetupOp(op, memory, this.config);
+      const reason = validateSetupOp(op, shadow, this.config);
       if (reason === null) {
         setupOps.push(op);
+        applySetupOpToState(shadow, op, 0); // checkpoint irrelevant for validation
       } else {
         rejected.push({ kind: "setup", op, reason });
       }
