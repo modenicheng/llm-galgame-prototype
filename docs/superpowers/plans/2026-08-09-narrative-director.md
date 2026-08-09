@@ -383,6 +383,7 @@ export function renderDirectorNote(brief: NarrativeBrief, maxRecentRawEvents: nu
 
 **Files:**
 - Create: `src/application/narrative/memory-consolidator.ts`
+- Modify: `src/application/narrative/narrative-director-service.ts`（consolidatePending 抽取为调用 MemoryConsolidator）
 - Test: `src/application/narrative/memory-consolidator.test.ts`
 
 **Interfaces:**
@@ -406,6 +407,8 @@ export class MemoryConsolidator {
   ): Promise<ConsolidationOutcome>;
 }
 ```
+
+**重构说明（抽取）**：Task 6 的 `NarrativeDirectorService.consolidatePending()` 内联实现了"调 port → validator → apply"管线。本任务把"调 port + 截断 + validator 过滤 + episode id 生成"抽取到 `MemoryConsolidator` 类（行为不变：同样的 validator 规则、同样的拒绝记录），并修改 director-service：`consolidatePending()` 改为调用 `memoryConsolidator.consolidate(...)`，把返回的 episode/threadOps/setupOps 应用、rejected 记录；director 持有 `MemoryConsolidator`（由构造参数 `consolidator: MemoryConsolidatorPort | undefined` 内部包装，consolidator 为 undefined 时 MemoryConsolidator 也返回空 outcome）。director-service 现有测试必须保持全绿（重构不改行为）。
 
 - [ ] **Step 1: 失败测试**（mock MemoryConsolidatorPort）：成功路径（result → 校验 → episode id/字段、ops 透传）；非法 threadOp/setupOp 进 rejected；port reject → outcome.result null 且不 throw；截断（> max_events_per_call 只传最后 N 给 port，断言 port 收到的 events 长度）。
 - [ ] **Step 2: 运行确认失败**。
