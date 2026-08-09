@@ -31,13 +31,13 @@
 
 ## 3. 作者静态设定：story-plan.yaml
 
-新文件 `story-plan.yaml`，根键 `story_plan`，三段全部可选（缺省时从空状态开始）：
+新文件 `story-plan.yaml`，**顶层键** `threads / setups / anchors`（审计修正：
+早先草稿的 `story_plan:` 根键已废弃；三段全部可选，缺省时从空状态开始）：
 
 ```yaml
-story_plan:
-  threads:  # PlotThread 种子（source: author）
-  setups:   # SetupPayoff 种子（source: author，status: planned）
-  anchors:  # [{id, purpose, prerequisites, required}]
+threads:  # PlotThread 种子（source: author）
+setups:   # SetupPayoff 种子（source: author，status: planned）
+anchors:  # [{id, purpose, prerequisites, required}]（status 恒 pending）
 ```
 
 - 示例内容（按作者题材：苏遥/终端）：
@@ -47,12 +47,18 @@ story_plan:
 - 加载器 `src/adapters/static/story-plan-loader.ts`：纯函数（路径 → StoryPlan）。
   - yaml 语法/结构错误 → 启动时报清晰错误
   - 单个条目校验失败 → 跳过该条目 + warning（走 diagnostic sink），不整体崩溃
+  - **种子只负责第一次创建缺失条目**（审计修正）：`initialize()` 合并时
+    持久化状态优先（loaded wins），同 id 的运行时生命周期（status /
+    时间戳 / reinforcementCount）重启后不被 plan 覆盖
 
 ## 4. Core 类型与 Port
 
 ### `src/core/narrative/memory-types.ts`
-- `PlotThread`：id / kind（main|character|mystery|relationship|promise）/ summary / status（open|developing|ready_to_resolve|resolved|abandoned）/ importance（major|minor）/ introducedAt / lastTouchedAt / nextPressure? / source（author|runtime）
-- `SetupPayoff`：id / kind（foreshadow|mystery_clue|object|character|relationship|world_rule|promise|motif）/ setup / intendedPayoff? / status（planned|seeded|reinforced|ready|paid_off|dropped）/ threadId? / reinforcementCount / seededAt? / lastTouchedAt? / payoffAt? / prerequisites / payoffBeforeAnchor? / source
+- `PlotThread`：id / kind（main|character|mystery|relationship|promise）/ summary / status（open|developing|ready_to_resolve|resolved|abandoned）/ importance（major|minor）/ introducedAtCheckpoint / lastTouchedAtCheckpoint / nextPressure? / source（author|runtime）
+- `SetupPayoff`：id / kind（foreshadow|mystery_clue|object|character|relationship|world_rule|promise|motif）/ setup / intendedPayoff? / status（planned|seeded|reinforced|ready|paid_off|dropped）/ threadId? / reinforcementCount / seededAtCheckpoint? / lastTouchedAtCheckpoint? / payoffAtCheckpoint? / prerequisites / payoffBeforeAnchor? / source
+  - **时间字段全部为 checkpoint 单位**（审计修正）：写入值是应用操作时的
+    checkpointCount（叙事节拍），不是 event seq；classifySetup 的 age
+    计算（checkpoint − lastTouched ≥ 2）因此单位一致
 - `StoryAnchorState`：id / purpose / prerequisites / required / status（pending|reached|passed）
 - `EpisodeMemory`：id / fromEventSeq / toEventSeq / summary / characters / locations / threads / setups / importance（major|normal）
 - `NarrativeMemoryState`：revision / consolidatedThroughEventSeq / checkpointCount（递增，供 classifySetup 的 age 计算）/ threads / setups / anchors / recentEpisodeIds
@@ -115,22 +121,31 @@ interface NarrativeDirectorPort {
 - 非法状态迁移（如 paid_off → seeded、dropped → reinforce）
 - 超过 budget（§7 配置：major threads ≤ 2、minor ≤ 3、active setups ≤ 6）
 - summary 超长（上限 200 字）
-- op 声称的证据 event id 不在已提交范围内
+- op 声称的证据 event id 不在已提交范围内（≤ 当前批最后事件 seq）
+- **事务式 shadow 校验**（审计修正）：ops 按输出顺序在克隆状态上
+  validate → apply → 下一个，同批次内 budget/状态迁移互相可见
+  （两个 create、重复 seed、seed 后 reinforce 不再穿透）
 
 ### episode-retriever.ts
-- §12 检索：`(characters∩) 最近 2 + (threads∩) 最近 2 + 全部 major`，去重、按 seq 倒序、截断 max_relevant_episodes（默认 6）
+- `(characters∩) 最近 2 + (locations∩) 最近 2 + (threads∩) 最近 2 + 全部 major`（审计修正补 location），去重、按 seq 倒序、截断 max_relevant_episodes（默认 6）；threads 只传**活跃**线程 id（审计修正，避免已终结线程钝化检索信号）
 
 ### classifySetup（最小版，私有于 director-service）
-- payoffBeforeAnchor 命中当前 anchor → payoff/now
+- payoffBeforeAnchor 命中当前 anchor → payoff/now（**仅 seeded|reinforced|ready**
+  状态；审计修正：planned 等状态发 payoff 会被 validator 拒绝）
 - seeded 且 age ≥ 2 checkpoint → reinforce/soon
 - 其余 → hold/normal
+- **anchor 推进归第 3 步**（审计修正）：`computeCurrentAnchorId` 要求
+  存在已 reached/passed 的 anchor 才返回后续 pending；第 1+2 步无推进
+  机制 → 恒 undefined → payoffBeforeAnchor 指令惰性（便签不承诺无法
+  兑现的期限）
 
 ## 6. Adapters
 
 ### src/adapters/storage/json-narrative-memory-store.ts
-- 目录布局：`sessions/<session-id>/narrative-state.json`、`episodes.jsonl`、`narrative-ops.jsonl`（与 events.jsonl / state.json 并列）
+- 目录布局：`sessions/<session-id>/narrative-state.json`、`episodes.jsonl`、`narrative-ops.jsonl`（与 events.jsonl 同前缀的会话目录；**记忆绑定 session**，审计修正落实）
 - 原子写：tmp 文件 + rename
-- 损坏文件：load 时返回空状态 + warning（不崩溃）
+- 损坏文件：load 时返回空状态 + warning（不崩溃）；**语法损坏与结构损坏
+  都用 zod schema 判定**（审计修正），episode 按 id 去重（持久化重试幂等）
 
 ### src/adapters/llm/narrative-consolidator-adapter.ts
 - 独立 OpenAI client（api.model / base_url / api_key_env 同 generator 配置）
@@ -176,7 +191,17 @@ narrative:
 - candidate 隔离：`observeCommitted` 只在 `store.append` 正式落库处触发；prefetch 分支/预览候选天然不进记忆；现有事务逻辑不动
 - 异步不阻塞：consolidation fire-and-forget；`getBrief` 同步读内存
 - 滞后续写：brief 同时携带 consolidatedThroughEventSeq 与 currentEventSeq，渲染注明"记忆截至 X，最近事件见 RECENT EVENTS"
-- 重入安全：consolidator 单飞，watermark 单调推进
+- **consolidation 批次为 FIFO**（审计修正）：每次取最老 max_events_per_call
+  条，较新的 overflow 事件留队；watermark = 本批最后事件 seq（连续前沿，
+  天然单调，无回退）
+- 重入安全：consolidator 单飞；完成释放标志后重新检查调度（飞行期间新
+  事件可继续 drain），失败重试受 min_checkpoint_gap_ms 节流
+- **持久化失败原子**（审计修正）：copy-on-write——ops 应用到克隆状态，
+  saveState（提交点）→ appendEpisodes 全部成功后替换内存；任一失败内存
+  不动、整批重新入队（重试生成同 id episode，幂等收敛）；appendOps 失败
+  仅记日志
+- checkpoint 在交互正式落库（player choice/input 已 record）**之后**触发
+  （审计修正），保证触发 consolidation 时批次包含该交互事件
 
 ## 10. 测试矩阵
 

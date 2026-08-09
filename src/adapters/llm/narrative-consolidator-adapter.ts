@@ -29,7 +29,8 @@ const SYSTEM_PROMPT =
   "{episode:{summary,characters,locations,threads,setups,importance}, " +
   "threadOps:[{type,id,progress?}], setupOps:[{type,id,evidenceEventIds?}]}。" +
   "只整理事实，不要推测未来，不要写未来计划。" +
-  "threads/setups 只能引用给定列表中的 id。" +
+  "threads/setups 只能引用给定列表中的 id；唯一例外：threadOps 可用 " +
+  "type=create 创建全新线程（id 自拟且不得与列表重复，importance 默认为 minor）。" +
   "summary 不超过 200 字。";
 
 // ---------------------------------------------------------------------------

@@ -4324,8 +4324,10 @@ narrative:
 
 ## 116.4 文件布局
 
-与 `sessions/<sessionId>.jsonl` 同目录（sessions 根目录，§115 保留的会话
-存储格式不变）：
+与 `sessions/<sessionId>.jsonl` 同前缀的会话目录
+`sessions/<sessionId>/`（narrative 记忆**绑定 session**：新 session 从
+空记忆开始，恢复同一 session 时延续其记忆；事件 seq 与持久化 watermark
+不会跨 session 冲突）：
 
 - `narrative-state.json` — 全量 consolidated 状态快照（revision /
   consolidatedThroughEventSeq / checkpointCount / threads / setups /
@@ -4333,8 +4335,9 @@ narrative:
 - `episodes.jsonl` — 每行一个 EpisodeMemory；
 - `narrative-ops.jsonl` — 每行一个 RejectedOp（拒绝诊断日志）。
 
-`load()` 对缺失/损坏文件一律降级：损坏 state → 空状态，损坏单行 episode →
-跳过该行，绝不因存储问题抛错。
+`load()` 对缺失/损坏文件一律降级：损坏 state（语法或**结构**损坏，用
+zod schema 校验）→ 空状态，损坏单行 episode → 跳过该行，episode 按 id
+去重（持久化重试幂等），绝不因存储问题抛错。
 
 ## 116.5 mode: event 旁路
 
@@ -4353,24 +4356,49 @@ story-plan、不建 store / consolidator；`Game` 的 `narrativeDirector` 可选
 - **consolidatePending**（公开方法，测试与手动触发可用）：
   1. 原子排空 pending（异步 consolidation 期间新 observeCommitted 的事件
      不丢失）；
-  2. `MemoryConsolidator` 截断到 max_events_per_call（保留最近 N 条）→
-     经 `NarrativeConsolidatorAdapter` 调 LLM（输入 = 事件文本 + 当前
-     threads/setups 摘要）→ 结构化输出（episode + threadOps + setupOps）；
-  3. `memory-validator` 逐条过滤（顺序 episode → thread → setup），拒绝
-     规则：未知 id、非法状态迁移、thread/setup budget 超限、episode
-     summary 空或超 200 字、数组字段含空元素或去重超 20；被拒 ops 记入
-     narrative-ops.jsonl；
-  4. 应用通过校验的 ops（thread touch / advance / resolve / abandon /
-     create，setup seed / reinforce / payoff / hold / drop），新 episode
-     id 为 `ep_{revision+1}_{fromSeq}`；
-  5. 推进 revision、`consolidatedThroughEventSeq = 批次最后事件 seq`，
-     更新 recentEpisodeIds（上限 20），持久化三件套。
+  2. **FIFO 批次**：取最老 max_events_per_call 条（`pending.slice(0, max)`），
+     较新的 overflow 事件留在队尾，成功后在下次调用处理——叙事时间顺序
+     不被倒置；
+  3. `MemoryConsolidator` 经 `NarrativeConsolidatorAdapter` 调 LLM（输入
+     = 事件文本 + 当前 threads/setups 摘要）→ 结构化输出（episode +
+     threadOps + setupOps）；
+  4. `memory-validator` **shadow-state 事务校验**：ops 按输出顺序逐个
+     在克隆状态上 validate → apply → 下一个，同批次内的预算与状态迁移
+     互相可见（同批两个 create、重复 seed 等不再穿透 budget）；拒绝规则
+     另有：evidence event ids 必须落在已提交事件范围内、setup payoff
+     仅接受 seeded|reinforced|ready；被拒 ops 记入 narrative-ops.jsonl；
+  5. **copy-on-write 应用**：ops 应用到克隆状态 → saveState（提交点）→
+     appendEpisodes → 全部成功后替换内存；任一持久化失败则内存不动、
+     整批重新入队（重试生成同 id episode，load 按 id 去重，幂等收敛）；
+     appendOps 失败仅记日志；
+  6. 推进 revision、`consolidatedThroughEventSeq = 批次最后事件 seq`
+     （连续前沿，FIFO 下天然单调）、更新 recentEpisodeIds（上限 20）。
 - **失败与容错**：port 抛错或输出解析失败 → 空 outcome（result: null），
   已排空批次**重新入队队首**（事件不丢），不推进 watermark，下次调度
   重试；调度路径 fire-and-forget，异常只记诊断 warning，绝不 reject 到
-  game 主循环。
+  game 主循环；consolidation 完成释放单飞标志后重新检查调度（飞行期间
+  新事件可继续 drain），失败重试受 min_checkpoint_gap_ms 节流防风暴。
 
-## 116.7 运行时接入与提示词
+## 116.7 时间单位与 anchor 归属（审计修正）
+
+- 时间字段统一为 **checkpoint 单位**（叙事节拍）：`*Checkpoint` 后缀
+  （introducedAtCheckpoint / lastTouchedAtCheckpoint /
+  seededAtCheckpoint / payoffAtCheckpoint），写入值为应用时的
+  checkpointCount；classifySetup 的 age 计算（checkpoint − lastTouched
+  ≥ 2）单位一致。
+- **anchor 推进归第 3 步（PlotPlanner）**：第 1+2 步无 anchor 推进机制，
+  `computeCurrentAnchorId` 要求存在已 reached/passed 的 anchor，否则返回
+  undefined——`payoffBeforeAnchor` 指令在第 1+2 步保持惰性，便签不承诺
+  无法兑现的 payoff 期限；classifySetup 也只在 seeded|reinforced|ready
+  状态发 payoff/now（与 validator 的 payoff 前置一致）。
+- **restart merge**：`initialize()` 以持久化状态优先（loaded wins），
+  story-plan.yaml 只负责第一次创建缺失条目；同 id 的运行时生命周期
+  （status / 时间戳 / reinforcementCount）重启后不被 plan 覆盖。
+- `ThreadOp.create` 可用：consolidator prompt 允许用 create 创建全新
+  runtime thread（id 自拟、不得与列表重复、默认 minor），validator 的
+  budget/重复检查兜底。
+
+## 116.8 运行时接入与提示词
 
 - `Game` 构造新增可选依赖 `narrativeDirector?: NarrativeDirectorPort`；
   各类生成请求（opening / continuation / branch_prefetch / input_response

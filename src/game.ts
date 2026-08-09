@@ -2203,7 +2203,10 @@ export class Game {
     if (!this.narrativeDirector) return undefined;
     return this.narrativeDirector.getBrief({
       turn,
-      eventSeq: this.seq,
+      // The last COMMITTED event seq (this.seq is the next slot to
+      // allocate) — the brief's currentEventSeq must not lie about the
+      // story front (audit finding 9).
+      eventSeq: this.seq - 1,
       location: this.storyState.scene.location,
       characters: Object.keys(this.storyState.characters),
     });

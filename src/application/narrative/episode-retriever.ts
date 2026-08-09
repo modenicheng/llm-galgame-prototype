@@ -4,8 +4,9 @@
  *
  * No IO, no classes. Selection order:
  *  1) episodes whose characters intersect `opts.characters`, most recent 2
- *  2) episodes whose threads intersect `opts.threads`, most recent 2 (dedup)
- *  3) every episode with importance "major" (dedup)
+ *  2) episodes whose locations intersect `opts.locations`, most recent 2
+ *  3) episodes whose threads intersect `opts.threads`, most recent 2 (dedup)
+ *  4) every episode with importance "major" (dedup)
  * The merged result is sorted by toEventSeq descending and truncated to
  * `opts.max`. The input array is never mutated.
  */
@@ -27,7 +28,12 @@ const RECENT_PER_FILTER = 2;
  */
 export function retrieveEpisodes(
   episodes: EpisodeMemory[],
-  opts: { characters: string[]; threads: string[]; max: number },
+  opts: {
+    characters: string[];
+    locations: string[];
+    threads: string[];
+    max: number;
+  },
 ): EpisodeMemory[] {
   const selected: EpisodeMemory[] = [];
   const seen = new Set<string>();
@@ -52,7 +58,19 @@ export function retrieveEpisodes(
     addUnique(episode);
   }
 
-  // 2) Thread intersection: most recent 2, dedup against step 1 (no backfill).
+  // 2) Location intersection: recent 2, dedup against step 1.
+  const byLocation = episodes
+    .filter((episode) =>
+      episode.locations.some((location) =>
+        opts.locations.includes(location),
+      ),
+    )
+    .sort(byToEventSeqDesc);
+  for (const episode of byLocation.slice(0, RECENT_PER_FILTER)) {
+    addUnique(episode);
+  }
+
+  // 3) Thread intersection: most recent 2, dedup against steps 1-2 (no backfill).
   const byThread = episodes
     .filter((episode) =>
       episode.threads.some((thread) => opts.threads.includes(thread)),
@@ -62,7 +80,7 @@ export function retrieveEpisodes(
     addUnique(episode);
   }
 
-  // 3) Major episodes are always candidates (dedup against steps 1-2).
+  // 4) Major episodes are always candidates (dedup against steps 1-3).
   for (const episode of episodes) {
     if (episode.importance === "major") {
       addUnique(episode);

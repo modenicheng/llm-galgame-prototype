@@ -232,11 +232,16 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       )
       .filter((d): d is NonNullable<typeof d> => d !== undefined);
 
-    // Relevant episodes via retriever
-    const threadIds = Object.keys(this.memory.threads);
+    // Relevant episodes via retriever: active threads only (resolved/
+    // abandoned threads are dead weight and would blunt the signal), plus
+    // the current location (audit finding 9).
+    const activeThreadIds = Object.values(this.memory.threads)
+      .filter((t) => ACTIVE_THREAD_STATUSES.has(t.status))
+      .map((t) => t.id);
     const relevantEpisodes = retrieveEpisodes(this.episodes, {
       characters: request.characters,
-      threads: threadIds,
+      locations: request.location !== "" ? [request.location] : [],
+      threads: activeThreadIds,
       max: this.config.brief.max_relevant_episodes,
     });
 
