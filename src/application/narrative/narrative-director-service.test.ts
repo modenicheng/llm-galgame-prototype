@@ -739,40 +739,66 @@ describe("NarrativeDirectorService", () => {
       expect(saved.setups["ghost-s"]).toBeUndefined();
     });
 
-    it("consolidator failure does NOT throw and does NOT advance watermark", async () => {
+    it("consolidator failure does NOT throw, does NOT advance watermark, and RETAINS events for retry", async () => {
       const store = new FakeStore(emptyState());
       const plan = makePlan();
-      const failingConsolidator: MemoryConsolidatorPort = {
-        consolidate: vi.fn().mockRejectedValue(new Error("LLM timeout")),
-      };
+      const consolidateFn = vi.fn()
+        .mockRejectedValueOnce(new Error("LLM timeout"))
+        .mockResolvedValueOnce({
+          episode: {
+            summary: "Recovered episode",
+            characters: [],
+            locations: [],
+            threads: [],
+            setups: [],
+            importance: "normal",
+          },
+          threadOps: [],
+          setupOps: [],
+        } satisfies ConsolidationResult);
+      const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
       const diag = new RecordingDiagnostics();
       const svc = new NarrativeDirectorService({
         config: makeConfig(),
         store,
-        consolidator: failingConsolidator,
+        consolidator,
         plan,
         diagnostics: diag,
       });
       await svc.initialize();
 
-      const initialRevision = 0;
       svc.observeCommitted([makeEvent(10)]);
-      const result = await svc.consolidatePending();
+      const result1 = await svc.consolidatePending();
 
-      // Does not throw
-      expect(result.applied).toBe(0);
-      expect(result.rejected).toEqual([]);
+      // First call: does not throw
+      expect(result1.applied).toBe(0);
+      expect(result1.rejected).toEqual([]);
       // Watermark unchanged
-      const brief = svc.getBrief({
+      let brief = svc.getBrief({
         turn: 1,
         eventSeq: 10,
         location: "",
         characters: [],
       });
-      expect(brief.revision).toBe(initialRevision);
+      expect(brief.revision).toBe(0);
       expect(brief.consolidatedThroughEventSeq).toBe(0);
       // Diagnostic warning emitted
       expect(diag.warns.length).toBeGreaterThanOrEqual(1);
+
+      // Second call: events must still be pending and get processed
+      const result2 = await svc.consolidatePending();
+      expect(result2.applied).toBeGreaterThanOrEqual(1);
+      expect(consolidator.consolidate).toHaveBeenCalledTimes(2);
+
+      // Watermark now advanced from the retried batch
+      brief = svc.getBrief({
+        turn: 1,
+        eventSeq: 10,
+        location: "",
+        characters: [],
+      });
+      expect(brief.revision).toBe(1);
+      expect(brief.consolidatedThroughEventSeq).toBe(10);
     });
   });
 

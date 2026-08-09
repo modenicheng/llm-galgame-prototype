@@ -332,6 +332,9 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
           "NarrativeDirector",
           `consolidation failed: ${String(err)}`,
         );
+        // Re-queue the drained batch at the front so events are not
+        // permanently lost on consolidation failure.
+        this.pendingEvents = [...pending, ...this.pendingEvents];
         return { applied: 0, rejected: [] };
       }
 
