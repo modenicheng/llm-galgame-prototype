@@ -4245,6 +4245,149 @@ typecheck 与 build 全绿。
 
 ---
 
+# 116. NarrativeDirector 长线剧情记忆（2026-08-09）
+
+在 Runtime 与 StoryGenerator 之间新增长线剧情层：把"记忆过去"与"规划未来"
+拆开。本阶段（第 1+2 步）只做"记忆过去"——从正式 committed events 形成叙事
+记忆，供 Writer 生成下一段前读取一张足够小的"编剧便签"（导演便签）。
+第 3 步（PlotPlanner / DirectorPlan）与第 4 步（belief / embedding /
+SQLite）明确不做，只预留位置。设计见
+`docs/superpowers/specs/2026-08-09-narrative-director-design.md`。
+
+## 116.1 模块边界
+
+- **core/narrative**（纯类型与纯函数，无 IO）：
+  - `memory-types.ts`：PlotThread / SetupPayoff / StoryAnchorState /
+    EpisodeMemory / NarrativeMemoryState，全部带 zod schema；
+  - `memory-operation.ts`：ThreadOp / SetupOp / EpisodeSummaryOp /
+    RejectedOp 及 schema（也是 consolidator 的 LLM 输出契约）；
+  - `narrative-brief.ts`：NarrativeBrief / NarrativeBriefRequest。
+- **core/ports**：
+  - `narrative-director-port.ts`：`getBrief`（同步、只读内存缓存，零 await）
+    / `observeCommitted(events)`（只入队不阻塞）/ `checkpoint(reason)`
+    （调度 consolidation；reason 为 interaction_completed | segment_ended
+    | scene_change）；
+  - `narrative-memory-store-port.ts`：load / saveState / appendEpisodes /
+    appendOps——层内只依赖该接口，不接触具体文件布局。
+- **application/narrative**（组合根与编排）：
+  - `narrative-director-service.ts`：组合根，持有内存状态、pending 队列、
+    调度逻辑与 ops 应用；
+  - `memory-consolidator.ts`：consolidation 流水线（截断 → port 调用 →
+    validator 过滤 → episode id 生成），单飞并发保护；
+  - `memory-validator.ts`：纯函数拒绝规则；
+  - `episode-retriever.ts`：brief 的相关长线记忆检索（直接扫 episodes
+    数组，几十条规模不建索引，spec §12 的 YAGNI 简化）；
+  - `narrative-context-builder.ts`：brief → "导演便签"提示词段渲染。
+- **adapters**：
+  - `llm/narrative-consolidator-adapter.ts`：独立 OpenAI client（api
+    配置同 generator），非流式单轮 `response_format: json_object`，输出
+    经 zod 校验；
+  - `storage/json-narrative-memory-store.ts`：三个记忆文件的读写
+    （§116.4），原子写、损坏降级；
+  - `static/story-plan-loader.ts`：story-plan.yaml → StoryPlan，坏条目
+    跳过 + warning，语法错误启动时报错。
+
+## 116.2 三条硬约束
+
+1. **只从正式 committed events 形成记忆**：`observeCommitted` 只在
+   `game.ts` 的 `record()`（事件正式落库 `store.append` 处）旁同步调用；
+   候选分支、预取/预览候选永远不进入 NarrativeMemory。
+2. **未来计划永远不写入事实记忆**：consolidator system prompt 明确
+   "只整理事实，不要推测未来，不要写未来计划"；consolidator 输入只含已
+   发生事件文本与当前 threads/setups 摘要，不含任何未来计划。
+3. **planner 不写未来台词**：第 1+2 步没有 planner，结构上保证未来台词
+   不可能进入记忆；`checkpoint` 只作为 consolidation 触发点，不规划未来。
+   PlotPlanner / DirectorPlan 属第 3 步事项，本阶段不实现。
+
+## 116.3 配置（config.yaml / config.ts）
+
+```yaml
+narrative:
+  mode: longform        # longform | event（event 时 director 完全旁路）
+  threads:
+    max_major_active: 2     # 活跃 major 剧情线上限
+    max_minor_active: 3     # 活跃 minor 剧情线上限
+  setups:
+    max_active: 6           # 活跃伏笔上限
+  consolidation:
+    batch_min_events: 4      # 积压 ≥4 条才值得一次 LLM 调用
+    max_events_per_call: 80  # 单次 consolidator 输入上限（保留最近 N 条）
+    min_checkpoint_gap_ms: 5000
+  brief:
+    max_relevant_episodes: 6   # 导演便签相关长线记忆条数上限
+    max_recent_raw_events: 40  # 便签标注"最近 N 条原始事件"用
+  story_plan_path: story-plan.yaml
+```
+
+`NarrativeDirectorService` 构造时把五段配置逐段与默认值深合并归一化，浅
+合并的调用方（测试等）不会看到 undefined 子段。
+
+## 116.4 文件布局
+
+与 `sessions/<sessionId>.jsonl` 同目录（sessions 根目录，§115 保留的会话
+存储格式不变）：
+
+- `narrative-state.json` — 全量 consolidated 状态快照（revision /
+  consolidatedThroughEventSeq / checkpointCount / threads / setups /
+  anchors / recentEpisodeIds），原子写（tmp + rename）；
+- `episodes.jsonl` — 每行一个 EpisodeMemory；
+- `narrative-ops.jsonl` — 每行一个 RejectedOp（拒绝诊断日志）。
+
+`load()` 对缺失/损坏文件一律降级：损坏 state → 空状态，损坏单行 episode →
+跳过该行，绝不因存储问题抛错。
+
+## 116.5 mode: event 旁路
+
+`mode: event` 时 `createRuntimeApplication` 完全不组装 director：不加载
+story-plan、不建 store / consolidator；`Game` 的 `narrativeDirector` 可选
+依赖缺省 → `getBrief` 返回 undefined（提示词零变化）、无 observeCommitted
+/ checkpoint 调用，行为与引入前完全一致。
+
+## 116.6 整合与 consolidation 流程
+
+- **提交**：`record()` 落库后旁同步 `observeCommitted([stored])` → pending
+  队列追加 + `maybeSchedule()`（积压 ≥ batch_min_events 且距上次 ≥
+  min_checkpoint_gap_ms 才触发；`consolidateRunning` 单飞防重入）。
+- **checkpoint**：交互完成后 `checkpoint("interaction_completed")` 递增
+  checkpointCount（供 classifySetup 的 age 计算）并同样走 maybeSchedule。
+- **consolidatePending**（公开方法，测试与手动触发可用）：
+  1. 原子排空 pending（异步 consolidation 期间新 observeCommitted 的事件
+     不丢失）；
+  2. `MemoryConsolidator` 截断到 max_events_per_call（保留最近 N 条）→
+     经 `NarrativeConsolidatorAdapter` 调 LLM（输入 = 事件文本 + 当前
+     threads/setups 摘要）→ 结构化输出（episode + threadOps + setupOps）；
+  3. `memory-validator` 逐条过滤（顺序 episode → thread → setup），拒绝
+     规则：未知 id、非法状态迁移、thread/setup budget 超限、episode
+     summary 空或超 200 字、数组字段含空元素或去重超 20；被拒 ops 记入
+     narrative-ops.jsonl；
+  4. 应用通过校验的 ops（thread touch / advance / resolve / abandon /
+     create，setup seed / reinforce / payoff / hold / drop），新 episode
+     id 为 `ep_{revision+1}_{fromSeq}`；
+  5. 推进 revision、`consolidatedThroughEventSeq = 批次最后事件 seq`，
+     更新 recentEpisodeIds（上限 20），持久化三件套。
+- **失败与容错**：port 抛错或输出解析失败 → 空 outcome（result: null），
+  已排空批次**重新入队队首**（事件不丢），不推进 watermark，下次调度
+  重试；调度路径 fire-and-forget，异常只记诊断 warning，绝不 reject 到
+  game 主循环。
+
+## 116.7 运行时接入与提示词
+
+- `Game` 构造新增可选依赖 `narrativeDirector?: NarrativeDirectorPort`；
+  各类生成请求（opening / continuation / branch_prefetch / input_response
+  / repair / on-demand）前调用一次 `getBrief`，放入请求 `brief` 字段。
+- `context-builder.ts` 在"剧情历史"段之后渲染 `renderDirectorNote`
+  （"===== 导演便签 ====="）：revision 标注（"记忆已整理至事件 X（当前
+  事件 Y），最近 N 条原始事件见剧情历史"）、活跃剧情线（含 nextPressure）、
+  伏笔任务（SEED / REINFORCE / PAYOFF / HOLD + urgency）、相关长线记忆、
+  锚点进度、禁止透露（revealLocks，本阶段恒空）。
+- brief 同时携带 consolidatedThroughEventSeq 与 currentEventSeq，滞后
+  可见；重启后 watermark 缺口不补（raw events 仍完整保留在剧情历史中，
+  不丢信息，只不进长线记忆）。
+
+测试：node 1247（80 个文件）、web 263，双 typecheck 与 build 全绿。
+
+---
+
 # 附录 A：实施状态（2025-08 迁移快照）
 
 本文档其余部分为设计。以下是本仓库 `main` 分支当前已完成 / 未完成的对照，供后续开发定位。
