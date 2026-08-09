@@ -1246,7 +1246,6 @@ export class Game {
       { select_choice: true },
     );
     if (command.type !== "select_choice") throw new RuntimeShutdownError();
-    this.narrativeDirector?.checkpoint("interaction_completed");
     const selected = choice.options.find((option) => option.id === command.optionId);
     if (!selected) throw new Error(`未找到选项：${command.optionId}`);
     // The option exists: the interaction is now resolved and can no longer
@@ -1256,6 +1255,10 @@ export class Game {
     this.activeInteractionId = null;
     this.choiceTimestamp = this.clock.nowMs();
     await this.recordPlayerChoice(selected, turn);
+    // The checkpoint fires only AFTER the player choice is formally
+    // committed: a consolidation triggered here must include the choice
+    // event (audit finding 5).
+    this.narrativeDirector?.checkpoint("interaction_completed");
     this.diagnostics.info("player", `你选择了：${selected.text}`);
 
     const { preview, liveSelection } = await this.adoptSelectedBranch(
@@ -2051,7 +2054,6 @@ export class Game {
       this.resolveInteraction(interactionId, "choice");
       // §10.2 lifecycle: choice accepted → the interaction scope is released.
       this.activeInteractionId = null;
-      this.narrativeDirector?.checkpoint("interaction_completed");
       this.bridgeBuffer.discard(interactionId);
       // The preset option resolves the interaction: the bridge belongs to
       // the free-text path and is discarded (docs §35).
@@ -2061,6 +2063,8 @@ export class Game {
         { id: selected.id, text: selected.text },
         turn
       );
+      // After the choice is formally committed (audit finding 5).
+      this.narrativeDirector?.checkpoint("interaction_completed");
       this.choiceTimestamp = this.clock.nowMs();
       this.diagnostics.info("player", `你选择了：${selected.text}`);
 

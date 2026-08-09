@@ -3379,6 +3379,24 @@ describe("NarrativeDirector integration", () => {
     expect(
       checkpoints.some((c) => c.reason === "interaction_completed"),
     ).toBe(true);
+
+    // The checkpoint must fire AFTER the player choice is formally
+    // committed: a consolidation triggered by it includes the choice
+    // event (audit finding 5).
+    const firstCheckpointIdx = director.calls.findIndex(
+      (c) => c.type === "checkpoint" && c.reason === "interaction_completed",
+    );
+    const observedBeforeCheckpoint = director.calls
+      .slice(0, firstCheckpointIdx)
+      .filter(
+        (c): c is DirectorCall & { type: "observeCommitted" } =>
+          c.type === "observeCommitted",
+      );
+    expect(
+      observedBeforeCheckpoint.some((o) =>
+        o.events.some((ev) => ev.type === "player_choice"),
+      ),
+    ).toBe(true);
   });
 
   it("fires exactly ONE checkpoint per resolved hybrid interaction (cancel+resubmit does not double-count)", async () => {

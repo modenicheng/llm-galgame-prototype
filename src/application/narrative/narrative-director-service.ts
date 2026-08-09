@@ -340,9 +340,11 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
       // Port failure → empty outcome: re-queue the FULL drained batch at
       // the front so events are not permanently lost on consolidation
-      // failure.
+      // failure. lastConsolidateAt is also advanced so the retry is
+      // throttled by min_checkpoint_gap_ms (no failure storm).
       if (outcome.result === null) {
         this.pendingEvents = [...pending, ...this.pendingEvents];
+        this.lastConsolidateAt = Date.now();
         return { applied: 0, rejected: [] };
       }
 
@@ -421,6 +423,12 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       return { applied, rejected };
     } finally {
       this.consolidateRunning = false;
+      // Events observed WHILE this consolidation was in flight may now
+      // cross the batch threshold — re-check the scheduler (the gap
+      // throttle and batch_min guard still apply; the single-flight flag
+      // is already released) so pending work drains without manual
+      // intervention (audit finding 5).
+      this.maybeSchedule();
     }
   }
 
