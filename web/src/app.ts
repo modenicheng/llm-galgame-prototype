@@ -32,7 +32,7 @@ import { AudioCacheCleaner, type CleanerOptions } from "./storage/audio-cache-cl
 export const DEFAULT_PUBLIC_WEB_CONFIG: PublicWebConfig = {
   audio: {
     playback: {
-      startup_buffer_ms: 1400,
+      startup_buffer_ms: 350,
       critical_watermark_ms: 500,
       low_watermark_ms: 2500,
       target_buffer_ms: 6500,
@@ -560,10 +560,19 @@ export class GameApp {
     // Text-only mode (§10.5 degrade): no playback node, so no synthesis —
     // the story advances on the reading-time fallback.
     if (this.coordinator === null) return;
-    // Candidate branches are speculative text only. Synthesizing them before
-    // selection creates a request burst across every branch and spends the
-    // provider quota ahead of the path the player actually chooses.
-    if (entry.descriptor.scope.type === "candidate") return;
+    // Candidate branches are speculative text only — EXCEPT their first
+    // line (priority candidate_first_line, config candidate_prefetch_lines):
+    // the branch's opening voice is synthesized ahead of selection so that
+    // promoting the branch starts with its audio ready instead of a
+    // playback stall. Deep candidate lines stay unsynthesized until the
+    // branch is promoted (activateCandidate → active descriptor), bounding
+    // the per-branch request cost to one line.
+    if (
+      entry.descriptor.scope.type === "candidate" &&
+      entry.descriptor.priority !== "candidate_first_line"
+    ) {
+      return;
+    }
 
     // §10.3 prefetch headroom: the current line is always on the critical
     // path, but future lines are only fetched while the contiguous buffer

@@ -80,9 +80,8 @@ media:
       # 每句角色音频开播前的固定延迟，用于同步视觉与听觉（0 = 不延迟）。
       # 若发现配音比字幕快/慢，可在此微调。
       voice_delay_ms: 500
-      # 350ms 开播太早，整句要 ~1s 才生成完，播一段等一段造成可感知卡顿；
-      # 1400ms 攒够一句的量再开播（短句仍由 EOF 立即开播逻辑兜底）
-      startup_buffer_ms: 1400
+      # 开播前固定延迟：给语音合成开头留自然停顿，避免听感突兀（语音为预合成）
+      startup_buffer_ms: 350
       critical_watermark_ms: 500
       low_watermark_ms: 2500
       target_buffer_ms: 6500

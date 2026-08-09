@@ -801,7 +801,7 @@ describe("GameApp", () => {
     expect(synthCalls).toHaveLength(1); // only line-1 was fetched
   });
 
-  it("does not synthesize candidate audio until the branch is activated", async () => {
+  it("pre-synthesizes a candidate branch's first line (candidate_first_line)", async () => {
     const { ws, synthesizeCalls } = await setupApp();
     ws.receive(
       descriptorMsg("candidate-1", "cache-candidate", {
@@ -810,17 +810,44 @@ describe("GameApp", () => {
       }),
     );
     await flush();
-    expect(synthesizeCalls).toHaveLength(0);
+    // The branch's opening line is synthesized ahead of selection so the
+    // promoted branch starts with its voice ready (no playback stall).
+    expect(synthesizeCalls).toEqual([
+      expect.objectContaining({ lineId: "candidate-1", cacheKey: "cache-candidate" }),
+    ]);
 
+    // Promotion updates the scope to active; the already-running/"cached"
+    // fetch must not be re-issued.
     ws.receive(
       descriptorMsg("candidate-1", "cache-candidate", {
         scope: { type: "active" },
         priority: "current",
       }),
     );
+    await flush();
+    expect(synthesizeCalls).toHaveLength(1);
+  });
+
+  it("does not synthesize deep candidate lines (background priority) until promoted", async () => {
+    const { ws, synthesizeCalls } = await setupApp();
+    ws.receive(
+      descriptorMsg("candidate-2", "cache-candidate-2", {
+        scope: { type: "candidate", branchId: "branch-a" },
+        priority: "background",
+      }),
+    );
+    await flush();
+    expect(synthesizeCalls).toHaveLength(0);
+
+    ws.receive(
+      descriptorMsg("candidate-2", "cache-candidate-2", {
+        scope: { type: "active" },
+        priority: "active_future",
+      }),
+    );
     await vi.waitFor(() => {
       expect(synthesizeCalls).toEqual([
-        expect.objectContaining({ lineId: "candidate-1", cacheKey: "cache-candidate" }),
+        expect.objectContaining({ lineId: "candidate-2", cacheKey: "cache-candidate-2" }),
       ]);
     });
   });
