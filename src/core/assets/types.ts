@@ -48,6 +48,12 @@ export interface CharacterAssetBinding {
   spriteSet: string;
   defaultVariant: string;
   defaultPosition: CharacterPosition;
+  /**
+   * Sprite sets the character may use, incl. cross-set outfit swaps
+   * (`[spriteSet:variant]` in dialogue). Defaults to [spriteSet] — a
+   * character normally only renders with its own art (docs §15).
+   */
+  allowedSpriteSets: string[];
 }
 
 export interface AssetCatalog {
@@ -80,6 +86,7 @@ export interface ModelAssetCatalog {
       spriteSet: string;
       defaultVariant: string;
       defaultPosition: CharacterPosition;
+      allowedSpriteSets: string[];
     }
   >;
 }

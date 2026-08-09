@@ -27,6 +27,14 @@ export interface AudioDownloaderOptions {
   decoder: PcmDecoder | (() => PcmDecoder);
   /** Called with every decoded batch of samples (playback feed). */
   onPcm: (lineId: string, samples: Int16Array) => void;
+  /**
+   * Called once per consumer line when the stream is fully consumed —
+   * success, HTTP error, read error or abort. No more PCM will arrive for
+   * that line; the coordinator uses it to arm playback below the startup
+   * threshold and to finish the line once the worklet drains (EOF/drain
+   * lifecycle, §10.6).
+   */
+  onEof: (lineId: string) => void;
   /** Test seam; defaults to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
 }
@@ -78,19 +86,26 @@ export class AudioDownloader {
           ? this.options.decoder()
           : this.options.decoder;
       const controller = new AbortController();
-      const promise = this.run(
-        new Set([lineId]),
+      slot = {
+        promise: Promise.resolve(),
+        controller,
+        lineIds: new Set([lineId]),
+      };
+      // run() must fan out to the SAME Set object the slot owns: a
+      // consumer joining mid-stream is added to slot.lineIds and must
+      // receive the remaining PCM (and EOF) of this shared download.
+      slot.promise = this.run(
+        slot.lineIds,
         cacheKey,
         taskId ?? crypto.randomUUID(),
         descriptor,
         decoder,
         controller.signal,
       );
-      slot = { promise, controller, lineIds: new Set([lineId]) };
       AudioDownloader.inFlight.set(cacheKey, slot);
       // Release the dedup slot on either outcome without creating an
       // unhandled rejection (a bare `promise.finally(...)` would).
-      promise.then(
+      slot.promise.then(
         () => {
           AudioDownloader.inFlight.delete(cacheKey);
         },
@@ -132,15 +147,16 @@ export class AudioDownloader {
     signal: AbortSignal,
   ): Promise<void> {
     const lineId = descriptor.lineId;
-    // The writer session must exist before the first append — append()
-    // silently drops chunks while no session is registered for the key.
-    await this.options.writer.startAsset(cacheKey, lineId, {
-      encoding: descriptor.format.encoding,
-      sampleRate: descriptor.format.sampleRate,
-      channels: descriptor.format.channels,
-      bitDepth: 16,
-      scopeAtCreation: descriptor.scope.type,
-    });
+    try {
+      // The writer session must exist before the first append — append()
+      // silently drops chunks while no session is registered for the key.
+      await this.options.writer.startAsset(cacheKey, lineId, {
+        encoding: descriptor.format.encoding,
+        sampleRate: descriptor.format.sampleRate,
+        channels: descriptor.format.channels,
+        bitDepth: 16,
+        scopeAtCreation: descriptor.scope.type,
+      });
     console.log(`[tts-web] fetch ${lineId} task=${taskId.slice(0, 8)} cache=${cacheKey.slice(0, 8)}`);
     const response = await this.fetchImpl(SYNTHESIZE_PATH, {
       method: "POST",
@@ -180,5 +196,13 @@ export class AudioDownloader {
     }
     feed(decoder.flush());
     console.log(`[tts-web] stream-done ${lineId} bytes=${bytes}`);
+    } finally {
+      // EOF for every consumer regardless of outcome: the stream will never
+      // produce more PCM, so each consumer line can arm/advance its own
+      // playback lifecycle (a partial line still finishes via EOF + drain).
+      for (const consumer of lineIds) {
+        this.options.onEof(consumer);
+      }
+    }
   }
 }

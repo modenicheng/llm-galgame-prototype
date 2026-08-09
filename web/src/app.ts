@@ -222,6 +222,7 @@ export class GameApp {
         writer: this.writer,
         decoder: () => new PcmDecoder(),
         onPcm: (lineId, samples) => this.onPcm(lineId, samples),
+        onEof: (lineId) => this.coordinator?.notifyLineEof(lineId),
         ...(this.options.fetchImpl !== undefined
           ? { fetchImpl: this.options.fetchImpl }
           : {}),
@@ -646,6 +647,8 @@ export class GameApp {
     if (tail.length > 0) this.coordinator.feedPcm(lineId, tail);
     this.cacheDecoders.delete(cacheKey);
     entry.fed = true;
+    // The cached asset is fully fed — same EOF signal the downloader sends.
+    this.coordinator.notifyLineEof(lineId);
   }
 
   private reconcileAudio(): void {

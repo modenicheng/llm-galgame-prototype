@@ -333,6 +333,13 @@ sprite_set = placeholder_char
 variant = anxious
 ```
 
+**§15 限制（本轮新增）**：覆写只能使用该角色 `allowed_sprite_sets`（
+`resources.yaml` 角色配置的 `allowed_sprite_sets`，缺省仅自身 `sprite_set`）
+内的素材组。Compiler 对超出列表的 `[spriteSet:variant]` 丢弃整条 character
+cue 并记录 `FORBIDDEN_SPRITE_SET` 诊断（降级为保持现状）。换装/伪装需作者在
+角色绑定中显式列出 `allowed_sprite_sets`；Loader 启动校验保证列表引用存在且
+包含角色自身的 sprite_set。
+
 也可以：
 
 ```text
@@ -596,9 +603,12 @@ ch suyao:anxious left
 
 ```text
 ch <character_id>:<variant> [position]
+ch <character_id> hide|show|exit
 ```
 
 这里使用稳定内部 character ID，而不是 script name。
+
+`hide` 仅隐藏（保留状态）；`exit` 彻底离开舞台（状态移除，下次台词重新按默认登台）。
 
 原因：
 
@@ -673,6 +683,15 @@ ch suyao hide
 ch suyao show
 苏遥: 别回头。
 ```
+
+**§19b 站位互斥（本轮新增）**：一个槽位同时只能有一个可见角色。
+角色以可见状态占到一个已被占用的位置时，原占位者自动 `visible = false`
+（保留 sprite_set/variant/position/display_name，可被 `show` 或显式换位恢复）。
+这是引擎强制的确定性规则——不依赖模型记得 `hide`。
+
+**§19c 退场 `ch <id> exit`（本轮新增）**：从 VisualState 中彻底移除该角色
+（渲染器删除其 DOM 节点），下次台词按角色默认重新登台。`hide` 保留状态，
+`exit` 撤离舞台。
 
 ---
 

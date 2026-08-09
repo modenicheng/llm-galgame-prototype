@@ -58,6 +58,8 @@ class FakeWebSocket implements WebSocketLike {
 interface FakeAudioContextResult {
   context: AudioContext;
   addModule: Mock;
+  /** The worklet node's port — lets tests simulate drained(lineId). */
+  port: { postMessage: ReturnType<typeof vi.fn>; onmessage: ((e: MessageEvent) => void) | null };
 }
 
 function makeFakeAudioContext(noWorklet = false): FakeAudioContextResult {
@@ -75,7 +77,7 @@ function makeFakeAudioContext(noWorklet = false): FakeAudioContextResult {
     sampleRate: 22050,
     currentTime: 0,
   } as unknown as AudioContext;
-  return { context, addModule };
+  return { context, addModule, port };
 }
 
 /** A fetch stub that routes /api/config and /api/audio/synthesize. */
@@ -266,6 +268,7 @@ interface SetupResult {
   fetchImpl: ReturnType<typeof makeFetchImpl>["fetchImpl"];
   synthesizeCalls: unknown[];
   addModule: ReturnType<typeof vi.fn>;
+  port: { postMessage: ReturnType<typeof vi.fn>; onmessage: ((e: MessageEvent) => void) | null };
 }
 
 async function setupApp(overrides: { db?: AudioDb; fetchImpl?: typeof fetch } = {}): Promise<SetupResult> {
@@ -277,11 +280,11 @@ async function setupApp(overrides: { db?: AudioDb; fetchImpl?: typeof fetch } = 
     webSocketImpl: FakeWebSocket as unknown as WebSocketCtor,
     db: overrides.db ?? db,
   });
-  const { context, addModule } = makeFakeAudioContext();
+  const { context, addModule, port } = makeFakeAudioContext();
   await app.start(context);
   const ws = FakeWebSocket.last as FakeWebSocket;
   ws.open(); // → client.ready
-  return { app, ws, db: overrides.db ?? db, fetchImpl, synthesizeCalls, addModule };
+  return { app, ws, db: overrides.db ?? db, fetchImpl, synthesizeCalls, addModule, port };
 }
 
 /** Yield to the event loop so IDB (setImmediate) and fetch chains settle. */
@@ -372,7 +375,7 @@ describe("GameApp", () => {
   });
 
   it("auto mode advances after the line's playback finishes", async () => {
-    const { app, ws } = await setupApp();
+    const { app, ws, port } = await setupApp();
     vi.useFakeTimers();
     app.setMode("auto");
     ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
@@ -382,8 +385,13 @@ describe("GameApp", () => {
 
     // The 1s PCM chunk fills past the 350ms startup buffer → playback starts.
     expect(app.state().audioPlaying).toBe(true);
-    // The coordinator schedules the finish at ~1000ms of audio.
-    await vi.advanceTimersByTimeAsync(1100);
+    // The download stream has been consumed (EOF delivered to the
+    // coordinator); simulating the worklet drain finishes the line, which
+    // lets auto mode send the advance command.
+    await vi.advanceTimersByTimeAsync(5); // settle the download EOF chain
+    (port.onmessage as (e: MessageEvent) => void)({
+      data: { type: "drained", lineId: "line-1" },
+    } as MessageEvent);
     expect(sentCommands(ws)).toEqual([
       expect.objectContaining({ command: { type: "advance" } }),
     ]);

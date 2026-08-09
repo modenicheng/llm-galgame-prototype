@@ -47,6 +47,12 @@ export interface CharacterPatchCue {
   position?: PatchValue<CharacterPosition>;
   visible?: PatchValue<boolean>;
   displayName?: PatchValue<string>;
+  /**
+   * Exit the stage entirely: removes the character from VisualState (the
+   * renderer drops its DOM node; a later line first-touches them again at
+   * defaults). Mutually exclusive with the patch fields above (§19).
+   */
+  exit?: boolean;
 }
 
 /**
@@ -109,6 +115,11 @@ export interface CharacterRegistryEntry {
   defaultVariant: string;
   /** Default slot (e.g. "left"). */
   defaultPosition: CharacterPosition;
+  /**
+   * Sprite sets the character may use (docs §15): the compiler drops any
+   * `[spriteSet:variant]` patch outside this list. Defaults to [spriteSet].
+   */
+  allowedSpriteSets: string[];
 }
 
 export interface CharacterRegistry {

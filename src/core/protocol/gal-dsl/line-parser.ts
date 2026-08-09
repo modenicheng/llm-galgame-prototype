@@ -224,17 +224,20 @@ export function parseDslLine(rawLine: string): DslLine {
     }
     return { kind: "character_cue", characterId, variant, action: "set" };
   }
-  const chShowMatch = /^ch\s+(\S+)\s+(hide|show)\s*$/.exec(line);
+  const chShowMatch = /^ch\s+(\S+)\s+(hide|show|exit)\s*$/.exec(line);
   if (chShowMatch !== null) {
     const characterId = chShowMatch[1]!;
     const actionToken = chShowMatch[2]!;
+    if (actionToken === "exit") {
+      return { kind: "character_cue", characterId, action: "exit" };
+    }
     const action: "hide" | "show" = actionToken === "hide" ? "hide" : "show";
     return { kind: "character_cue", characterId, action };
   }
   if (line.startsWith("ch")) {
     throw new DslProtocolError(
       "INVALID_CH_CUE",
-      `无效的 ch 指令 "${line}"：格式为 ch <id>:<variant> [position] 或 ch <id> hide|show。`,
+      `无效的 ch 指令 "${line}"：格式为 ch <id>:<variant> [position] 或 ch <id> hide|show|exit。`,
     );
   }
 

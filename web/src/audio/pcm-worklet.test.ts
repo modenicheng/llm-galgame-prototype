@@ -88,6 +88,69 @@ describe("PcmWorkletProcessor", () => {
     expect(port.postMessage).toHaveBeenCalledWith({ type: "underrun" });
   });
 
+  it("posts drained(lineId) once when the marked line's samples are consumed", () => {
+    const { proc, port } = makeProcessor();
+    post(proc, { type: "line", lineId: "L1" });
+    post(proc, new Int16Array([1000, 2000, 3000, 4000]));
+    processBlock(proc, 4);
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "drained", lineId: "L1" });
+    expect(port.postMessage).toHaveBeenCalledTimes(1);
+    // A second empty block does not re-post drained.
+    processBlock(proc, 4);
+    expect(port.postMessage).toHaveBeenCalledTimes(2); // underrun for the empty block only
+    const types = port.postMessage.mock.calls.map((c) => (c[0] as { type: string }).type);
+    expect(types.filter((t) => t === "drained")).toHaveLength(1);
+  });
+
+  it("drained waits for the whole batch, not the first empty frame", () => {
+    const { proc, port } = makeProcessor();
+    post(proc, { type: "line", lineId: "L2" });
+    post(proc, new Int16Array(8));
+    processBlock(proc, 4);
+    expect(port.postMessage).not.toHaveBeenCalled();
+    processBlock(proc, 4);
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "drained", lineId: "L2" });
+  });
+
+  it("more samples for the same line re-arm the drained signal", () => {
+    const { proc, port } = makeProcessor();
+    post(proc, { type: "line", lineId: "L3" });
+    post(proc, new Int16Array(4));
+    processBlock(proc, 4);
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "drained", lineId: "L3" });
+    post(proc, new Int16Array(4)); // late chunk arrives after the drain
+    processBlock(proc, 4);
+    const drainedCalls = port.postMessage.mock.calls.filter(
+      (c) => (c[0] as { type: string }).type === "drained",
+    );
+    expect(drainedCalls).toHaveLength(2);
+  });
+
+  it("clear cancels the line and suppresses drained", () => {
+    const { proc, port } = makeProcessor();
+    post(proc, { type: "line", lineId: "L4" });
+    post(proc, new Int16Array([1000]));
+    post(proc, { type: "clear" });
+    processBlock(proc, 4);
+    const types = port.postMessage.mock.calls.map((c) => (c[0] as { type: string }).type);
+    expect(types).not.toContain("drained");
+    expect(types).toContain("underrun");
+  });
+
+  it("a new line marker supersedes the previous line", () => {
+    const { proc, port } = makeProcessor();
+    post(proc, { type: "line", lineId: "A" });
+    post(proc, new Int16Array(4));
+    post(proc, { type: "line", lineId: "B" });
+    post(proc, new Int16Array(4));
+    processBlock(proc, 8);
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "drained", lineId: "B" });
+    const drainedCalls = port.postMessage.mock.calls.filter(
+      (c) => (c[0] as { type: string }).type === "drained",
+    );
+    expect(drainedCalls).toHaveLength(1);
+  });
+
   it("exposes parameterDescriptors and keeps running (returns true)", () => {
     const { proc } = makeProcessor();
     expect(PcmWorkletProcessor.parameterDescriptors).toEqual([]);

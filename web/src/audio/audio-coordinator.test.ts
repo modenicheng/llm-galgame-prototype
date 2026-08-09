@@ -58,6 +58,12 @@ function makeFakeContext(): FakeContext {
 const viewPosts = (port: { postMessage: ReturnType<typeof vi.fn> }): unknown[] =>
   port.postMessage.mock.calls.map((call) => call[0]).filter(ArrayBuffer.isView);
 
+/** Simulate the worklet consuming the marked line's samples (§10.6 drain). */
+const simulateDrain = (coordinator: AudioCoordinator, port: FakeContext["port"], lineId: string): void => {
+  void coordinator;
+  (port.onmessage as (e: MessageEvent) => void)({ data: { type: "drained", lineId } } as MessageEvent);
+};
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -124,25 +130,97 @@ describe("AudioCoordinator", () => {
     expect((posts[1] as Int16Array).length).toBe(1000);
   });
 
-  it("auto mode emits finished after pause_after_ms (fake timers)", async () => {
+  it("mid-stream stall does not finish early; EOF + drained finish the line", async () => {
     vi.useFakeTimers();
-    const { context } = makeFakeContext();
+    const { context, port } = makeFakeContext();
     const events = makeEvents();
     const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
     await coordinator.init();
     coordinator.setMode("auto");
-    coordinator.enqueueLine("line-1", "cache-1", 0, 150);
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
     coordinator.start("line-1");
-    coordinator.feedPcm("line-1", new Int16Array(22050)); // exactly 1s of audio
+    coordinator.feedPcm("line-1", new Int16Array(22050)); // exactly 1s — starts
     expect(events.onLinePlaybackStarted).toHaveBeenCalledWith("line-1");
-    vi.advanceTimersByTime(1000 + 150);
+    // The old time-estimate would fire finishLine at ~1s; the stall must not.
+    vi.advanceTimersByTime(5000);
+    expect(events.onLinePlaybackFinished).not.toHaveBeenCalled();
+    expect(coordinator.isPlaying()).toBe(true);
+    // Producer completes the stream → EOF; then the worklet drains.
+    coordinator.notifyLineEof("line-1");
+    simulateDrain(coordinator, port, "line-1");
     expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-1");
     expect(coordinator.isPlaying()).toBe(false);
   });
 
+  it("EOF below the startup threshold starts and finishes a short line", async () => {
+    const { context, port } = makeFakeContext();
+    const events = makeEvents();
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
+    await coordinator.init();
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
+    coordinator.start("line-1");
+    coordinator.feedPcm("line-1", new Int16Array(5000)); // 227ms < 350ms threshold
+    expect(coordinator.isPlaying()).toBe(false); // still below the gate
+    expect(events.onLinePlaybackStarted).not.toHaveBeenCalled();
+    coordinator.notifyLineEof("line-1"); // producer done — start anyway
+    expect(events.onLinePlaybackStarted).toHaveBeenCalledWith("line-1");
+    expect(coordinator.isPlaying()).toBe(true);
+    expect(viewPosts(port)).toHaveLength(1); // the short line was flushed
+    simulateDrain(coordinator, port, "line-1");
+    expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-1");
+  });
+
+  it("EOF with zero samples finishes without a started event", async () => {
+    const { context } = makeFakeContext();
+    const events = makeEvents();
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
+    await coordinator.init();
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
+    coordinator.start("line-1");
+    coordinator.notifyLineEof("line-1"); // empty stream
+    expect(events.onLinePlaybackStarted).not.toHaveBeenCalled();
+    expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-1");
+    expect(coordinator.isPlaying()).toBe(false);
+  });
+
+  it("EOF for a future line arms playback when it becomes current", async () => {
+    const { context, port } = makeFakeContext();
+    const events = makeEvents();
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
+    await coordinator.init();
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
+    coordinator.start("line-1");
+    coordinator.enqueueLine("line-2", "cache-2", 0, 0);
+    coordinator.feedPcm("line-2", new Int16Array(4000)); // 181ms < threshold
+    coordinator.notifyLineEof("line-2"); // fully fetched while future
+    expect(events.onLinePlaybackStarted).not.toHaveBeenCalledWith("line-2");
+    coordinator.skip("line-2");
+    // EOF recorded → playback starts below the startup threshold.
+    expect(events.onLinePlaybackStarted).toHaveBeenCalledWith("line-2");
+    const rawPosts = port.postMessage.mock.calls.map((c) => c[0]);
+    expect(rawPosts).toContainEqual({ type: "line", lineId: "line-2" });
+    simulateDrain(coordinator, port, "line-2");
+    expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-2");
+  });
+
+  it("drained without producer EOF does not finish the line", async () => {
+    const { context, port } = makeFakeContext();
+    const events = makeEvents();
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
+    await coordinator.init();
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
+    coordinator.start("line-1");
+    coordinator.feedPcm("line-1", new Int16Array(22050));
+    simulateDrain(coordinator, port, "line-1"); // premature drain
+    expect(events.onLinePlaybackFinished).not.toHaveBeenCalled();
+    coordinator.notifyLineEof("line-1");
+    simulateDrain(coordinator, port, "line-1");
+    expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-1");
+  });
+
   it("voice_delay_ms defers playback start and finished until the delay elapses", async () => {
     vi.useFakeTimers();
-    const { context } = makeFakeContext();
+    const { context, port } = makeFakeContext();
     const events = makeEvents();
     const delayed = new AudioCoordinator(
       { context, playbackConfig: { ...playbackConfig, voice_delay_ms: 500 }, format },
@@ -158,8 +236,9 @@ describe("AudioCoordinator", () => {
     expect(events.onLinePlaybackStarted).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     expect(events.onLinePlaybackStarted).toHaveBeenCalledWith("line-1");
-    // The 1s audio plays after the 0.5s lead-in.
-    vi.advanceTimersByTime(1000);
+    // The 1s audio plays after the 0.5s lead-in; EOF then drain finish it.
+    delayed.notifyLineEof("line-1");
+    simulateDrain(delayed, port, "line-1");
     expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-1");
     expect(delayed.isPlaying()).toBe(false);
   });
@@ -201,17 +280,18 @@ describe("AudioCoordinator", () => {
     expect(delayed.isPlaying()).toBe(false);
   });
 
-  it("manual mode finishes without waiting pause_after_ms", async () => {
-    vi.useFakeTimers();
-    const { context } = makeFakeContext();
+  it("manual mode finishes on EOF + drain without waiting a pause", async () => {
+    const { context, port } = makeFakeContext();
     const events = makeEvents();
     const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
     await coordinator.init();
     coordinator.enqueueLine("line-1", "cache-1", 0, 5000);
     coordinator.start("line-1");
     coordinator.feedPcm("line-1", new Int16Array(22050));
-    vi.advanceTimersByTime(1000);
+    coordinator.notifyLineEof("line-1");
+    simulateDrain(coordinator, port, "line-1");
     expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-1");
+    expect(coordinator.isPlaying()).toBe(false);
   });
 
   it("skip clears unplayed samples and drops dropped lines' pending chunks", async () => {
@@ -323,8 +403,7 @@ describe("AudioCoordinator", () => {
   });
 
   it("start/skip on the currently playing line is a no-op (no duplicate events)", async () => {
-    vi.useFakeTimers();
-    const { context } = makeFakeContext();
+    const { context, port } = makeFakeContext();
     const events = makeEvents();
     const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
     await coordinator.init();
@@ -336,7 +415,8 @@ describe("AudioCoordinator", () => {
     coordinator.skip("line-1");
     expect(events.onLinePlaybackStarted).toHaveBeenCalledTimes(1);
     expect(coordinator.isPlaying()).toBe(true);
-    vi.advanceTimersByTime(1000);
+    coordinator.notifyLineEof("line-1");
+    simulateDrain(coordinator, port, "line-1");
     expect(events.onLinePlaybackFinished).toHaveBeenCalledTimes(1);
     expect(coordinator.isPlaying()).toBe(false);
   });
@@ -387,7 +467,6 @@ describe("AudioCoordinator", () => {
   });
 
   it("dropLine of the current line halts playback silently and frees the buffer", async () => {
-    vi.useFakeTimers();
     const { context } = makeFakeContext();
     const events = makeEvents();
     const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
@@ -400,8 +479,8 @@ describe("AudioCoordinator", () => {
     coordinator.dropLine("line-1");
     expect(coordinator.isPlaying()).toBe(false);
     expect(coordinator.bufferedAheadMs()).toBe(0);
-    // The finish timer was cancelled — dead audio emits no finished event.
-    vi.advanceTimersByTime(5000);
+    // A late EOF + drain for the dropped line emits no finished event.
+    coordinator.notifyLineEof("line-1");
     expect(events.onLinePlaybackFinished).not.toHaveBeenCalled();
   });
 });

@@ -46,6 +46,7 @@ const catalog: AssetCatalog = {
       spriteSet: "suyao",
       defaultVariant: "neutral",
       defaultPosition: "left",
+      allowedSpriteSets: ["suyao"],
     },
     mysterious_woman: {
       characterId: "mysterious_woman",
@@ -54,6 +55,7 @@ const catalog: AssetCatalog = {
       spriteSet: "mysterious_woman",
       defaultVariant: "gentle_smile",
       defaultPosition: "right",
+      allowedSpriteSets: ["mysterious_woman"],
     },
   },
 };
@@ -105,6 +107,7 @@ describe("toModelCatalog", () => {
       spriteSet: "suyao",
       defaultVariant: "neutral",
       defaultPosition: "left",
+      allowedSpriteSets: ["suyao"],
     });
     expect(model.characters.mysterious_woman).toEqual({
       scriptName: "神秘女子",
@@ -112,6 +115,7 @@ describe("toModelCatalog", () => {
       spriteSet: "mysterious_woman",
       defaultVariant: "gentle_smile",
       defaultPosition: "right",
+      allowedSpriteSets: ["mysterious_woman"],
     });
   });
 });
@@ -131,6 +135,7 @@ describe("toCharacterRegistry", () => {
       spriteSet: "suyao",
       defaultVariant: "neutral",
       defaultPosition: "left",
+      allowedSpriteSets: ["suyao"],
     });
   });
 

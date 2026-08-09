@@ -14,3 +14,6 @@ sessions/state.json
 
 .worktrees/
 assets/raw/
+
+# pi-subagents tooling state
+.pi-subagents/

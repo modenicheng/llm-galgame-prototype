@@ -71,14 +71,15 @@ export type DslLine =
   | { kind: "sound_effect"; assetId: string }
   /**
    * `ch <character_id>:<variant> [position]` → action "set";
-   * `ch <character_id> hide|show` → action "hide" | "show" (docs §17–§19).
+   * `ch <character_id> hide|show|exit` → action "hide" | "show" | "exit"
+   * (docs §17–§19; exit removes the character from the stage entirely).
    */
   | {
       kind: "character_cue";
       characterId: string;
       variant?: string;
       position?: CharacterPosition;
-      action: "set" | "show" | "hide";
+      action: "set" | "show" | "hide" | "exit";
     }
   | { kind: "beat" }
   | { kind: "form_start"; prompt: string }
@@ -208,7 +209,8 @@ export type AssetDiagnosticCode =
   | "UNKNOWN_BACKGROUND"
   | "UNKNOWN_BGM"
   | "UNKNOWN_SOUND_EFFECT"
-  | "UNKNOWN_SPRITE_VARIANT";
+  | "UNKNOWN_SPRITE_VARIANT"
+  | "FORBIDDEN_SPRITE_SET";
 
 /**
  * One dropped-cue diagnostic: which asset kind was unknown and the id

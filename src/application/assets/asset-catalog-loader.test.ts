@@ -173,6 +173,7 @@ describe("loadAssetCatalog", () => {
       spriteSet: "suyao",
       defaultVariant: "neutral",
       defaultPosition: "left",
+      allowedSpriteSets: ["suyao"],
     });
   });
 
@@ -234,6 +235,7 @@ describe("loadAssetCatalog", () => {
       spriteSet: "suyao",
       defaultVariant: "neutral",
       defaultPosition: "left",
+      allowedSpriteSets: ["suyao"],
     });
     expect(catalog.characters.mysterious_woman).toEqual({
       characterId: "mysterious_woman",
@@ -241,7 +243,8 @@ describe("loadAssetCatalog", () => {
       displayName: "神秘女子",
       spriteSet: "mysterious_woman",
       defaultVariant: "gentle_smile",
-      defaultPosition: "right",
+      defaultPosition: "center",
+      allowedSpriteSets: ["mysterious_woman"],
     });
     expect(catalog.characters.linche).toEqual({
       characterId: "linche",
@@ -249,7 +252,8 @@ describe("loadAssetCatalog", () => {
       displayName: "林澈",
       spriteSet: "linche",
       defaultVariant: "neutral",
-      defaultPosition: "left",
+      defaultPosition: "right",
+      allowedSpriteSets: ["linche"],
     });
     // The protagonist's placeholder set shares one silhouette file.
     expect(catalog.spriteSets.linche!.variants.thinking!.src).toBe(
@@ -370,6 +374,109 @@ describe("loadAssetCatalog failures", () => {
       ].join("\n"),
     );
     await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/default_variant/);
+  });
+
+  it("allowed_sprite_sets 缺省为仅自身；显式列表被保留", async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
+    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
+    await writeFile(path.join(dir, "sprite2.png"), Buffer.from("x"));
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds:",
+        "  a: { src: bg.png, description: d }",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets:",
+        "  good:",
+        "    variants:",
+        "      normal: { src: sprite.png }",
+        "  alt:",
+        "    variants:",
+        "      alt_v: { src: sprite2.png }",
+        "characters:",
+        "  own_only:",
+        "    script_name: 默认角色",
+        "    display_name: 默认角色",
+        "    sprite_set: good",
+        "    default_variant: normal",
+        "    default_position: left",
+        "  disguised:",
+        "    script_name: 伪装者",
+        "    display_name: 伪装者",
+        "    sprite_set: good",
+        "    default_variant: normal",
+        "    default_position: left",
+        "    allowed_sprite_sets: [good, alt]",
+      ].join("\n"),
+    );
+    const catalog = await loadAssetCatalog(path.join(dir, "resources.yaml"));
+    expect(catalog.characters.own_only!.allowedSpriteSets).toEqual(["good"]);
+    expect(catalog.characters.disguised!.allowedSpriteSets).toEqual(["good", "alt"]);
+  });
+
+  it("拒绝 allowed_sprite_sets 引用不存在的 sprite_set", async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
+    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds:",
+        "  a: { src: bg.png, description: d }",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets:",
+        "  good:",
+        "    variants:",
+        "      normal: { src: sprite.png }",
+        "characters:",
+        "  c:",
+        "    script_name: 测试",
+        "    display_name: 测试",
+        "    sprite_set: good",
+        "    default_variant: normal",
+        "    default_position: left",
+        "    allowed_sprite_sets: [good, ghost]",
+      ].join("\n"),
+    );
+    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/allowed_sprite_sets/);
+  });
+
+  it("拒绝 allowed_sprite_sets 遗漏自身 sprite_set", async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
+    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
+    await writeFile(path.join(dir, "sprite2.png"), Buffer.from("x"));
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds:",
+        "  a: { src: bg.png, description: d }",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets:",
+        "  good:",
+        "    variants:",
+        "      normal: { src: sprite.png }",
+        "  alt:",
+        "    variants:",
+        "      alt_v: { src: sprite2.png }",
+        "characters:",
+        "  c:",
+        "    script_name: 测试",
+        "    display_name: 测试",
+        "    sprite_set: good",
+        "    default_variant: normal",
+        "    default_position: left",
+        "    allowed_sprite_sets: [alt]",
+      ].join("\n"),
+    );
+    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/必须包含自身/);
   });
 
   it("拒绝原型链键（constructor）作为 default_variant", async () => {

@@ -42,6 +42,7 @@ export function toModelCatalog(catalog: AssetCatalog): ModelAssetCatalog {
       spriteSet: binding.spriteSet,
       defaultVariant: binding.defaultVariant,
       defaultPosition: binding.defaultPosition,
+      allowedSpriteSets: binding.allowedSpriteSets,
     };
   }
 
@@ -72,6 +73,7 @@ export function toCharacterRegistry(catalog: AssetCatalog): CharacterRegistry {
       spriteSet: binding.spriteSet,
       defaultVariant: binding.defaultVariant,
       defaultPosition: binding.defaultPosition,
+      allowedSpriteSets: binding.allowedSpriteSets,
     };
     byId.set(characterId, entry);
     byScriptName.set(binding.scriptName, entry);

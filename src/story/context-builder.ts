@@ -231,7 +231,7 @@ export function serializeModelAssetCatalog(catalog: ModelAssetCatalog): string {
     for (const id of characterIds) {
       const binding = catalog.characters[id]!;
       lines.push(
-        `- ${id}（脚本名：${binding.scriptName}，默认显示名：${binding.displayName}，立绘组：${binding.spriteSet}，默认立绘：${binding.defaultVariant}，默认位置：${binding.defaultPosition}）`,
+        `- ${id}（脚本名：${binding.scriptName}，默认显示名：${binding.displayName}，立绘组：${binding.spriteSet}，默认立绘：${binding.defaultVariant}，默认位置：${binding.defaultPosition}，可用立绘组：${binding.allowedSpriteSets.join("/")}）`,
       );
     }
   }

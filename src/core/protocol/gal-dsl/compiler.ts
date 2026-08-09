@@ -158,11 +158,16 @@ function resolveDialogue(
 /**
  * 素材语义校验（spec §7）：未知 id/variant 的 cue 被丢弃（降级为保持现状），
  * 剧情继续；诊断写入 diagnostics。保持确定性。
+ *
+ * §15 sprite-set 禁令：character_patch 显式换用非该角色 allowed_sprite_sets
+ * 内的素材组（如 `苏遥[mysterious_woman:gentle_smile]`）会被丢弃——普通角色
+ * 只能使用自己的素材组，换装/伪装需要角色绑定里显式列 allowed_sprite_sets。
  */
 function filterInvalidCues(
   cues: StageCue[],
   state: VisualState,
   catalog: AssetCatalog,
+  registry: CharacterRegistry,
   diagnostics: AssetDiagnostic[] | undefined,
 ): StageCue[] {
   const kept: StageCue[] = [];
@@ -177,20 +182,31 @@ function filterInvalidCues(
     } else if (cue.type === "sound_effect") {
       keep = cue.assetId in catalog.soundEffects;
       if (!keep) diagnostics?.push({ code: "UNKNOWN_SOUND_EFFECT", id: cue.assetId });
-    } else if (
-      cue.type === "character_patch" &&
-      cue.variant !== undefined &&
-      cue.variant.op === "set"
-    ) {
-      const effectiveSet =
-        cue.spriteSet !== undefined && cue.spriteSet.op === "set"
-          ? cue.spriteSet.value
-          : state.characters[cue.character]?.spriteSet;
-      const variants =
-        effectiveSet !== undefined ? catalog.spriteSets[effectiveSet]?.variants : undefined;
-      if (variants === undefined || !Object.hasOwn(variants, cue.variant.value)) {
+    } else if (cue.type === "character_patch") {
+      // §15: cross-character spriteSet swaps require an explicit allow-list.
+      const entry = registry.resolveById(cue.character);
+      if (
+        cue.spriteSet !== undefined &&
+        cue.spriteSet.op === "set" &&
+        entry !== undefined &&
+        !entry.allowedSpriteSets.includes(cue.spriteSet.value)
+      ) {
         keep = false;
-        diagnostics?.push({ code: "UNKNOWN_SPRITE_VARIANT", id: cue.variant.value });
+        diagnostics?.push({
+          code: "FORBIDDEN_SPRITE_SET",
+          id: cue.spriteSet.value,
+        });
+      } else if (cue.variant !== undefined && cue.variant.op === "set") {
+        const effectiveSet =
+          cue.spriteSet !== undefined && cue.spriteSet.op === "set"
+            ? cue.spriteSet.value
+            : state.characters[cue.character]?.spriteSet;
+        const variants =
+          effectiveSet !== undefined ? catalog.spriteSets[effectiveSet]?.variants : undefined;
+        if (variants === undefined || !Object.hasOwn(variants, cue.variant.value)) {
+          keep = false;
+          diagnostics?.push({ code: "UNKNOWN_SPRITE_VARIANT", id: cue.variant.value });
+        }
       }
     }
     if (keep) kept.push(cue);
@@ -256,7 +272,7 @@ export function compileEventGroup(
   const allCues: StageCue[] = dialogueCue ? [dialogueCue, ...prelude] : prelude;
   const filteredCues =
     options.catalog !== undefined
-      ? filterInvalidCues(allCues, tailState, options.catalog, options.diagnostics)
+      ? filterInvalidCues(allCues, tailState, options.catalog, options.registry, options.diagnostics)
       : allCues;
   const nextState = reduce(tailState, filteredCues);
 

@@ -141,6 +141,8 @@ export class EventGroupBuilder {
         return { ...base, visible: { op: "set", value: true } };
       case "hide":
         return { ...base, visible: { op: "set", value: false } };
+      case "exit":
+        return { ...base, exit: true };
       case "set":
         return {
           ...base,

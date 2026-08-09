@@ -789,6 +789,7 @@ describe("DSL serializers and prompt builder", () => {
           spriteSet: "suyao",
           defaultVariant: "normal",
           defaultPosition: "left",
+          allowedSpriteSets: ["suyao"],
         },
       },
     };

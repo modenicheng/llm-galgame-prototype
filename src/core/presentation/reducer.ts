@@ -54,6 +54,17 @@ export function createVisualStateReducer(
         }
         case "character_patch": {
           const working = characters ?? state.characters;
+          // Exit: remove the character from the stage entirely. The entry
+          // is gone — a later line first-touches them again at defaults.
+          if (cue.exit) {
+            if (Object.hasOwn(working, cue.character)) {
+              if (!characters) {
+                characters = { ...state.characters };
+              }
+              delete characters[cue.character];
+            }
+            break;
+          }
           const existing = working[cue.character];
           const entryDefaults = defaults.defaultFor(cue.character);
           if (!existing && !entryDefaults) {
@@ -68,6 +79,23 @@ export function createVisualStateReducer(
             : { ...entryDefaults! };
           applyPatch(entry, cue, entryDefaults);
           characters[cue.character] = entry;
+          // Stage occupancy (§19): one slot, one character. When a
+          // character ends up VISIBLE at a position, every other visible
+          // character at that position is hidden — the engine enforces the
+          // slot instead of relying on the model to remember `hide`. The
+          // evicted character keeps its state (a `show` or explicit
+          // placement brings them back).
+          if (entry.visible && entry.position) {
+            for (const [otherId, otherEntry] of Object.entries(characters)) {
+              if (
+                otherId !== cue.character &&
+                otherEntry.visible &&
+                otherEntry.position === entry.position
+              ) {
+                characters[otherId] = { ...otherEntry, visible: false };
+              }
+            }
+          }
           break;
         }
       }

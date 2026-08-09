@@ -11,6 +11,13 @@ guidance: |
   用于"神秘女子"初次出场、身份尚未揭示、或远处无法确认身份的场景；
   身份揭示后应切换到该角色的彩色表情立绘。
 
+  角色只能使用其"可用立绘组"内的素材组（`[spriteSet:立绘]` 换装）；
+  默认每个角色只有自己的立绘组，换装/伪装需作者在角色配置中显式允许。
+
+  舞台站位互斥：一个位置只能站一个可见角色，新角色占位会让原占位者自动隐藏；
+  多角色同场时用 [|位置] 或 ch <id> <位置> 分开（如 苏遥 left、林澈 right）。
+  角色离场用 ch <id> exit，不要只依赖 hide。
+
   林澈是主角，目前只有占位剪影立绘（全部表情共用同一张图）：
   可用 ch linche:<表情> 改变站位，但不要期待表情有区别；
   除非剧情需要主角出场，否则通常让他待在 left 侧即可。
@@ -245,11 +252,11 @@ characters:
     display_name: 神秘女子
     sprite_set: mysterious_woman
     default_variant: gentle_smile
-    default_position: right
+    default_position: center
 
   linche:
     script_name: 林澈
     display_name: 林澈
     sprite_set: linche
     default_variant: neutral
-    default_position: left
+    default_position: right

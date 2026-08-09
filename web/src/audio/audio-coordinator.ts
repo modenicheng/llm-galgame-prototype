@@ -53,7 +53,12 @@ export class AudioCoordinator {
   private startupSamples = 0;
   private fedForCurrentLine = 0;
   private playbackStartMs = 0;
-  private finishTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Lines whose producer has signalled EOF (§10.6): the HTTP stream was
+   * fully consumed (or failed) and no more PCM will arrive. Playback of
+   * such a line finishes only after the worklet reports `drained`.
+   */
+  private readonly producerEof = new Set<string>();
   /** Pending start (voice_delay_ms) — playback begins only after it fires. */
   private startTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -144,8 +149,39 @@ export class AudioCoordinator {
       }
     } else {
       this.flushPending(lineId);
-      this.scheduleFinish();
     }
+  }
+
+  /**
+   * The producer has finished feeding PCM for `lineId` (§10.6). No more
+   * samples will arrive, so a line below the startup threshold can start
+   * immediately, and a playing line finishes once the worklet drains.
+   */
+  notifyLineEof(lineId: string): void {
+    if (lineId !== this.currentLineId) {
+      // Not the active line — recorded; switchToLine consults it later.
+      this.producerEof.add(lineId);
+      return;
+    }
+    if (!this.playbackStarted) {
+      if (this.linePendingCount(lineId) === 0 || this.workletNode === null) {
+        // Nothing playable (empty stream) or no playback path (degraded
+        // environment) — the line is done without ever starting.
+        this.finishLine(lineId);
+        return;
+      }
+      this.producerEof.add(lineId);
+      this.armPlaybackStart(); // EOF overrides the startup-buffer gate
+      return;
+    }
+    this.producerEof.add(lineId);
+    if (this.workletNode === null) {
+      // Degraded environment: samples were never handed to a worklet, so no
+      // drained event can ever arrive — finish on EOF directly.
+      this.finishLine(lineId);
+      return;
+    }
+    // playing with a worklet — finishLine fires on drained
   }
 
   enqueueLine(lineId: string, cacheKey: string, pauseBeforeMs: number, pauseAfterMs: number): void {
@@ -165,8 +201,10 @@ export class AudioCoordinator {
   /** Halt current line playback (silent — no finished event). */
   stop(): void {
     this.cancelStartTimer();
-    this.cancelFinishTimer();
     this.postWorkletMessage({ type: "clear" });
+    if (this.currentLineId !== null) {
+      this.producerEof.delete(this.currentLineId);
+    }
     this.currentLineId = null;
     this.playbackStarted = false;
     this.startupSamples = 0;
@@ -181,22 +219,19 @@ export class AudioCoordinator {
   dropLine(lineId: string): void {
     if (lineId === this.currentLineId) {
       this.cancelStartTimer();
-      this.cancelFinishTimer();
       this.postWorkletMessage({ type: "clear" });
       this.currentLineId = null;
       this.playbackStarted = false;
       this.startupSamples = 0;
       this.fedForCurrentLine = 0;
     }
+    this.producerEof.delete(lineId);
     this.timeline.remove(lineId);
     this.pendingByLine.delete(lineId);
   }
 
   setMode(mode: PlaybackMode): void {
     this.mode = mode;
-    if (this.currentLineId !== null && this.playbackStarted) {
-      this.scheduleFinish(); // pause_after handling depends on the mode
-    }
   }
 
   /** False when the environment lacks AudioWorklet (text-only mode). */
@@ -232,7 +267,6 @@ export class AudioCoordinator {
       return; // already playing this line — restarting would drop audio mid-line
     }
     this.cancelStartTimer();
-    this.cancelFinishTimer();
     this.postWorkletMessage({ type: "clear" });
     this.currentLineId = lineId;
     this.playbackStarted = false;
@@ -248,6 +282,16 @@ export class AudioCoordinator {
     const pending = this.linePendingCount(lineId);
     this.startupSamples = pending;
     this.fedForCurrentLine = pending;
+    if (this.producerEof.has(lineId)) {
+      if (pending === 0 || this.workletNode === null) {
+        // Nothing playable (empty stream) or no playback path (degraded
+        // environment) — the line is done without ever starting.
+        this.finishLine(lineId);
+        return;
+      }
+      this.armPlaybackStart(); // EOF: start even below the threshold
+      return;
+    }
     if (pending >= this.startupThresholdSamples()) {
       this.armPlaybackStart();
     }
@@ -282,7 +326,6 @@ export class AudioCoordinator {
     this.flushPending(lineId);
     // May reject under autoplay policy; the UI resumes inside the user gesture.
     void this.context.resume().catch(() => {});
-    this.scheduleFinish();
     this.events.onLinePlaybackStarted(lineId);
   }
 
@@ -295,37 +338,14 @@ export class AudioCoordinator {
 
   private finishLine(lineId: string): void {
     if (this.currentLineId !== lineId) {
-      return; // line was skipped or stopped while the timer was pending
+      return; // line was skipped or stopped while the drain was pending
     }
     this.currentLineId = null;
     this.playbackStarted = false;
     this.startupSamples = 0;
     this.fedForCurrentLine = 0;
-    this.finishTimer = null;
+    this.producerEof.delete(lineId);
     this.events.onLinePlaybackFinished(lineId);
-  }
-
-  /** Re-arm the finish timer from the fed sample count (auto mode waits pause_after_ms). */
-  private scheduleFinish(): void {
-    const lineId = this.currentLineId;
-    if (lineId === null || !this.playbackStarted) {
-      return;
-    }
-    const totalMs = (this.fedForCurrentLine / this.sampleRate) * 1000;
-    const elapsedMs = performance.now() - this.playbackStartMs;
-    const remainingMs = Math.max(0, totalMs - elapsedMs);
-    const pauseAfterMs = this.mode === "auto" ? (this.timeline.pauseAfterMsFor(lineId) ?? 0) : 0;
-    this.cancelFinishTimer();
-    this.finishTimer = setTimeout(() => {
-      this.finishLine(lineId);
-    }, remainingMs + pauseAfterMs);
-  }
-
-  private cancelFinishTimer(): void {
-    if (this.finishTimer !== null) {
-      clearTimeout(this.finishTimer);
-      this.finishTimer = null;
-    }
   }
 
   private flushPending(lineId: string): void {
@@ -333,6 +353,8 @@ export class AudioCoordinator {
     if (!chunks || chunks.length === 0 || !this.workletNode) {
       return; // keep queued until the node exists
     }
+    // Mark the line before flushing so the worklet can report drained.
+    this.postWorkletMessage({ type: "line", lineId });
     for (const chunk of chunks) {
       this.postWorkletMessage(chunk);
     }
@@ -361,8 +383,22 @@ export class AudioCoordinator {
 
   private handleWorkletMessage(event: MessageEvent): void {
     const data: unknown = event.data;
-    if (data !== null && typeof data === "object" && "type" in data && data.type === "underrun") {
+    if (data === null || typeof data !== "object" || !("type" in data)) {
+      return;
+    }
+    if (data.type === "underrun") {
       this.events.onUnderrun();
+      return;
+    }
+    if (data.type === "drained") {
+      const lineId = (data as { type: string; lineId?: unknown }).lineId;
+      if (
+        typeof lineId === "string" &&
+        this.currentLineId === lineId &&
+        this.producerEof.has(lineId)
+      ) {
+        this.finishLine(lineId);
+      }
     }
   }
 

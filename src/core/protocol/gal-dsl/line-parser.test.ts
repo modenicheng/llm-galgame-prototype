@@ -173,6 +173,14 @@ describe("parseDslLine", () => {
     });
   });
 
+  it("parses a ch exit cue", () => {
+    expect(parseDslLine("ch suyao exit")).toEqual({
+      kind: "character_cue",
+      characterId: "suyao",
+      action: "exit",
+    });
+  });
+
   // --- beat / forms ---
 
   it("parses a beat", () => {

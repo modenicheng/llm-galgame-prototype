@@ -14,6 +14,7 @@ import type { AssetCatalog } from "../../assets/types.js";
 import type {
   CharacterRegistry,
   CharacterRegistryEntry,
+  CharacterPatchCue,
   StageCue,
   VisualState,
 } from "../../presentation/types.js";
@@ -27,6 +28,13 @@ const SUYAO: CharacterRegistryEntry = {
   spriteSet: "suyao",
   defaultVariant: "normal",
   defaultPosition: "left",
+  allowedSpriteSets: ["suyao"],
+};
+
+/** Suyao with an explicit disguise allowance (§15 explicit allow-list). */
+const DISGUISED_SUYAO: CharacterRegistryEntry = {
+  ...SUYAO,
+  allowedSpriteSets: ["suyao", "mysterious_woman"],
 };
 
 function makeRegistry(): CharacterRegistry {
@@ -361,6 +369,12 @@ const CATALOG: AssetCatalog = {
         anxious: { id: "anxious", src: "characters/suyao/anxious.png" },
       },
     },
+    mysterious_woman: {
+      id: "mysterious_woman",
+      variants: {
+        gentle_smile: { id: "gentle_smile", src: "characters/mysterious_woman/gentle_smile.png" },
+      },
+    },
   },
   characters: {},
 };
@@ -381,6 +395,84 @@ function withCharacter(
 ): VisualState {
   return { characters: { [characterId]: state } };
 }
+
+describe("compileEventGroup — sprite-set binding (§15)", () => {
+  it("drops a cross-character spriteSet swap (FORBIDDEN_SPRITE_SET) unless allowed", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx();
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [],
+        main: {
+          type: "dialogue",
+          speaker: "苏遥",
+          text: "你认错人了。",
+          visual: {
+            hasVisual: true,
+            resetVisual: false,
+            spriteSet: "mysterious_woman",
+            variant: "gentle_smile",
+          },
+          name: { hasName: false, resetName: false },
+        },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    // The whole cue is dropped (degradation: keep current state, story
+    // continues) — the forbidden cross-set never reaches the stage.
+    expect(group.prelude).toHaveLength(0);
+    expect(tailState.characters["suyao"]).toBeUndefined();
+    expect(diagnostics).toEqual([{ code: "FORBIDDEN_SPRITE_SET", id: "mysterious_woman" }]);
+  });
+
+  it("keeps an allowed spriteSet swap when the binding explicitly allows it", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const registry: CharacterRegistry = {
+      resolveByScriptName(name: string): CharacterRegistryEntry | undefined {
+        return name === "苏遥" ? DISGUISED_SUYAO : undefined;
+      },
+      resolveById(id: string): CharacterRegistryEntry | undefined {
+        return id === "suyao" || id === "苏遥" ? DISGUISED_SUYAO : undefined;
+      },
+      entries(): CharacterRegistryEntry[] {
+        return [DISGUISED_SUYAO];
+      },
+    };
+    const defaults = createDefaultsFromRegistry(registry);
+    const ctx = {
+      registry,
+      tailState: createInitialVisualState(),
+      reduce: createVisualStateReducer(defaults),
+      defaultsFor: defaults.defaultFor.bind(defaults),
+    };
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [],
+        main: {
+          type: "dialogue",
+          speaker: "苏遥",
+          text: "（易容后的伪装）",
+          visual: {
+            hasVisual: true,
+            resetVisual: false,
+            spriteSet: "mysterious_woman",
+            variant: "gentle_smile",
+          },
+          name: { hasName: false, resetName: false },
+        },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(diagnostics).toEqual([]);
+    const patch = group.prelude[0] as CharacterPatchCue;
+    expect(patch.spriteSet).toEqual({ op: "set", value: "mysterious_woman" });
+    expect(patch.variant).toEqual({ op: "set", value: "gentle_smile" });
+    expect(tailState.characters["suyao"]!.spriteSet).toBe("mysterious_woman");
+    expect(tailState.characters["suyao"]!.variant).toBe("gentle_smile");
+  });
+});
 
 describe("compileEventGroup — asset semantic validation (spec §7)", () => {
   it("drops an unknown background cue, records UNKNOWN_BACKGROUND, keeps state", () => {

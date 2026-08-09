@@ -183,6 +183,125 @@ describe("character SET", () => {
   });
 });
 
+describe("stage occupancy (§19)", () => {
+  const bothAtLeft = (): VisualState => ({
+    characters: {
+      suyao: { ...SUYAO_DEFAULTS, position: "left", visible: true },
+      sasha: {
+        spriteSet: "placeholder_char",
+        variant: "normal",
+        position: "left",
+        displayName: "莎莎",
+        visible: true,
+      },
+    },
+  });
+
+  it("a character becoming visible at an occupied slot hides the previous occupant", () => {
+    const next = reduce([charPatch("suyao", { position: { op: "set", value: "left" } })], bothAtLeft());
+    expect(suyao(next).visible).toBe(true);
+    expect(suyao(next).position).toBe("left");
+    expect(next.characters.sasha!.visible).toBe(false);
+  });
+
+  it("evicts when a hidden character is shown at an occupied slot", () => {
+    const state: VisualState = {
+      characters: {
+        suyao: { ...SUYAO_DEFAULTS, position: "left" as const, visible: false },
+        sasha: {
+          spriteSet: "placeholder_char",
+          variant: "normal",
+          position: "left" as const,
+          displayName: "莎莎",
+          visible: true,
+        },
+      },
+    };
+    const next = reduce([charPatch("suyao", { visible: { op: "set", value: true } })], state);
+    expect(suyao(next).visible).toBe(true);
+    expect(next.characters.sasha!.visible).toBe(false);
+  });
+
+  it("no eviction when the characters occupy different slots", () => {
+    const state: VisualState = {
+      characters: {
+        suyao: { ...SUYAO_DEFAULTS, position: "left" as const },
+        sasha: {
+          spriteSet: "placeholder_char",
+          variant: "normal",
+          position: "right" as const,
+          displayName: "莎莎",
+          visible: true,
+        },
+      },
+    };
+    const next = reduce(
+      [charPatch("suyao", { position: { op: "set", value: "left" } })],
+      state,
+    );
+    expect(suyao(next).visible).toBe(true);
+    expect(next.characters.sasha!.visible).toBe(true);
+  });
+
+  it("a hide does not evict anyone (the character is leaving, not claiming)", () => {
+    const next = reduce(
+      [charPatch("suyao", { visible: { op: "set", value: false } })],
+      bothAtLeft(),
+    );
+    expect(suyao(next).visible).toBe(false);
+    expect(next.characters.sasha!.visible).toBe(true);
+  });
+
+  it("an invisible character does not occupy its slot", () => {
+    const state: VisualState = {
+      characters: {
+        suyao: { ...SUYAO_DEFAULTS, position: "left" as const, visible: true },
+        sasha: {
+          spriteSet: "placeholder_char",
+          variant: "normal",
+          position: "left" as const,
+          displayName: "莎莎",
+          visible: false,
+        },
+      },
+    };
+    const next = reduce([charPatch("sasha", { visible: { op: "set", value: true } })], state);
+    // sasha claims left; suyao (left) is evicted — sasha had no claim.
+    expect(next.characters.sasha!.visible).toBe(true);
+    expect(suyao(next).visible).toBe(false);
+  });
+});
+
+describe("character exit (§19)", () => {
+  it("exit removes the character from the stage entirely", () => {
+    const next = reduce([charPatch("suyao", { exit: true })], suyaoState());
+    expect(next.characters.suyao).toBeUndefined();
+  });
+
+  it("exit of a character not on stage is a no-op", () => {
+    const next = reduce([charPatch("suyao", { exit: true })], { characters: {} });
+    expect(next.characters).toEqual({});
+  });
+
+  it("exit leaves other characters untouched", () => {
+    const state: VisualState = {
+      characters: {
+        suyao: { ...SUYAO_DEFAULTS, position: "left" as const },
+        sasha: {
+          spriteSet: "placeholder_char",
+          variant: "normal",
+          position: "right" as const,
+          displayName: "莎莎",
+          visible: true,
+        },
+      },
+    };
+    const next = reduce([charPatch("suyao", { exit: true })], state);
+    expect(next.characters.suyao).toBeUndefined();
+    expect(next.characters.sasha!.visible).toBe(true);
+  });
+});
+
 describe("character RESET", () => {
   it("resets all visual fields via all-reset cue ([]-style), keeping displayName", () => {
     const state = suyaoState({

@@ -39,6 +39,7 @@ const CharacterBindingSchema = z.object({
   sprite_set: z.string().min(1),
   default_variant: z.string().min(1),
   default_position: z.enum(POSITIONS),
+  allowed_sprite_sets: z.array(z.string().min(1)).optional(),
 });
 
 const ResourceYamlSchema = z.object({
@@ -127,6 +128,18 @@ async function validateCatalog(
         `资产目录校验失败: characters.${characterId}.default_variant "${binding.defaultVariant}" 不存在于 sprite_set "${binding.spriteSet}"`,
       );
     }
+    if (!binding.allowedSpriteSets.includes(binding.spriteSet)) {
+      throw new Error(
+        `资产目录校验失败: characters.${characterId}.allowed_sprite_sets 必须包含自身的 sprite_set "${binding.spriteSet}"`,
+      );
+    }
+    for (const allowed of binding.allowedSpriteSets) {
+      if (!Object.hasOwn(catalog.spriteSets, allowed)) {
+        throw new Error(
+          `资产目录校验失败: characters.${characterId}.allowed_sprite_sets 引用不存在的 sprite_set "${allowed}"`,
+        );
+      }
+    }
   }
 
   const srcs: Array<{ where: string; src: string }> = [
@@ -211,6 +224,7 @@ function mapToCatalog(data: ResourceYaml): AssetCatalog {
       spriteSet: binding.sprite_set,
       defaultVariant: binding.default_variant,
       defaultPosition: binding.default_position,
+      allowedSpriteSets: binding.allowed_sprite_sets ?? [binding.sprite_set],
     };
   }
 

@@ -41,6 +41,10 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
   phase = 0;
   sourceRate = DEFAULT_SAMPLE_RATE;
   outputRate = DEFAULT_SAMPLE_RATE;
+  /** Line id set by the `line` marker; null when idle/cleared. */
+  currentLineId = null;
+  /** True once drained(currentLineId) has been posted for the current batch. */
+  drainedSent = false;
 
   constructor(options = {}) {
     super(options);
@@ -64,6 +68,15 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
     }
     if ("type" in data && data.type === "clear") {
       this.resetRing();
+      this.currentLineId = null;
+      this.drainedSent = false;
+      return;
+    }
+    if ("type" in data && data.type === "line") {
+      // The coordinator marks the line before flushing its samples; the
+      // worklet reports drained(lineId) once the batch is consumed.
+      this.currentLineId = data.lineId ?? null;
+      this.drainedSent = false;
       return;
     }
     if (ArrayBuffer.isView(data)) {
@@ -97,6 +110,14 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
     if (underrun) {
       this.port.postMessage({ type: "underrun" });
     }
+    if (
+      this.currentLineId !== null &&
+      !this.drainedSent &&
+      this.queued === 0
+    ) {
+      this.drainedSent = true;
+      this.port.postMessage({ type: "drained", lineId: this.currentLineId });
+    }
     return true;
   }
 
@@ -104,6 +125,11 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
     if (samples.length === 0) return;
     this.chunks.push(samples);
     this.queued += samples.length;
+    // More audio arrived for the marked line — a previous drain no longer
+    // describes the ring state.
+    if (this.currentLineId !== null) {
+      this.drainedSent = false;
+    }
   }
 
   sampleAt(offset) {
