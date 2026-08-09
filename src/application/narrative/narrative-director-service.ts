@@ -174,10 +174,14 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       revision: loadedState.revision,
       consolidatedThroughEventSeq: loadedState.consolidatedThroughEventSeq,
       checkpointCount: loadedState.checkpointCount,
-      // Plan seeds take precedence over loaded state for same ids
-      threads: { ...loadedState.threads, ...seedThreads },
-      setups: { ...loadedState.setups, ...seedSetups },
-      anchors: { ...loadedState.anchors, ...seedAnchors },
+      // Loaded (persisted) state wins over plan seeds for same ids: the
+      // static plan only creates entries that do not exist yet (first
+      // start). A resumed session must keep its runtime lifecycle
+      // (status, timestamps, reinforcement counts) — the plan must never
+      // roll them back (audit finding 2).
+      threads: { ...seedThreads, ...loadedState.threads },
+      setups: { ...seedSetups, ...loadedState.setups },
+      anchors: { ...seedAnchors, ...loadedState.anchors },
       recentEpisodeIds: [...loadedState.recentEpisodeIds],
     };
 

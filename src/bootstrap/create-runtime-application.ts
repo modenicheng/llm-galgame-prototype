@@ -144,6 +144,13 @@ export async function createRuntimeApplication(
   const projection = new UiProjectionStoreImpl();
   const store = new NodeJsonlSessionStore(options.sessionDir ?? config.game.sessions_dir);
 
+  // One session id for the whole runtime: the game's session file AND the
+  // narrative-memory directory are bound to it (spec §6), so narrative
+  // state never leaks across sessions and a resumed session restores its
+  // own memory.
+  const sessionId =
+    options.sessionId ?? new SessionIdGenerator().nextSessionId();
+
   // --- Narrative director assembly (§7.1) ---
   const diagnostics = new ConsoleDiagnosticSink();
   let narrativeDirector: NarrativeDirectorPort | undefined;
@@ -154,6 +161,7 @@ export async function createRuntimeApplication(
     );
     const narrativeStore = new JsonNarrativeMemoryStore(
       options.sessionDir ?? config.game.sessions_dir,
+      sessionId,
     );
     const consolidator = new NarrativeConsolidatorAdapter({
       apiKey,
@@ -176,6 +184,7 @@ export async function createRuntimeApplication(
     store,
     clock: new SystemClock(),
     ids: new SessionIdGenerator(),
+    sessionId,
     diagnostics,
     ...(narrativeDirector ? { narrativeDirector } : {}),
   }, assetCatalog);

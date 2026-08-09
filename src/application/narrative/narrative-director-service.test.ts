@@ -269,18 +269,26 @@ describe("NarrativeDirectorService", () => {
       expect(sharedState.threads["existing"]).toBeDefined();
     });
 
-    it("plan threads with same id as runtime threads take precedence (plan wins)", async () => {
+    it("loaded state wins over plan seeds for same ids (restart does not roll back runtime lifecycle)", async () => {
       const sharedState = emptyState();
       sharedState.threads["t-conflict"] = makeThread({
         id: "t-conflict",
         summary: "runtime summary",
+        status: "resolved", // runtime pushed it to a terminal state
+        source: "runtime",
+      });
+      sharedState.setups["s-conflict"] = makeSetup({
+        id: "s-conflict",
+        status: "paid_off", // runtime paid it off
         source: "runtime",
       });
       const store = new FakeStore(sharedState);
 
-      const plan = makePlan([
-        makeThread({ id: "t-conflict", summary: "plan summary", source: "author" }),
-      ]);
+      // The plan still carries the ORIGINAL authored values.
+      const plan = makePlan(
+        [makeThread({ id: "t-conflict", summary: "plan summary", status: "developing", source: "author" })],
+        [makeSetup({ id: "s-conflict", status: "planned", source: "author" })],
+      );
       const svc = new NarrativeDirectorService({
         config: makeConfig(),
         store,
@@ -289,6 +297,8 @@ describe("NarrativeDirectorService", () => {
       });
       await svc.initialize();
 
+      // The runtime lifecycle survives the restart — the plan must only
+      // create MISSING entries, never overwrite persisted state.
       const brief = svc.getBrief({
         turn: 1,
         eventSeq: 10,
@@ -296,8 +306,14 @@ describe("NarrativeDirectorService", () => {
         characters: [],
       });
       const t = brief.activeThreads.find((th: { id: string }) => th.id === "t-conflict");
-      expect(t).toBeDefined();
-      expect(t!.summary).toBe("plan summary");
+      expect(t).toBeUndefined(); // resolved → not active
+      // paid_off is terminal — no directive for s-conflict.
+      expect(brief.setupDirectives.some((d: { id: string }) => d.id === "s-conflict")).toBe(false);
+      // And the stored summary/status were NOT reset to plan values:
+      const mem = (svc as unknown as { memory: NarrativeMemoryState }).memory;
+      expect(mem.threads["t-conflict"]!.status).toBe("resolved");
+      expect(mem.threads["t-conflict"]!.summary).toBe("runtime summary");
+      expect(mem.setups["s-conflict"]!.status).toBe("paid_off");
     });
   });
 

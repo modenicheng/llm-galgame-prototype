@@ -5,7 +5,7 @@
  * touches real session data.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { appendFile, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { JsonNarrativeMemoryStore } from "./json-narrative-memory-store.js";
@@ -76,11 +76,31 @@ describe("JsonNarrativeMemoryStore", () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(path.join(tmpdir(), "nar-mem-"));
-    store = new JsonNarrativeMemoryStore(dir);
+    store = new JsonNarrativeMemoryStore(dir, "test-session");
   });
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("writes narrative files under <sessionDir>/<sessionId>/", async () => {
+    await store.saveState(makeState());
+    // The session directory nests under the base dir.
+    const sessionDirPath = path.join(dir, "test-session");
+    expect((await readdir(sessionDirPath)).sort()).toEqual([
+      "narrative-state.json",
+    ]);
+    // The base dir itself only contains the session directory.
+    expect((await readdir(dir)).sort()).toEqual(["test-session"]);
+    const loaded = await store.load();
+    expect(loaded.state.revision).toBe(3);
+  });
+
+  it("isolates sessions: a different session id sees empty state", async () => {
+    await store.saveState({ ...makeState(), revision: 7 });
+    const other = new JsonNarrativeMemoryStore(dir, "other-session");
+    const loaded = await other.load();
+    expect(loaded.state).toEqual(EMPTY_STATE);
   });
 
   it("load returns empty state and episodes when files are missing (no throw)", async () => {
@@ -109,16 +129,29 @@ describe("JsonNarrativeMemoryStore", () => {
     await store.saveState({ ...makeState(), revision: 9 });
 
     // Only the state file exists — no stray tmp files left behind.
-    expect((await readdir(dir)).sort()).toEqual(["narrative-state.json"]);
+    expect((await readdir(path.join(dir, "test-session"))).sort()).toEqual(["narrative-state.json"]);
 
-    const raw = await readFile(path.join(dir, "narrative-state.json"), "utf8");
+    const raw = await readFile(path.join(dir, "test-session", "narrative-state.json"), "utf8");
     expect(JSON.parse(raw)).toEqual({ ...makeState(), revision: 9 });
     const loaded = await store.load();
     expect(loaded.state.revision).toBe(9);
   });
 
   it("returns empty state without throwing on corrupt state.json", async () => {
-    await appendFile(path.join(dir, "narrative-state.json"), "{ not json !!!", "utf8");
+    await mkdir(path.join(dir, "test-session"), { recursive: true });
+    await appendFile(path.join(dir, "test-session", "narrative-state.json"), "{ not json !!!", "utf8");
+    const loaded = await store.load();
+    expect(loaded.state).toEqual(EMPTY_STATE);
+  });
+
+  it("degrades structurally-corrupt state (valid JSON, wrong shape) to empty state", async () => {
+    // Valid JSON that fails the zod schema (revision is a string).
+    await mkdir(path.join(dir, "test-session"), { recursive: true });
+    await appendFile(
+      path.join(dir, "test-session", "narrative-state.json"),
+      JSON.stringify({ revision: "oops", threads: {} }),
+      "utf8",
+    );
     const loaded = await store.load();
     expect(loaded.state).toEqual(EMPTY_STATE);
   });
@@ -126,7 +159,7 @@ describe("JsonNarrativeMemoryStore", () => {
   it("skips corrupt episode lines and keeps valid ones", async () => {
     await store.appendEpisodes([makeEpisode("ep_1", 1), makeEpisode("ep_2", 10)]);
     await appendFile(
-      path.join(dir, "episodes.jsonl"),
+      path.join(dir, "test-session", "episodes.jsonl"),
       '{"broken": line without closing\n',
       "utf8",
     );
@@ -137,6 +170,20 @@ describe("JsonNarrativeMemoryStore", () => {
       makeEpisode("ep_2", 10),
       makeEpisode("ep_3", 20),
     ]);
+  });
+
+  it("skips structurally-corrupt episode lines and dedupes by id", async () => {
+    // Valid JSON failing the zod schema — skipped like a syntax error.
+    await store.appendEpisodes([makeEpisode("ep_1", 1)]);
+    await appendFile(
+      path.join(dir, "test-session", "episodes.jsonl"),
+      JSON.stringify({ id: 42, fromEventSeq: "x" }) + "\n",
+      "utf8",
+    );
+    // Same id twice (a failed persist retry re-appends) — deduped.
+    await store.appendEpisodes([makeEpisode("ep_1", 1), makeEpisode("ep_2", 10)]);
+    const loaded = await store.load();
+    expect(loaded.episodes).toEqual([makeEpisode("ep_1", 1), makeEpisode("ep_2", 10)]);
   });
 
   it("accumulates rejected ops across appendOps calls", async () => {
@@ -150,7 +197,7 @@ describe("JsonNarrativeMemoryStore", () => {
     await store.appendOps(first);
     await store.appendOps(second);
 
-    const raw = await readFile(path.join(dir, "narrative-ops.jsonl"), "utf8");
+    const raw = await readFile(path.join(dir, "test-session", "narrative-ops.jsonl"), "utf8");
     const lines = raw.split("\n").filter((l) => l.trim().length > 0);
     expect(lines).toHaveLength(3);
     expect(lines.map((l) => JSON.parse(l))).toEqual([...first, ...second]);

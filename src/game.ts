@@ -154,6 +154,9 @@ export interface GamePorts {
   store: SessionStorePort;
   clock: ClockPort;
   ids: IdGeneratorPort;
+  /** Session id for this game instance (narrative memory binds to it).
+   * Omitted → generated from `ids`. */
+  sessionId?: string;
   diagnostics?: DiagnosticSink;
   narrativeDirector?: NarrativeDirectorPort;
 }
@@ -271,7 +274,7 @@ export class Game {
     this.ids = ports.ids;
     this.diagnostics = ports.diagnostics ?? silentDiagnosticSink;
     this.narrativeDirector = ports.narrativeDirector;
-    this.sessionId = this.ids.nextSessionId();
+    this.sessionId = ports.sessionId ?? this.ids.nextSessionId();
     this.interactionPolicy = new InteractionPolicy(config.interaction);
     this.storyState = createInitialState();
     this.catalog = catalog;

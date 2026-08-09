@@ -15,7 +15,11 @@
  */
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { NarrativeMemoryStorePort } from "../../core/ports/narrative-memory-store-port.js";
+import { NarrativeMemoryStorePort } from "../../core/ports/narrative-memory-store-port.js";
+import {
+  EpisodeMemorySchema,
+  NarrativeMemoryStateSchema,
+} from "../../core/narrative/memory-types.js";
 import type {
   EpisodeMemory,
   NarrativeMemoryState,
@@ -39,8 +43,14 @@ const EMPTY_STATE: NarrativeMemoryState = {
 export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
   private readonly dir: string;
 
-  constructor(sessionDir: string) {
-    this.dir = path.resolve(sessionDir);
+  /**
+   * Narrative memory is bound to ONE session: files live under
+   * `<sessionDir>/<sessionId>/` (spec §6) so a new session starts with a
+   * clean memory and a resumed session restores its own. Session-bound
+   * event seqs can never collide with the persisted watermark.
+   */
+  constructor(sessionDir: string, sessionId: string) {
+    this.dir = path.join(path.resolve(sessionDir), sessionId);
   }
 
   get location(): string {
@@ -64,7 +74,13 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
     try {
       const raw = await readFile(this.statePath, "utf8");
       if (raw.trim().length > 0) {
-        state = JSON.parse(raw) as NarrativeMemoryState;
+        const parsed: unknown = JSON.parse(raw);
+        // Structural corruption (valid JSON, wrong shape) must degrade the
+        // same way as syntax corruption: only a zod-valid state is used.
+        const checked = NarrativeMemoryStateSchema.safeParse(parsed);
+        if (checked.success) {
+          state = checked.data;
+        }
       }
     } catch {
       // Missing or corrupt state file → empty state, never throw.
@@ -72,13 +88,23 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
     }
 
     const episodes: EpisodeMemory[] = [];
+    const seenIds = new Set<string>();
     try {
       const raw = await readFile(this.episodesPath, "utf8");
       for (const line of raw.split("\n")) {
         const trimmed = line.trim();
         if (trimmed.length === 0) continue;
         try {
-          episodes.push(JSON.parse(trimmed) as EpisodeMemory);
+          const parsed: unknown = JSON.parse(trimmed);
+          const checked = EpisodeMemorySchema.safeParse(parsed);
+          if (checked.success) {
+            // Dedupe by id: a failed persist retry may append the same
+            // episode id twice (id is revision-derived and idempotent).
+            if (!seenIds.has(checked.data.id)) {
+              seenIds.add(checked.data.id);
+              episodes.push(checked.data);
+            }
+          }
         } catch {
           // Corrupt single episode line → skip it, keep the rest.
         }

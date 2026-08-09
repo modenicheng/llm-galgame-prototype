@@ -464,7 +464,7 @@ function dashscopeConfig(): AppConfig {
       segmentEnd: { kind: "complete", nonce: "aaaa", reason: "ending" },
     };
 
-    const app = await createRuntimeApplication({ config, sessionDir, storyPlanPath });
+    const app = await createRuntimeApplication({ config, sessionDir, storyPlanPath, sessionId: "test-session" });
 
     // NarrativeDirectorService is wired into the Game as a private field.
     expect((app.game as any).narrativeDirector).toBeInstanceOf(
@@ -483,7 +483,7 @@ function dashscopeConfig(): AppConfig {
     // The narrative-memory store writes directly into the sessions
     // base directory (same dir as events.jsonl).
     await expect(
-      access(path.join(sessionDir, "narrative-state.json")),
+      access(path.join(sessionDir, "test-session", "narrative-state.json")),
     ).resolves.toBeUndefined();
 
     // narrative-ops.jsonl is only created when there are rejected
@@ -491,7 +491,7 @@ function dashscopeConfig(): AppConfig {
     // (empty threadOps/setupOps + a well-formed episode), so nothing
     // is rejected and the file is never written.
     await expect(
-      access(path.join(sessionDir, "narrative-ops.jsonl")),
+      access(path.join(sessionDir, "test-session", "narrative-ops.jsonl")),
     ).rejects.toThrow();
 
     await rm(dir, { recursive: true, force: true });
@@ -556,6 +556,7 @@ function dashscopeConfig(): AppConfig {
       config,
       sessionDir,
       storyPlanPath: nonexistentPlan,
+      sessionId: "test-session",
     });
     expect((app.game as any).narrativeDirector).toBeDefined();
 
@@ -568,7 +569,7 @@ function dashscopeConfig(): AppConfig {
     // Consolidation runs fire-and-forget; yield the microtask queue.
     await new Promise((resolve) => setTimeout(resolve, 10));
     await expect(
-      access(path.join(sessionDir, "narrative-state.json")),
+      access(path.join(sessionDir, "test-session", "narrative-state.json")),
     ).resolves.toBeUndefined();
 
     await rm(dir, { recursive: true, force: true });

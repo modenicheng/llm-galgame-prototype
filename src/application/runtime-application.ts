@@ -41,6 +41,9 @@ export interface RuntimeApplicationOptions {
   voicesPath?: string;
   /** story-plan.yaml path (default config.narrative.story_plan_path). */
   storyPlanPath?: string;
+  /** Session id for narrative-memory files and the game session. When
+   * omitted, one is generated. Explicit ids make tests deterministic. */
+  sessionId?: string;
 }
 
 
