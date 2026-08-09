@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { buildSystemContext, buildUserPrompt, type ContextInput } from "./context-builder.js";
+import { buildSystemContext, type ContextInput } from "./context-builder.js";
 import { createInitialState } from "./state.js";
 import type { PromptBundle } from "../prompts.js";
 import type { StoryContextEvent } from "../schema.js";
@@ -27,7 +27,6 @@ function makeDefaultContext(): ContextInput {
     prompts: makePrompts(),
     state: createInitialState(),
     recentEvents: [],
-    outputProtocol: "你是互动视觉小说的剧情生成器。输出严格 JSONL。硬性规则：不得替玩家选择。",
   };
 }
 
@@ -114,11 +113,11 @@ function makeRecentEvents(): StoryContextEvent[] {
 // ---------------------------------------------------------------------------
 
 describe("buildSystemContext", () => {
-  it("should include the output protocol", () => {
+  it("should include the output protocol (dsl-protocol)", () => {
     const ctx = makeDefaultContext();
     const system = buildSystemContext(ctx);
-    expect(system).toContain("互动视觉小说的剧情生成器");
-    expect(system).toContain("硬性规则");
+    expect(system).toContain("行式 Gal DSL");
+    expect(system).toContain("角色设定");
   });
 
   it("should include character settings", () => {
@@ -180,138 +179,5 @@ describe("buildSystemContext", () => {
     expect(system).not.toContain("[Open Threads]");
     expect(system).not.toContain("[Canon]");
     expect(system).not.toContain("[Recent]");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// buildUserPrompt
-// ---------------------------------------------------------------------------
-
-describe("buildUserPrompt", () => {
-  it("should include the turn number", () => {
-    const ctx = makeDefaultContext();
-    const prompt = buildUserPrompt(3, ctx);
-    expect(prompt).toContain("当前回合：3");
-  });
-
-  // ── Scene info ──────────────────────────────────────────────────────
-
-  it("should include scene info from story state", () => {
-    const ctx: ContextInput = {
-      ...makeDefaultContext(),
-      state: makeRichState(),
-    };
-    const prompt = buildUserPrompt(1, ctx);
-    expect(prompt).toContain("当前故事状态");
-    expect(prompt).toContain("[Scene]");
-    expect(prompt).toContain("dark_forest");
-    expect(prompt).toContain("森林深处");
-    expect(prompt).toContain("深夜");
-  });
-
-  // ── Character states ────────────────────────────────────────────────
-
-  it("should include character states", () => {
-    const ctx: ContextInput = {
-      ...makeDefaultContext(),
-      state: makeRichState(),
-    };
-    const prompt = buildUserPrompt(1, ctx);
-    expect(prompt).toContain("hero");
-    expect(prompt).toContain("紧张");
-    expect(prompt).toContain("guide");
-    expect(prompt).toContain("神秘");
-    expect(prompt).toContain("ally");
-  });
-
-  // ── Open threads ────────────────────────────────────────────────────
-
-  it("should include open threads", () => {
-    const ctx: ContextInput = {
-      ...makeDefaultContext(),
-      state: makeRichState(),
-    };
-    const prompt = buildUserPrompt(1, ctx);
-    expect(prompt).toContain("[Open Threads]");
-    expect(prompt).toContain("main_quest");
-    expect(prompt).toContain("找到失落的圣物");
-    expect(prompt).toContain("wolf_howl");
-    expect(prompt).toContain("调查远处的狼嚎声");
-  });
-
-  // ── Recent summary ──────────────────────────────────────────────────
-
-  it("should include recent summary from state", () => {
-    const ctx: ContextInput = {
-      ...makeDefaultContext(),
-      state: makeRichState(),
-    };
-    const prompt = buildUserPrompt(1, ctx);
-    expect(prompt).toContain("[Recent]");
-    expect(prompt).toContain("迷雾森林");
-    expect(prompt).toContain("狼嚎");
-  });
-
-  // ── Player tendencies ───────────────────────────────────────────────
-
-  it("should include player tendencies when present", () => {
-    const ctx: ContextInput = {
-      ...makeDefaultContext(),
-      state: makeRichState(),
-    };
-    const prompt = buildUserPrompt(1, ctx);
-    expect(prompt).toContain("[Player]");
-    expect(prompt).toContain("探索");
-    expect(prompt).toContain("谨慎");
-  });
-
-  it("should not include player tendencies section when empty", () => {
-    const ctx = makeDefaultContext(); // recent_tendencies is []
-    const prompt = buildUserPrompt(1, ctx);
-    expect(prompt).not.toContain("[Player]");
-  });
-
-  // ── Event history ───────────────────────────────────────────────────
-
-  it("should include recent event history", () => {
-    const ctx: ContextInput = {
-      ...makeDefaultContext(),
-      recentEvents: makeRecentEvents(),
-    };
-    const prompt = buildUserPrompt(2, ctx);
-    expect(prompt).toContain("剧情历史");
-    expect(prompt).toContain("narration");
-    expect(prompt).toContain("迷雾笼罩");
-  });
-
-  it("should show placeholder when no history events exist", () => {
-    const ctx = makeDefaultContext();
-    const prompt = buildUserPrompt(1, ctx);
-    expect(prompt).toContain("没有历史事件");
-  });
-
-  // ── Extra instructions ──────────────────────────────────────────────
-
-  it("should include extra instructions when provided", () => {
-    const ctx = makeDefaultContext();
-    const prompt = buildUserPrompt(
-      1,
-      ctx,
-      "请生成一段开场叙述。",
-    );
-    expect(prompt).toContain("请生成一段开场叙述。");
-  });
-
-  // ── Token budget sanity ─────────────────────────────────────────────
-
-  it("should produce output under 5000 characters for a typical context", () => {
-    const ctx: ContextInput = {
-      prompts: makePrompts(),
-      state: makeRichState(),
-      recentEvents: makeRecentEvents(),
-      outputProtocol: "你是互动视觉小说的剧情生成器。输出严格 JSONL。",
-    };
-    const prompt = buildUserPrompt(7, ctx, "请继续推进剧情。");
-    expect(prompt.length).toBeLessThan(5000);
   });
 });

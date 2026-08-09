@@ -7,40 +7,40 @@ import {
   createGenerationHandle,
   type StoryGeneratorPort,
 } from "./story-generator-port.js";
-import type { ModelEvent } from "../../schema.js";
+import type { EventGroupDraft } from "../protocol/gal-dsl/types.js";
 
-function narration(text: string): ModelEvent {
-  return { type: "narration", text };
+function narrationGroup(text: string): EventGroupDraft {
+  return { prelude: [], main: { type: "narration", text } };
 }
 
 describe("createGenerationHandle", () => {
   it("publishes events as they arrive and resolves done with the envelope", async () => {
-    const handle = createGenerationHandle("g1", async (_signal, onEvent) => {
-      onEvent(narration("one"));
-      onEvent(narration("two"));
-      return { events: [narration("one"), narration("two")], state_patch: {} };
+    const handle = createGenerationHandle("g1", async (_signal, onGroup) => {
+      onGroup(narrationGroup("one"));
+      onGroup(narrationGroup("two"));
+      return { events: [], state_patch: {}, groups: [narrationGroup("one"), narrationGroup("two")] };
     });
 
-    const seen: ModelEvent[] = [];
+    const seen: EventGroupDraft[] = [];
     for await (const event of handle.events) seen.push(event);
 
-    expect(seen.map((e) => (e as { text?: string }).text)).toEqual(["one", "two"]);
+    expect(seen.map((e) => (e as { main: { text: string } }).main.text)).toEqual(["one", "two"]);
     const result = await handle.done;
-    expect(result.events).toHaveLength(2);
+    expect(result.groups).toHaveLength(2);
     expect(handle.id).toBe("g1");
   });
 
   it("yields events that arrive asynchronously after handle creation", async () => {
-    const handle = createGenerationHandle("g3", async (_signal, onEvent) => {
+    const handle = createGenerationHandle("g3", async (_signal, onGroup) => {
       await new Promise((resolve) => setTimeout(resolve, 5));
-      onEvent(narration("late"));
+      onGroup(narrationGroup("late"));
       return { events: [], state_patch: {} };
     });
 
-    const seen: ModelEvent[] = [];
+    const seen: EventGroupDraft[] = [];
     for await (const event of handle.events) seen.push(event);
 
-    expect(seen.map((e) => (e as { text?: string }).text)).toEqual(["late"]);
+    expect(seen.map((e) => (e as { main: { text: string } }).main.text)).toEqual(["late"]);
   });
 
   it("closes the stream when the runner completes without events", async () => {
@@ -49,7 +49,7 @@ describe("createGenerationHandle", () => {
       state_patch: {},
     }));
 
-    const seen: ModelEvent[] = [];
+    const seen: EventGroupDraft[] = [];
     for await (const event of handle.events) seen.push(event);
     expect(seen).toEqual([]);
     await expect(handle.done).resolves.toBeDefined();

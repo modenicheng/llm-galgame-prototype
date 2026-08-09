@@ -4199,6 +4199,50 @@ mode + options IDs + InputSpec + interaction ID
 compiler 对未注册角色本就放行（speaker 回退原文显示），因此约束完全落在 prompt 层；引擎行为不变。
 
 
+
+---
+
+# 115. 移除 JSONL 旧协议，全量采用 Gal DSL（2026-08-09）
+
+作者要求：彻底移除 jsonl 格式输出，全量接受 dsl 剧本；删除所有可能混淆
+开发与维护的旧版提示词和代码。本次清理删除：
+
+## 删除的模块与文件
+- `src/core/protocol/model-jsonl.ts`（132 行 JSONL 解析）+ `src/jsonl.test.ts`（335 行）。
+- `generator`（openai-compatible-generator）的 jsonl 路径：`requestEnvelope`、
+  `parseGenerationEnvelope`、`stripRuntimeMeta`、五个任务方法的 jsonl 分支、
+  `GenerationStreamOptions.onEvent/validateEvent`。现在唯一入口是
+  `requestDslEnvelope`（DSL 流式解析）。
+- schema 层：`ModelEventSchema`/`StatePatchLineSchema`/`ChoiceEventSchema`/
+  `EndEventSchema`/`isStatePatchLine`/`ModelEvent`/`ModelPlayableEvent`；
+  `input_bridge` 内联字段（InteractionEvent 及 schema）与 `materializeInputBridge`；
+  `InteractionPolicy` 的 bridge 校验与 legacy choice 归一化。
+- 配置：`generation.protocol`（jsonl|dsl 枚举）、`interaction.legacy_choice`
+  （allow_model_output / allow_runtime_compatibility）。
+- 提示词：`instructions.yaml` 的 `output_protocol` 段；`InstructionSet.output_protocol`
+  字段；`buildUserPrompt`（jsonl 版）；`ContextInput.outputProtocol`。
+- game.ts：`onEvent`/`validateEvent` 回调、`materializeEvents`/
+  `filterPlayableEvents`/`materializePlayableEvents`、legacy choice 分支。
+
+## 行为变化
+- **ChoiceEvent 变为纯运行时内部类型**（syntheticChoice + BranchManager），
+  模型不再可能输出 choice/end 事件；`@end ... ending` 哨兵仍由
+  `handleSegmentEnd` 合成 EndEvent。
+- **interaction_id 与选项 id 由运行时生成**：`interaction_<turn>` /
+  `<id>_opt_<i>`；所有以模型输入 id 为契约的旧断言失效（测试已全部改为
+  运行时 id）。
+- DSL 交互表单在 `compileGroup → buildRuntimeInteraction` 中生成 id；
+  修复了 input 模式错误访问 `optionTexts` 的潜在崩溃（现在 input 分支
+  提前返回）。
+
+## 保留
+- `NodeJsonlSessionStore` / `sessions/*.jsonl`：会话**存储格式**，与模型
+  输出协议无关，继续使用。
+- `ChoiceEvent`/`ChoiceOption`/`EndEvent` 类型（运行时内部/存档类型）。
+
+测试：node 1084（-3 个 jsonl 测试文件，+DSL 等价覆盖），web 263，双
+typecheck 与 build 全绿。
+
 ---
 
 # 附录 A：实施状态（2025-08 迁移快照）

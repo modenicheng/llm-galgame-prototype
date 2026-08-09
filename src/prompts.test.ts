@@ -6,11 +6,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const MINIMAL_INSTRUCTIONS_YAML = [
-  "output_protocol: '你是互动视觉小说的剧情生成器。'",
   "opening: '请从故事开场开始生成完整开场剧情。'",
   "branch_prefetch: '当前分支问题：{choice_prompt}。假设玩家选择：{option_text}。至少 {min_dialogue} 条 dialogue。'",
   "input_response: '交互点：{interaction_prompt}。玩家输入：{player_input}。生成 NPC 回应。'",
-  "continuation: '预取片段：{prefetched_jsonl}。继续生成。'",
+  "continuation: '预取片段：{prefetched}。继续生成。'",
   "input_bridge: '交互点：{interaction_prompt}。生成 1–2 条 narration 过渡。'",
   "recovery: '上一次输出被拒绝：{repair_reason}。请修正后继续。'",
   "ending: '剧情收束，用 @end {nonce} ending 结束。'",
@@ -58,7 +57,6 @@ describe("loadPrompts", () => {
     expect(bundle.storyLine).toBe("这是一个关于冒险的故事。");
     expect(bundle.guideline).toBe("保持角色设定一致性。");
     expect(bundle.dslProtocol).toContain("行式 Gal DSL");
-    expect(instructions.output_protocol).toContain("互动视觉小说");
     expect(instructions.opening).toContain("开场");
     expect(instructions.input_bridge).toContain("narration");
     expect(instructions.recovery).toContain("repair_reason");
@@ -106,7 +104,6 @@ describe("loadPrompts", () => {
       guideline: expectedGuide,
       dslProtocol: "你是互动视觉小说的编剧。输出行式 Gal DSL。",
     });
-    expect(instructions.output_protocol).toBeTruthy();
   });
 
   it("handles files with surrounding whitespace (trimmed)", async () => {
@@ -145,20 +142,10 @@ describe("loadPrompts", () => {
     );
     const { bundle, instructions } = await loadPrompts(repoPrompts);
 
-    // output_protocol is now a short legacy-JSONL pointer, not the full
-    // interaction protocol spec (which moved to dsl-protocol.txt).
-    expect(instructions.output_protocol).toContain("严格 JSONL");
-    expect(instructions.output_protocol).not.toContain('互动：{"type":"interaction"');
-    expect(instructions.output_protocol).not.toContain("mode=hybrid");
-
-    // The full DSL spec lives in prompts/dsl-protocol.txt.
+    // The full DSL protocol spec lives in prompts/dsl-protocol.txt.
     expect(bundle.dslProtocol).toContain("行式 Gal DSL");
     expect(bundle.dslProtocol).toContain("hybrid");
     expect(bundle.dslProtocol).toContain("@end <nonce> <reason>");
-
-    // Opening and continuation forbid legacy choice.
-    expect(instructions.opening).toContain("不得输出旧式 choice");
-    expect(instructions.continuation).toContain("不得输出旧式 choice");
 
     // Input-response additions.
     expect(instructions.input_response).toContain(

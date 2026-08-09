@@ -59,7 +59,6 @@ const inputInteractionOpened: ServerMessage = {
       prompt: "Say something",
       mode: "input",
       input: { kind: "free_text", placeholder: "…", max_length: 200 },
-      input_bridge: { events: [{ type: "narration", text: "She waits." }] },
     },
   },
 };
@@ -80,7 +79,6 @@ const hybridInteractionOpened: ServerMessage = {
         { id: "o2", text: "Stay" },
       ],
       input: { kind: "free_text", placeholder: "…", max_length: 200 },
-      input_bridge: { events: [{ type: "narration", text: "She waits." }] },
     },
   },
 };
@@ -395,8 +393,7 @@ describe("GameViewModel", () => {
         prompt: "Say something",
         mode: "input",
         input: { kind: "free_text", placeholder: "…", max_length: 200 },
-        input_bridge: { events: [{ type: "narration", text: "She waits." }] },
-      },
+        },
     });
     expect(vm.state().mode).toBe("INPUT_EDITING");
 
@@ -413,8 +410,7 @@ describe("GameViewModel", () => {
           { id: "o2", text: "Stay" },
         ],
         input: { kind: "free_text", placeholder: "…", max_length: 200 },
-        input_bridge: { events: [{ type: "narration", text: "She waits." }] },
-      },
+        },
     });
     expect(vm.state().mode).toBe("HYBRID_SELECTING");
 
@@ -466,8 +462,7 @@ describe("GameViewModel", () => {
         prompt: "Say something",
         mode: "input",
         input: { kind: "free_text", placeholder: "…", max_length: 200 },
-        input_bridge: { events: [{ type: "narration", text: "She waits." }] },
-      },
+        },
       currentPreview: { previewId: "pv-1", text: "typed draft" },
     });
     const state = vm.state();

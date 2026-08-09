@@ -29,11 +29,10 @@ function makeTestPrompts() {
 
 function makeTestInstructions() {
   return {
-    output_protocol: "你是互动视觉小说的剧情生成器。输出严格 JSONL。",
     opening: "请从故事开场开始，生成完整开场剧情，直到第一个 choice、interaction 或 end。",
     branch_prefetch: "当前分支问题：{choice_prompt}\n假设玩家选择：{option_text}\n请只生成至少 {min_dialogue} 条 dialogue 的预取片段。",
     input_response: "当前交互点：{interaction_prompt}\n玩家输入：{player_input}\n请生成 NPC 回应。",
-    continuation: "以下预取片段已固定：\n{prefetched_jsonl}\n请继续生成完整剧情段。",
+    continuation: "以下预取片段已固定：\n{prefetched}\n请继续生成完整剧情段。",
     input_bridge: "当前交互点：{interaction_prompt}\n生成 1–2 条 narration 作为场景过渡。",
     recovery: "上一次输出被拒绝：{repair_reason}。请修正后继续。",
     ending: "剧情收束，用 @end {nonce} ending 结束。",
@@ -128,7 +127,7 @@ function outputSeq(outputs: RuntimeOutput[]): string[] {
 describe("repro2: real DSL generator — loaded branch selection", () => {
   it("branch lines reach PLAYING on the VM (not stuck at CONTENT_WAITING)", async () => {
     const config: AppConfig = makeTestConfig({
-      generation: { protocol: "dsl", repair_attempts: 0 },
+      generation: { repair_attempts: 0 },
       prefetch: { branch_dialogue_lines: 3 },
     });
     const generator = new StoryGenerator(config, makeTestPrompts(), makeTestInstructions(), DUMMY_API_KEY);
@@ -190,7 +189,7 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
 
   it("branch prefetch failing (2 dialogues < required 3) → selection retry also fails → behavior", async () => {
     const config: AppConfig = makeTestConfig({
-      generation: { protocol: "dsl", repair_attempts: 1 },
+      generation: { repair_attempts: 1 },
       prefetch: { branch_dialogue_lines: 3 },
     });
     const generator = new StoryGenerator(config, makeTestPrompts(), makeTestInstructions(), DUMMY_API_KEY);
@@ -259,7 +258,7 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
 describe("hybrid preview-cancel re-arm then select (real generator)", () => {
   it("selecting an option after a cancel/re-arm does not corrupt the playback buffer", async () => {
     const config: AppConfig = makeTestConfig({
-      generation: { protocol: "dsl", repair_attempts: 0 },
+      generation: { repair_attempts: 0 },
       prefetch: { branch_dialogue_lines: 3 },
     });
     const generator = new StoryGenerator(config, makeTestPrompts(), makeTestInstructions(), DUMMY_API_KEY);
@@ -339,7 +338,7 @@ describe("hybrid preview-cancel re-arm then select (real generator)", () => {
 describe("aborted streamed input response then branch select (buffer race)", () => {
   it("selecting an option after aborting a streamed input response keeps buffer order", async () => {
     const config: AppConfig = makeTestConfig({
-      generation: { protocol: "dsl", repair_attempts: 0 },
+      generation: { repair_attempts: 0 },
       prefetch: { branch_dialogue_lines: 3 },
     });
     const generator = new StoryGenerator(config, makeTestPrompts(), makeTestInstructions(), DUMMY_API_KEY);
@@ -424,7 +423,7 @@ describe("aborted streamed input response then branch select (buffer race)", () 
 describe("stray group after the interaction terminal is discarded (docs §50)", () => {
   it("a dialogue group emitted after the interaction corrupts the buffer", async () => {
     const config: AppConfig = makeTestConfig({
-      generation: { protocol: "dsl", repair_attempts: 0 },
+      generation: { repair_attempts: 0 },
       prefetch: { branch_dialogue_lines: 3 },
     });
     const generator = new StoryGenerator(config, makeTestPrompts(), makeTestInstructions(), DUMMY_API_KEY);

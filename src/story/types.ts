@@ -3,7 +3,6 @@
  *
  * These types define the new generation protocol where the model returns a
  * GenerationEnvelope containing both narrative events and a state patch,
- * rather than raw JSONL. InteractionEvents replace standalone choice/end
  * as the terminal event type, and BranchCandidate formalizes the prefetch
  * branch transaction model.
  */
@@ -78,20 +77,6 @@ export interface InputSpec {
  * unifies both branching and text-input interactions under one type.
  */
 
-/** A bridge event is always narration — never dialogue, never state. */
-export type InputBridgeEvent = NarrationDraftEvent;
-
-/**
- * 1–2 narration lines bundled with an input/hybrid interaction.
- *
- * The runtime plays them after the player confirms their input and before
- * the NPC response arrives: they set the scene without answering the
- * input, introducing facts, changing state, or creating a new interaction.
- */
-export interface InputBridge {
-  events: InputBridgeEvent[];
-}
-
 export interface ChoiceInteraction {
   type: "interaction";
   /** Unique identifier for this interaction point. */
@@ -112,13 +97,6 @@ export interface InputInteraction {
   mode: "input";
   /** Open-ended input specification. */
   input: InputSpec;
-  /**
-   * Scene-aware lead-in narration played after the player confirms.
-   * Optional since the DSL refactor: the runtime may prefetch the bridge
-   * as a separate task instead of receiving it inline from the model
-   * (docs/llm-outputs-refactor.md §32–§34).
-   */
-  input_bridge?: InputBridge;
 }
 
 export interface HybridInteraction {
@@ -132,11 +110,6 @@ export interface HybridInteraction {
   options: InteractionOption[];
   /** Open-ended input specification. */
   input: InputSpec;
-  /**
-   * Scene-aware lead-in narration; discarded when a preset option is chosen.
-   * Optional since the DSL refactor (see InputInteraction.input_bridge).
-   */
-  input_bridge?: InputBridge;
 }
 
 export type InteractionEvent =
@@ -153,7 +126,6 @@ export type InteractionEvent =
  * Excludes runtime-only fields like `line_id`.
  *
  * Includes `ChoiceEvent` for backward compatibility with the legacy
- * JSONL format. New code should prefer `InteractionEvent` with
  * `mode: "choice"` instead.
  */
 export type GeneratedEvent =
@@ -377,13 +349,6 @@ export const NarrationDraftEventSchema = z.object({
   performance: LinePerformanceSchema.catch(undefined as never).optional(),
 });
 
-/** Bridge events are plain narration lines, 1–2 per interaction. */
-export const InputBridgeEventSchema = NarrationDraftEventSchema;
-
-export const InputBridgeSchema = z.object({
-  events: z.array(InputBridgeEventSchema).min(1).max(2),
-});
-
 const InputSpecSchema = z.object({
   kind: z.enum([
     "free_text",
@@ -440,7 +405,6 @@ const InputInteractionSchema = z.strictObject({
   prompt: z.string().trim().min(1),
   mode: z.literal("input"),
   input: InputSpecSchema,
-  input_bridge: InputBridgeSchema.optional(),
 });
 
 const HybridInteractionSchema = z
@@ -451,7 +415,6 @@ const HybridInteractionSchema = z
     mode: z.literal("hybrid"),
     options: z.array(InteractionOptionSchema).min(2).max(5),
     input: InputSpecSchema,
-    input_bridge: InputBridgeSchema.optional(),
   })
   .superRefine(validateUniqueOptionIds);
 

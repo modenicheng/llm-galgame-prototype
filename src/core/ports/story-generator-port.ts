@@ -11,9 +11,9 @@ import type {
   ChoiceEvent,
   ChoiceOption,
   InteractionEvent,
-  ModelEvent,
   StoryContextEvent,
 } from "../../schema.js";
+import type { EventGroupDraft } from "../protocol/gal-dsl/types.js";
 import type { GenerationEnvelope, StoryState } from "../../story/types.js";
 import { AsyncEventQueue } from "../runtime/async-event-queue.js";
 
@@ -52,8 +52,8 @@ export interface InputResponseRequest {
 export interface GenerationHandle {
   /** Stable identifier of this generation task. */
   id: string;
-  /** Parsed model events as they arrive, one per completed JSONL line. */
-  events: AsyncIterable<ModelEvent>;
+  /** Committed DSL event groups as they arrive (docs §36). */
+  events: AsyncIterable<EventGroupDraft>;
   /** Resolves with the full envelope; rejects when the task fails/aborts. */
   done: Promise<GenerationEnvelope>;
   /** Ask the provider to stop producing further events. */
@@ -70,12 +70,12 @@ export interface StoryGeneratorPort {
 /** Shape of the underlying promise-based provider a handle wraps. */
 export type GenerationRunner = (
   signal: AbortSignal,
-  onEvent: (event: ModelEvent) => void,
+  onGroup: (group: EventGroupDraft) => void,
 ) => Promise<GenerationEnvelope>;
 
 /**
  * Compatibility wrapper: adapt an existing `Promise<GenerationEnvelope>` +
- * `onEvent` provider into a `GenerationHandle` without rewriting the
+ * `onGroup` provider into a `GenerationHandle` without rewriting the
  * provider's internals.
  */
 export function createGenerationHandle(
@@ -83,9 +83,9 @@ export function createGenerationHandle(
   run: GenerationRunner,
 ): GenerationHandle {
   const controller = new AbortController();
-  const queue = new AsyncEventQueue<ModelEvent>();
+  const queue = new AsyncEventQueue<EventGroupDraft>();
 
-  const done = run(controller.signal, (event) => queue.push(event)).finally(() =>
+  const done = run(controller.signal, (group) => queue.push(group)).finally(() =>
     queue.close(),
   );
 

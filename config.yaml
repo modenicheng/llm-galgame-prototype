@@ -15,8 +15,6 @@ api:
   token_limit_field: max_completion_tokens
 
 generation:
-  # 模型输出协议：dsl（新 Gal DSL）或 jsonl（旧协议，迁移期回滚用）
-  protocol: dsl
   temperature: 0.9
   # 1400 常在长段结尾截断（无 @end）导致整段判失败；2200 给模型足够预算
   max_tokens: 2200
@@ -61,10 +59,6 @@ interaction:
   input:
     max_length: 500
     max_consecutive_pure_input: 1
-
-  legacy_choice:
-    allow_runtime_compatibility: true
-    allow_model_output: false
 
 media:
   audio:

@@ -11,7 +11,6 @@ import { InteractionPolicy } from "./interaction-policy.js";
 
 import type { InteractionPolicyConfig } from "../config.js";
 import type { InteractionEvent, InteractionMode } from "./types.js";
-import type { ChoiceEvent } from "../schema.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -30,7 +29,6 @@ const BASE_CONFIG: InteractionPolicyConfig = {
   default_mode: "hybrid",
   options: { min_count: 2, max_count: 5 },
   input: { max_length: 500, max_consecutive_pure_input: 1 },
-  legacy_choice: { allow_runtime_compatibility: true, allow_model_output: false },
 };
 
 function makeConfig(overrides: DeepPartial<InteractionPolicyConfig> = {}): InteractionPolicyConfig {
@@ -39,7 +37,6 @@ function makeConfig(overrides: DeepPartial<InteractionPolicyConfig> = {}): Inter
     default_mode: overrides.default_mode ?? BASE_CONFIG.default_mode,
     options: { ...BASE_CONFIG.options, ...overrides.options },
     input: { ...BASE_CONFIG.input, ...overrides.input },
-    legacy_choice: { ...BASE_CONFIG.legacy_choice, ...overrides.legacy_choice },
   };
 }
 
@@ -69,7 +66,6 @@ function inputInteraction(maxLength = 100): InteractionEvent {
     prompt: "输入：",
     mode: "input",
     input: { kind: "free_text", placeholder: "…", max_length: maxLength },
-    input_bridge: { events: [{ type: "narration", text: "桥接旁白。" }] },
   };
 }
 
@@ -81,12 +77,7 @@ function hybridInteraction(): InteractionEvent {
     mode: "hybrid",
     options: OPTIONS_2,
     input: { kind: "free_text", placeholder: "…", max_length: 100 },
-    input_bridge: { events: [{ type: "narration", text: "桥接旁白。" }] },
   };
-}
-
-function legacyChoiceEvent(options: Array<{ id: string; text: string }>): ChoiceEvent {
-  return { type: "choice", prompt: "请选择：", options };
 }
 
 // ---------------------------------------------------------------------------
@@ -153,18 +144,6 @@ describe("InteractionPolicy", () => {
     expect(result.accepted).toBe(true);
   });
 
-  it("旧式 choice 归一化为 choice", () => {
-    const policy = new InteractionPolicy(makeConfig());
-
-    // 即使前面连续两次纯 input，旧式 choice 也按 choice 处理（重置纯 input 计数）。
-    const result = policy.validate(
-      legacyChoiceEvent(OPTIONS_2),
-      state(["input", "input"]),
-    );
-
-    expect(result.accepted).toBe(true);
-  });
-
   // -----------------------------------------------------------------------
   // 其余 §8.3 校验（§14.4 之外的行为保障）
   // -----------------------------------------------------------------------
@@ -202,19 +181,6 @@ describe("InteractionPolicy", () => {
     expect(policy.validate(malformed, state([])).accepted).toBe(false);
   });
 
-  it("choice 错误携带 input_bridge 字段 → 拒绝（防 Schema 改动绕过）", () => {
-    const policy = new InteractionPolicy(makeConfig());
-
-    const malformed = {
-      ...choiceInteraction(OPTIONS_2),
-      input_bridge: { events: [{ type: "narration", text: "她等着。" }] },
-    } as unknown as InteractionEvent;
-
-    const result = policy.validate(malformed, state([]));
-    expect(result.accepted).toBe(false);
-    expect(result.reason).toContain("bridge");
-  });
-
   it("input 错误携带 options 字段 → 拒绝（防 Schema 改动绕过）", () => {
     const policy = new InteractionPolicy(makeConfig());
 
@@ -226,46 +192,4 @@ describe("InteractionPolicy", () => {
     expect(policy.validate(malformed, state([])).accepted).toBe(false);
   });
 
-  it("input 不携带 input_bridge → 接受（bridge 由独立 prefetch task 提供）", () => {
-    const policy = new InteractionPolicy(makeConfig());
-
-    const withoutBridge = {
-      type: "interaction" as const,
-      interaction_id: "i-input",
-      prompt: "输入：",
-      mode: "input" as const,
-      input: { kind: "free_text" as const, placeholder: "…", max_length: 100 },
-    } as unknown as InteractionEvent;
-
-    expect(policy.validate(withoutBridge, state([])).accepted).toBe(true);
-  });
-
-  it("input 携带非法 input_bridge（非 narration） → 拒绝", () => {
-    const policy = new InteractionPolicy(makeConfig());
-
-    const badBridge = {
-      ...inputInteraction(),
-      input_bridge: { events: [{ type: "dialogue" as const, speaker: "X", text: "错" }] },
-    } as unknown as InteractionEvent;
-
-    const result = policy.validate(badBridge, state([]));
-    expect(result.accepted).toBe(false);
-    expect(result.reason).toContain("bridge");
-  });
-
-  it("旧式 choice 同样受选项数限制", () => {
-    const policy = new InteractionPolicy(makeConfig({ options: { min_count: 2, max_count: 3 } }));
-
-    const result = policy.validate(
-      legacyChoiceEvent([
-        { id: "a", text: "A" },
-        { id: "b", text: "B" },
-        { id: "c", text: "C" },
-        { id: "d", text: "D" },
-      ]),
-      state([]),
-    );
-
-    expect(result.accepted).toBe(false);
-  });
 });

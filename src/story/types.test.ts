@@ -79,9 +79,6 @@ describe("type exports", () => {
         placeholder: "Or describe what you do...",
         max_length: 150,
       },
-      input_bridge: {
-        events: [{ type: "narration", text: "The door looms before you." }],
-      },
     };
     expect(event.mode).toBe("hybrid");
     expect(event.input?.kind).toBe("action");
@@ -224,7 +221,7 @@ describe("InteractionEventSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("should parse a valid input-mode interaction with a bridge", () => {
+  it("rejects an input-mode interaction carrying a removed input_bridge field", () => {
     const result = InteractionEventSchema.safeParse({
       type: "interaction",
       interaction_id: "int-2",
@@ -239,10 +236,10 @@ describe("InteractionEventSchema", () => {
         events: [{ type: "narration", text: "The room falls quiet." }],
       },
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
-  it("should parse a valid hybrid-mode interaction with a bridge", () => {
+  it("rejects a hybrid-mode interaction carrying a removed input_bridge field", () => {
     const result = InteractionEventSchema.safeParse({
       type: "interaction",
       interaction_id: "int-6",
@@ -264,7 +261,7 @@ describe("InteractionEventSchema", () => {
         ],
       },
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it("should fail when type is not 'interaction'", () => {

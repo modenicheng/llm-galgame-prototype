@@ -14,9 +14,6 @@ function makeInteraction(overrides: Partial<InputInteraction> = {}): InputIntera
       placeholder: "Type your response...",
       max_length: 200,
     },
-    input_bridge: {
-      events: [{ type: "narration", text: "She waits for your answer." }],
-    },
     ...overrides,
   };
 }

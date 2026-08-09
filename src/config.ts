@@ -76,11 +76,6 @@ export interface InteractionPolicyConfig {
     max_length: number;
     max_consecutive_pure_input: number;
   };
-
-  legacy_choice: {
-    allow_runtime_compatibility: boolean;
-    allow_model_output: boolean;
-  };
 }
 
 interface RefinementContext {
@@ -96,8 +91,6 @@ export interface AppConfig {
     token_limit_field: "max_completion_tokens" | "max_tokens";
   };
   generation: {
-    /** Model output protocol: legacy JSONL or the new Gal DSL (docs §87). */
-    protocol: "jsonl" | "dsl";
     temperature: number;
     max_tokens: number;
     repair_attempts: number;
@@ -309,12 +302,6 @@ const InteractionPolicyConfigSchema = z
         max_consecutive_pure_input: z.number().int().min(0).default(1),
       })
       .default({ max_length: 500, max_consecutive_pure_input: 1 }),
-    legacy_choice: z
-      .object({
-        allow_runtime_compatibility: z.boolean().default(true),
-        allow_model_output: z.boolean().default(false),
-      })
-      .default({ allow_runtime_compatibility: true, allow_model_output: false }),
   })
   .superRefine((value, context: RefinementContext) => {
     if (!value.allowed_modes.includes(value.default_mode)) {
@@ -337,7 +324,6 @@ const InteractionPolicyConfigSchema = z
     default_mode: "hybrid",
     options: { min_count: 2, max_count: 5 },
     input: { max_length: 500, max_consecutive_pure_input: 1 },
-    legacy_choice: { allow_runtime_compatibility: true, allow_model_output: false },
   });
 
 const ConfigSchema = z.object({
@@ -351,7 +337,6 @@ const ConfigSchema = z.object({
       .default("max_completion_tokens")
   }),
   generation: z.object({
-    protocol: z.enum(["jsonl", "dsl"]).default("jsonl"),
     temperature: z.number().min(0).max(2).default(0.9),
     max_tokens: z.number().int().positive().default(2200),
     repair_attempts: z.number().int().min(0).max(5).default(2)

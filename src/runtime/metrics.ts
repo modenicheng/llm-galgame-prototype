@@ -246,7 +246,7 @@ export class Metrics {
     this.responsePromotedLiveCount += 1;
   }
 
-  /** Call when a schema validation failure occurs (JSONL parse error, etc.). */
+  /** Call when a schema validation failure occurs (DSL parse error, etc.). */
   recordSchemaValidationFailure(): void {
     this.schemaValidationFailures += 1;
   }

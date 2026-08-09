@@ -3,17 +3,10 @@ import type { AppConfig, AuthorConfig } from "../../config.js";
 import {
   buildDslUserPrompt,
   buildSystemContext,
-  buildUserPrompt,
   serializeStoryContext,
   type ContextInput,
   type DslContextInput,
 } from "../../story/context-builder.js";
-import {
-  parsePrefetchModelJsonl,
-  parseTerminalModelJsonl,
-  removeMarkdownFence,
-  type ParsedJsonl,
-} from "../../core/protocol/model-jsonl.js";
 import { toModelCatalog } from "../../core/assets/catalog.js";
 import type { AssetCatalog, ModelAssetCatalog } from "../../core/assets/types.js";
 import type { VisualState } from "../../core/presentation/types.js";
@@ -30,16 +23,11 @@ import {
 import type { InstructionSet, PromptBundle } from "../../prompts.js";
 import type { LLMRequestCounts } from "../../runtime/metrics.js";
 import { Metrics } from "../../runtime/metrics.js";
-import {
-  isStatePatchLine,
-  ModelEventSchema,
-  StatePatchLineSchema,
-  type ChoiceEvent,
-  type ChoiceOption,
-  type InteractionEvent,
-  type ModelEvent,
-  type ModelPlayableEvent,
-  type StoryContextEvent,
+import type {
+  ChoiceEvent,
+  ChoiceOption,
+  InteractionEvent,
+  StoryContextEvent,
 } from "../../schema.js";
 import type { GenerationEnvelope, StoryState, StoryStatePatch } from "../../story/types.js";
 import { mergePatches } from "../../story/patch.js";
@@ -86,26 +74,14 @@ export function generateNonce(): string {
 }
 
 export interface GenerationStreamOptions {
-  /** Called as soon as one complete, schema-valid JSONL event arrives. */
-  onEvent?: (event: ModelEvent) => void;
   /**
-   * DSL mode: called as soon as one complete EventGroup is committed and
-   * forwarded (docs §36). The runtime may publish it immediately; a later
-   * failure then preserves the already-forwarded prefix.
+   * Called as soon as one complete EventGroup is committed and forwarded
+   * (docs §36). The runtime may publish it immediately; a later failure
+   * then preserves the already-forwarded prefix.
    */
   onGroup?: (group: EventGroupDraft) => void;
-  /** DSL mode: called once when the segment ends cleanly (docs §44–§51). */
+  /** Called once when the segment ends cleanly (docs §44–§51). */
   onSegmentEnd?: (status: SegmentEndStatus) => void;
-  /**
-   * §8.5: policy hook run AFTER schema validation and BEFORE the event is
-   * accepted (pushed to `events`) or handed to onEvent. Throwing here fails
-   * the current generation attempt and enters the repair loop; the thrown
-   * message becomes the repair instruction on the next attempt.
-   */
-  validateEvent?: (
-    event: ModelEvent,
-    acceptedEvents: readonly ModelEvent[],
-  ) => void;
   /**
    * §8.5: concrete reason for a Game-level repair (e.g. an interaction that
    * violated InteractionPolicy AFTER playable events were already published).
@@ -119,12 +95,6 @@ export interface GenerationStreamOptions {
    * into the user prompt as TAIL_VISUAL_STATE (docs §70).
    */
   tailVisualState?: VisualState;
-}
-
-/** Strip runtime metadata fields that waste tokens when sent to the model. */
-function stripRuntimeMeta(event: StoryContextEvent): Record<string, unknown> {
-  const { seq, turn, timestamp, source, line_id, ...rest } = event as Record<string, unknown>;
-  return rest;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,10 +141,6 @@ export class StoryGenerator {
       prompts: this.prompts,
       state,
       recentEvents,
-      outputProtocol:
-        this.config.generation.protocol === "dsl"
-          ? this.prompts.dslProtocol
-          : this.instructions.output_protocol,
     };
     if (this.authorConfig) {
       ctx.authorConfig = this.authorConfig;
@@ -211,27 +177,14 @@ export class StoryGenerator {
     signal?: AbortSignal,
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
-    if (this.config.generation.protocol === "dsl") {
-      const nonce = generateNonce();
-      const ctx = this.buildDslCtx(state, [], "opening", nonce, options);
-      return this.requestDslEnvelope(
-        "opening",
-        "opening",
-        ["buffer", "interaction", "ending"],
-        nonce,
-        buildDslUserPrompt(turn, ctx, fill(this.instructions.opening, { nonce })),
-        signal,
-        options,
-      );
-    }
-    const ctx = this.makeCtx(state, []);
-    return this.requestEnvelope(
+    const nonce = generateNonce();
+    const ctx = this.buildDslCtx(state, [], "opening", nonce, options);
+    return this.requestDslEnvelope(
       "opening",
-      buildUserPrompt(turn, ctx, this.instructions.opening),
-      (text) =>
-        parseTerminalModelJsonl(text, {
-          allowLegacyChoice: this.config.interaction.legacy_choice.allow_model_output,
-        }),
+      "opening",
+      ["buffer", "interaction", "ending"],
+      nonce,
+      buildDslUserPrompt(turn, ctx, fill(this.instructions.opening, { nonce })),
       signal,
       options,
     );
@@ -247,54 +200,33 @@ export class StoryGenerator {
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
     const recentHistory = history.slice(-this.config.game.history_events);
-    if (this.config.generation.protocol === "dsl") {
-      const nonce = generateNonce();
-      const ctx = this.buildDslCtx(state, recentHistory, "branch_prefetch", nonce, options);
-      const extra = fill(this.instructions.branch_prefetch, {
-        choice_prompt: choice.prompt,
-        option_text: JSON.stringify(option),
-        min_dialogue: String(this.config.prefetch.branch_dialogue_lines),
-        nonce,
-      });
-      return this.requestDslEnvelope(
-        "branch_prefetch",
-        "branch_prefetch",
-        ["buffer"],
-        nonce,
-        buildDslUserPrompt(turn, ctx, extra),
-        signal,
-        options,
-      ).then((envelope) => {
-        const dialogueCount = (envelope.groups ?? []).filter(
-          (group) => group.main.type === "dialogue",
-        ).length;
-        if (dialogueCount < this.config.prefetch.branch_dialogue_lines) {
-          throw new Error(
-            `分支预取片段只包含 ${dialogueCount} 条台词，至少需要 ${this.config.prefetch.branch_dialogue_lines} 条。`,
-          );
-        }
-        return envelope;
-      });
-    }
-    const ctx = this.makeCtx(state, recentHistory);
+    const nonce = generateNonce();
+    const ctx = this.buildDslCtx(state, recentHistory, "branch_prefetch", nonce, options);
     const extra = fill(this.instructions.branch_prefetch, {
       choice_prompt: choice.prompt,
       option_text: JSON.stringify(option),
-      min_dialogue: this.config.prefetch.branch_dialogue_lines,
+      min_dialogue: String(this.config.prefetch.branch_dialogue_lines),
+      nonce,
     });
-    return this.requestEnvelope(
+    return this.requestDslEnvelope(
       "branch_prefetch",
-      buildUserPrompt(turn, ctx, extra),
-      (text) => ({
-        events: parsePrefetchModelJsonl(
-          text,
-          this.config.prefetch.branch_dialogue_lines,
-        ),
-        patches: [],
-      }),
+      "branch_prefetch",
+      ["buffer"],
+      nonce,
+      buildDslUserPrompt(turn, ctx, extra),
       signal,
       options,
-    );
+    ).then((envelope) => {
+      const dialogueCount = (envelope.groups ?? []).filter(
+        (group) => group.main.type === "dialogue",
+      ).length;
+      if (dialogueCount < this.config.prefetch.branch_dialogue_lines) {
+        throw new Error(
+          `分支预取片段只包含 ${dialogueCount} 条台词，至少需要 ${this.config.prefetch.branch_dialogue_lines} 条。`,
+        );
+      }
+      return envelope;
+    });
   }
 
   generateInputResponse(
@@ -307,51 +239,36 @@ export class StoryGenerator {
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
     const recentHistory = history.slice(-this.config.game.history_events);
-    if (this.config.generation.protocol === "dsl") {
-      const nonce = generateNonce();
-      const ctx = this.buildDslCtx(state, recentHistory, "input_response", nonce, options);
-      const extra = fill(this.instructions.input_response, {
-        interaction_prompt: interaction.prompt,
-        player_input: playerInput,
-        nonce,
-      });
-      return this.requestDslEnvelope(
-        "continuation",
-        "input_response",
-        ["buffer"],
-        nonce,
-        buildDslUserPrompt(turn, ctx, extra),
-        signal,
-        options,
-      ).then((envelope) => {
-        const dialogueCount = (envelope.groups ?? []).filter(
-          (group) => group.main.type === "dialogue",
-        ).length;
-        if (dialogueCount < 1) {
-          throw new Error(`输入回应片段只包含 ${dialogueCount} 条台词，至少需要 1 条。`);
-        }
-        return envelope;
-      });
-    }
-    const ctx = this.makeCtx(state, recentHistory);
+    const nonce = generateNonce();
+    const ctx = this.buildDslCtx(state, recentHistory, "input_response", nonce, options);
     const extra = fill(this.instructions.input_response, {
       interaction_prompt: interaction.prompt,
       player_input: playerInput,
+      nonce,
     });
-    return this.requestEnvelope(
+    return this.requestDslEnvelope(
       "continuation",
-      buildUserPrompt(turn, ctx, extra),
-      (text) => ({ events: parsePrefetchModelJsonl(text, 1), patches: [] }),
+      "input_response",
+      ["buffer"],
+      nonce,
+      buildDslUserPrompt(turn, ctx, extra),
       signal,
       options,
-    );
+    ).then((envelope) => {
+      const dialogueCount = (envelope.groups ?? []).filter(
+        (group) => group.main.type === "dialogue",
+      ).length;
+      if (dialogueCount < 1) {
+        throw new Error(`输入回应片段只包含 ${dialogueCount} 条台词，至少需要 1 条。`);
+      }
+      return envelope;
+    });
   }
 
   /**
-   * DSL mode: generate the scene-transition narration played after the
-   * player confirms a free-text input and before the NPC response arrives
-   * (docs §32–§34). JSONL mode is a no-op — the bridge arrives inline with
-   * the interaction there.
+   * Generate the scene-transition narration played after the player
+   * confirms a free-text input and before the NPC response arrives
+   * (docs §32–§34). Prefetched as a separate task from the interaction.
    */
   generateInputBridge(
     turn: number,
@@ -360,9 +277,6 @@ export class StoryGenerator {
     signal?: AbortSignal,
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
-    if (this.config.generation.protocol !== "dsl") {
-      return Promise.resolve({ events: [], state_patch: {} });
-    }
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, [], "input_bridge", nonce, options);
     const extra = fill(this.instructions.input_bridge, {
@@ -389,310 +303,26 @@ export class StoryGenerator {
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
     const recentHistory = history.slice(-this.config.game.history_events);
-    if (this.config.generation.protocol === "dsl") {
-      const nonce = generateNonce();
-      const ctx = this.buildDslCtx(state, recentHistory, "continuation", nonce, options);
-      const extra = fill(this.instructions.continuation, {
-        nonce,
-        target_lines: String(this.config.text_buffer.target_lines),
-        prefetched: serializeStoryContext(prefetchedEvents),
-      });
-      return this.requestDslEnvelope(
-        "continuation",
-        "continuation",
-        ["buffer", "interaction", "ending"],
-        nonce,
-        buildDslUserPrompt(turn, ctx, extra),
-        signal,
-        options,
-      );
-    }
-    const ctx = this.makeCtx(state, recentHistory);
+    const nonce = generateNonce();
+    const ctx = this.buildDslCtx(state, recentHistory, "continuation", nonce, options);
     const extra = fill(this.instructions.continuation, {
-      prefetched_jsonl: prefetchedEvents.map((e) => JSON.stringify(stripRuntimeMeta(e))).join("\n"),
+      nonce,
+      target_lines: String(this.config.text_buffer.target_lines),
+      prefetched: serializeStoryContext(prefetchedEvents),
     });
-    return this.requestEnvelope(
+    return this.requestDslEnvelope(
       "continuation",
-      buildUserPrompt(turn, ctx, extra),
-      (text) =>
-        parseTerminalModelJsonl(text, {
-          allowLegacyChoice: this.config.interaction.legacy_choice.allow_model_output,
-        }),
+      "continuation",
+      ["buffer", "interaction", "ending"],
+      nonce,
+      buildDslUserPrompt(turn, ctx, extra),
       signal,
       options,
     );
   }
 
-  // -----------------------------------------------------------------------
-  // Private: streaming request + line-by-line parsing
-  // -----------------------------------------------------------------------
-
-  private parseGenerationEnvelope(
-    text: string,
-    fallbackParse: (text: string) => ParsedJsonl,
-  ): ParsedJsonl {
-    return fallbackParse(removeMarkdownFence(text));
-  }
-
   /**
-   * Yield complete lines from a streaming chat completion.
-   * Buffers partial chunks until a newline arrives.
-   *
-   * Each yielded line records whether it was terminated by a newline. The
-   * final fragment flushed at end-of-stream has `eol === false` — when it
-   * fails to parse it is a token-limit truncation (cut mid-string), not a
-   * corrupt line, and can be dropped without failing the whole request.
-   */
-  private async *streamLines(
-    stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>,
-  ): AsyncGenerator<{ text: string; eol: boolean }> {
-    let buffer = "";
-    for await (const chunk of stream) {
-      const text = chunk.choices[0]?.delta?.content;
-      if (!text) continue;
-      buffer += text;
-      while (true) {
-        const idx = buffer.indexOf("\n");
-        if (idx === -1) break;
-        const line = buffer.slice(0, idx).trim();
-        buffer = buffer.slice(idx + 1);
-        if (line) yield { text: line, eol: true };
-      }
-    }
-    if (buffer.trim()) yield { text: buffer.trim(), eol: false };
-  }
-
-  private async requestEnvelope(
-    type: LLMRequestCounts extends Record<infer K, number> ? K : never,
-    userPrompt: string,
-    fallbackParse: (text: string) => ParsedJsonl,
-    signal?: AbortSignal,
-    options?: GenerationStreamOptions,
-  ): Promise<GenerationEnvelope> {
-    let lastError = "";
-    const attempts = this.config.generation.repair_attempts + 1;
-    const maxTokens = this.config.generation.max_tokens;
-
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-
-      // On retry: add repair instruction describing the previous failure.
-      // Provider-internal retries set `lastError`; the Game-level repair
-      // path passes a concrete reason via options.repairReason. They get
-      // different guidance: an in-stream schema violation means "fix this
-      // output and keep going", while a Game-level repair means the segment
-      // was truncated without a terminal — the model must ONLY close the
-      // segment (interaction form or @end), not write new dialogue.
-      const lastErrorInstruction = lastError
-        ? `\n上一份输出出错：${lastError}。请修正该问题后继续输出，不要重复已输出的内容。`
-        : "";
-      const repairReasonInstruction = options?.repairReason
-        ? `\n上一段输出未正常结束：${options.repairReason}。` +
-          `\n你现在只需要**收尾**，不要写新台词或推进剧情：` +
-          `若该让玩家交互，直接输出一个完整交互表单（? ... /?）；` +
-          `否则直接输出 @end 哨兵（buffer 或 ending）。不要重复已输出的内容。`
-        : "";
-      const repairInstruction = lastErrorInstruction + repairReasonInstruction;
-
-      const callStart = Date.now();
-      let firstLineMs = 0;
-      const rawLines: string[] = [];
-      const events: ModelEvent[] = [];
-      let streamAborted = false;
-      let usage = { input: 0, output: 0 };
-
-      const controller = new AbortController();
-      const signalCleanup = signal
-        ? (() => {
-            const onAbort = () => controller.abort();
-            signal.addEventListener("abort", onAbort, { once: true });
-            return () => signal.removeEventListener("abort", onAbort);
-          })()
-        : () => {};
-
-      // Parsed JSONL events and in-band state patches.
-      const patches: StoryStatePatch[] = [];
-      // Original error behind a mid-stream abort. Chained as the `cause` of
-      // the wrap thrown to the runtime so error-class detection (e.g.
-      // instanceof InteractionPolicyViolationError) survives the wrapping.
-      let streamError: unknown = undefined;
-
-      try {
-        const stream = await this.client.chat.completions.create(
-          {
-            model: this.config.api.model,
-            temperature: this.config.generation.temperature,
-            ...(this.config.api.token_limit_field === "max_tokens"
-              ? { max_tokens: maxTokens }
-              : { max_completion_tokens: maxTokens }),
-            // DeepSeek reasoning models (deepseek-v4-*) think by default on
-            // complex prompts. The official docs require the toggle as a
-            // TOP-LEVEL body field — the openai SDK (7.x) serializes
-            // `extra_body` as a literal key and the API ignores it. Other
-            // OpenAI-compatible providers drop unknown fields, so this is
-            // safe to send unconditionally.
-            ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
-            messages: [
-              { role: "system" as const, content: this.systemPrompt },
-              { role: "user" as const, content: `${userPrompt}${repairInstruction}` },
-            ],
-            stream: true,
-          },
-          { signal: controller.signal },
-        );
-
-        for await (const chunk of this.streamLines(stream)) {
-          if (firstLineMs === 0) firstLineMs = Date.now();
-          rawLines.push(chunk.text);
-
-          // Tolerate markdown fence markers around the JSONL payload.
-          const trimmed = chunk.text.trim();
-          if (trimmed.startsWith("```") || trimmed.endsWith("```")) continue;
-
-          // Parse each line immediately.
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(trimmed);
-          } catch (error) {
-            // The last line arrived without a trailing newline and is not
-            // valid JSON on its own — the model was cut off by the token
-            // limit mid-string, not a corrupt stream. Drop the partial line;
-            // every line before it was already validated. If the remaining
-            // batch then violates the terminal-event contract, the batch
-            // validation below still fails and the normal retry/repair paths
-            // take over.
-            if (!chunk.eol) {
-              rawLines.pop();
-              this.metrics?.recordSchemaValidationFailure();
-              console.warn(
-                `[LLM] ${type} 输出在末尾被截断，已丢弃残片（截断于第 ${rawLines.length + 1} 行）`,
-              );
-              break;
-            }
-            // Malformed line. Once events have been published (or patches
-            // applied), the stream is corrupt — abort and preserve the
-            // prefix so the runtime can keep what is already playable.
-            // Otherwise retry the whole request (fence/JSONL shape errors
-            // are fixed by the repair instruction on the next attempt).
-            streamAborted = true;
-            lastError = `第 ${rawLines.length} 行不是合法 JSON：${error instanceof Error ? error.message : String(error)}`;
-            controller.abort();
-            break;
-          }
-
-          // In-band state update — validated here, applied by the runtime
-          // after the request completes. Never enters the playback stream.
-          if (isStatePatchLine(parsed)) {
-            try {
-              patches.push(StatePatchLineSchema.parse(parsed).patch as StoryStatePatch);
-            } catch (error) {
-              streamAborted = true;
-              streamError = error;
-              lastError = `第 ${rawLines.length} 行 state_patch 校验失败：${error instanceof Error ? error.message : String(error)}`;
-              controller.abort();
-              break;
-            }
-            continue;
-          }
-
-          try {
-            const event = ModelEventSchema.parse(parsed) as ModelEvent;
-            // §8.5: order is parse JSON → Schema → validateEvent → onEvent.
-            // validateEvent runs BEFORE the event is accepted so a policy
-            // rejection with nothing published yet retries (repair loop).
-            options?.validateEvent?.(event, events);
-            events.push(event);
-            options?.onEvent?.(event);
-            if (events.length === 1) {
-              console.log(`[LLM] ${type} 首句 ${Date.now() - callStart}ms → ${event.type}`);
-            }
-          } catch (error) {
-            streamAborted = true;
-            streamError = error;
-            lastError = `第 ${rawLines.length} 行事件校验失败：${error instanceof Error ? error.message : String(error)}`;
-            controller.abort();
-            break;
-          }
-        }
-
-        signalCleanup();
-
-        const latencyMs = Date.now() - callStart;
-
-        // Collect usage from the final chunk (only available with include_usage)
-        // We can't easily get this from the stream; estimate from raw text
-        const outputChars = rawLines.join("\n").length;
-        usage = { input: 0, output: Math.ceil(outputChars / 4) };
-        console.log(`[LLM] ${type} ${latencyMs}ms lines=${rawLines.length} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${lastError || "ok"}`);
-
-        // If we aborted mid-stream due to a bad line, retry
-        if (streamAborted) {
-          this.metrics?.recordLLMRequest(type, usage, latencyMs);
-          this.metrics?.recordSchemaValidationFailure();
-          // Once events have been published to the runtime, retrying from the
-          // beginning would duplicate already assigned line IDs and corrupt
-          // the active playback path. Keep the partial stream and fail it so
-          // the runtime can preserve what is already playable.
-          if (options?.onEvent && (events.length > 0 || patches.length > 0)) {
-            throw new Error(`JSONL 流在第 ${rawLines.length} 行校验失败：${lastError}`, {
-              cause: streamError,
-            });
-          }
-          continue;
-        }
-
-        // No lines at all
-        if (rawLines.length === 0) {
-          this.metrics?.recordLLMRequest(type, usage, latencyMs);
-          lastError = "模型返回空内容。";
-          continue;
-        }
-
-        // Try to parse the result
-        try {
-          const fullText = rawLines.join("\n");
-          if (events.length > 0) {
-            // Events were parsed incrementally — validate the batch now
-            // (terminal placement rules, etc.) and collect any patches.
-            const result = fallbackParse(fullText);
-            this.metrics?.recordLLMRequest(type, usage, latencyMs);
-            return {
-              events: result.events,
-              state_patch: mergePatchesList([...result.patches, ...patches]),
-            };
-          }
-
-          // No events were published — whole-text parse with fence stripping
-          // (covers fence-wrapped or batched outputs that were not
-          // line-parsable, e.g. a single chunk containing many lines).
-          const result = this.parseGenerationEnvelope(fullText, fallbackParse);
-          this.metrics?.recordLLMRequest(type, usage, latencyMs);
-          return {
-            events: result.events,
-            state_patch: mergePatchesList([...result.patches, ...patches]),
-          };
-        } catch (error) {
-          this.metrics?.recordLLMRequest(type, usage, latencyMs);
-          this.metrics?.recordSchemaValidationFailure();
-          if (options?.onEvent && (events.length > 0 || patches.length > 0)) {
-            throw error;
-          }
-          lastError = error instanceof Error ? error.message : String(error);
-        }
-      } catch (error) {
-        signalCleanup();
-        if (signal?.aborted || isAbortError(error)) throw error;
-        const latencyMs = Date.now() - callStart;
-        this.metrics?.recordLLMRequest(type, usage, latencyMs);
-        throw error;
-      }
-    }
-
-    throw new Error(`模型输出连续校验失败：${lastError}`);
-  }
-
-  /**
-   * DSL-mode streaming request (docs §40–§51). Mirrors requestEnvelope's
+   * DSL-mode streaming request (docs §40–§51).
    * retry/abort/metrics skeleton, but each line is parsed by the Gal DSL
    * pipeline: fence markers are skipped, parseDslLine + DslSegmentParser
    * validate incrementally, and committed EventGroupDrafts are forwarded via
@@ -947,26 +577,26 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
   constructor(private readonly inner: StoryGenerator) {}
 
   generateOpening(request: OpeningRequest): GenerationHandle {
-    return createGenerationHandle(`opening:${request.turn}`, (signal, onEvent) =>
-      this.inner.generateOpening(request.turn, request.state, signal, { onEvent }),
+    return createGenerationHandle(`opening:${request.turn}`, (signal, onGroup) =>
+      this.inner.generateOpening(request.turn, request.state, signal, { onGroup }),
     );
   }
 
   generateContinuation(request: ContinuationRequest): GenerationHandle {
-    return createGenerationHandle(`continuation:${request.turn}`, (signal, onEvent) =>
+    return createGenerationHandle(`continuation:${request.turn}`, (signal, onGroup) =>
       this.inner.generateContinuation(
         request.turn,
         request.state,
         request.history,
         request.prefetchedEvents,
         signal,
-        { onEvent },
+        { onGroup },
       ),
     );
   }
 
   generateBranchPrefetch(request: BranchPrefetchRequest): GenerationHandle {
-    return createGenerationHandle(`branch:${request.option.id}`, (signal, onEvent) =>
+    return createGenerationHandle(`branch:${request.option.id}`, (signal, onGroup) =>
       this.inner.generateBranchPrefetch(
         request.turn,
         request.state,
@@ -974,13 +604,13 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         request.choice,
         request.option,
         signal,
-        { onEvent },
+        { onGroup },
       ),
     );
   }
 
   generateInputResponse(request: InputResponseRequest): GenerationHandle {
-    return createGenerationHandle(`input:${request.interaction.interaction_id}`, (signal, onEvent) =>
+    return createGenerationHandle(`input:${request.interaction.interaction_id}`, (signal, onGroup) =>
       this.inner.generateInputResponse(
         request.turn,
         request.state,
@@ -988,7 +618,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         request.interaction,
         request.playerInput,
         signal,
-        { onEvent },
+        { onGroup },
       ),
     );
   }

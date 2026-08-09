@@ -8,7 +8,15 @@
  *
  * Pure text processing: no runtime, wire, or LLM dependencies.
  */
-import { removeMarkdownFence } from "../model-jsonl.js";
+
+/** Strip a markdown fence (```json/```jsonl/```) around a model payload. */
+export function removeMarkdownFence(text: string): string {
+  return text
+    .trim()
+    .replace(/^```(?:jsonl|json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
 import { parseDslLine } from "./line-parser.js";
 import { DslSegmentParser } from "./segment-validator.js";
 import type {

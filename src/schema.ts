@@ -1,4 +1,3 @@
-import { z } from "zod";
 import type { StageCue } from "./core/presentation/types.js";
 import {
   InteractionEventSchema,
@@ -14,8 +13,6 @@ import {
 // Re-export for convenience
 export type {
   InteractionEvent,
-  InputBridge,
-  InputBridgeEvent,
   ChoiceInteraction,
   InputInteraction,
   HybridInteraction,
@@ -25,8 +22,6 @@ export {
   PortraitSchema,
   DialogueDraftEventSchema,
   NarrationDraftEventSchema,
-  InputBridgeEventSchema,
-  InputBridgeSchema,
   LinePerformanceSchema,
 } from "./story/types.js";
 export { InteractionEventSchema } from "./story/types.js";
@@ -57,27 +52,32 @@ export interface ChoiceOption {
   text: string;
 }
 
+/**
+ * Runtime-only branching terminal. Never produced by the model (the DSL
+ * interaction form is the model-side contract); the runtime synthesizes it
+ * from a mode=choice interaction to drive BranchManager/branch prefetch.
+ */
 export interface ChoiceEvent {
   type: "choice";
   prompt: string;
   options: ChoiceOption[];
 }
 
+/**
+ * Terminal produced by the runtime when a DSL segment closes with
+ * `@end ... ending` (handleSegmentEnd). Never emitted by the model.
+ */
 export interface EndEvent {
   type: "end";
   ending_id: string;
   text: string;
 }
 
-export type ModelPlayableEvent = DialogueDraftEvent | NarrationDraftEvent;
-export type ModelEvent = ModelPlayableEvent | ChoiceEvent | InteractionEvent | EndEvent;
-
 export type RuntimeDialogueEvent = DialogueDraftEvent & {
   line_id: string;
   /**
    * Stable character identity for StoryState/TTS/asset binding (docs
-   * llm-outputs-refactor.md §10, §62). Absent on legacy events, which
-   * fall back to `speaker` for voice resolution.
+   * llm-outputs-refactor.md §10, §62).
    */
   characterId?: string;
   /** Stage cues applied together with this line (docs §63). */
@@ -109,7 +109,11 @@ export type RuntimePlayableEvent =
   | RuntimeNarrationEvent
   | PlayerDialogueEvent;
 
-export type RuntimeModelEvent = RuntimeDialogueEvent | RuntimeNarrationEvent | ChoiceEvent | InteractionEvent | EndEvent;
+export type RuntimeModelEvent =
+  | RuntimeDialogueEvent
+  | RuntimeNarrationEvent
+  | InteractionEvent
+  | EndEvent;
 
 /** Everything the playback buffer may hold (model stream + player lines). */
 export type RuntimeBufferEvent = RuntimeModelEvent | PlayerDialogueEvent;
@@ -157,56 +161,6 @@ export type StoryContextEvent =
       text: string;
     }
   | PlayerDialogueEvent;
-
-export const ChoiceOptionSchema = z.object({
-  id: z.string().min(1),
-  text: z.string().min(1)
-});
-
-export const ChoiceEventSchema = z.object({
-  type: z.literal("choice"),
-  prompt: z.string().min(1).default("请选择："),
-  options: z.array(ChoiceOptionSchema).min(2).max(5)
-});
-
-export const EndEventSchema = z.object({
-  type: z.literal("end"),
-  ending_id: z.string().min(1),
-  text: z.string().min(1)
-});
-
-/**
- * Optional in-band state-update line in the JSONL stream.
- *
- * The model may emit `{"type":"state_patch","patch":{...}}` at any point
- * between event lines. The runtime validates the patch and applies it after
- * the request completes (state_patch lines never enter the playback path).
- */
-export const StatePatchLineSchema = z.object({
-  type: z.literal("state_patch"),
-  patch: StoryStatePatchSchema,
-});
-
-export interface StatePatchLine {
-  type: "state_patch";
-  patch: StoryStatePatch;
-}
-
-export function isStatePatchLine(value: unknown): value is StatePatchLine {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    (value as Record<string, unknown>).type === "state_patch"
-  );
-}
-
-export const ModelEventSchema = z.discriminatedUnion("type", [
-  DialogueDraftEventSchema,
-  NarrationDraftEventSchema,
-  ChoiceEventSchema,
-  InteractionEventSchema,
-  EndEventSchema
-]);
 
 export function isPlayableEvent(
   event: RuntimeModelEvent,

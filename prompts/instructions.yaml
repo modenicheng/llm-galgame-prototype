@@ -1,17 +1,10 @@
 # 第四层指令模板 —— 统一管理所有 LLM 提示词
 # 使用 {placeholder} 语法，运行时由程序替换为实际值
 #
-# DSL 模式（generation.protocol: dsl）下，System Prompt 使用
-# prompts/dsl-protocol.txt；此处只保留各任务的短模板。
-# JSONL 旧协议（legacy）仍使用 output_protocol。
+# System Prompt 使用 prompts/dsl-protocol.txt（唯一输出协议）；
+# 此处只保留各任务的短模板。
 
-# 旧 JSONL 协议的系统提示（仅 generation.protocol: jsonl 时使用）
-output_protocol: |
-  你是互动视觉小说的编剧。回复必须是严格 JSONL：每行一个独立、完整的 JSON 对象。
-  每行只能是 narration / dialogue / interaction / end / state_patch 之一。
-  interaction 的 mode 三选一（choice/hybrid/input），结构详见旧版协议文档。
-
-# 任务模板（DSL 模式）
+# 任务模板
 # 占位符：
 #   {nonce}          本次请求的段结束哨兵 nonce，必须原样使用
 #   {target_lines}   本次续写目标文本行数
@@ -19,6 +12,7 @@ output_protocol: |
 #   {player_input}   玩家自由输入的原话
 #   {interaction_prompt} 当前交互点提示文本
 #   {repair_reason}  上一次输出被拒绝的原因
+#   {prefetched}     已固定的预取片段（continuation）
 
 opening: |
   任务：开场生成（task_type=opening）。

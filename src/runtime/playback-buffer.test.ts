@@ -10,17 +10,6 @@ function dialogue(speaker: string, text: string): RuntimePlayableEvent {
   return { type: "dialogue", speaker, text, line_id: `line_test_${text}` };
 }
 
-function choiceEvent(prompt: string): RuntimeModelEvent {
-  return {
-    type: "choice",
-    prompt,
-    options: [
-      { id: "a", text: "Option A" },
-      { id: "b", text: "Option B" },
-    ],
-  };
-}
-
 function endEvent(): RuntimeModelEvent {
   return { type: "end", ending_id: "end_1", text: "The end." };
 }
@@ -73,7 +62,7 @@ describe("PlaybackBuffer", () => {
     const buffer = new PlaybackBuffer();
     buffer.enqueue(narration("N1"));
     buffer.enqueue(dialogue("Alice", "D1"));
-    buffer.enqueue(choiceEvent("Choose"));
+    buffer.enqueue(endEvent());
     buffer.enqueue(narration("N2"));
 
     // All 3 playable events are ahead (choice is not playable)
@@ -95,7 +84,7 @@ describe("PlaybackBuffer", () => {
   it("should detect unconsumed interaction/choice", () => {
     const buffer = new PlaybackBuffer();
     buffer.enqueue(narration("N1"));
-    buffer.enqueue(choiceEvent("Choose"));
+    buffer.enqueue(endEvent());
 
     expect(buffer.hasUnconsumedInteraction()).toBe(true);
     buffer.advance(); // consume N1

@@ -187,7 +187,6 @@ describe("RuntimeWebSocket", () => {
           { id: "b", text: "选项B" },
         ],
         input: { kind: "free_text", placeholder: "...", max_length: 200 },
-        input_bridge: { events: [{ type: "narration", text: "她等着你的决定。" }] },
       },
     };
     projection.setSnapshot(opened);

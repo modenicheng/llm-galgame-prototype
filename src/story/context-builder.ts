@@ -27,11 +27,6 @@ export interface ContextInput {
   recentEvents: StoryContextEvent[];
   /** Optional author-enforced constraints. */
   authorConfig?: AuthorConfig;
-  /**
-   * Output format protocol for the system prompt.
-   * Comes from `instructions.yaml` → `InstructionSet.output_protocol`.
-   */
-  outputProtocol: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,7 +44,7 @@ export interface ContextInput {
 export function buildSystemContext(input: ContextInput): string {
   const sections: string[] = [];
 
-  sections.push(input.outputProtocol);
+  sections.push(input.prompts.dslProtocol);
 
   if (input.authorConfig) {
     sections.push(buildAuthorConfigSection(input.authorConfig));
@@ -63,43 +58,6 @@ export function buildSystemContext(input: ContextInput): string {
 
   sections.push("===== 写作限制 =====");
   sections.push(input.prompts.guideline);
-
-  return sections.join("\n\n");
-}
-
-// ---------------------------------------------------------------------------
-// User prompt
-// ---------------------------------------------------------------------------
-
-/**
- * Build the per-request user prompt.
- *
- * Includes the current turn number, a condensed story state snapshot,
- * the recent event history, and any extra instructions the caller
- * provides (e.g. generation mode hints, repair directives).
- */
-export function buildUserPrompt(
-  turn: number,
-  input: ContextInput,
-  extraInstructions?: string,
-): string {
-  const sections: string[] = [];
-
-  sections.push(`当前回合：${turn}`);
-
-  sections.push("===== 当前故事状态 =====");
-  sections.push(summarizeState(input.state));
-
-  sections.push("===== 剧情历史 =====");
-  if (input.recentEvents.length > 0) {
-    sections.push(serializeHistory(input.recentEvents));
-  } else {
-    sections.push("（当前没有历史事件。）");
-  }
-
-  if (extraInstructions) {
-    sections.push(extraInstructions);
-  }
 
   return sections.join("\n\n");
 }
@@ -132,10 +90,6 @@ function buildAuthorConfigSection(config: AuthorConfig): string {
   }
 
   return lines.join("\n");
-}
-
-function serializeHistory(events: StoryContextEvent[]): string {
-  return events.map((event) => JSON.stringify(event)).join("\n");
 }
 
 // ---------------------------------------------------------------------------

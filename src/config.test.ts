@@ -71,7 +71,6 @@ describe("loadConfig defaults", () => {
     expect(config.generation.temperature).toBe(1.0); // explicit in yaml
     expect(config.generation.max_tokens).toBe(2200); // default
     expect(config.generation.repair_attempts).toBe(2); // default
-    expect(config.generation.protocol).toBe("jsonl"); // default
 
     // Text buffer defaults (docs §74)
     expect(config.text_buffer.start_threshold_lines).toBe(2);
@@ -108,8 +107,6 @@ describe("loadConfig defaults", () => {
     expect(config.interaction.options.max_count).toBe(5);
     expect(config.interaction.input.max_length).toBe(500);
     expect(config.interaction.input.max_consecutive_pure_input).toBe(1);
-    expect(config.interaction.legacy_choice.allow_runtime_compatibility).toBe(true);
-    expect(config.interaction.legacy_choice.allow_model_output).toBe(false);
   });
 });
 
@@ -129,7 +126,6 @@ describe("loadConfig with all fields", () => {
       "  token_limit_field: max_tokens",
       "",
       "generation:",
-      "  protocol: dsl",
       "  temperature: 1.2",
       "  max_tokens: 2000",
       "  repair_attempts: 3",
@@ -187,9 +183,6 @@ describe("loadConfig with all fields", () => {
       "  input:",
       "    max_length: 800",
       "    max_consecutive_pure_input: 2",
-      "  legacy_choice:",
-      "    allow_runtime_compatibility: false",
-      "    allow_model_output: true",
     ].join("\n");
 
     const filePath = await writeTempYaml("full", yamlContent);
@@ -202,7 +195,6 @@ describe("loadConfig with all fields", () => {
     expect(config.api.token_limit_field).toBe("max_tokens");
 
     // Generation
-    expect(config.generation.protocol).toBe("dsl");
     expect(config.generation.temperature).toBe(1.2);
     expect(config.generation.max_tokens).toBe(2000);
     expect(config.generation.repair_attempts).toBe(3);
@@ -254,8 +246,6 @@ describe("loadConfig with all fields", () => {
     expect(config.interaction.options.max_count).toBe(4);
     expect(config.interaction.input.max_length).toBe(800);
     expect(config.interaction.input.max_consecutive_pure_input).toBe(2);
-    expect(config.interaction.legacy_choice.allow_runtime_compatibility).toBe(false);
-    expect(config.interaction.legacy_choice.allow_model_output).toBe(true);
   });
 });
 

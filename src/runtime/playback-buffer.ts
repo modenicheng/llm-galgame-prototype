@@ -56,11 +56,7 @@ export class PlaybackBuffer {
   hasUnconsumedInteraction(): boolean {
     for (let i = this.cursor; i < this.events.length; i += 1) {
       const event = this.events[i]!;
-      if (
-        event.type === "choice" ||
-        event.type === "interaction" ||
-        event.type === "end"
-      ) {
+      if (event.type === "interaction" || event.type === "end") {
         return true;
       }
     }

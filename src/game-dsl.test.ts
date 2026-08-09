@@ -66,7 +66,6 @@ const CATALOG: AssetCatalog = {
 
 function makeDslConfig(overrides: Parameters<typeof makeTestConfig>[0] = {}): AppConfig {
   return makeTestConfig({
-    generation: { protocol: "dsl" },
     ...overrides,
   });
 }

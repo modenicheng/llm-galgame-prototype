@@ -55,8 +55,6 @@ import type {
   HybridInteraction,
   InputInteraction,
   InteractionEvent,
-  ModelEvent,
-  ModelPlayableEvent,
   PlayerDialogueEvent,
   RuntimeModelEvent,
   RuntimePlayableEvent,
@@ -77,7 +75,6 @@ import { applyPatch } from "./story/patch.js";
 import { createInitialState } from "./story/state.js";
 import type {
   GeneratedEvent,
-  InputBridge,
   StoryState,
   StoryStatePatch,
 } from "./story/types.js";
@@ -177,7 +174,7 @@ export class InteractionPolicyViolationError extends Error {
 /** §8.4: keep only the most recent formally-opened interaction modes. */
 const MAX_INTERACTION_MODE_HISTORY = 8;
 
-/** Registry fallback when no asset catalog is wired (jsonl-only hosts). */
+/** Registry fallback when no asset catalog is wired. */
 const emptyRegistry: CharacterRegistry = {
   resolveByScriptName(): undefined {
     return undefined;
@@ -490,16 +487,7 @@ export class Game {
    * attempt and routes it into the repair loop; nothing (buffer, bridge,
    * BranchManager, interaction_opened) is published for the illegal event.
    */
-  private assertInteractionPolicy(event: ModelEvent): void {
-    if (event.type !== "interaction" && event.type !== "choice") return;
-    if (
-      event.type === "choice" &&
-      !this.config.interaction.legacy_choice.allow_runtime_compatibility
-    ) {
-      throw new InteractionPolicyViolationError(
-        "旧式 choice 仅兼容模式下允许；请输出 type=interaction、mode=choice。",
-      );
-    }
+  private assertInteractionPolicy(event: InteractionEvent): void {
     const result = this.interactionPolicy.validate(event, {
       previousModes: this.recentInteractionModes,
     });
@@ -542,45 +530,11 @@ export class Game {
     };
 
     const controller = this.generationScheduler.startActivePath(taskId);
-    const onEvent = (draft: ModelEvent): void => {
-      // §8.5/§13.1: policy check FIRST — the illegal terminal never enters
-      // the buffer, never materializes a bridge, never spawns a
-      // BranchManager, and never becomes this segment's terminal.
-      this.assertInteractionPolicy(draft);
-      const event = this.materializeEvents([draft])[0]!;
-      // The segment already produced its terminal (choice/interaction/end);
-      // a late event is the provider's in-flight tail and must never enter
-      // the playback buffer — the run loop has already moved past the
-      // terminal, so enqueueing it would desynchronize advanceBufferedEvent.
-      if (segment.terminal !== null) return;
-      segment.events.push(event);
-      if (isPlayableEvent(event)) {
-        this.registerBuffered([event]);
-        this.media.registerActive([event]);
-      }
-      this.playbackBuffer.enqueue(event);
-      queue.push(event);
 
-      if (event.type === "choice" || event.type === "interaction" || event.type === "end") {
-        segment.terminal = event;
-        if (event.type !== "end") {
-          if (event.type === "interaction" && "input_bridge" in event) {
-            this.materializeInputBridge(event);
-          }
-          const context = [...history, ...segment.events];
-          segment.branchManager = this.createBranchManagerForTerminal(event, turn, context);
-        }
-        // The terminal event is the contract boundary of this generation
-        // segment. Do not wait for a provider to close the stream after it has
-        // already produced the next interaction point.
-        controller.abort();
-      }
-    };
-
-    // DSL mode: the generator emits complete EventGroupDrafts instead of
-    // ModelEvents. Each group is compiled (character resolution + stage
-    // cues) against the current tail visual state and flattened into
-    // runtime events carrying `stage` (docs §36, §63).
+    // The generator emits complete EventGroupDrafts (docs §36, §63). Each
+    // group is compiled (character resolution + stage cues) against the
+    // current tail visual state and flattened into runtime events carrying
+    // `stage`.
     const onGroup = (group: EventGroupDraft): void => {
       this.handleDslGroup(segment, history, turn, group);
     };
@@ -588,22 +542,9 @@ export class Game {
       this.handleSegmentEnd(segment, status, turn);
     };
 
-    // §8.5: validateEvent runs inside the provider between Schema
-    // validation and onEvent, so a policy rejection with no events
-    // published yet enters the provider's own repair loop (which embeds
-    // the concrete reason in the repair instruction). onEvent above stays
-    // defensive for envelope-format providers that never call validateEvent.
-    const validateEvent = (event: ModelEvent): void => {
-      this.assertInteractionPolicy(event);
-    };
-
     const jobId = kind === "opening" ? "opening" : `continuation:${turn}`;
     const label = kind === "opening" ? "初始剧情" : `第 ${turn} 回合后续`;
-    // DSL mode: streamed groups replace the per-line onEvent contract. The
-    // generator picks the right callbacks based on config.generation.protocol.
     const dslOptions = {
-      onEvent,
-      validateEvent,
       onGroup,
       onSegmentEnd,
       tailVisualState: this.tailVisualState,
@@ -623,17 +564,14 @@ export class Game {
 
       return request.then((envelope) => {
         // Test doubles and envelope-format providers do not invoke
-        // onEvent/onGroup. Preserve the same runtime behavior by feeding
-        // their events here (jsonl mode → envelope.events; dsl mode →
-        // envelope.groups + envelope.segmentEnd).
+        // onGroup/onSegmentEnd. Preserve the same runtime behavior by
+        // feeding their groups + segmentEnd here.
         if (segment.events.length === 0) {
           if (envelope.groups !== undefined && envelope.groups.length > 0) {
             for (const group of envelope.groups) onGroup(group);
             if (envelope.segmentEnd !== undefined && segment.endStatus === null) {
               onSegmentEnd(envelope.segmentEnd);
             }
-          } else {
-            for (const draft of envelope.events) onEvent(draft);
           }
         }
         try {
@@ -730,12 +668,7 @@ export class Game {
         segment.branchManager?.discardAll();
         this.playbackBuffer.clear();
         const terminal = segment.terminal;
-        if (terminal?.type === "choice") {
-          for (const option of terminal.options) {
-            this.status.removeJob(`branch:${option.id}`);
-          }
-          this.status.clearBranches();
-        } else if (terminal?.type === "interaction" && terminal.mode !== "input") {
+        if (terminal?.type === "interaction" && terminal.mode !== "input") {
           for (const option of terminal.options) {
             this.status.removeJob(`branch:${option.id}`);
           }
@@ -798,16 +731,8 @@ export class Game {
       await this.recordModelEvent(event, turn);
       const context = [...priorContext, ...segment.events];
       // §8.4: the interaction is now formally opened (policy already passed
-      // in onEvent). Record its mode for consecutive-input tracking; a
-      // legacy choice counts as "choice".
-      this.recordInteractionMode(
-        event.type === "choice" ? "choice" : event.mode,
-      );
-
-      if (event.type === "choice") {
-        const preview = await this.handleChoice(event, turn, segment.branchManager, context);
-        return { type: "choice", nextTurn: turn + 1, ...preview };
-      }
+      // in handleDslGroup). Record its mode for consecutive-input tracking.
+      this.recordInteractionMode(event.mode);
 
       if (event.mode === "choice") {
         const syntheticChoice: ChoiceEvent = {
@@ -913,63 +838,6 @@ export class Game {
   /**
    * Assign stable line_ids to an interaction's bridge narration and buffer
    * it. Bridge events never enter the formal event log.
-   */
-  private materializeInputBridge(
-    interaction: InputInteraction | HybridInteraction,
-  ): void {
-    const cfg = this.config.prefetch.input_bridge;
-    const events = interaction.input_bridge?.events ?? [];
-    if (!cfg.enabled) return;
-    // Runtime-level re-validation of the bridge contract (the schema already
-    // enforces the same shape; this catches config drift).
-    if (
-      events.length < cfg.min_events ||
-      events.length > cfg.max_events ||
-      (cfg.only_narration && events.some((event) => event.type !== "narration"))
-    ) {
-      this.metrics.recordSchemaValidationFailure();
-      return;
-    }
-    const materialized = events.map(
-      (draft) => ({ ...draft, line_id: this.nextLineId() }),
-    );
-    for (const event of materialized) this.bridgeLineIds.add(event.line_id);
-    this.bridgeBuffer.store(interaction.interaction_id, materialized);
-  }
-
-  private createBranchManagerForTerminal(
-    terminal: ChoiceEvent | InteractionEvent,
-    turn: number,
-    context: StoryContextEvent[],
-  ): BranchManager | null {
-    // §13.2: a legacy choice only creates a BranchManager while runtime
-    // compatibility is enabled (assertInteractionPolicy rejects it otherwise).
-    if (terminal.type === "choice") {
-      if (!this.config.interaction.legacy_choice.allow_runtime_compatibility) {
-        return null;
-      }
-      return this.createBranchManager(terminal, turn, context);
-    }
-    if (terminal.mode === "choice" || terminal.mode === "hybrid") {
-      const choice: ChoiceEvent = {
-        type: "choice",
-        prompt: terminal.prompt,
-        options: terminal.options.map((option) => ({ id: option.id, text: option.text })),
-      };
-      return this.createBranchManager(choice, turn, context, terminal.interaction_id, "choice");
-    }
-    return null;
-  }
-
-  // ------------------------------------------------------------------
-  // DSL group handling (docs §36–§39, §49–§51, §62–§63)
-  // ------------------------------------------------------------------
-
-  /**
-   * Compile one draft group against a base visual state and materialize
-   * its playable main event. Returns everything the caller needs to route
-   * the group (playable event with line_id + stage, or a compiled
-   * interaction, or a beat). The tail state is the state AFTER the group.
    */
   private compileGroup(
     draft: EventGroupDraft,
@@ -1083,6 +951,22 @@ export class Game {
     });
   }
 
+  private createBranchManagerForTerminal(
+    terminal: InteractionEvent,
+    turn: number,
+    context: StoryContextEvent[],
+  ): BranchManager | null {
+    if (terminal.mode === "choice" || terminal.mode === "hybrid") {
+      const choice: ChoiceEvent = {
+        type: "choice",
+        prompt: terminal.prompt,
+        options: terminal.options.map((option) => ({ id: option.id, text: option.text })),
+      };
+      return this.createBranchManager(choice, turn, context, terminal.interaction_id, "choice");
+    }
+    return null;
+  }
+
   /**
    * Segment end sentinel handling (docs §44–§51, §76):
    * - `ending` → synthesize an internal EndEvent (docs §48);
@@ -1127,6 +1011,14 @@ export class Game {
       interaction_id: interactionId,
       prompt: draft.prompt,
     };
+    if (draft.mode === "input") {
+      const input: InputSpec = {
+        kind: "free_text",
+        placeholder: draft.inputPlaceholder?.trim() || "输入你的回答……",
+        max_length: this.config.interaction.input.max_length,
+      };
+      return { ...base, mode: "input", input };
+    }
     const options = draft.optionTexts.map((text, index) => ({
       id: `${interactionId}_opt_${index}`,
       text,
@@ -1139,9 +1031,6 @@ export class Game {
       placeholder: draft.inputPlaceholder?.trim() || "输入你的回答……",
       max_length: this.config.interaction.input.max_length,
     };
-    if (draft.mode === "input") {
-      return { ...base, mode: "input", input };
-    }
     return { ...base, mode: "hybrid", options, input };
   }
 
@@ -1272,12 +1161,9 @@ export class Game {
       const retryPromise = this.generator
         .generateBranchPrefetch(turn + 1, this.storyState, prefetchContext, choice, selected)
         .then((envelope) => {
-          if (envelope.groups !== undefined && envelope.groups.length > 0) {
-            const result = this.materializeDslGroups(envelope.groups, this.tailVisualState, turn);
-            this.branchTailStates.set(selected.id, result.tailState);
-            return result.events;
-          }
-          return this.materializePlayableEvents(this.filterPlayableEvents(envelope.events));
+          const result = this.materializeDslGroups(envelope.groups ?? [], this.tailVisualState, turn);
+          this.branchTailStates.set(selected.id, result.tailState);
+          return result.events;
         });
       preview = await retryPromise;
       this.media.registerCandidate(selected.id, preview);
@@ -1590,33 +1476,6 @@ export class Game {
     if (command.type !== "advance") throw new RuntimeShutdownError();
   }
 
-  private materializeEvents(drafts: ModelEvent[]): RuntimeModelEvent[] {
-    return drafts.map((event) => {
-      if (event.type === "dialogue" || event.type === "narration") {
-        return { ...event, line_id: this.nextLineId() };
-      }
-      return event;
-    });
-  }
-
-  private filterPlayableEvents(events: GeneratedEvent[]): ModelPlayableEvent[] {
-    const playable: ModelPlayableEvent[] = [];
-    for (const event of events) {
-      if (event.type === "dialogue" || event.type === "narration") {
-        playable.push(event);
-      } else {
-        this.diagnostics.warn("Game", `过滤非可播放事件: ${event.type}（应由 parser 预先拦截）`);
-      }
-    }
-    return playable;
-  }
-
-  private materializePlayableEvents(
-    drafts: ModelPlayableEvent[]
-  ): RuntimePlayableEvent[] {
-    return drafts.map((event) => ({ ...event, line_id: this.nextLineId() }));
-  }
-
   private nextLineId(): string {
     return this.ids.nextLineId(this.sessionId);
   }
@@ -1688,23 +1547,12 @@ export class Game {
                 onEvent(playable);
               }
             },
-            onEvent: (draft) => {
-              if (draft.type !== "dialogue" && draft.type !== "narration") return;
-              const event = this.materializeEvents([draft])[0]!;
-              if (!isPlayableEvent(event)) return;
-              materialized.push(event);
-              onEvent(event);
-            },
           },
         );
-        if (materialized.length === 0) {
-          if (envelope.groups !== undefined && envelope.groups.length > 0) {
-            const result = this.materializeDslGroups(envelope.groups, branchState, turn);
-            materialized.push(...result.events);
-            branchState = result.tailState;
-          } else {
-            materialized.push(...this.materializePlayableEvents(this.filterPlayableEvents(envelope.events)));
-          }
+        if (materialized.length === 0 && envelope.groups !== undefined && envelope.groups.length > 0) {
+          const result = this.materializeDslGroups(envelope.groups, branchState, turn);
+          materialized.push(...result.events);
+          branchState = result.tailState;
         }
         this.branchTailStates.set(option.id, branchState);
         return materialized;
@@ -2006,18 +1854,6 @@ export class Game {
               this.stageResponseEvent(responseSession, playable);
             }
           },
-          onEvent: (draft) => {
-            if (controller.signal.aborted) {
-              // Late event from a cancelled session — must never enter any
-              // formal buffer.
-              this.metrics.recordStaleInputEventDropped();
-              return;
-            }
-            if (draft.type !== "dialogue" && draft.type !== "narration") return;
-            const event = this.materializeEvents([draft])[0]!;
-            if (!isPlayableEvent(event)) return;
-            this.stageResponseEvent(responseSession, event);
-          },
         },
       )
       // Single reaction (not .then().catch()): the fulfillment/rejection
@@ -2029,21 +1865,14 @@ export class Game {
           if (controller.signal.aborted) return;
           // Defer state patch until the player confirms (second Enter).
           responseSession.setPendingPatch(envelope.state_patch);
-          // Envelope-format providers do not invoke onEvent; feed their events
-          // through the same staging path.
+          // Envelope-format providers do not invoke onGroup; feed their
+          // groups through the same staging path.
           if (responseSession.responseEvents.length === 0) {
             if (envelope.groups !== undefined && envelope.groups.length > 0) {
               const result = this.materializeDslGroups(envelope.groups, responseState, turn);
               responseState = result.tailState;
               for (const event of result.events) {
                 this.stageResponseEvent(responseSession, event);
-              }
-            } else {
-              for (const draft of this.filterPlayableEvents(envelope.events)) {
-                this.stageResponseEvent(
-                  responseSession,
-                  this.materializePlayableEvents([draft])[0]!,
-                );
               }
             }
           }
@@ -2257,7 +2086,10 @@ export class Game {
             syntheticChoice,
             { id: selected.id, text: selected.text }
           )
-          .then((envelope) => this.materializePlayableEvents(this.filterPlayableEvents(envelope.events)));
+          .then((envelope) => {
+            const result = this.materializeDslGroups(envelope.groups ?? [], this.tailVisualState, turn);
+            return result.events;
+          });
         preview = await genPromise;
         this.registerBuffered(preview);
         this.status.removeJob("on-demand-branch");

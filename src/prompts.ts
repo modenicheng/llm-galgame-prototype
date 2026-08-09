@@ -13,8 +13,7 @@ export interface PromptBundle {
   guideline: string;
   /**
    * Gal DSL output protocol system prompt (prompts/dsl-protocol.txt).
-   * Used when `generation.protocol === "dsl"`; the JSONL legacy protocol
-   * keeps using `InstructionSet.output_protocol`.
+   * The single supported model output protocol.
    */
   dslProtocol: string;
 }
@@ -32,15 +31,13 @@ async function readRequiredFile(filePath: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 export interface InstructionSet {
-  /** System prompt: output format protocol + hard rules for the model. */
-  output_protocol: string;
   /** Extra instruction for opening generation. */
   opening: string;
   /** Template for branch prefetch. Placeholders: {choice_prompt}, {option_text}, {min_dialogue} */
   branch_prefetch: string;
   /** Template for free-text input NPC response. Placeholders: {interaction_prompt}, {player_input} */
   input_response: string;
-  /** Template for continuation after prefetch playthrough. Placeholder: {prefetched_jsonl} */
+  /** Template for continuation after prefetch playthrough. Placeholder: {prefetched} */
   continuation: string;
   /** Template for input bridge narration (DSL). Placeholder: {interaction_prompt} */
   input_bridge: string;
@@ -51,7 +48,6 @@ export interface InstructionSet {
 }
 
 const InstructionSetSchema = z.object({
-  output_protocol: z.string().min(1),
   opening: z.string().min(1),
   branch_prefetch: z.string().min(1),
   input_response: z.string().min(1),

@@ -23,17 +23,16 @@ import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { RuntimeStatus } from "./status.js";
 import type { AppConfig } from "./config.js";
 import type {
-  ModelEvent,
   RuntimePlayableEvent,
   NarrationDraftEvent,
   EndEvent,
   StoredEvent,
   StoryContextEvent,
-  ChoiceEvent,
   InteractionEvent,
 } from "./schema.js";
 import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
 import type { GenerationEnvelope } from "./story/types.js";
+import type { EventGroupDraft } from "./core/protocol/gal-dsl/types.js";
 import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
 import type { InteractionOpenedOutput } from "./test-helpers.js";
 
@@ -47,6 +46,11 @@ function makeMockGenerator(): StoryGenerator {
     generateBranchPrefetch: vi.fn(),
     generateInputResponse: vi.fn(),
     generateContinuation: vi.fn(),
+    // Default bridge: one narration line (docs §34). Tests that expect a
+    // different bridge text override this per-test.
+    generateInputBridge: vi.fn(async () =>
+      envelope([narrationEvent("她等着你开口。")]),
+    ),
   } as unknown as StoryGenerator;
 }
 
@@ -75,12 +79,95 @@ function makeMockStatus(): RuntimeStatus {
   } as unknown as RuntimeStatus;
 }
 
-/** Build a minimal GenerationEnvelope for the mock generator. */
+type EnvelopeDraft =
+  | { type: "narration"; text: string }
+  | { type: "dialogue"; speaker: string; text: string }
+  | { type: "choice"; prompt: string; options: Array<{ id: string; text: string }> }
+  | InteractionEvent
+  | EndEvent;
+
+/** Convert one draft event into a DSL EventGroupDraft (end → sentinel). */
+function groupFromEvent(draft: EnvelopeDraft): EventGroupDraft {
+  if (draft.type === "narration") {
+    return { prelude: [], main: { type: "narration", text: draft.text } };
+  }
+  if (draft.type === "dialogue") {
+    return {
+      prelude: [],
+      main: {
+        type: "dialogue",
+        speaker: draft.speaker,
+        text: draft.text,
+        visual: { hasVisual: false, resetVisual: false },
+        name: { hasName: false, resetName: false },
+      },
+    };
+  }
+  if (draft.type === "choice") {
+    return {
+      prelude: [],
+      main: {
+        type: "interaction",
+        interaction: {
+          prompt: draft.prompt,
+          mode: "choice",
+          optionTexts: draft.options.map((o) => o.text),
+        },
+      },
+    };
+  }
+  if (draft.type !== "interaction") {
+    throw new Error("end 事件不是组：请用段结束哨兵表达结局。");
+  }
+  const interaction: InteractionEvent = draft;
+  const draftInteraction: {
+    prompt: string;
+    mode: InteractionEvent["mode"];
+    optionTexts: string[];
+    inputPlaceholder?: string;
+  } = {
+    prompt: interaction.prompt,
+    mode: interaction.mode,
+    optionTexts:
+      interaction.mode === "input"
+        ? []
+        : interaction.options.map((o) => o.text),
+  };
+  if (interaction.mode !== "choice") {
+    draftInteraction.inputPlaceholder = interaction.input.placeholder;
+  }
+  return {
+    prelude: [],
+    main: { type: "interaction", interaction: draftInteraction },
+  };
+}
+
+/**
+ * Build a minimal GenerationEnvelope for the mock generator. DSL protocol:
+ * the envelope carries committed groups plus the segment-end status; draft
+ * events are converted into DSL groups, a trailing `end` event maps to the
+ * `@end ... ending` sentinel.
+ */
 function envelope(
-  events: ModelEvent[],
+  drafts: EnvelopeDraft[],
   state_patch: GenerationEnvelope["state_patch"] = {},
 ): GenerationEnvelope {
-  return { events, state_patch };
+  let reason: "buffer" | "interaction" | "ending" = "buffer";
+  const groups: EventGroupDraft[] = [];
+  for (const draft of drafts) {
+    if (draft.type === "end") {
+      reason = "ending";
+      continue;
+    }
+    if (draft.type === "interaction") reason = "interaction";
+    groups.push(groupFromEvent(draft));
+  }
+  return {
+    events: [],
+    state_patch,
+    groups,
+    segmentEnd: { kind: "complete", nonce: "0000", reason },
+  };
 }
 
 function narrationEvent(text = "Some narration."): NarrationDraftEvent {
@@ -224,95 +311,6 @@ describe("internal state access", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Event materialization (materializeEvents)
-// ---------------------------------------------------------------------------
-
-describe("materializeEvents", () => {
-  let game: Game;
-
-  beforeEach(() => {
-    game = new Game(
-      makeTestConfig(),
-      makeMockGenerator(),
-      makeMockStatus(),
-      makeMockMedia(),
-      undefined,
-      makeTestPorts(),
-    );
-  });
-
-  it("should assign line_id to playable events (narration, dialogue)", () => {
-    const drafts: ModelEvent[] = [
-      { type: "narration", text: "It was a dark night." },
-      {
-        type: "dialogue",
-        speaker: "Hero",
-        text: "Hello!",
-        portrait: null,
-      },
-    ];
-    const g = game as any;
-    const result = g.materializeEvents(drafts) as RuntimePlayableEvent[];
-
-    expect(result).toHaveLength(2);
-    for (const event of result) {
-      expect(event).toHaveProperty("line_id");
-      expect(typeof event.line_id).toBe("string");
-      expect(event.line_id).toMatch(/^line_/);
-    }
-  });
-
-  it("should NOT assign line_id to non-playable events (choice, end, interaction)", () => {
-    const drafts: ModelEvent[] = [
-      { type: "narration", text: "Narration." },
-      {
-        type: "choice",
-        prompt: "Choose:",
-        options: [
-          { id: "a", text: "A" },
-          { id: "b", text: "B" },
-        ],
-      },
-      { type: "end", ending_id: "end_1", text: "The end." },
-      {
-        type: "interaction",
-        interaction_id: "int_1",
-        prompt: "What do you say?",
-        mode: "input",
-        input: { kind: "free_text", placeholder: "Type...", max_length: 100 },
-        input_bridge: {
-          events: [{ type: "narration", text: "她等待着你的回答。" }],
-        },
-      },
-    ];
-    const g = game as any;
-    const result = g.materializeEvents(drafts);
-
-    // First event is narration -> should have line_id
-    expect(result[0]).toHaveProperty("line_id");
-
-    // choice, end, interaction should NOT have line_id
-    expect(result[1]).not.toHaveProperty("line_id");
-    expect(result[2]).not.toHaveProperty("line_id");
-    expect(result[3]).not.toHaveProperty("line_id");
-  });
-
-  it("should produce unique line_ids on each call", () => {
-    const drafts: ModelEvent[] = [
-      { type: "narration", text: "First." },
-      { type: "narration", text: "Second." },
-    ];
-    const g = game as any;
-    const result1 = g.materializeEvents(drafts) as RuntimePlayableEvent[];
-    const result2 = g.materializeEvents(drafts) as RuntimePlayableEvent[];
-
-    const allIds = [...result1, ...result2].map((e) => e.line_id);
-    const uniqueIds = new Set(allIds);
-    expect(uniqueIds.size).toBe(4);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Line ID uniqueness and format
 // ---------------------------------------------------------------------------
 
@@ -332,14 +330,12 @@ describe("Line ID generation", () => {
 
   it("should produce monotonically incrementing line_id suffixes", () => {
     const g = game as any;
-    const draft: ModelEvent[] = [{ type: "narration", text: "X" }];
 
     const ids: string[] = [];
     for (let i = 0; i < 20; i++) {
-      const [event] = g.materializeEvents(draft) as RuntimePlayableEvent[];
-      expect(event).toBeDefined();
-      if (!event) throw new Error("materializeEvents 返回空结果");
-      ids.push(event.line_id);
+      const lineId = g.nextLineId() as string;
+      expect(lineId).toBeDefined();
+      ids.push(lineId);
     }
 
     // Extract sequence numbers
@@ -360,12 +356,8 @@ describe("Line ID generation", () => {
   it("should embed the session ID in the line_id", () => {
     const g = game as any;
     const sid = g.sessionId as string;
-    const [event] = g.materializeEvents([
-      { type: "narration", text: "X" },
-    ]) as RuntimePlayableEvent[];
-    expect(event).toBeDefined();
-    if (!event) throw new Error("materializeEvents 返回空结果");
-    expect(event.line_id).toContain(sid);
+    const lineId = g.nextLineId() as string;
+    expect(lineId).toContain(sid);
   });
 });
 
@@ -457,7 +449,7 @@ describe("recordPlayerInput", () => {
 
   it("should handle empty text", async () => {
     const g = game as any;
-    await g.recordPlayerInput("int_1", "", 1);
+    await g.recordPlayerInput("interaction_1", "", 1);
 
     const events = g.events;
     expect(events[0]).toMatchObject({
@@ -469,7 +461,7 @@ describe("recordPlayerInput", () => {
   it("should handle long text", async () => {
     const g = game as any;
     const longText = "A".repeat(1000);
-    await g.recordPlayerInput("int_1", longText, 1);
+    await g.recordPlayerInput("interaction_1", longText, 1);
 
     const events = g.events;
     expect(events[0]).toMatchObject({
@@ -502,7 +494,7 @@ describe("Sequence numbering", () => {
     // Initial seq should be 1 (private field)
     // Record two player choices, then a player input
     await g.recordPlayerChoice({ id: "a", text: "A" }, 1);
-    await g.recordPlayerInput("int_1", "text", 1);
+    await g.recordPlayerInput("interaction_1", "text", 1);
     await g.recordPlayerChoice({ id: "b", text: "B" }, 2);
 
     const events = (game as any).events;
@@ -673,8 +665,8 @@ describe("JSONL store initialization", () => {
         openingCalls += 1;
         if (openingCalls === 1) {
           // Stream two events, then fail mid-stream before any terminal event.
-          options!.onEvent!({ type: "narration", text: "第一句。" });
-          options!.onEvent!({ type: "dialogue", speaker: "小樱", text: "第二句。" });
+          options!.onGroup!(groupFromEvent({ type: "narration", text: "第一句。" }));
+          options!.onGroup!(groupFromEvent({ type: "dialogue", speaker: "小樱", text: "第二句。" }));
           throw new Error("网络中断");
         }
         throw new Error("unexpected second opening call");
@@ -717,7 +709,7 @@ describe("JSONL store initialization", () => {
     // continuing along the last successful line until repair #3 succeeds.
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
       async (_t, _s, _sig, options) => {
-        options!.onEvent!({ type: "narration", text: "半句。" });
+        options!.onGroup!(groupFromEvent({ type: "narration", text: "半句。" }));
         throw new Error("open 失败");
       },
     );
@@ -728,7 +720,7 @@ describe("JSONL store initialization", () => {
         // Failures publish a line via onEvent then throw (like a truncated
         // stream); the successful repair returns a full envelope instead.
         if (repairs < 3) {
-          options!.onEvent!({ type: "narration", text: `修复段半句${repairs}。` });
+          options!.onGroup!(groupFromEvent({ type: "narration", text: `修复段半句${repairs}。` }));
           throw new Error("修复失败");
         }
         return envelope([
@@ -761,7 +753,7 @@ describe("JSONL store initialization", () => {
       async (_t, _s, _sig, options) => {
         openingCalls += 1;
         if (openingCalls === 1) {
-          options!.onEvent!({ type: "narration", text: "开场半句。" });
+          options!.onGroup!(groupFromEvent({ type: "narration", text: "开场半句。" }));
           throw new Error("网络中断");
         }
         throw new Error("unexpected second opening call");
@@ -792,7 +784,8 @@ describe("JSONL store initialization", () => {
     const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
     const controller = new MemoryController({
       onInteractionOpened: (output) => {
-        controller.select(output.interactionId, "a");
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        controller.select(output.interactionId, first.id);
       },
     });
     controller.attach(game);
@@ -826,7 +819,8 @@ describe("JSONL store initialization", () => {
         controller.dispatch({ type: "advance" });
       },
       onInteractionOpened: (output) => {
-        controller.select(output.interactionId, "a");
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        controller.select(output.interactionId, first.id);
       },
     });
 
@@ -852,7 +846,7 @@ describe("JSONL store initialization", () => {
     (generator.generateContinuation as ReturnType<typeof vi.fn>)
       .mockImplementationOnce(
         async (_t, _s, _h, _p, _sig, options) => {
-          options!.onEvent!({ type: "narration", text: "续写半句。" });
+          options!.onGroup!(groupFromEvent({ type: "narration", text: "续写半句。" }));
           throw new Error("续写网络中断");
         },
       )
@@ -912,13 +906,10 @@ describe("Input preview cancellation", () => {
         narrationEvent("开场。"),
         {
           type: "interaction",
-          interaction_id: "int_1",
+          interaction_id: "interaction_1",
           prompt: "说什么？",
           mode: "input",
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
-          input_bridge: {
-            events: [{ type: "narration", text: "她静静地看着你。" }],
-          },
         },
       ]),
     );
@@ -986,13 +977,10 @@ describe("Input preview cancellation", () => {
         narrationEvent("开场。"),
         {
           type: "interaction",
-          interaction_id: "int_1",
+          interaction_id: "interaction_1",
           prompt: "说什么？",
           mode: "input",
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
-          input_bridge: {
-            events: [{ type: "narration", text: "她静静地看着你。" }],
-          },
         },
       ]),
     );
@@ -1064,21 +1052,21 @@ describe("Input bridge semantics", () => {
         narrationEvent("开场。"),
         {
           type: "interaction",
-          interaction_id: "int_1",
+          interaction_id: "interaction_1",
           prompt: "说什么？",
           mode: "input",
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
-          input_bridge: {
-            events: [
-              { type: "narration", text: "风穿过走廊。" },
-              { type: "narration", text: "她抬起了头。" },
-            ],
-          },
         },
       ]),
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([
+        narrationEvent("风穿过走廊。"),
+        narrationEvent("她抬起了头。"),
+      ]),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -1096,7 +1084,7 @@ describe("Input bridge semantics", () => {
     // The bridge is consumed at confirm and played after the player's line:
     // player_dialogue → bridge ×2 → response. It never enters the formal log.
     const g = game as any;
-    expect(g.bridgeBuffer.peek("int_1")).toBeNull();
+    expect(g.bridgeBuffer.peek("interaction_1")).toBeNull();
     const played = controller.playbackEvents().map((output) => output.event);
     expect(played[0]!.text).toBe("开场。");
     expect(played[1]!.type).toBe("player_dialogue");
@@ -1126,7 +1114,7 @@ describe("Input bridge semantics", () => {
         narrationEvent("开场。"),
         {
           type: "interaction",
-          interaction_id: "int_1",
+          interaction_id: "interaction_1",
           prompt: "怎么做？",
           mode: "hybrid",
           options: [
@@ -1134,9 +1122,6 @@ describe("Input bridge semantics", () => {
             { id: "b", text: "选项B" },
           ],
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
-          input_bridge: {
-            events: [{ type: "narration", text: "她等着你的决定。" }],
-          },
         },
       ]),
     );
@@ -1148,14 +1133,18 @@ describe("Input bridge semantics", () => {
     );
 
     const controller = new MemoryController({
-      onInteractionOpened: (output) => controller.select(output.interactionId, "a"),
+      onInteractionOpened: (output) =>
+        controller.select(
+          output.interactionId,
+          (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+        ),
     });
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
-    expect((game as any).bridgeBuffer.peek("int_1")).toBeNull();
+    expect((game as any).bridgeBuffer.peek("interaction_1")).toBeNull();
   });
 
   it("keeps the bridge when hybrid free text is submitted", async () => {
@@ -1169,7 +1158,7 @@ describe("Input bridge semantics", () => {
         narrationEvent("开场。"),
         {
           type: "interaction",
-          interaction_id: "int_1",
+          interaction_id: "interaction_1",
           prompt: "怎么做？",
           mode: "hybrid",
           options: [
@@ -1177,14 +1166,14 @@ describe("Input bridge semantics", () => {
             { id: "b", text: "选项B" },
           ],
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
-          input_bridge: {
-            events: [{ type: "narration", text: "她等着你的决定。" }],
-          },
         },
       ]),
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你的决定。")]),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -1202,7 +1191,7 @@ describe("Input bridge semantics", () => {
 
     // The bridge is consumed at confirm and played between the player's line
     // and the NPC response.
-    expect((game as any).bridgeBuffer.peek("int_1")).toBeNull();
+    expect((game as any).bridgeBuffer.peek("interaction_1")).toBeNull();
     const played = controller.playbackEvents().map((output) => output.event);
     expect(played[1]!.type).toBe("player_dialogue");
     expect(played[2]!.text).toBe("她等着你的决定。");
@@ -1220,7 +1209,7 @@ describe("Input bridge semantics", () => {
         narrationEvent("开场。"),
         {
           type: "interaction",
-          interaction_id: "int_1",
+          interaction_id: "interaction_1",
           prompt: "怎么做？",
           mode: "hybrid",
           options: [
@@ -1228,9 +1217,6 @@ describe("Input bridge semantics", () => {
             { id: "b", text: "选项B" },
           ],
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
-          input_bridge: {
-            events: [{ type: "narration", text: "她等着你的决定。" }],
-          },
         },
       ]),
     );
@@ -1240,6 +1226,9 @@ describe("Input bridge semantics", () => {
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你的决定。")]),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -1265,7 +1254,7 @@ describe("Input bridge semantics", () => {
         (o): o is Extract<RuntimeOutput, { type: "interaction_resolved" }> =>
           o.type === "interaction_resolved",
       ),
-    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "input" }]);
+    ).toEqual([{ type: "interaction_resolved", interactionId: "interaction_1", resolution: "input" }]);
     const played = controller.playbackEvents().map((output) => output.event);
     const texts = played.map((e) => e.text);
     expect(texts).not.toContain("候选分支内容。");
@@ -1284,26 +1273,23 @@ function makeManualInputResponse(
   generator: StoryGenerator,
   run: (
     signal: AbortSignal,
-    onEvent: (draft: ModelEvent) => void,
+    onGroup: (draft: EventGroupDraft) => void,
   ) => Promise<GenerationEnvelope>,
 ): void {
   (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(
     async (_t, _s, _h, _interaction, _text, signal, options) => {
-      return run(signal, (draft) => options?.onEvent?.(draft));
+      return run(signal, (draft) => options?.onGroup?.(draft));
     },
   );
 }
 
-function inputInteractionFixture(bridgeText = "她等着你开口。") {
+function inputInteractionFixture() {
   return {
     type: "interaction" as const,
-    interaction_id: "int_1",
+    interaction_id: "interaction_1",
     prompt: "说什么？",
     mode: "input" as const,
     input: { kind: "free_text" as const, placeholder: "...", max_length: 200 },
-    input_bridge: {
-      events: [{ type: "narration" as const, text: bridgeText }],
-    },
   };
 }
 
@@ -1317,11 +1303,11 @@ describe("Input response streaming", () => {
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    let emitLine!: (draft: ModelEvent) => void;
+    let emitGroup!: (draft: EventGroupDraft) => void;
     let completeResponse!: () => void;
-    makeManualInputResponse(generator, async (_signal, onEvent) => {
+    makeManualInputResponse(generator, async (_signal, onGroup) => {
       return new Promise((resolve) => {
-        emitLine = onEvent;
+        emitGroup = onGroup;
         completeResponse = () => resolve(envelope([], {}));
       });
     });
@@ -1335,8 +1321,8 @@ describe("Input response streaming", () => {
       onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
       onInputPreviewOpened: (output) => {
         // Two lines arrive during the preview: they must stay staged.
-        emitLine({ type: "narration", text: "第一行。" });
-        emitLine({ type: "narration", text: "第二行。" });
+        emitGroup(groupFromEvent({ type: "narration", text: "第一行。" }));
+        emitGroup(groupFromEvent({ type: "narration", text: "第二行。" }));
         const storedTexts = (g.events as StoredEvent[]).map((e) =>
           (e as { text?: string }).text,
         );
@@ -1369,11 +1355,11 @@ describe("Input response streaming", () => {
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    let emitLine!: (draft: ModelEvent) => void;
+    let emitGroup!: (draft: EventGroupDraft) => void;
     let completeResponse!: () => void;
-    makeManualInputResponse(generator, async (_signal, onEvent) => {
+    makeManualInputResponse(generator, async (_signal, onGroup) => {
       return new Promise((resolve) => {
-        emitLine = onEvent;
+        emitGroup = onGroup;
         completeResponse = () => resolve(envelope([], {}));
       });
     });
@@ -1388,13 +1374,13 @@ describe("Input response streaming", () => {
         // One line is present at confirm; the second arrives only after the
         // committed prefix (player → bridge → first line) has been presented,
         // so the drain must wait for it: a genuine underrun.
-        emitLine({ type: "narration", text: "第一行。" });
+        emitGroup(groupFromEvent({ type: "narration", text: "第一行。" }));
         controller.confirm(output.previewId);
       },
       onPlaybackReady: (event) => {
         if (event.type === "narration" && event.text === "第一行。") {
           setTimeout(() => {
-            emitLine({ type: "narration", text: "第二行。" });
+            emitGroup(groupFromEvent({ type: "narration", text: "第二行。" }));
             completeResponse();
           }, 20);
         }
@@ -1431,13 +1417,13 @@ describe("Input response streaming", () => {
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    let emitLine!: (draft: ModelEvent) => void;
+    let emitGroup!: (draft: EventGroupDraft) => void;
     let completeResponse!: () => void;
     // First call: manually controlled pending stream. Second call: normal.
     (generator.generateInputResponse as ReturnType<typeof vi.fn>)
       .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
         return new Promise((resolve) => {
-          emitLine = (draft) => options?.onEvent?.(draft);
+          emitGroup = (draft) => options?.onGroup?.(draft);
           completeResponse = () => resolve(envelope([], {}));
         });
       })
@@ -1455,7 +1441,7 @@ describe("Input response streaming", () => {
         if (previewIndex === 0) {
           controller.cancel(output.previewId);
           // The stale stream emits AFTER the cancel — must be dropped.
-          emitLine({ type: "narration", text: "迟到事件。" });
+          emitGroup(groupFromEvent({ type: "narration", text: "迟到事件。" }));
           completeResponse();
         } else {
           controller.confirm(output.previewId);
@@ -1483,14 +1469,14 @@ describe("Input response streaming", () => {
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    let emitLine!: (draft: ModelEvent) => void;
+    let emitGroup!: (draft: EventGroupDraft) => void;
     let completeStale!: (value: GenerationEnvelope) => void;
     // First call: manually controlled pending stream that outlives the
     // cancel. Second call: normal response for the re-opened interaction.
     (generator.generateInputResponse as ReturnType<typeof vi.fn>)
       .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
         return new Promise((resolve) => {
-          emitLine = (draft) => options?.onEvent?.(draft);
+          emitGroup = (draft) => options?.onGroup?.(draft);
           completeStale = (value) => resolve(value);
         });
       })
@@ -1507,13 +1493,13 @@ describe("Input response streaming", () => {
       onInputPreviewOpened: (output) => {
         if (previewIndex === 0) {
           // A line arrives while the preview is open; the player then cancels.
-          emitLine({ type: "narration", text: "暂存行。" });
+          emitGroup(groupFromEvent({ type: "narration", text: "暂存行。" }));
           controller.cancel(output.previewId);
         } else {
           // The cancel is now processed. The OLD stream's later events must
           // be dropped and its state patch must never reach the story state
           // (§17.14 / §17.15).
-          emitLine({ type: "narration", text: "迟到事件。" });
+          emitGroup(groupFromEvent({ type: "narration", text: "迟到事件。" }));
           completeStale(
             envelope([], {
               open_threads: [
@@ -1556,6 +1542,9 @@ describe("Input response streaming", () => {
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你开口。")]),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -1662,8 +1651,8 @@ describe("Input response streaming", () => {
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    makeManualInputResponse(generator, async (_signal, onEvent) => {
-      onEvent({ type: "narration", text: "半句回应。" });
+    makeManualInputResponse(generator, async (_signal, onGroup) => {
+      onGroup(groupFromEvent({ type: "narration", text: "半句回应。" }));
       throw new Error("流中断");
     });
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
@@ -1792,20 +1781,20 @@ describe("Input response streaming", () => {
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    let emitStale!: (draft: ModelEvent) => void;
+    let emitStale!: (draft: EventGroupDraft) => void;
     let completeStale!: () => void;
-    let emitLive!: (draft: ModelEvent) => void;
+    let emitLive!: (draft: EventGroupDraft) => void;
     let completeLive!: () => void;
     (generator.generateInputResponse as ReturnType<typeof vi.fn>)
       .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
         return new Promise((resolve) => {
-          emitStale = (draft) => options?.onEvent?.(draft);
+          emitStale = (draft) => options?.onGroup?.(draft);
           completeStale = () => resolve(envelope([], {}));
         });
       })
       .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
         return new Promise((resolve) => {
-          emitLive = (draft) => options?.onEvent?.(draft);
+          emitLive = (draft) => options?.onGroup?.(draft);
           completeLive = () => resolve(envelope([], {}));
         });
       });
@@ -1823,7 +1812,7 @@ describe("Input response streaming", () => {
           // The cancelled stream is fully torn down by now (the runtime
           // re-opened the interaction after the cancel); its late event must
           // be dropped as stale.
-          emitStale({ type: "narration", text: "迟到。" });
+          emitStale(groupFromEvent({ type: "narration", text: "迟到。" }));
           completeStale();
           controller.submitInput(output.interactionId, "第二次");
         }
@@ -1834,7 +1823,7 @@ describe("Input response streaming", () => {
         } else {
           controller.confirm(output.previewId);
           setTimeout(() => {
-            emitLive({ type: "narration", text: "回应。" });
+            emitLive(groupFromEvent({ type: "narration", text: "回应。" }));
             completeLive();
           }, 5);
         }
@@ -1864,6 +1853,9 @@ describe("Input response streaming", () => {
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你开口。")]),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -2063,7 +2055,7 @@ describe("Hybrid interaction commands", () => {
         narrationEvent("开场。"),
         {
           type: "interaction",
-          interaction_id: "int_1",
+          interaction_id: "interaction_1",
           prompt: "怎么做？",
           mode: "hybrid",
           options: [
@@ -2071,9 +2063,6 @@ describe("Hybrid interaction commands", () => {
             { id: "b", text: "选项B" },
           ],
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
-          input_bridge: {
-            events: [{ type: "narration", text: "她等着你的决定。" }],
-          },
         },
       ]),
     );
@@ -2088,7 +2077,8 @@ describe("Hybrid interaction commands", () => {
     // client-side cancel loop (re-prompting) never touches the runtime.
     const controller = new MemoryController({
       onInteractionOpened: (output) => {
-        controller.select(output.interactionId, "a");
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        controller.select(output.interactionId, first.id);
       },
     });
 
@@ -2121,6 +2111,9 @@ describe("Hybrid interaction commands", () => {
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
     );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你开口。")]),
+    );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
@@ -2134,7 +2127,10 @@ describe("Hybrid interaction commands", () => {
         if (controller.count("interaction_opened") === 1) {
           controller.submitInput(output.interactionId, "先试试输入");
         } else {
-          controller.select(output.interactionId, "a");
+          controller.select(
+            output.interactionId,
+            (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+          );
         }
       },
       onInputPreviewOpened: (output) => {
@@ -2160,7 +2156,7 @@ describe("Hybrid interaction commands", () => {
         (o): o is Extract<RuntimeOutput, { type: "interaction_resolved" }> =>
           o.type === "interaction_resolved",
       ),
-    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "choice" }]);
+    ).toEqual([{ type: "interaction_resolved", interactionId: "interaction_1", resolution: "choice" }]);
     const played = controller.playbackEvents().map((output) => output.event.text);
     expect(played).toContain("分支内容。");
     expect(played).not.toContain("回应。");
@@ -2206,10 +2202,10 @@ describe("Narration-only branch handoff", () => {
     );
     (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
       async (_t, _s, _h, _choice, option, _signal, options) => {
-        options!.onEvent!({ type: "narration", text: `分支${option.id}第一句。` });
+        options!.onGroup!(groupFromEvent({ type: "narration", text: `分支${option.id}第一句。` }));
         await new Promise<void>((resolve) => {
           emitters.set(option.id, () => {
-            options!.onEvent!({ type: "narration", text: `分支${option.id}第二句。` });
+            options!.onGroup!(groupFromEvent({ type: "narration", text: `分支${option.id}第二句。` }));
             resolve();
           });
         });
@@ -2225,8 +2221,9 @@ describe("Narration-only branch handoff", () => {
     // threshold (branch_dialogue_lines = 2).
     const controller = new MemoryController({
       onInteractionOpened: (output) => {
-        emitters.get("a")?.();
-        controller.select(output.interactionId, "a");
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options![0]!;
+        emitters.get(first.id)?.();
+        controller.select(output.interactionId, first.id);
       },
     });
 
@@ -2253,7 +2250,6 @@ describe("Interaction policy enforcement", () => {
         default_mode: "choice",
         options: { min_count: 2, max_count: 5 },
         input: { max_length: 500, max_consecutive_pure_input: 1 },
-        legacy_choice: { allow_runtime_compatibility: true, allow_model_output: false },
       },
     });
   }
@@ -2265,9 +2261,6 @@ describe("Interaction policy enforcement", () => {
       prompt: "说什么？",
       mode: "input",
       input: { kind: "free_text", placeholder: "...", max_length: 200 },
-      input_bridge: {
-        events: [{ type: "narration", text: "她静静地看着你。" }],
-      },
     };
   }
 
@@ -2295,20 +2288,6 @@ describe("Interaction policy enforcement", () => {
         { id: "b", text: "选项B" },
       ],
       input: { kind: "free_text", placeholder: "...", max_length: 200 },
-      input_bridge: {
-        events: [{ type: "narration", text: "她等着你的决定。" }],
-      },
-    };
-  }
-
-  function legacyChoiceEvent(): ChoiceEvent {
-    return {
-      type: "choice",
-      prompt: "怎么选？",
-      options: [
-        { id: "a", text: "选项A" },
-        { id: "b", text: "选项B" },
-      ],
     };
   }
 
@@ -2320,8 +2299,8 @@ describe("Interaction policy enforcement", () => {
     // Opening streams a narration, then an ILLEGAL input interaction.
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
       async (_t, _s, _sig, options) => {
-        options!.onEvent!({ type: "narration", text: "开场。" });
-        options!.onEvent!(inputInteraction("int_illegal"));
+        options!.onGroup!(groupFromEvent({ type: "narration", text: "开场。" }));
+        options!.onGroup!(groupFromEvent(inputInteraction("int_illegal")));
         return envelope([]);
       },
     );
@@ -2345,7 +2324,8 @@ describe("Interaction policy enforcement", () => {
     const diagnostics: Array<{ scope: string; message: string }> = [];
     const controller = new MemoryController({
       onInteractionOpened: (output) => {
-        controller.select(output.interactionId, "a");
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        controller.select(output.interactionId, first.id);
       },
     });
     const game = new Game(
@@ -2372,18 +2352,18 @@ describe("Interaction policy enforcement", () => {
         output.type === "interaction_opened",
     );
     expect(opened).toHaveLength(1);
-    expect(opened[0]!.interactionId).toBe("int_legal");
+    // The repaired (legal) terminal is a choice — the illegal input never
+    // opened. Both were emitted in the same turn, so the runtime ids
+    // collide; the mode distinguishes them.
+    // choice terminals are emitted as synthetic choice events (no mode).
+    expect(opened[0]!.interaction.type).toBe("choice");
     expect(
-      opened.some(
-        (output) =>
-          "interaction_id" in output.interaction &&
-          output.interaction.interaction_id === "int_illegal",
-      ),
+      opened.some((output) => (output.interaction as { mode?: string }).mode === "input"),
     ).toBe(false);
 
     // Its bridge was never materialized; the only branch prefetches come
     // from the legal terminal's BranchManager (one per option).
-    expect((game as any).bridgeBuffer.peek("int_illegal")).toBeNull();
+    expect((game as any).bridgeBuffer.peek("interaction_1")).toBeNull();
     // Exactly one BranchManager prefetch per option of the LEGAL terminal —
     // had the illegal terminal leaked into the branch flow, the count would
     // exceed the 2 options of the repaired choice.
@@ -2410,7 +2390,7 @@ describe("Interaction policy enforcement", () => {
     // The opening publishes ONLY the illegal interaction — no playable prefix.
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
       async (_t, _s, _sig, options) => {
-        options!.onEvent!(inputInteraction("int_illegal"));
+        options!.onGroup!(groupFromEvent(inputInteraction("int_illegal")));
         return envelope([]);
       },
     );
@@ -2427,7 +2407,8 @@ describe("Interaction policy enforcement", () => {
 
     const controller = new MemoryController({
       onInteractionOpened: (output) => {
-        controller.select(output.interactionId, "a");
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        controller.select(output.interactionId, first.id);
       },
     });
     const game = new Game(
@@ -2451,17 +2432,20 @@ describe("Interaction policy enforcement", () => {
 
     const generator = makeMockGenerator();
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteraction("int_1")]),
+      envelope([narrationEvent("开场。"), inputInteraction("interaction_1")]),
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你开口。")]),
     );
     // Continuation #1 tries to open ANOTHER pure input → 2 consecutive →
     // rejected. Repair #1 emits a choice (non-input), then the post-choice
     // continuation ends the story.
     (generator.generateContinuation as ReturnType<typeof vi.fn>)
       .mockImplementationOnce(async () =>
-        envelope([narrationEvent("续写。"), inputInteraction("int_2")]),
+        envelope([narrationEvent("续写。"), inputInteraction("interaction_2")]),
       )
       .mockImplementationOnce(async () =>
         envelope([narrationEvent("修复段。"), choiceInteraction("int_3")]),
@@ -2475,10 +2459,13 @@ describe("Interaction policy enforcement", () => {
 
     const controller = new MemoryController({
       onInteractionOpened: (output) => {
-        if (output.interactionId === "int_1") {
-          controller.submitInput("int_1", "你好");
+        if (output.interactionId === "interaction_1") {
+          controller.submitInput("interaction_1", "你好");
         } else {
-          controller.select(output.interactionId, "a");
+          controller.select(
+            output.interactionId,
+            (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+          );
         }
       },
       onInputPreviewOpened: (output) => controller.confirm(output.previewId),
@@ -2500,7 +2487,7 @@ describe("Interaction policy enforcement", () => {
     const openedIds = controller.outputs
       .filter((output) => output.type === "interaction_opened")
       .map((output) => (output as InteractionOpenedOutput).interactionId);
-    expect(openedIds).toEqual(["int_1", "int_3"]);
+    expect(openedIds).toEqual(["interaction_1", "interaction_2"]);
   });
 
   it("accepts a pure input after a hybrid interaction (streak reset)", async () => {
@@ -2509,16 +2496,19 @@ describe("Interaction policy enforcement", () => {
 
     const generator = makeMockGenerator();
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), hybridInteraction("int_1")]),
+      envelope([narrationEvent("开场。"), hybridInteraction("interaction_1")]),
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你开口。")]),
     );
     // The continuation opens a pure input AFTER a hybrid: the streak was
     // broken, so it must be accepted.
     (generator.generateContinuation as ReturnType<typeof vi.fn>)
       .mockImplementationOnce(async () =>
-        envelope([narrationEvent("续写。"), inputInteraction("int_2")]),
+        envelope([narrationEvent("续写。"), inputInteraction("interaction_2")]),
       )
       .mockImplementationOnce(async () =>
         envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -2544,7 +2534,7 @@ describe("Interaction policy enforcement", () => {
     const openedIds = controller.outputs
       .filter((output) => output.type === "interaction_opened")
       .map((output) => (output as InteractionOpenedOutput).interactionId);
-    expect(openedIds).toEqual(["int_1", "int_2"]);
+    expect(openedIds).toEqual(["interaction_1", "interaction_2"]);
     expect(controller.ended()).toBe(true);
   });
 
@@ -2563,44 +2553,9 @@ describe("Interaction policy enforcement", () => {
     );
     const g = game as any;
 
-    expect(g.createBranchManagerForTerminal(inputInteraction("int_1"), 1, [])).toBeNull();
-    expect(g.createBranchManagerForTerminal(hybridInteraction("int_2"), 1, [])).not.toBeNull();
+    expect(g.createBranchManagerForTerminal(inputInteraction("interaction_1"), 1, [])).toBeNull();
+    expect(g.createBranchManagerForTerminal(hybridInteraction("interaction_2"), 1, [])).not.toBeNull();
     expect(g.createBranchManagerForTerminal(choiceInteraction("int_3"), 1, [])).not.toBeNull();
-    expect(g.createBranchManagerForTerminal(legacyChoiceEvent(), 1, [])).not.toBeNull();
-  });
-
-  it("creates a BranchManager for legacy choice only when runtime compatibility is enabled", () => {
-    const generator = makeMockGenerator();
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
-    );
-    const withCompat = new Game(
-      makeTestConfig(),
-      generator,
-      makeMockStatus(),
-      makeMockMedia(),
-      undefined,
-      makeTestPorts(),
-    );
-    const withoutCompat = new Game(
-      makeTestConfig({
-        interaction: {
-          allowed_modes: ["choice", "hybrid", "input"],
-          default_mode: "choice",
-          options: { min_count: 2, max_count: 5 },
-          input: { max_length: 500, max_consecutive_pure_input: 1 },
-          legacy_choice: { allow_runtime_compatibility: false, allow_model_output: false },
-        },
-      }),
-      generator,
-      makeMockStatus(),
-      makeMockMedia(),
-      undefined,
-      makeTestPorts(),
-    );
-
-    expect((withCompat as any).createBranchManagerForTerminal(legacyChoiceEvent(), 1, [])).not.toBeNull();
-    expect((withoutCompat as any).createBranchManagerForTerminal(legacyChoiceEvent(), 1, [])).toBeNull();
   });
 
   it("never prefetches branches during a pure input run", async () => {
@@ -2609,10 +2564,13 @@ describe("Interaction policy enforcement", () => {
 
     const generator = makeMockGenerator();
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteraction("int_1")]),
+      envelope([narrationEvent("开场。"), inputInteraction("interaction_1")]),
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你开口。")]),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -2693,7 +2651,11 @@ describe("Interaction resolution publication", () => {
     );
 
     const controller = new MemoryController({
-      onInteractionOpened: (output) => controller.select(output.interactionId, "a"),
+      onInteractionOpened: (output) =>
+        controller.select(
+          output.interactionId,
+          (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+        ),
     });
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     controller.attach(game);
@@ -2705,7 +2667,7 @@ describe("Interaction resolution publication", () => {
     expect(resolved).toHaveLength(1);
     expect(resolved[0]).toEqual({
       type: "interaction_resolved",
-      interactionId: "choice_1",
+      interactionId: "interaction_1",
       resolution: "choice",
     });
     // Published between opening the form and playing the adopted branch.
@@ -2760,7 +2722,7 @@ describe("Interaction resolution publication", () => {
         narrationEvent("开场。"),
         {
           type: "interaction",
-          interaction_id: "int_1",
+          interaction_id: "interaction_1",
           prompt: "怎么做？",
           mode: "hybrid",
           options: [
@@ -2768,9 +2730,6 @@ describe("Interaction resolution publication", () => {
             { id: "b", text: "选项B" },
           ],
           input: { kind: "free_text", placeholder: "...", max_length: 200 },
-          input_bridge: {
-            events: [{ type: "narration", text: "她等着你的决定。" }],
-          },
         },
       ]),
     );
@@ -2782,7 +2741,11 @@ describe("Interaction resolution publication", () => {
     );
 
     const controller = new MemoryController({
-      onInteractionOpened: (output) => controller.select(output.interactionId, "a"),
+      onInteractionOpened: (output) =>
+        controller.select(
+          output.interactionId,
+          (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+        ),
     });
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     controller.attach(game);
@@ -2793,7 +2756,7 @@ describe("Interaction resolution publication", () => {
     ).toEqual([
       {
         type: "interaction_resolved",
-        interactionId: "int_1",
+        interactionId: "interaction_1",
         resolution: "choice",
       },
     ]);
@@ -2815,6 +2778,9 @@ describe("Interaction resolution publication", () => {
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你开口。")]),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -2847,6 +2813,9 @@ describe("Interaction resolution publication", () => {
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你开口。")]),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -2888,6 +2857,9 @@ describe("Interaction resolution publication", () => {
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("回应。")]),
     );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope([narrationEvent("她等着你开口。")]),
+    );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
@@ -2905,7 +2877,7 @@ describe("Interaction resolution publication", () => {
     expect(resolved).toHaveLength(1);
     expect(resolved[0]).toEqual({
       type: "interaction_resolved",
-      interactionId: "int_1",
+      interactionId: "interaction_1",
       resolution: "input",
     });
     expect(controller.count("input_committed")).toBe(1);
@@ -2924,7 +2896,7 @@ function choiceFixture(
   return { type: "choice" as const, prompt: "怎么选？", options };
 }
 
-function hybridFixture(interactionId = "int_1", bridgeText = "她等着你的决定。") {
+function hybridFixture(interactionId = "interaction_1", bridgeText = "她等着你的决定。") {
   return {
     type: "interaction" as const,
     interaction_id: interactionId,
@@ -2963,14 +2935,18 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     );
     vi.mocked(generator.generateBranchPrefetch).mockImplementation(
       async (_turn, _state, _context, _choice, option: { id: string }) =>
-        envelope([narrationEvent(option.id === "a" ? "分支A。" : "分支B。")]),
+        envelope([narrationEvent(option.id.endsWith("_opt_0") ? "分支A。" : "分支B。")]),
     );
     vi.mocked(generator.generateContinuation).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
-      onInteractionOpened: (output) => controller.select(output.interactionId, "a"),
+      onInteractionOpened: (output) =>
+        controller.select(
+          output.interactionId,
+          (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+        ),
     });
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     controller.attach(game);
@@ -2979,10 +2955,10 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     const g = game as unknown as GameScopingInternals;
     expect(
       controller.outputs.filter((o) => o.type === "interaction_resolved"),
-    ).toEqual([{ type: "interaction_resolved", interactionId: "choice_1", resolution: "choice" }]);
+    ).toEqual([{ type: "interaction_resolved", interactionId: "interaction_1", resolution: "choice" }]);
     const playerChoices = g.events.filter((e) => e.type === "player_choice");
     expect(playerChoices).toHaveLength(1);
-    expect(playerChoices[0]!).toMatchObject({ choice_id: "a" });
+    expect(playerChoices[0]!).toMatchObject({ choice_id: "interaction_1_opt_0" });
     // Only the selected branch plays; the unselected branch is canceled.
     const played = controller.playbackEvents().map((o) => o.event.text);
     expect(played).toContain("分支A。");
@@ -3021,7 +2997,7 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     expect(generator.generateInputResponse).toHaveBeenCalledTimes(1);
     expect(
       controller.outputs.filter((o) => o.type === "interaction_resolved"),
-    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "input" }]);
+    ).toEqual([{ type: "interaction_resolved", interactionId: "interaction_1", resolution: "input" }]);
     expect(controller.count("input_preview_opened")).toBe(1);
     expect(controller.count("input_committed")).toBe(1);
     const played = controller.playbackEvents().map((o) => o.event);
@@ -3059,7 +3035,10 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     // Both entrances submit in the same tick, the option click first.
     const controller = new MemoryController({
       onInteractionOpened: (output) => {
-        controller.select(output.interactionId, "a");
+        controller.select(
+          output.interactionId,
+          (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+        );
         controller.submitInput(output.interactionId, "竞态输入");
       },
     });
@@ -3070,7 +3049,7 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     const g = game as unknown as GameScopingInternals;
     expect(
       controller.outputs.filter((o) => o.type === "interaction_resolved"),
-    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "choice" }]);
+    ).toEqual([{ type: "interaction_resolved", interactionId: "interaction_1", resolution: "choice" }]);
     const playerBehaviors = g.events.filter(
       (e) => e.type === "player_choice" || e.type === "player_input",
     );
@@ -3107,7 +3086,10 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     const controller = new MemoryController({
       onInteractionOpened: (output) => {
         controller.submitInput(output.interactionId, "竞态输入");
-        controller.select(output.interactionId, "a");
+        controller.select(
+        output.interactionId,
+        (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+      );
       },
       onInputPreviewOpened: (output) => controller.confirm(output.previewId),
     });
@@ -3118,7 +3100,7 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     const g = game as unknown as GameScopingInternals;
     expect(
       controller.outputs.filter((o) => o.type === "interaction_resolved"),
-    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "input" }]);
+    ).toEqual([{ type: "interaction_resolved", interactionId: "interaction_1", resolution: "input" }]);
     const playerBehaviors = g.events.filter(
       (e) => e.type === "player_choice" || e.type === "player_input",
     );
@@ -3143,7 +3125,7 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     );
     vi.mocked(generator.generateBranchPrefetch).mockImplementation(
       async (_turn, _state, _context, _choice, option: { id: string }) =>
-        envelope([narrationEvent(option.id === "a" ? "分支A。" : "分支B。")]),
+        envelope([narrationEvent(option.id.endsWith("_opt_0") ? "分支A。" : "分支B。")]),
     );
     vi.mocked(generator.generateContinuation).mockResolvedValue(
       envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -3151,8 +3133,14 @@ describe("Interaction command scoping (stale / double-submit)", () => {
 
     const controller = new MemoryController({
       onInteractionOpened: (output) => {
-        controller.select(output.interactionId, "a");
-        controller.select(output.interactionId, "a");
+        controller.select(
+        output.interactionId,
+        (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+      );
+        controller.select(
+        output.interactionId,
+        (output.interaction as { options?: Array<{ id: string }> }).options![0]!.id,
+      );
       },
     });
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -3221,7 +3209,7 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     ).toMatchObject({ previewId: committedPreviewId });
     expect(
       controller.outputs.filter((o) => o.type === "interaction_resolved"),
-    ).toEqual([{ type: "interaction_resolved", interactionId: "int_1", resolution: "input" }]);
+    ).toEqual([{ type: "interaction_resolved", interactionId: "interaction_1", resolution: "input" }]);
     expect(g.deferredCommands).toHaveLength(0);
     expect(g.activePreviewId).toBeNull();
     expect(g.activeInteractionId).toBeNull();

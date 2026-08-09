@@ -16,7 +16,7 @@ import path from "node:path";
 import { createRuntimeApplication } from "./create-runtime-application.js";
 import { makeTestConfig, MemoryController } from "../test-helpers.js";
 import type { AppConfig } from "../config.js";
-import type { ModelEvent } from "../schema.js";
+import type { GeneratedEvent } from "../story/types.js";
 
 // The TTS providers (Task B) and the performance compiler impl (Task H)
 // land in parallel with this task. The composition test never exercises
@@ -43,7 +43,12 @@ vi.mock("../application/audio/performance-compiler.js", () => ({
 
 /** Mutable envelopes the mocked StoryGenerator returns (per test). */
 const generatorState = vi.hoisted(() => ({
-  opening: { events: [] as ModelEvent[], state_patch: undefined as unknown },
+  opening: {
+    events: [] as GeneratedEvent[],
+    state_patch: undefined as unknown,
+    groups: undefined as unknown,
+    segmentEnd: undefined as unknown,
+  },
 }));
 /** Constructor opts captured from the mocked DashScope provider. */
 const dashscopeProviderState = vi.hoisted(() => ({
@@ -56,6 +61,7 @@ vi.mock("../adapters/llm/openai-compatible-generator.js", () => ({
     generateBranchPrefetch = vi.fn(async () => ({ events: [], state_patch: undefined }));
     generateInputResponse = vi.fn(async () => ({ events: [], state_patch: undefined }));
     generateContinuation = vi.fn(async () => ({ events: [], state_patch: undefined }));
+    generateInputBridge = vi.fn(async () => ({ events: [], state_patch: undefined }));
   },
 }));
 
@@ -296,11 +302,12 @@ function dashscopeConfig(): AppConfig {
     });
     const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-session-"));
     generatorState.opening = {
-      events: [
-        { type: "narration", text: "第一幕" },
-        { type: "end", ending_id: "e1", text: "终" },
+      events: [],
+      groups: [
+        { prelude: [], main: { type: "narration", text: "第一幕" } },
       ],
       state_patch: undefined,
+      segmentEnd: { kind: "complete", nonce: "0000", reason: "ending" },
     };
 
     const app = await createRuntimeApplication({ config, sessionDir });
@@ -314,7 +321,7 @@ function dashscopeConfig(): AppConfig {
     const snap = app.projection.snapshot();
     expect(snap.sessionId).toBeDefined();
     expect(snap.phase).toBe("ended");
-    expect(snap.ending?.ending_id).toBe("e1");
+    expect(snap.ending?.ending_id).toBeDefined();
     expect(snap.currentLine?.line_id).toBeDefined();
     expect(snap.recentLines).toHaveLength(1);
     expect(controller.count("session_started")).toBe(1);
@@ -333,17 +340,22 @@ function dashscopeConfig(): AppConfig {
     // Opening yields only an input interaction: no controller attached, so
     // run() parks inside handleInteractionInput awaiting preview_input.
     generatorState.opening = {
-      events: [
+      events: [],
+      groups: [
         {
-          type: "interaction",
-          interaction_id: "int_1",
-          prompt: "说什么？",
-          mode: "input",
-          input: { kind: "free_text", placeholder: "...", max_length: 200 },
-          input_bridge: { events: [{ type: "narration", text: "她等着你开口。" }] },
+          prelude: [],
+          main: {
+            type: "interaction",
+            interaction: {
+              prompt: "说什么？",
+              mode: "input",
+              inputPlaceholder: "...",
+            },
+          },
         },
       ],
       state_patch: undefined,
+      segmentEnd: undefined,
     };
 
     const app = await createRuntimeApplication({ config, sessionDir });
@@ -357,7 +369,10 @@ function dashscopeConfig(): AppConfig {
       });
     });
 
-    const runPromise = app.game.run().catch((error: unknown) => error);
+    const runPromise = app.game.run().catch((error: unknown) => {
+      console.error("RUN ERROR:", error);
+      return error;
+    });
     await opened;
 
     await app.shutdown();
