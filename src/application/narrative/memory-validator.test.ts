@@ -27,7 +27,7 @@ import type {
   SetupOp,
   EpisodeSummaryOp,
 } from "../../core/narrative/memory-operation.js";
-import type { SetupDirective } from "../../core/narrative/narrative-brief.js";
+import type { SetupDirective } from "../../core/narrative/director-plan.js";
 
 // ---------------------------------------------------------------------------
 // Helpers / fixtures

@@ -51,7 +51,9 @@ export const EpisodeSummaryOpSchema: z.ZodType<EpisodeSummaryOp> = z.object({
 
 /** A rejected narrative operation, recorded for diagnostics/feedback. */
 export interface RejectedOp {
-  kind: "thread" | "setup" | "episode";
+  // plan = plan proposal rejected as a whole / field-level rejection,
+  // anchor = anchor op rejected.
+  kind: "thread" | "setup" | "episode" | "plan" | "anchor";
   op: unknown;
   reason: string;
 }

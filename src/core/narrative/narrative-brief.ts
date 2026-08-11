@@ -18,6 +18,10 @@ import type {
   PlotThread,
   StoryAnchorState,
 } from "./memory-types.js";
+import {
+  SetupDirectiveSchema,
+  type SetupDirective,
+} from "./director-plan.js";
 
 export interface NarrativeBriefRequest {
   turn: number;
@@ -25,12 +29,6 @@ export interface NarrativeBriefRequest {
   location: string;
   characters: string[];
   currentInteractionId?: string;
-}
-
-export interface SetupDirective {
-  id: string;
-  action: "seed" | "reinforce" | "payoff" | "hold";
-  urgency: "now" | "soon" | "normal";
 }
 
 export interface NarrativeBrief {
@@ -73,12 +71,6 @@ const ActiveThreadSchema = z.object({
   importance: z.enum(["major", "minor"]),
   lastTouchedAtCheckpoint: z.number().int().nonnegative(),
   nextPressure: z.exactOptional(z.string().min(1)),
-});
-
-const SetupDirectiveSchema = z.object({
-  id: z.string().min(1),
-  action: z.enum(["seed", "reinforce", "payoff", "hold"]),
-  urgency: z.enum(["now", "soon", "normal"]),
 });
 
 export const NarrativeBriefSchema: z.ZodType<NarrativeBrief> = z.object({

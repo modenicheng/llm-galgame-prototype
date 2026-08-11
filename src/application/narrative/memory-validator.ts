@@ -19,7 +19,7 @@ import type {
   SetupOp,
   EpisodeSummaryOp,
 } from "../../core/narrative/memory-operation.js";
-import type { SetupDirective } from "../../core/narrative/narrative-brief.js";
+import type { SetupDirective } from "../../core/narrative/director-plan.js";
 import type { NarrativeConfig } from "../../config.js";
 
 /** Thread statuses that count as "active" for the thread budgets. */
