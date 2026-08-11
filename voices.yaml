@@ -46,18 +46,18 @@ profiles:
 
     providers:
       dashscope:
-        model: cosyvoice-v3.5-flash
+        # model: cosyvoice-v3.5-flash
+        model: qwen3-tts-vc-2026-01-22
         voice_id_env: COSYVOICE_VOICE_SUYAO
         instruction_mode: free
 
   # 林澈（玩家角色）音色配置（voice-id 在 .env 的 COSYVOICE_VOICE_LINCHE）
   linche_main:
     semantic:
-      base_description: 年轻男性，声线自然偏沉，语气平淡随性，句子简短。
+      base_description: 年轻女性，声线自然偏沉，语气平淡随性，句子简短。
       allowed_delivery:
         - restrained
         - hesitant
-        - gentle
         - firm
       forbidden_delivery:
         - exaggerated
@@ -66,7 +66,8 @@ profiles:
 
     providers:
       dashscope:
-        model: cosyvoice-v3.5-flash
+        model: qwen3-tts-vc-2026-01-22
+        # model: cosyvoice-v3.5-flash
         voice_id_env: COSYVOICE_VOICE_LINCHE
         instruction_mode: free
 
