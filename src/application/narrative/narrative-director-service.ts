@@ -40,15 +40,17 @@ import type {
   NarrativeBriefRequest,
 } from "../../core/narrative/narrative-brief.js";
 import {
-  classifySetup,
   applyThreadOpToState,
   applySetupOpToState,
 } from "./memory-validator.js";
+import {
+  computeCurrentAnchorId,
+  scheduleSetups,
+} from "./setup-scheduler.js";
 import { retrieveEpisodes } from "./episode-retriever.js";
 import {
   MemoryConsolidator,
   ACTIVE_THREAD_STATUSES,
-  NON_TERMINAL_SETUP_STATUSES,
 } from "./memory-consolidator.js";
 import type { MemoryConsolidatorPort } from "./memory-consolidator.js";
 
@@ -225,13 +227,12 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       });
 
     // Setup directives for all non-terminal setups
-    const currentAnchorId = this.computeCurrentAnchorId();
-    const setupDirectives = Object.values(this.memory.setups)
-      .filter((s) => NON_TERMINAL_SETUP_STATUSES.has(s.status))
-      .map((s) =>
-        classifySetup(s, this.memory.checkpointCount, currentAnchorId),
-      )
-      .filter((d): d is NonNullable<typeof d> => d !== undefined);
+    const currentAnchorId = computeCurrentAnchorId(this.memory.anchors);
+    const setupDirectives = scheduleSetups(
+      Object.values(this.memory.setups),
+      this.memory.checkpointCount,
+      currentAnchorId,
+    );
 
     // Relevant episodes via retriever: active threads only (resolved/
     // abandoned threads are dead weight and would blunt the signal), plus
@@ -487,50 +488,5 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       );
     });
   }
-
-  // -----------------------------------------------------------------------
-  // Internal: anchor id computation
-  // -----------------------------------------------------------------------
-
-  /**
-   * Find the first pending anchor AFTER the most recent reached/passed
-   * anchor. Returns undefined when no anchor has been reached yet.
-   *
-   * Anchor progression (reach/pass) is a Step-3 PlotPlanner concern; in
-   * Step 1+2 no anchor can ever become reached, so this returns undefined
-   * and payoffBeforeAnchor directives stay inert — the brief must not
-   * claim a payoff deadline it cannot honor (audit finding 3).
-   */
-  private computeCurrentAnchorId(): string | undefined {
-    // Sort anchors by id for determinism
-    const sorted = Object.values(this.memory.anchors).sort((a, b) =>
-      a.id.localeCompare(b.id),
-    );
-
-    // Find last reached/passed index
-    let lastResolvedIdx = -1;
-    for (let i = 0; i < sorted.length; i++) {
-      const status = sorted[i]!.status;
-      if (status === "reached" || status === "passed") {
-        lastResolvedIdx = i;
-      }
-    }
-
-    // No anchor has been reached yet → no "current" anchor exists
-    // (Step 2 has no anchor-progression mechanism).
-    if (lastResolvedIdx === -1) {
-      return undefined;
-    }
-
-    // Look for first pending after that index
-    for (let i = lastResolvedIdx + 1; i < sorted.length; i++) {
-      if (sorted[i]!.status === "pending") {
-        return sorted[i]!.id;
-      }
-    }
-
-    return undefined;
-  }
-
 
 }
