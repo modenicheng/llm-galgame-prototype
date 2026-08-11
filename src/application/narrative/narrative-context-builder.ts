@@ -3,9 +3,9 @@
  * (narrative director, Task 7).
  *
  * The director note is a compact "director's note" section: revision
- * annotation, active threads, setup directives, long-form episode memories,
- * anchor progress, and reveal locks. Each subsection is rendered only when
- * its list is non-empty.
+ * annotation, optional director goal (phase / goal / beats), active threads,
+ * setup directives, long-form episode memories, anchor progress, and reveal
+ * locks. Each subsection is rendered only when its content is present.
  */
 
 import type { NarrativeBrief } from "../../core/narrative/narrative-brief.js";
@@ -28,6 +28,19 @@ export function renderDirectorNote(
   lines.push(
     `记忆已整理至事件 ${brief.consolidatedThroughEventSeq}（当前事件 ${brief.currentEventSeq}），最近 ${maxRecentRawEvents} 条原始事件见下方剧情历史。`,
   );
+
+  if (brief.currentGoal !== undefined) {
+    lines.push("[导演目标]");
+    if (brief.phase !== undefined) {
+      lines.push(`- 阶段：${brief.phase}`);
+    }
+    lines.push(`- 目标：${brief.currentGoal}`);
+    if (brief.beats !== undefined && brief.beats.length > 0) {
+      for (const [index, beat] of brief.beats.entries()) {
+        lines.push(`- 节拍 ${index + 1}：${beat.purpose}`);
+      }
+    }
+  }
 
   if (brief.activeThreads.length > 0) {
     lines.push("[活跃剧情线]");

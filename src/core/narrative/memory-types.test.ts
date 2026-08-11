@@ -527,4 +527,17 @@ describe("NarrativeBriefSchema", () => {
     };
     expect(NarrativeBriefSchema.safeParse(badDirective).success).toBe(false);
   });
+
+  it("accepts optional plan fields and rejects empty beats entries", () => {
+    const brief = {
+      ...validBrief,
+      phase: "escalation" as const,
+      currentGoal: "推进怀疑",
+      beats: [{ purpose: "侧面证据" }],
+    };
+    expect(NarrativeBriefSchema.parse(brief).phase).toBe("escalation");
+    expect(
+      NarrativeBriefSchema.safeParse({ ...brief, beats: [{ purpose: "" }] }).success,
+    ).toBe(false);
+  });
 });

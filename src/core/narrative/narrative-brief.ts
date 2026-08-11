@@ -19,7 +19,11 @@ import type {
   StoryAnchorState,
 } from "./memory-types.js";
 import {
+  DirectorPhaseSchema,
+  PlannedBeatSchema,
   SetupDirectiveSchema,
+  type DirectorPhase,
+  type PlannedBeat,
   type SetupDirective,
 } from "./director-plan.js";
 
@@ -55,6 +59,10 @@ export interface NarrativeBrief {
   anchors: StoryAnchorState[];
   /** Always [] in this plan. */
   revealLocks: string[];
+  // 第 3 步新增（可选；无有效计划时为 undefined → 渲染省略 [导演目标]）
+  phase?: DirectorPhase;
+  currentGoal?: string;
+  beats?: PlannedBeat[];
 }
 
 const ActiveThreadSchema = z.object({
@@ -85,4 +93,7 @@ export const NarrativeBriefSchema: z.ZodType<NarrativeBrief> = z.object({
   relevantEpisodes: z.array(EpisodeMemorySchema),
   anchors: z.array(StoryAnchorStateSchema),
   revealLocks: z.array(z.string().min(1)),
+  phase: z.exactOptional(DirectorPhaseSchema),
+  currentGoal: z.exactOptional(z.string().min(1).max(200)),
+  beats: z.exactOptional(z.array(PlannedBeatSchema).min(1).max(6)),
 });

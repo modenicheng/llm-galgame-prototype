@@ -122,4 +122,36 @@ describe("renderDirectorNote", () => {
     expect(note).not.toContain("[禁止透露]");
     expect(note).not.toContain("- ");
   });
+
+  it("renders the director goal section before threads when present", () => {
+    const note = renderDirectorNote(
+      makeBrief({
+        activeThreads: [
+          {
+            id: "thread_suyao",
+            kind: "character",
+            summary: "苏遥对主角隐瞒了旧终端的秘密",
+            status: "developing",
+            importance: "major",
+            lastTouchedAtCheckpoint: 10,
+          },
+        ],
+        phase: "development",
+        currentGoal: "推进玩家对苏遥的怀疑",
+        beats: [{ purpose: "让玩家得到侧面证据" }, { purpose: "苏遥阻止调查" }],
+      }),
+      40,
+    );
+    expect(note).toContain("[导演目标]");
+    expect(note).toContain("阶段：development");
+    expect(note).toContain("目标：推进玩家对苏遥的怀疑");
+    expect(note).toContain("节拍 1：让玩家得到侧面证据");
+    expect(note).toContain("节拍 2：苏遥阻止调查");
+    expect(note.indexOf("[导演目标]")).toBeLessThan(note.indexOf("[活跃剧情线]"));
+  });
+
+  it("omits the director goal section when no plan is in effect", () => {
+    const note = renderDirectorNote(makeBrief(), 40);
+    expect(note).not.toContain("[导演目标]");
+  });
 });
