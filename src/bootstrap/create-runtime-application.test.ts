@@ -20,6 +20,9 @@ import { DirectorPlanSchema } from "../core/narrative/director-plan.js";
 import { DEFAULT_NARRATIVE_CONFIG } from "../config.js";
 import type { AppConfig } from "../config.js";
 import type { GeneratedEvent } from "../story/types.js";
+import type { GenerationEnvelope } from "../story/types.js";
+import type { EventGroupDraft } from "../core/protocol/gal-dsl/types.js";
+import type { GenerationHandle } from "../core/ports/story-generator-port.js";
 
 // The TTS providers (Task B) and the performance compiler impl (Task H)
 // land in parallel with this task. The composition test never exercises
@@ -109,15 +112,63 @@ const dashscopeProviderState = vi.hoisted(() => ({
   instances: [] as Array<Record<string, unknown>>,
 }));
 
-vi.mock("../adapters/llm/openai-compatible-generator.js", () => ({
-  StoryGenerator: class {
-    generateOpening = vi.fn(async () => generatorState.opening);
-    generateBranchPrefetch = vi.fn(async () => ({ events: [], state_patch: undefined }));
-    generateInputResponse = vi.fn(async () => ({ events: [], state_patch: undefined }));
-    generateContinuation = vi.fn(async () => generatorState.continuation);
-    generateInputBridge = vi.fn(async () => ({ events: [], state_patch: undefined }));
-  },
-}));
+vi.mock("../adapters/llm/openai-compatible-generator.js", () => {
+  const handleFrom = (envelope: {
+    events: GeneratedEvent[];
+    state_patch: unknown;
+    groups: unknown;
+    segmentEnd: unknown;
+  } | undefined): GenerationHandle => {
+    const env = envelope ?? {
+      events: [],
+      state_patch: undefined,
+      groups: [],
+      segmentEnd: undefined,
+    };
+    const groups = (env.groups ?? []) as EventGroupDraft[];
+    const iterator = groups[Symbol.iterator]();
+    return {
+      id: "mock",
+      events: {
+        [Symbol.asyncIterator](): AsyncIterator<EventGroupDraft> {
+          return {
+            next: () => {
+              const step = iterator.next();
+              return step.done
+                ? Promise.resolve({ value: undefined, done: true })
+                : Promise.resolve({ value: step.value, done: false });
+            },
+          };
+        },
+      },
+      done: Promise.resolve(env as unknown as GenerationEnvelope),
+      cancel: () => undefined,
+    };
+  };
+  return {
+    StoryGenerator: class {
+      generateOpening = vi.fn(() => handleFrom(generatorState.opening));
+      generateBranchPrefetch = vi.fn(() => handleFrom(undefined));
+      generateInputResponse = vi.fn(() => handleFrom(undefined));
+      generateContinuation = vi.fn(() => handleFrom(generatorState.continuation));
+      generateInputBridge = vi.fn(() => handleFrom(undefined));
+    },
+    GeneratorPortFacade: class {
+      constructor(private readonly inner: {
+        generateOpening: (request: unknown) => unknown;
+        generateBranchPrefetch: (request: unknown) => unknown;
+        generateInputResponse: (request: unknown) => unknown;
+        generateContinuation: (request: unknown) => unknown;
+        generateInputBridge: (request: unknown) => unknown;
+      }) {}
+      generateOpening = (request: unknown) => this.inner.generateOpening(request);
+      generateBranchPrefetch = (request: unknown) => this.inner.generateBranchPrefetch(request);
+      generateInputResponse = (request: unknown) => this.inner.generateInputResponse(request);
+      generateContinuation = (request: unknown) => this.inner.generateContinuation(request);
+      generateInputBridge = (request: unknown) => this.inner.generateInputBridge(request);
+    },
+  };
+});
 
 const ORIGINAL_TEST_KEY = process.env.TEST_KEY;
 const ORIGINAL_UNUSED_KEY = process.env.UNUSED_KEY;

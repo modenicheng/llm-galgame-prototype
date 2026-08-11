@@ -18,7 +18,15 @@ import {
 } from "./test-helpers.js";
 import { NodeJsonlSessionStore } from "./adapters/storage/node-jsonl-session-store.js";
 import { SessionIdGenerator } from "./adapters/platform/session-id-generator.js";
-import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
+import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
+import { createGenerationHandle } from "./core/ports/story-generator-port.js";
+import type {
+  GenerationHandle,
+  OpeningRequest,
+  ContinuationRequest,
+  BranchPrefetchRequest,
+  InputResponseRequest,
+} from "./core/ports/story-generator-port.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { RuntimeStatus } from "./status.js";
 import type { AppConfig } from "./config.js";
@@ -60,18 +68,22 @@ function makeGameConfig(overrides?: Parameters<typeof makeTestConfig>[0]): AppCo
   });
 }
 
-function makeMockGenerator(): StoryGenerator {
+function makeMockGenerator(): StoryGeneratorPort {
   return {
     generateOpening: vi.fn(),
-    generateBranchPrefetch: vi.fn(),
+    // Default: an empty branch (candidates resolve with no events). Hybrid
+    // free-text tests never set this; the prefetch group still starts.
+    generateBranchPrefetch: vi.fn(() =>
+      createGenerationHandle("branch", async () => ({ events: [], state_patch: {}, groups: [] })),
+    ),
     generateInputResponse: vi.fn(),
     generateContinuation: vi.fn(),
     // Default bridge: one narration line (docs §34). Tests that expect a
     // different bridge text override this per-test.
-    generateInputBridge: vi.fn(async () =>
-      envelope([narrationEvent("她等着你开口。")]),
+    generateInputBridge: vi.fn(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     ),
-  } as unknown as StoryGenerator;
+  } as unknown as StoryGeneratorPort;
 }
 
 function makeMockMedia(): MediaPlannerPort {
@@ -190,6 +202,26 @@ function envelope(
   };
 }
 
+/**
+ * Port-shaped mock handle: the drafts stream through `onGroup` (so they
+ * arrive on `handle.events` exactly like the real generator's DSL stream)
+ * and the envelope carries the segment-end status. `end` drafts map to the
+ * `@end ... ending` sentinel in the envelope, never to a group.
+ */
+function handleFromDrafts(
+  id: string,
+  drafts: EnvelopeDraft[],
+  state_patch: GenerationEnvelope["state_patch"] = {},
+): GenerationHandle {
+  return createGenerationHandle(id, async (_signal, onGroup) => {
+    for (const draft of drafts) {
+      if (draft.type === "end") continue;
+      onGroup(groupFromEvent(draft));
+    }
+    return envelope(drafts, state_patch);
+  });
+}
+
 function narrationEvent(text = "Some narration."): NarrationDraftEvent {
   return { type: "narration", text };
 }
@@ -204,7 +236,7 @@ function endEvent(endingId = "end_1", text = "The end."): EndEvent {
 
 describe("Game construction", () => {
   let config: AppConfig;
-  let generator: StoryGenerator;
+  let generator: StoryGeneratorPort;
   let status: RuntimeStatus;
   let media: MediaPlannerPort;
 
@@ -254,7 +286,7 @@ describe("Game construction", () => {
 
 describe("Session ID", () => {
   let config: AppConfig;
-  let generator: StoryGenerator;
+  let generator: StoryGeneratorPort;
   let status: RuntimeStatus;
   let media: MediaPlannerPort;
 
@@ -295,7 +327,7 @@ describe("Session ID", () => {
 
 describe("internal state access", () => {
   let config: AppConfig;
-  let generator: StoryGenerator;
+  let generator: StoryGeneratorPort;
   let status: RuntimeStatus;
   let media: MediaPlannerPort;
 
@@ -387,7 +419,7 @@ describe("Line ID generation", () => {
 
 describe("recordPlayerChoice", () => {
   let game: Game;
-  let gen: StoryGenerator;
+  let gen: StoryGeneratorPort;
 
   beforeEach(() => {
     gen = makeMockGenerator();
@@ -629,8 +661,11 @@ describe("JSONL store initialization", () => {
     const media = makeMockMedia();
 
     // Mock the generator to throw after init so run() doesn't loop forever
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("stop"),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        createGenerationHandle("opening", async () => {
+          throw new Error("stop");
+        }),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
@@ -656,8 +691,8 @@ describe("JSONL store initialization", () => {
 
     const generator = makeMockGenerator();
     // Return a minimal [narration, end] segment so run() completes
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("It begins."), endEvent("end_1", "Fin.")]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("It begins."), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
@@ -681,13 +716,15 @@ describe("JSONL store initialization", () => {
     const generator = makeMockGenerator();
     let openingCalls = 0;
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn, _state, _signal, options) => {
+      (request: OpeningRequest) => {
         openingCalls += 1;
         if (openingCalls === 1) {
           // Stream two events, then fail mid-stream before any terminal event.
-          options!.onGroup!(groupFromEvent({ type: "narration", text: "第一句。" }));
-          options!.onGroup!(groupFromEvent({ type: "dialogue", speaker: "小樱", text: "第二句。" }));
-          throw new Error("网络中断");
+          return createGenerationHandle("opening", async (_signal, onGroup) => {
+            onGroup(groupFromEvent({ type: "narration", text: "第一句。" }));
+            onGroup(groupFromEvent({ type: "dialogue", speaker: "小樱", text: "第二句。" }));
+            throw new Error("网络中断");
+          });
         }
         throw new Error("unexpected second opening call");
       },
@@ -695,12 +732,12 @@ describe("JSONL store initialization", () => {
     // The repair path must use a continuation request seeded with the
     // preserved prefix.
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn, _state, history, prefetchedEvents) => {
-        expect(prefetchedEvents).toHaveLength(2);
-        expect(history).toContainEqual(
+      (request: ContinuationRequest) => {
+        expect(request.prefetchedEvents).toHaveLength(2);
+        expect(request.history).toContainEqual(
           expect.objectContaining({ type: "dialogue", speaker: "小樱" }),
         );
-        return envelope([narrationEvent("修复后的开场。"), endEvent("end_1", "Fin.")]);
+        return handleFromDrafts("continuation", [narrationEvent("修复后的开场。"), endEvent("end_1", "Fin.")]);
       },
     );
 
@@ -728,22 +765,25 @@ describe("JSONL store initialization", () => {
     // exhausted along the way) — the run must NOT terminate: it keeps
     // continuing along the last successful line until repair #3 succeeds.
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t, _s, _sig, options) => {
-        options!.onGroup!(groupFromEvent({ type: "narration", text: "半句。" }));
-        throw new Error("open 失败");
-      },
+      (request: OpeningRequest) =>
+        createGenerationHandle("opening", async (_signal, onGroup) => {
+          onGroup(groupFromEvent({ type: "narration", text: "半句。" }));
+          throw new Error("open 失败");
+        }),
     );
     let repairs = 0;
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t, _s, _h, _p, _sig, options) => {
+      (request: ContinuationRequest) => {
         repairs += 1;
         // Failures publish a line via onEvent then throw (like a truncated
         // stream); the successful repair returns a full envelope instead.
         if (repairs < 3) {
-          options!.onGroup!(groupFromEvent({ type: "narration", text: `修复段半句${repairs}。` }));
-          throw new Error("修复失败");
+          return createGenerationHandle("continuation", async (_signal, onGroup) => {
+            onGroup(groupFromEvent({ type: "narration", text: `修复段半句${repairs}。` }));
+            throw new Error("修复失败");
+          });
         }
-        return envelope([
+        return handleFromDrafts("continuation", [
           narrationEvent(`修复段收尾${repairs}。`),
           endEvent("end_1", "Fin."),
         ]);
@@ -770,19 +810,21 @@ describe("JSONL store initialization", () => {
     const generator = makeMockGenerator();
     let openingCalls = 0;
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t, _s, _sig, options) => {
+      (request: OpeningRequest) => {
         openingCalls += 1;
         if (openingCalls === 1) {
-          options!.onGroup!(groupFromEvent({ type: "narration", text: "开场半句。" }));
-          throw new Error("网络中断");
+          return createGenerationHandle("opening", async (_signal, onGroup) => {
+            onGroup(groupFromEvent({ type: "narration", text: "开场半句。" }));
+            throw new Error("网络中断");
+          });
         }
         throw new Error("unexpected second opening call");
       },
     );
     // Repair continuation ends in a choice; the branch flow must take over.
     (generator.generateContinuation as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(async () =>
-        envelope([
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [
           narrationEvent("修复段内容。"),
           {
             type: "choice",
@@ -794,11 +836,11 @@ describe("JSONL store initialization", () => {
           },
         ]),
       )
-      .mockImplementationOnce(async () =>
-        envelope([narrationEvent("续写结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("续写结尾。"), endEvent("end_1", "Fin.")]),
       );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
@@ -845,8 +887,8 @@ describe("JSONL store initialization", () => {
     });
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "choice",
@@ -858,21 +900,21 @@ describe("JSONL store initialization", () => {
         },
       ]),
     );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
     // Continuation #1: publish one line, then fail mid-stream while the
     // run loop is still presenting the selected branch's preview.
     (generator.generateContinuation as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(
-        async (_t, _s, _h, _p, _sig, options) => {
-          options!.onGroup!(groupFromEvent({ type: "narration", text: "续写半句。" }));
+      .mockImplementationOnce(() =>
+        createGenerationHandle("continuation", async (_signal, onGroup) => {
+          onGroup(groupFromEvent({ type: "narration", text: "续写半句。" }));
           throw new Error("续写网络中断");
-        },
+        }),
       )
       // Repair continuation completes the story.
-      .mockImplementationOnce(async () =>
-        envelope([narrationEvent("修复续写。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("修复续写。"), endEvent("end_1", "Fin.")]),
       );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
@@ -921,8 +963,8 @@ describe("Input preview cancellation", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "interaction",
@@ -934,18 +976,22 @@ describe("Input preview cancellation", () => {
       ]),
     );
 
-    // First (stale) response: a pending promise resolved only after run()
+    // First (stale) response: a pending handle resolved only after run()
     // completes. Second response: resolves normally.
     let resolveStale!: (value: unknown) => void;
-    const staleResponse = new Promise((resolve) => {
-      resolveStale = resolve;
+    const staleDone = new Promise<GenerationEnvelope>((resolve) => {
+      resolveStale = (value: unknown) => resolve(value as GenerationEnvelope);
     });
     const generateInputResponse = generator.generateInputResponse as ReturnType<typeof vi.fn>;
     generateInputResponse
-      .mockImplementationOnce(() => staleResponse)
-      .mockResolvedValueOnce(envelope([narrationEvent("回应。")]));
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        createGenerationHandle("input", async () => staleDone),
+      )
+      .mockImplementationOnce(() =>
+        handleFromDrafts("input", [narrationEvent("回应。")]),
+      );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     // Editor round 1: submit "你好", preview cancels. Round 2: submit
@@ -992,8 +1038,8 @@ describe("Input preview cancellation", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "interaction",
@@ -1008,10 +1054,14 @@ describe("Input preview cancellation", () => {
     // First response resolves immediately (completed BEFORE the cancel);
     // second resolves normally.
     generateInputResponse
-      .mockResolvedValueOnce(envelope([narrationEvent("已完成的回应。")]))
-      .mockResolvedValueOnce(envelope([narrationEvent("第二次回应。")]));
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("input", [narrationEvent("已完成的回应。")]),
+      )
+      .mockImplementationOnce(() =>
+        handleFromDrafts("input", [narrationEvent("第二次回应。")]),
+      );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     let previewIndex = 0;
@@ -1067,8 +1117,8 @@ describe("Input bridge semantics", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "interaction",
@@ -1079,17 +1129,17 @@ describe("Input bridge semantics", () => {
         },
       ]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [
         narrationEvent("风穿过走廊。"),
         narrationEvent("她抬起了头。"),
       ]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -1129,8 +1179,8 @@ describe("Input bridge semantics", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "interaction",
@@ -1145,11 +1195,11 @@ describe("Input bridge semantics", () => {
         },
       ]),
     );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -1173,8 +1223,8 @@ describe("Input bridge semantics", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "interaction",
@@ -1189,14 +1239,14 @@ describe("Input bridge semantics", () => {
         },
       ]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你的决定。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你的决定。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -1224,8 +1274,8 @@ describe("Input bridge semantics", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "interaction",
@@ -1241,17 +1291,17 @@ describe("Input bridge semantics", () => {
       ]),
     );
     // Both option candidates are prefetched and become ready…
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("候选分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("候选分支内容。")]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你的决定。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你的决定。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -1290,16 +1340,15 @@ describe("Input bridge semantics", () => {
 
 /** Wire generateInputResponse to a manually controlled streaming provider. */
 function makeManualInputResponse(
-  generator: StoryGenerator,
+  generator: StoryGeneratorPort,
   run: (
     signal: AbortSignal,
     onGroup: (draft: EventGroupDraft) => void,
   ) => Promise<GenerationEnvelope>,
 ): void {
   (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(
-    async (_t, _s, _h, _interaction, _text, signal, options) => {
-      return run(signal, (draft) => options?.onGroup?.(draft));
-    },
+    (request: InputResponseRequest) =>
+      createGenerationHandle("input", (signal, onGroup) => run(signal, onGroup)),
   );
 }
 
@@ -1320,8 +1369,8 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     let emitGroup!: (draft: EventGroupDraft) => void;
     let completeResponse!: () => void;
@@ -1331,8 +1380,8 @@ describe("Input response streaming", () => {
         completeResponse = () => resolve(envelope([], {}));
       });
     });
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1372,8 +1421,8 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     let emitGroup!: (draft: EventGroupDraft) => void;
     let completeResponse!: () => void;
@@ -1383,8 +1432,8 @@ describe("Input response streaming", () => {
         completeResponse = () => resolve(envelope([], {}));
       });
     });
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1434,22 +1483,26 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     let emitGroup!: (draft: EventGroupDraft) => void;
     let completeResponse!: () => void;
     // First call: manually controlled pending stream. Second call: normal.
     (generator.generateInputResponse as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
-        return new Promise((resolve) => {
-          emitGroup = (draft) => options?.onGroup?.(draft);
-          completeResponse = () => resolve(envelope([], {}));
-        });
-      })
-      .mockResolvedValueOnce(envelope([narrationEvent("回应。")]));
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        createGenerationHandle("input", async (_signal, onGroup) => {
+          return new Promise<GenerationEnvelope>((resolve) => {
+            emitGroup = onGroup;
+            completeResponse = () => resolve(envelope([], {}));
+          });
+        }),
+      )
+      .mockImplementationOnce(() =>
+        handleFromDrafts("input", [narrationEvent("回应。")]),
+      );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1486,23 +1539,27 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     let emitGroup!: (draft: EventGroupDraft) => void;
     let completeStale!: (value: GenerationEnvelope) => void;
     // First call: manually controlled pending stream that outlives the
     // cancel. Second call: normal response for the re-opened interaction.
     (generator.generateInputResponse as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
-        return new Promise((resolve) => {
-          emitGroup = (draft) => options?.onGroup?.(draft);
-          completeStale = (value) => resolve(value);
-        });
-      })
-      .mockResolvedValueOnce(envelope([narrationEvent("回应。")]));
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        createGenerationHandle("input", async (_signal, onGroup) => {
+          return new Promise<GenerationEnvelope>((resolve) => {
+            emitGroup = onGroup;
+            completeStale = (value) => resolve(value);
+          });
+        }),
+      )
+      .mockImplementationOnce(() =>
+        handleFromDrafts("input", [narrationEvent("回应。")]),
+      );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1557,17 +1614,17 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你开口。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1599,8 +1656,8 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     let resolveResponse!: (env: GenerationEnvelope) => void;
     makeManualInputResponse(generator, async () => {
@@ -1608,8 +1665,8 @@ describe("Input response streaming", () => {
         resolveResponse = resolve;
       });
     });
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1637,14 +1694,14 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     makeManualInputResponse(generator, async () =>
       envelope([narrationEvent("回应。")], { recent_summary: "未确认的摘要" }),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1672,35 +1729,35 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     makeManualInputResponse(generator, async (_signal, onGroup) => {
       onGroup(groupFromEvent({ type: "narration", text: "半句回应。" }));
       throw new Error("流中断");
     });
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t, _s, _h, prefetchedEvents: StoryContextEvent[]) => {
+      (request: ContinuationRequest) => {
         // The continuation repair receives the committed prefix: player line
         // + bridge + the arrived response line.
         expect(
-          prefetchedEvents.some(
+          request.prefetchedEvents.some(
             (e) => (e as { text?: string }).text === "半句回应。",
           ),
         ).toBe(true);
         expect(
-          prefetchedEvents.some(
+          request.prefetchedEvents.some(
             (e) =>
               e.type === "player_dialogue" &&
               (e as { text?: string }).text === "你好",
           ),
         ).toBe(true);
         expect(
-          prefetchedEvents.some(
+          request.prefetchedEvents.some(
             (e) => (e as { text?: string }).text === "她等着你开口。",
           ),
         ).toBe(true);
-        return envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]);
+        return handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]);
       },
     );
 
@@ -1728,16 +1785,20 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(async () => {
-        throw new Error("首轮失败");
-      })
-      .mockResolvedValueOnce(envelope([narrationEvent("修复回应。")]));
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        createGenerationHandle("input", async () => {
+          throw new Error("首轮失败");
+        }),
+      )
+      .mockImplementationOnce(() =>
+        handleFromDrafts("input", [narrationEvent("修复回应。")]),
+      );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1765,16 +1826,17 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(
-      async () => {
-        throw new Error("总是失败");
-      },
+      () =>
+        createGenerationHandle("input", async () => {
+          throw new Error("总是失败");
+        }),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1802,28 +1864,32 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     let emitStale!: (draft: EventGroupDraft) => void;
     let completeStale!: () => void;
     let emitLive!: (draft: EventGroupDraft) => void;
     let completeLive!: () => void;
     (generator.generateInputResponse as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
-        return new Promise((resolve) => {
-          emitStale = (draft) => options?.onGroup?.(draft);
-          completeStale = () => resolve(envelope([], {}));
-        });
-      })
-      .mockImplementationOnce(async (_t, _s, _h, _i, _text, _signal, options) => {
-        return new Promise((resolve) => {
-          emitLive = (draft) => options?.onGroup?.(draft);
-          completeLive = () => resolve(envelope([], {}));
-        });
-      });
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        createGenerationHandle("input", async (_signal, onGroup) => {
+          return new Promise<GenerationEnvelope>((resolve) => {
+            emitStale = onGroup;
+            completeStale = () => resolve(envelope([], {}));
+          });
+        }),
+      )
+      .mockImplementationOnce(() =>
+        createGenerationHandle("input", async (_signal, onGroup) => {
+          return new Promise<GenerationEnvelope>((resolve) => {
+            emitLive = onGroup;
+            completeLive = () => resolve(envelope([], {}));
+          });
+        }),
+      );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1872,17 +1938,17 @@ describe("Input response streaming", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你开口。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
@@ -1952,7 +2018,7 @@ describe("StoryState reconciliation", () => {
 
 describe("Metrics pass-through", () => {
   let config: AppConfig;
-  let generator: StoryGenerator;
+  let generator: StoryGeneratorPort;
   let status: RuntimeStatus;
   let media: MediaPlannerPort;
 
@@ -2022,8 +2088,8 @@ describe("Hybrid interaction commands", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "interaction",
@@ -2038,11 +2104,11 @@ describe("Hybrid interaction commands", () => {
         },
       ]),
     );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     // The runtime opens the interaction once and waits for a command; a
@@ -2071,23 +2137,23 @@ describe("Hybrid interaction commands", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         hybridFixture(),
       ]),
     );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你开口。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     // First open: submit free text; the preview is then cancelled. The
@@ -2159,8 +2225,8 @@ describe("Narration-only branch handoff", () => {
     // its own event list), keyed by option id.
     const emitters = new Map<string, () => void>();
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "choice",
@@ -2173,19 +2239,20 @@ describe("Narration-only branch handoff", () => {
       ]),
     );
     (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t, _s, _h, _choice, option, _signal, options) => {
-        options!.onGroup!(groupFromEvent({ type: "narration", text: `分支${option.id}第一句。` }));
-        await new Promise<void>((resolve) => {
-          emitters.set(option.id, () => {
-            options!.onGroup!(groupFromEvent({ type: "narration", text: `分支${option.id}第二句。` }));
-            resolve();
+      (request: BranchPrefetchRequest) =>
+        createGenerationHandle(`branch:${request.option.id}`, async (_signal, onGroup) => {
+          onGroup(groupFromEvent({ type: "narration", text: `分支${request.option.id}第一句。` }));
+          await new Promise<void>((resolve) => {
+            emitters.set(request.option.id, () => {
+              onGroup(groupFromEvent({ type: "narration", text: `分支${request.option.id}第二句。` }));
+              resolve();
+            });
           });
-        });
-        return [];
-      },
+          return [] as unknown as GenerationEnvelope;
+        }),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("续写。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("续写。"), endEvent("end_1", "Fin.")]),
     );
 
     // Emit the second line right when the player picks an option: the live
@@ -2270,27 +2337,28 @@ describe("Interaction policy enforcement", () => {
     const generator = makeMockGenerator();
     // Opening streams a narration, then an ILLEGAL input interaction.
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t, _s, _sig, options) => {
-        options!.onGroup!(groupFromEvent({ type: "narration", text: "开场。" }));
-        options!.onGroup!(groupFromEvent(inputInteraction("int_illegal")));
-        return envelope([]);
-      },
+      (request: OpeningRequest) =>
+        createGenerationHandle("opening", async (_signal, onGroup) => {
+          onGroup(groupFromEvent({ type: "narration", text: "开场。" }));
+          onGroup(groupFromEvent(inputInteraction("int_illegal")));
+          return envelope([]);
+        }),
     );
     // Repair continuation emits a LEGAL choice interaction; the post-choice
     // continuation ends the story.
     let repairReason: string | undefined;
     (generator.generateContinuation as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(async (_t, _s, _h, _p, _sig, options) => {
+      .mockImplementationOnce((request: ContinuationRequest) => {
         // The Game-level repair passes the concrete policy reason so the
         // model sees WHY its previous output was rejected.
-        repairReason = options?.repairReason;
-        return envelope([narrationEvent("修复段。"), choiceInteraction("int_legal")]);
+        repairReason = request.repairReason;
+        return handleFromDrafts("continuation", [narrationEvent("修复段。"), choiceInteraction("int_legal")]);
       })
-      .mockImplementationOnce(async () =>
-        envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
       );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
 
     const diagnostics: Array<{ scope: string; message: string }> = [];
@@ -2361,20 +2429,21 @@ describe("Interaction policy enforcement", () => {
     const generator = makeMockGenerator();
     // The opening publishes ONLY the illegal interaction — no playable prefix.
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t, _s, _sig, options) => {
-        options!.onGroup!(groupFromEvent(inputInteraction("int_illegal")));
-        return envelope([]);
-      },
+      (request: OpeningRequest) =>
+        createGenerationHandle("opening", async (_signal, onGroup) => {
+          onGroup(groupFromEvent(inputInteraction("int_illegal")));
+          return envelope([]);
+        }),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(async () =>
-        envelope([narrationEvent("修复段。"), choiceInteraction("int_legal")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("修复段。"), choiceInteraction("int_legal")]),
       )
-      .mockImplementationOnce(async () =>
-        envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
       );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
 
     const controller = new MemoryController({
@@ -2403,30 +2472,30 @@ describe("Interaction policy enforcement", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteraction("interaction_1")]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteraction("interaction_1")]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你开口。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     );
     // Continuation #1 tries to open ANOTHER pure input → 2 consecutive →
     // rejected. Repair #1 emits a choice (non-input), then the post-choice
     // continuation ends the story.
     (generator.generateContinuation as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(async () =>
-        envelope([narrationEvent("续写。"), inputInteraction("interaction_2")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("续写。"), inputInteraction("interaction_2")]),
       )
-      .mockImplementationOnce(async () =>
-        envelope([narrationEvent("修复段。"), choiceInteraction("int_3")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("修复段。"), choiceInteraction("int_3")]),
       )
-      .mockImplementationOnce(async () =>
-        envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
       );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
 
     const controller = new MemoryController({
@@ -2467,23 +2536,23 @@ describe("Interaction policy enforcement", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), hybridInteraction("interaction_1")]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), hybridInteraction("interaction_1")]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你开口。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     );
     // The continuation opens a pure input AFTER a hybrid: the streak was
     // broken, so it must be accepted.
     (generator.generateContinuation as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(async () =>
-        envelope([narrationEvent("续写。"), inputInteraction("interaction_2")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("续写。"), inputInteraction("interaction_2")]),
       )
-      .mockImplementationOnce(async () =>
-        envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
       );
 
     const controller = new MemoryController({
@@ -2512,8 +2581,8 @@ describe("Interaction policy enforcement", () => {
 
   it("creates no BranchManager for pure input terminals (§13.2)", () => {
     const generator = makeMockGenerator();
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
     const game = new Game(
       makeGameConfig(),
@@ -2535,17 +2604,17 @@ describe("Interaction policy enforcement", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteraction("interaction_1")]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteraction("interaction_1")]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你开口。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -2602,8 +2671,8 @@ describe("Interaction resolution publication", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "choice",
@@ -2615,11 +2684,11 @@ describe("Interaction resolution publication", () => {
         },
       ]),
     );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -2658,8 +2727,8 @@ describe("Interaction resolution publication", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "choice",
@@ -2689,8 +2758,8 @@ describe("Interaction resolution publication", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "interaction",
@@ -2705,11 +2774,11 @@ describe("Interaction resolution publication", () => {
         },
       ]),
     );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -2745,17 +2814,17 @@ describe("Interaction resolution publication", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你开口。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -2780,17 +2849,17 @@ describe("Interaction resolution publication", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你开口。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     let previews = 0;
@@ -2823,17 +2892,17 @@ describe("Interaction resolution publication", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你开口。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -2902,15 +2971,17 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    vi.mocked(generator.generateOpening).mockResolvedValue(
-      envelope([narrationEvent("开场。"), choiceFixture()]),
+    vi.mocked(generator.generateOpening).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), choiceFixture()]),
     );
     vi.mocked(generator.generateBranchPrefetch).mockImplementation(
-      async (_turn, _state, _context, _choice, option: { id: string }) =>
-        envelope([narrationEvent(option.id.endsWith("_opt_0") ? "分支A。" : "分支B。")]),
+      (request: BranchPrefetchRequest) =>
+        handleFromDrafts("branch", [
+          narrationEvent(request.option.id.endsWith("_opt_0") ? "分支A。" : "分支B。"),
+        ]),
     );
-    vi.mocked(generator.generateContinuation).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    vi.mocked(generator.generateContinuation).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -2946,14 +3017,14 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    vi.mocked(generator.generateOpening).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    vi.mocked(generator.generateOpening).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    vi.mocked(generator.generateInputResponse).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    vi.mocked(generator.generateInputResponse).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    vi.mocked(generator.generateContinuation).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    vi.mocked(generator.generateContinuation).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -2991,17 +3062,17 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    vi.mocked(generator.generateOpening).mockResolvedValue(
-      envelope([narrationEvent("开场。"), hybridFixture()]),
+    vi.mocked(generator.generateOpening).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), hybridFixture()]),
     );
-    vi.mocked(generator.generateBranchPrefetch).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    vi.mocked(generator.generateBranchPrefetch).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
-    vi.mocked(generator.generateInputResponse).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    vi.mocked(generator.generateInputResponse).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    vi.mocked(generator.generateContinuation).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    vi.mocked(generator.generateContinuation).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     // Both entrances submit in the same tick, the option click first.
@@ -3041,17 +3112,17 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    vi.mocked(generator.generateOpening).mockResolvedValue(
-      envelope([narrationEvent("开场。"), hybridFixture()]),
+    vi.mocked(generator.generateOpening).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), hybridFixture()]),
     );
-    vi.mocked(generator.generateBranchPrefetch).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    vi.mocked(generator.generateBranchPrefetch).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
-    vi.mocked(generator.generateInputResponse).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    vi.mocked(generator.generateInputResponse).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    vi.mocked(generator.generateContinuation).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    vi.mocked(generator.generateContinuation).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     // Both entrances submit in the same tick, the input first.
@@ -3092,15 +3163,17 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    vi.mocked(generator.generateOpening).mockResolvedValue(
-      envelope([narrationEvent("开场。"), choiceFixture()]),
+    vi.mocked(generator.generateOpening).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), choiceFixture()]),
     );
     vi.mocked(generator.generateBranchPrefetch).mockImplementation(
-      async (_turn, _state, _context, _choice, option: { id: string }) =>
-        envelope([narrationEvent(option.id.endsWith("_opt_0") ? "分支A。" : "分支B。")]),
+      (request: BranchPrefetchRequest) =>
+        handleFromDrafts("branch", [
+          narrationEvent(request.option.id.endsWith("_opt_0") ? "分支A。" : "分支B。"),
+        ]),
     );
-    vi.mocked(generator.generateContinuation).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    vi.mocked(generator.generateContinuation).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     const controller = new MemoryController({
@@ -3139,14 +3212,14 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     const media = makeMockMedia();
 
     const generator = makeMockGenerator();
-    vi.mocked(generator.generateOpening).mockResolvedValue(
-      envelope([narrationEvent("开场。"), inputInteractionFixture()]),
+    vi.mocked(generator.generateOpening).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
-    vi.mocked(generator.generateInputResponse).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    vi.mocked(generator.generateInputResponse).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    vi.mocked(generator.generateContinuation).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    vi.mocked(generator.generateContinuation).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     let cancelledPreviewId: string | null = null;
@@ -3244,7 +3317,7 @@ function makePortsWithDirector(
 
 describe("NarrativeDirector integration", () => {
   let config: AppConfig;
-  let generator: StoryGenerator;
+  let generator: StoryGeneratorPort;
   let status: RuntimeStatus;
   let media: MediaPlannerPort;
 
@@ -3258,8 +3331,8 @@ describe("NarrativeDirector integration", () => {
   it("delivers observeCommitted after a playable line is recorded", async () => {
     const director = makeDirectorFake();
 
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场叙事。"),
         endEvent("end_1", "Fin."),
       ]),
@@ -3299,8 +3372,8 @@ describe("NarrativeDirector integration", () => {
   it("delivers checkpoint('interaction_completed') after a choice is consumed", async () => {
     const director = makeDirectorFake();
 
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("选择前。"),
         {
           type: "choice",
@@ -3312,11 +3385,11 @@ describe("NarrativeDirector integration", () => {
         },
       ]),
     );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支A。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支A。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("续写。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("续写。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(
@@ -3369,23 +3442,23 @@ describe("NarrativeDirector integration", () => {
     const director = makeDirectorFake();
 
     // Opening: narration + hybrid interaction
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         hybridFixture(),
       ]),
     );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("分支内容。")]),
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("回应。")]),
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("她等着你开口。")]),
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
     );
 
     // Player opens preview, cancels, then selects a preset option.
@@ -3434,8 +3507,8 @@ describe("NarrativeDirector integration", () => {
   it("never delivers prefetch candidate content to observeCommitted", async () => {
     const director = makeDirectorFake();
 
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         {
           type: "choice",
@@ -3452,17 +3525,16 @@ describe("NarrativeDirector integration", () => {
     const branchAContent = "这是分支A的专属内容。";
     const branchBContent = "这是分支B的专属内容，不应该出现。";
     (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
-      async (...args: unknown[]) => {
-        const option = args[4] as { text?: string } | undefined;
+      (request: BranchPrefetchRequest) => {
         // Runtime-generated option IDs are unpredictable; identify by text.
-        if (option?.text === "左边") {
-          return envelope([narrationEvent(branchAContent)]);
+        if (request.option.text === "左边") {
+          return handleFromDrafts("branch", [narrationEvent(branchAContent)]);
         }
-        return envelope([narrationEvent(branchBContent)]);
+        return handleFromDrafts("branch", [narrationEvent(branchBContent)]);
       },
     );
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([narrationEvent("续写。"), endEvent("end_1", "Fin.")]),
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("续写。"), endEvent("end_1", "Fin.")]),
     );
 
     const game = new Game(
@@ -3523,8 +3595,8 @@ describe("NarrativeDirector integration", () => {
       ],
     });
 
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         endEvent("end_1", "Fin."),
       ]),
@@ -3544,15 +3616,14 @@ describe("NarrativeDirector integration", () => {
 
     expect(generator.generateOpening).toHaveBeenCalled();
 
-    // The 4th argument is the GenerationStreamOptions with brief
+    // The request object carries the brief from getBrief.
     const callArgs = (
       generator.generateOpening as ReturnType<typeof vi.fn>
     ).mock.calls[0] as unknown[];
-    const options = callArgs[3] as Record<string, unknown> | undefined;
-    expect(options).toBeDefined();
-    expect(options!.brief).toBeDefined();
+    const request = callArgs[0] as OpeningRequest;
+    expect(request.brief).toBeDefined();
 
-    const brief = options!.brief as NarrativeBrief;
+    const brief = request.brief as NarrativeBrief;
     expect(brief.revision).toBe(7);
     expect(brief.checkpointCount).toBe(3);
     expect(brief.activeThreads).toHaveLength(1);
@@ -3565,8 +3636,8 @@ describe("NarrativeDirector integration", () => {
     // Baseline: no director; run must complete normally
     const ports = makeTestPorts(); // no narrativeDirector
 
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope([
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
         narrationEvent("开场。"),
         endEvent("end_1", "Fin."),
       ]),
@@ -3585,11 +3656,11 @@ describe("NarrativeDirector integration", () => {
     await expect(game.run()).resolves.toBeUndefined();
 
     expect(controller.ended()).toBe(true);
-    // No brief in options when director is absent
+    // No brief in the request when director is absent
     const callArgs = (
       generator.generateOpening as ReturnType<typeof vi.fn>
     ).mock.calls[0] as unknown[];
-    const options = callArgs[3] as Record<string, unknown> | undefined;
-    expect(options?.brief).toBeUndefined();
+    const request = callArgs[0] as OpeningRequest;
+    expect(request.brief).toBeUndefined();
   });
 });

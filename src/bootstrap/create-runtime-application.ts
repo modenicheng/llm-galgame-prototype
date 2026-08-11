@@ -11,7 +11,7 @@ import { loadApiKey, loadAuthorConfig, loadConfig } from "../config.js";
 import type { AppConfig } from "../config.js";
 import { loadVoices, validateDashscopeEnv } from "../config/voices.js";
 import { Game } from "../game.js";
-import { StoryGenerator } from "../adapters/llm/openai-compatible-generator.js";
+import { GeneratorPortFacade, StoryGenerator } from "../adapters/llm/openai-compatible-generator.js";
 import { NodeJsonlSessionStore } from "../adapters/storage/node-jsonl-session-store.js";
 import { ConsoleDiagnosticSink } from "../adapters/platform/console-diagnostic-sink.js";
 import { SessionIdGenerator } from "../adapters/platform/session-id-generator.js";
@@ -188,7 +188,7 @@ export async function createRuntimeApplication(
     narrativeDirector = service;
   }
 
-  const game = new Game(config, generator, status, planner, metrics, {
+  const game = new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {
     store,
     clock: new SystemClock(),
     ids: new SessionIdGenerator(),

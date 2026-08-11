@@ -8,7 +8,16 @@
  * generator's dsl protocol branch.
  */
 import { describe, it, expect, vi } from "vitest";
-import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
+import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
+import { createGenerationHandle } from "./core/ports/story-generator-port.js";
+import type {
+  GenerationHandle,
+  OpeningRequest,
+  ContinuationRequest,
+  BranchPrefetchRequest,
+  InputResponseRequest,
+  InputBridgeRequest,
+} from "./core/ports/story-generator-port.js";
 import type { AppConfig } from "./config.js";
 import { Game } from "./game.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
@@ -25,6 +34,7 @@ import type {
   SegmentEndReason,
   SegmentEndStatus,
 } from "./core/protocol/gal-dsl/types.js";
+import type { GenerationEnvelope } from "./story/types.js";
 import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
 import type { AssetCatalog } from "./core/assets/types.js";
 import type { RuntimePlayableEvent } from "./schema.js";
@@ -95,22 +105,30 @@ function makeMockMedia(): MediaPlannerPort {
   } as unknown as MediaPlannerPort;
 }
 
-function makeDslMockGenerator(): StoryGenerator {
+function makeDslMockGenerator(): StoryGeneratorPort {
   return {
     generateOpening: vi.fn(),
     generateBranchPrefetch: vi.fn(),
     generateInputResponse: vi.fn(),
     generateInputBridge: vi.fn(),
     generateContinuation: vi.fn(),
-  } as unknown as StoryGenerator;
+  } as unknown as StoryGeneratorPort;
 }
 
-type StreamOptions = {
-  onGroup?: (group: EventGroupDraft) => void;
-  onSegmentEnd?: (status: SegmentEndStatus) => void;
-  /** Present only on repair continuations (Game repair path, docs §8.5). */
-  repairReason?: string;
-};
+/**
+ * Port-shaped DSL handle: the runner's `onGroup` calls stream into
+ * `handle.events` and the returned envelope carries the segment-end
+ * status — exactly like the real generator's DSL protocol branch.
+ */
+function dslHandle(
+  id: string,
+  run: (
+    signal: AbortSignal,
+    onGroup: (group: EventGroupDraft) => void,
+  ) => Promise<GenerationEnvelope>,
+): GenerationHandle {
+  return createGenerationHandle(id, run);
+}
 
 function dslNarration(text: string, cues: EventGroupDraft["prelude"] = []): EventGroupDraft {
   return { prelude: cues, main: { type: "narration", text } };
@@ -174,28 +192,28 @@ describe("DSL mode — opening groups", () => {
     const generator = makeDslMockGenerator();
 
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn: number, _state: unknown, _signal: unknown, options?: StreamOptions) => {
-        options?.onGroup?.(dslNarration("地下室里只亮着终端的一点蓝光。", [
-          { type: "background", assetId: "basement" },
-        ]));
-        options?.onGroup?.(dslDialogue("苏遥", "你不该来这里。", {
-          displayName: "神秘女子",
-          variant: "normal",
-          position: "left",
-        }));
-        options?.onSegmentEnd?.(complete("buffer"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
-      },
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("地下室里只亮着终端的一点蓝光。", [
+            { type: "background", assetId: "basement" },
+          ]));
+          onGroup(dslDialogue("苏遥", "你不该来这里。", {
+            displayName: "神秘女子",
+            variant: "normal",
+            position: "left",
+          }));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }),
     );
     // Buffer end → refill continuation → ending.
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn: number, _state: unknown, history: unknown, prefetched: unknown, _signal: unknown, options?: StreamOptions) => {
-        expect(prefetched).toEqual([]);
-        expect(history).toHaveLength(2); // the two committed events
-        options?.onGroup?.(dslNarration("故事结束。"));
-        options?.onSegmentEnd?.(complete("ending"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-      },
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          expect(request.prefetchedEvents).toEqual([]);
+          expect(request.history).toHaveLength(2); // the two committed events
+          onGroup(dslNarration("故事结束。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
@@ -236,11 +254,11 @@ describe("DSL mode — opening groups", () => {
     const generator = makeDslMockGenerator();
 
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _sig: unknown, options?: StreamOptions) => {
-        options?.onGroup?.(dslDialogue("苏遥", "再见了。"));
-        options?.onSegmentEnd?.(complete("ending"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-      },
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslDialogue("苏遥", "再见了。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
@@ -262,36 +280,40 @@ describe("DSL mode — interaction compile", () => {
     const generator = makeDslMockGenerator();
 
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _sig: unknown, options?: StreamOptions) => {
-        options?.onGroup?.(dslDialogue("苏遥", "别碰那台机器。"));
-        options?.onGroup?.(dslInteraction(
-          {
-            prompt: "怎么回应？",
-            optionTexts: ["追问她", "暂时停手"],
-            inputPlaceholder: "或输入自己的回答……",
-            mode: "hybrid",
-          },
-          [{ type: "bgm", assetId: "mystery" }],
-        ));
-        options?.onSegmentEnd?.(complete("interaction"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
-      },
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslDialogue("苏遥", "别碰那台机器。"));
+          onGroup(dslInteraction(
+            {
+              prompt: "怎么回应？",
+              optionTexts: ["追问她", "暂时停手"],
+              inputPlaceholder: "或输入自己的回答……",
+              mode: "hybrid",
+            },
+            [{ type: "bgm", assetId: "mystery" }],
+          ));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
+        }),
     );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-      events: [],
-      state_patch: {},
-      groups: [dslDialogue("苏遥", "分支内容。")],
-    });
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue({
-      events: [],
-      state_patch: {},
-      groups: [dslNarration("她沉默了一会儿。")],
-    });
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        dslHandle("branch", async (_signal, onGroup) => {
+          onGroup(dslDialogue("苏遥", "分支内容。"));
+          return { events: [], state_patch: {}, groups: [dslDialogue("苏遥", "分支内容。")] };
+        }),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        dslHandle("bridge", async (_signal, onGroup) => {
+          onGroup(dslNarration("她沉默了一会儿。"));
+          return { events: [], state_patch: {}, groups: [dslNarration("她沉默了一会儿。")] };
+        }),
+    );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _h: unknown, _p: unknown, _sig: unknown, options?: StreamOptions) => {
-        options?.onSegmentEnd?.(complete("ending"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-      },
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal) => {
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
     );
 
     const controller = new MemoryController({
@@ -333,32 +355,36 @@ describe("DSL mode — interaction compile", () => {
     const generator = makeDslMockGenerator();
 
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _sig: unknown, options?: StreamOptions) => {
-        options?.onGroup?.(dslInteraction({
-          prompt: "你准备对她说什么？",
-          optionTexts: [],
-          inputPlaceholder: "输入你的回答……",
-          mode: "input",
-        }));
-        options?.onSegmentEnd?.(complete("interaction"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
-      },
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslInteraction({
+            prompt: "你准备对她说什么？",
+            optionTexts: [],
+            inputPlaceholder: "输入你的回答……",
+            mode: "input",
+          }));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
+        }),
     );
-    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockResolvedValue({
-      events: [],
-      state_patch: {},
-      groups: [dslNarration("房间里安静下来。")],
-    });
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue({
-      events: [],
-      state_patch: {},
-      groups: [dslDialogue("苏遥", "你明明知道它还在运行。")],
-    });
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        dslHandle("bridge", async (_signal, onGroup) => {
+          onGroup(dslNarration("房间里安静下来。"));
+          return { events: [], state_patch: {}, groups: [dslNarration("房间里安静下来。")] };
+        }),
+    );
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        dslHandle("input", async (_signal, onGroup) => {
+          onGroup(dslDialogue("苏遥", "你明明知道它还在运行。"));
+          return { events: [], state_patch: {}, groups: [dslDialogue("苏遥", "你明明知道它还在运行。")] };
+        }),
+    );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _h: unknown, _p: unknown, _sig: unknown, options?: StreamOptions) => {
-        options?.onSegmentEnd?.(complete("ending"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-      },
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal) => {
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
     );
 
     const controller = new MemoryController({
@@ -390,33 +416,36 @@ describe("DSL mode — interaction compile", () => {
     const generator = makeDslMockGenerator();
 
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _sig: unknown, options?: StreamOptions) => {
-        options?.onGroup?.(dslInteraction({
-          prompt: "怎么回应？",
-          optionTexts: ["追问她", "暂时停手"],
-          inputPlaceholder: "或输入……",
-          mode: "hybrid",
-        }));
-        options?.onSegmentEnd?.(complete("interaction"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
-      },
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslInteraction({
+            prompt: "怎么回应？",
+            optionTexts: ["追问她", "暂时停手"],
+            inputPlaceholder: "或输入……",
+            mode: "hybrid",
+          }));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
+        }),
     );
-    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-      events: [],
-      state_patch: {},
-      groups: [dslDialogue("苏遥", "分支内容。")],
-    });
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        dslHandle("branch", async (_signal, onGroup) => {
+          onGroup(dslDialogue("苏遥", "分支内容。"));
+          return { events: [], state_patch: {}, groups: [dslDialogue("苏遥", "分支内容。")] };
+        }),
+    );
     // The cancel flow starts (then aborts) an input response generation.
-    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockResolvedValue({
-      events: [],
-      state_patch: {},
-      groups: [],
-    });
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        dslHandle("input", async () => {
+          return { events: [], state_patch: {}, groups: [] };
+        }),
+    );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _h: unknown, _p: unknown, _sig: unknown, options?: StreamOptions) => {
-        options?.onSegmentEnd?.(complete("ending"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-      },
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal) => {
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
     );
 
     let firstInteraction = true;
@@ -457,30 +486,31 @@ describe("DSL mode — truncation recovery", () => {
 
     let openingCalls = 0;
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _sig: unknown, options?: StreamOptions) => {
+      (request: OpeningRequest) => {
         openingCalls += 1;
-        options?.onGroup?.(dslNarration("第一句。"));
-        // Truncated: a group is committed, then the request dies without a
-        // sentinel (the real generator throws for incomplete-with-prefix).
-        throw new Error("DSL 流截断：段结束时没有 @end 哨兵");
+        return dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("第一句。"));
+          // Truncated: a group is committed, then the request dies without a
+          // sentinel (the real generator throws for incomplete-with-prefix).
+          throw new Error("DSL 流截断：段结束时没有 @end 哨兵");
+        });
       },
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _history: unknown, prefetched: unknown, _sig: unknown, options?: StreamOptions) => {
-        // fix(F) 后 advance-trigger 对失败段跳过低水续写：第一次（也是唯一
-        // 一次）续写调用就是带保留前缀的修复。prefetched=[] 分支保留为
-        // 回归哨兵（若 advance-trigger 对失败段误触发，杂散续写会先占住
-        // 单槽调度器，修复路径的 startActivePath 将抛错）。
-        if ((prefetched as unknown[]).length === 0) {
-          options?.onSegmentEnd?.(complete("buffer"));
-          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
-        }
-        // Repair continuation seeded with the preserved prefix.
-        expect(prefetched).toHaveLength(1);
-        options?.onGroup?.(dslNarration("修复后的续写。"));
-        options?.onSegmentEnd?.(complete("ending"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-      },
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          // fix(F) 后 advance-trigger 对失败段跳过低水续写：第一次（也是唯一
+          // 一次）续写调用就是带保留前缀的修复。prefetched=[] 分支保留为
+          // 回归哨兵（若 advance-trigger 对失败段误触发，杂散续写会先占住
+          // 单槽调度器，修复路径的 startActivePath 将抛错）。
+          if (request.prefetchedEvents.length === 0) {
+            return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+          }
+          // Repair continuation seeded with the preserved prefix.
+          expect(request.prefetchedEvents).toHaveLength(1);
+          onGroup(dslNarration("修复后的续写。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
@@ -503,18 +533,18 @@ describe("DSL mode — visual state", () => {
     const generator = makeDslMockGenerator();
 
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _sig: unknown, options?: StreamOptions) => {
-        options?.onGroup?.(dslDialogue("苏遥", "第一句。", { variant: "anxious" }));
-        options?.onGroup?.(dslDialogue("苏遥", "第二句。"));
-        options?.onSegmentEnd?.(complete("buffer"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
-      },
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslDialogue("苏遥", "第一句。", { variant: "anxious" }));
+          onGroup(dslDialogue("苏遥", "第二句。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_t: number, _s: unknown, _h: unknown, _p: unknown, _sig: unknown, options?: StreamOptions) => {
-        options?.onSegmentEnd?.(complete("ending"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-      },
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal) => {
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
     );
 
     const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
@@ -543,12 +573,12 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
 
     // 开场段：2 句旁白后 @end buffer。
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn: number, _state: unknown, _signal: unknown, options?: StreamOptions) => {
-        options?.onGroup?.(dslNarration("地下室里只亮着终端的一点蓝光。"));
-        options?.onGroup?.(dslNarration("键盘上落了一层灰。"));
-        options?.onSegmentEnd?.(complete("buffer"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
-      },
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("地下室里只亮着终端的一点蓝光。"));
+          onGroup(dslNarration("键盘上落了一层灰。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }),
     );
     // 续写段：记录被调用的时刻（玩家是否已读完开场最后一行）。
     // 第 1 次调用 = 低水位提前续写（buffer，继续播放）；第 2 次调用 = 收尾
@@ -556,19 +586,18 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     let continuationStartedWhileReadingTail = false;
     let continuationCalls = 0;
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn: number, _state: unknown, _history: unknown, _prefetched: unknown, _signal: unknown, options?: StreamOptions) => {
-        continuationCalls += 1;
-        if (continuationCalls === 1) {
-          // 若玩家还没推进到最后一行（还有未消费的 playable），说明续写提前启动了。
-          const playback = playbackOf(outputs);
-          continuationStartedWhileReadingTail = playback.length < 2;
-          options?.onGroup?.(dslNarration("终端屏幕上浮现出一行字。"));
-          options?.onSegmentEnd?.(complete("buffer"));
-          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
-        }
-        options?.onSegmentEnd?.(complete("ending"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-      },
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          continuationCalls += 1;
+          if (continuationCalls === 1) {
+            // 若玩家还没推进到最后一行（还有未消费的 playable），说明续写提前启动了。
+            const playback = playbackOf(outputs);
+            continuationStartedWhileReadingTail = playback.length < 2;
+            onGroup(dslNarration("终端屏幕上浮现出一行字。"));
+            return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+          }
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
     );
 
     const runPromise = game.run();
@@ -599,29 +628,28 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     game.subscribe((o) => outputs.push(o));
 
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn: number, _state: unknown, _signal: unknown, options?: StreamOptions) => {
-        for (let i = 0; i < 5; i++) options?.onGroup?.(dslNarration(`第 ${i + 1} 句。`));
-        options?.onSegmentEnd?.(complete("buffer"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
-      },
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          for (let i = 0; i < 5; i++) onGroup(dslNarration(`第 ${i + 1} 句。`));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }),
     );
     // 第 1 次 = 低水位续写（buffer）；第 2 次 = 收尾（ending，终止 run loop）。
     let continuationCalls = 0;
     let playedLinesAtContinuationStart = -1;
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn: number, _state: unknown, _history: unknown, _prefetched: unknown, _signal: unknown, options?: StreamOptions) => {
-        continuationCalls += 1;
-        if (continuationCalls === 1) {
-          // 续写启动时玩家已播放的行数：GREEN=2（还有 3 句 ahead），
-          // RED=5（玩家读空后才由 run loop 启动）。
-          playedLinesAtContinuationStart = playbackOf(outputs).length;
-          options?.onGroup?.(dslNarration("续写句。"));
-          options?.onSegmentEnd?.(complete("buffer"));
-          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
-        }
-        options?.onSegmentEnd?.(complete("ending"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-      },
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          continuationCalls += 1;
+          if (continuationCalls === 1) {
+            // 续写启动时玩家已播放的行数：GREEN=2（还有 3 句 ahead），
+            // RED=5（玩家读空后才由 run loop 启动）。
+            playedLinesAtContinuationStart = playbackOf(outputs).length;
+            onGroup(dslNarration("续写句。"));
+            return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+          }
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
     );
 
     // 手动推进（onPlaybackReady 不自动 advance）：逐步观察低水位触发时机。
@@ -670,26 +698,25 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     let resolveFirstLine!: () => void;
     const firstLineGate = new Promise<void>((r) => { resolveFirstLine = r; });
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn: number, _state: unknown, _signal: unknown, options?: StreamOptions) => {
-        options?.onGroup?.(dslNarration("第一句。"));
-        await firstLineGate; // 第二句延迟到达
-        options?.onGroup?.(dslNarration("第二句。"));
-        options?.onSegmentEnd?.(complete("buffer"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
-      },
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("第一句。"));
+          await firstLineGate; // 第二句延迟到达
+          onGroup(dslNarration("第二句。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn: number, _state: unknown, _history: unknown, _prefetched: unknown, _signal: unknown, options?: StreamOptions) => {
-        // 第 1 次 = 低水位续写（buffer）；第 2 次 = 收尾（ending，终止 run loop）。
-        const calls = (generator.generateContinuation as ReturnType<typeof vi.fn>).mock.calls.length;
-        if (calls === 1) {
-          options?.onGroup?.(dslNarration("续写句。"));
-          options?.onSegmentEnd?.(complete("buffer"));
-          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
-        }
-        options?.onSegmentEnd?.(complete("ending"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-      },
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          // 第 1 次 = 低水位续写（buffer）；第 2 次 = 收尾（ending，终止 run loop）。
+          const calls = (generator.generateContinuation as ReturnType<typeof vi.fn>).mock.calls.length;
+          if (calls === 1) {
+            onGroup(dslNarration("续写句。"));
+            return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+          }
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
     );
 
     const runPromise = game.run();
@@ -724,34 +751,34 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     game.subscribe((o) => outputs.push(o));
 
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn: number, _state: unknown, _signal: unknown, options?: StreamOptions) => {
-        options?.onGroup?.(dslNarration("第一句。"));
-        // 截断：产出 1 句后请求失败（无 @end 哨兵），endStatus 恒空。
-        throw new Error("DSL 流截断：段结束时没有 @end 哨兵");
-      },
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("第一句。"));
+          // 截断：产出 1 句后请求失败（无 @end 哨兵），endStatus 恒空。
+          throw new Error("DSL 流截断：段结束时没有 @end 哨兵");
+        }),
     );
     // 修复前不得出现无 repairReason 的杂散续写：若出现，记录并挂起
     // （模拟真实 LLM 长请求，使修复路径的 startActivePath 必然抛错）。
     let spuriousRefill = false;
     let continuationCalls = 0;
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
-      async (_turn: number, _state: unknown, _history: unknown, _prefetched: unknown, _signal: unknown, options?: StreamOptions) => {
-        continuationCalls += 1;
-        if (options?.repairReason === undefined) {
-          if (continuationCalls === 1) {
-            spuriousRefill = true;
-            await new Promise<never>(() => {}); // 永不 resolve（gated）
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          continuationCalls += 1;
+          if (request.repairReason === undefined) {
+            if (continuationCalls === 1) {
+              spuriousRefill = true;
+              await new Promise<never>(() => {}); // 永不 resolve（gated）
+            }
+            // 修复后的正常低水续写：buffer 段收尾后由 run loop 启动 → ending。
+            return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
           }
-          // 修复后的正常低水续写：buffer 段收尾后由 run loop 启动 → ending。
-          options?.onSegmentEnd?.(complete("ending"));
-          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
-        }
-        // 修复续写：带保留前缀，产出 2 句后 @end buffer（正常段边界）。
-        options?.onGroup?.(dslNarration("修复第一句。"));
-        options?.onGroup?.(dslNarration("修复第二句。"));
-        options?.onSegmentEnd?.(complete("buffer"));
-        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
-      },
+          // 修复续写：带保留前缀，产出 2 句后 @end buffer（正常段边界）。
+          onGroup(dslNarration("修复第一句。"));
+          onGroup(dslNarration("修复第二句。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }),
     );
 
     const runPromise = game.run();
@@ -764,7 +791,7 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     expect(spuriousRefill).toBe(false);
     expect(continuationCalls).toBe(2);
     const firstContinuationCall = (generator.generateContinuation as ReturnType<typeof vi.fn>).mock.calls[0]!;
-    expect((firstContinuationCall[5] as StreamOptions | undefined)?.repairReason).toBeDefined();
+    expect((firstContinuationCall[0] as ContinuationRequest).repairReason).toBeDefined();
     // 保留前缀 + 修复续写句全部播放，故事正常结束。
     expect(playbackOf(outputs).map((o) => o.event.text)).toEqual([
       "第一句。",

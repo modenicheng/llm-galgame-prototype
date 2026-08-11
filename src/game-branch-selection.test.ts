@@ -5,7 +5,7 @@
  * after selecting a fully-loaded branch.
  */
 import { describe, it, expect, vi } from "vitest";
-import { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
+import { GeneratorPortFacade, StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
 import type { AppConfig } from "./config.js";
 import { makeTestConfig, makeTestPorts } from "./test-helpers.js";
 import { Game } from "./game.js";
@@ -184,7 +184,7 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
       onInteractionOpened: (output) =>
         controller.select(output.interactionId, `${output.interactionId}_opt_0`),
     });
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts(), CATALOG);
     controller.attach(game);
     await game.run();
 
@@ -247,7 +247,7 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
       onInteractionOpened: (output) =>
         controller.select(output.interactionId, `${output.interactionId}_opt_0`),
     });
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts(), CATALOG);
     controller.attach(game);
 
     let runError: unknown = null;
@@ -329,7 +329,7 @@ describe("hybrid preview-cancel re-arm then select (real generator)", () => {
       },
       onInputPreviewOpened: (output) => controller.cancel(output.previewId),
     });
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts(), CATALOG);
     controller.attach(game);
 
     let runError: unknown = null;
@@ -418,7 +418,7 @@ describe("aborted streamed input response then branch select (buffer race)", () 
       },
       onInputPreviewOpened: (output) => controller.cancel(output.previewId),
     });
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts(), CATALOG);
     controller.attach(game);
 
     let runError: unknown = null;
@@ -486,7 +486,7 @@ describe("stray group after the interaction terminal is discarded (docs §50)", 
       onInteractionOpened: (output) =>
         controller.select(output.interactionId, `${output.interactionId}_opt_0`),
     });
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts(), CATALOG);
     controller.attach(game);
 
     let runError: unknown = null;

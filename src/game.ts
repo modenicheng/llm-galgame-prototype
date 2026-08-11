@@ -19,7 +19,7 @@ import type { IdGeneratorPort } from "./core/ports/id-generator-port.js";
 import type {
   SessionStorePort,
 } from "./core/ports/session-store-port.js";
-import type { StoryGenerator } from "./adapters/llm/openai-compatible-generator.js";
+import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { NarrativeDirectorPort } from "./core/ports/narrative-director-port.js";
 import type { NarrativeBrief } from "./core/narrative/narrative-brief.js";
@@ -280,7 +280,7 @@ export class Game {
 
   constructor(
     private readonly config: AppConfig,
-    private readonly generator: StoryGenerator,
+    private readonly generator: StoryGeneratorPort,
     private readonly status: RuntimeStatus,
     private readonly media: MediaPlannerPort,
     metrics: Metrics | undefined,
@@ -582,38 +582,49 @@ export class Game {
     const jobId = kind === "opening" ? "opening" : `continuation:${turn}`;
     const label = kind === "opening" ? "初始剧情" : `第 ${turn} 回合后续`;
     const brief = this.makeBrief(turn);
-    const dslOptions = {
-      onGroup,
-      onSegmentEnd,
-      tailVisualState: this.tailVisualState,
-      ...(brief ? { brief } : {}),
-      ...(repairReason ? { repairReason } : {}),
-    };
-    segment.done = this.runTrackedJob(jobId, label, () => {
-      const request = kind === "opening"
-        ? this.generator.generateOpening(turn, this.storyState, controller.signal, dslOptions)
-        : this.generator.generateContinuation(
-            turn,
-            this.storyState,
-            history,
-            prefetchedEvents,
-            controller.signal,
-            dslOptions,
-          );
+    segment.done = this.runTrackedJob(jobId, label, async () => {
+      const genHandle =
+        kind === "opening"
+          ? this.generator.generateOpening({
+              turn,
+              state: this.storyState,
+              signal: controller.signal,
+              ...(brief !== undefined ? { brief } : {}),
+              tailVisualState: this.tailVisualState,
+            })
+          : this.generator.generateContinuation({
+              turn,
+              state: this.storyState,
+              history,
+              prefetchedEvents,
+              signal: controller.signal,
+              ...(brief !== undefined ? { brief } : {}),
+              tailVisualState: this.tailVisualState,
+              ...(repairReason !== undefined ? { repairReason } : {}),
+            });
 
-      return request.then((envelope) => {
-        // Test doubles and envelope-format providers do not invoke
-        // onGroup/onSegmentEnd. Preserve the same runtime behavior by
-        // feeding their groups + segmentEnd here.
-        if (segment.events.length === 0) {
-          if (envelope.groups !== undefined && envelope.groups.length > 0) {
-            for (const group of envelope.groups) onGroup(group);
-            if (envelope.segmentEnd !== undefined && segment.endStatus === null) {
-              onSegmentEnd(envelope.segmentEnd);
-            }
-          }
+      // 泵：把 handle 的事件流喂进段队列（与旧 onGroup 直连语义等价）。
+      const pump = (async () => {
+        for await (const group of genHandle.events) {
+          onGroup(group);
         }
-      });
+      })();
+
+      try {
+        const envelope = await genHandle.done;
+        await pump;
+        // 段结束状态由 envelope 携带（旧 onSegmentEnd 语义）；envelope.groups
+        // 已通过 handle 事件流到达，不再重复喂养（避免双份）。
+        if (envelope.segmentEnd !== undefined && segment.endStatus === null) {
+          onSegmentEnd(envelope.segmentEnd);
+        }
+      } catch (error) {
+        // 失败段标记必须与任务失败同拍设置：advance-trigger 的低水续写
+        // 与修复路径竞争单槽调度器，任何微任务延迟都会让杂散续写先占住
+        // startActivePath（修复 startActiveSegment 抛错杀死 run()）。
+        segment.failed = true;
+        throw error;
+      }
     }).finally(() => {
       queue.close();
       if (!segment.schedulerReleased) {
@@ -1115,17 +1126,22 @@ export class Game {
     const controller = new AbortController();
     this.bridgeControllers.set(interactionId, controller);
 
-    const bridgeOptions: Parameters<typeof this.generator.generateInputBridge>[4] = {
-      tailVisualState: this.tailVisualState,
-    };
     const bridgeBrief = this.makeBrief(turn + 1);
-    if (bridgeBrief) bridgeOptions.brief = bridgeBrief;
+    const handle = this.generator.generateInputBridge({
+      turn: turn + 1,
+      state: this.storyState,
+      interaction,
+      signal: controller.signal,
+      ...(bridgeBrief !== undefined ? { brief: bridgeBrief } : {}),
+      tailVisualState: this.tailVisualState,
+    });
 
-    const promise = this.generator
-      .generateInputBridge(turn + 1, this.storyState, interaction, controller.signal, bridgeOptions)
-      .then((envelope) => {
+    const promise = (async () => {
+      try {
+        const groups: EventGroupDraft[] = [];
+        for await (const group of handle.events) groups.push(group);
+        await handle.done;
         if (controller.signal.aborted) return;
-        const groups = envelope.groups ?? [];
         const events: RuntimeNarrationEvent[] = [];
         for (const group of groups) {
           if (group.main.type === "narration") {
@@ -1148,15 +1164,14 @@ export class Game {
         }
         for (const event of events) this.bridgeLineIds.add(event.line_id);
         this.bridgeBuffer.store(interactionId, events);
-      })
-      .catch((error: unknown) => {
+      } catch (error: unknown) {
         if (controller.signal.aborted) return;
         const message = error instanceof Error ? error.message : String(error);
         this.diagnostics.warn("Bridge", `输入过渡旁白生成失败：${message}`);
-      })
-      .finally(() => {
+      } finally {
         this.bridgeControllers.delete(interactionId);
-      });
+      }
+    })();
     void promise;
   }
 
@@ -1227,18 +1242,22 @@ export class Game {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.status.setJob("selected-branch-retry", "已选分支重试", "running");
-      const retryOptions: Parameters<typeof this.generator.generateBranchPrefetch>[6] = {};
       const retryBrief = this.makeBrief(turn + 1);
-      if (retryBrief) retryOptions.brief = retryBrief;
-
-      const retryPromise = this.generator
-        .generateBranchPrefetch(turn + 1, this.storyState, prefetchContext, choice, selected, undefined, retryOptions)
-        .then((envelope) => {
-          const result = this.materializeDslGroups(envelope.groups ?? [], this.tailVisualState, turn);
-          this.branchTailStates.set(selected.id, result.tailState);
-          return result.events;
-        });
-      preview = await retryPromise;
+      const handle = this.generator.generateBranchPrefetch({
+        turn: turn + 1,
+        state: this.storyState,
+        history: prefetchContext,
+        choice,
+        option: selected,
+        ...(retryBrief !== undefined ? { brief: retryBrief } : {}),
+        tailVisualState: this.tailVisualState,
+      });
+      await handle.done;
+      const groups: EventGroupDraft[] = [];
+      for await (const group of handle.events) groups.push(group);
+      const result = this.materializeDslGroups(groups, this.tailVisualState, turn);
+      this.branchTailStates.set(selected.id, result.tailState);
+      preview = result.events;
       this.media.registerCandidate(selected.id, preview);
       this.status.removeJob("selected-branch-retry");
     }
@@ -1670,31 +1689,30 @@ export class Game {
         // branches never execute, so their states stay isolated here.
         let branchState = this.tailVisualState;
         const prefetchBrief = this.makeBrief(turn + 1);
-        const envelope = await this.generator.generateBranchPrefetch(
-          turn + 1,
-          this.storyState,
-          prefetchContext,
+        const handle = this.generator.generateBranchPrefetch({
+          turn: turn + 1,
+          state: this.storyState,
+          history: prefetchContext,
           choice,
           option,
           signal,
-          {
-            tailVisualState: this.tailVisualState,
-            ...(prefetchBrief ? { brief: prefetchBrief } : {}),
-            onGroup: (group) => {
-              const { playable, tailState } = this.compileGroup(group, branchState, turn);
-              branchState = tailState;
-              if (playable !== null) {
-                materialized.push(playable);
-                onEvent(playable);
-              }
-            },
-          },
-        );
-        if (materialized.length === 0 && envelope.groups !== undefined && envelope.groups.length > 0) {
-          const result = this.materializeDslGroups(envelope.groups, branchState, turn);
-          materialized.push(...result.events);
-          branchState = result.tailState;
-        }
+          ...(prefetchBrief !== undefined ? { brief: prefetchBrief } : {}),
+          tailVisualState: this.tailVisualState,
+        });
+        // 泵：与旧 onGroup 直连语义等价——组到达即编译并喂给 onEvent
+        // （branch-local visual state 逐组折叠）。
+        const pump = (async () => {
+          for await (const group of handle.events) {
+            const { playable, tailState } = this.compileGroup(group, branchState, turn);
+            branchState = tailState;
+            if (playable !== null) {
+              materialized.push(playable);
+              onEvent(playable);
+            }
+          }
+        })();
+        await handle.done;
+        await pump;
         this.branchTailStates.set(option.id, branchState);
         return materialized;
       },
@@ -1760,7 +1778,7 @@ export class Game {
     const interactionId = interaction.interaction_id;
     // The bridge is shared across preview cancels; it is consumed only at
     // confirm so a cancelled preview can retry with the same bridge.
-    const bridgeEvents = this.bridgeBuffer.peek(interactionId) ?? [];
+    let bridgeEvents = this.bridgeBuffer.peek(interactionId) ?? [];
 
     while (true) {
       let text: string;
@@ -1838,6 +1856,12 @@ export class Game {
       const previewDwellMs = this.clock.nowMs() - previewStartTime;
       this.metrics.recordInputPreview(previewDwellMs);
 
+      // The bridge prefetch may still be landing when the interaction opens
+      // (its handle stream settles a microtask after the terminal group).
+      // Refresh at the commit point so a late but valid bridge is included;
+      // the buffer is consumed only at confirm, so this is idempotent.
+      bridgeEvents = this.bridgeBuffer.peek(interactionId) ?? [];
+
       if (previewCommand.type === "cancel_input") {
         // Return to editing — abort the stale response request so its events
         // can never be buffered or rendered for the previous edit session.
@@ -1886,6 +1910,12 @@ export class Game {
       }
 
       const playerDialogue = this.makePlayerDialogue(interactionId, text);
+
+      // The handle rejection settles two microtask hops behind the runner
+      // failure (the port's queue-close finally + propagation). Drain the
+      // microtask queue so a failed stream is classified as a repair attempt
+      // below, not as a live promotion.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
       // Failure with no usable events: one repair attempt, streamed live so
       // the player line + bridge can play first (reading time hides it).
@@ -1973,48 +2003,42 @@ export class Game {
     let responseState = this.tailVisualState;
 
     const brief = this.makeBrief(turn + 1);
-    const promise = this.generator
-      .generateInputResponse(
-        turn + 1,
-        this.storyState,
-        [...this.events],
-        interaction,
-        text,
-        controller.signal,
-        {
-          tailVisualState: this.tailVisualState,
-          ...(brief ? { brief } : {}),
-          onGroup: (group) => {
-            if (controller.signal.aborted) {
-              this.metrics.recordStaleInputEventDropped();
-              return;
-            }
-            const { playable, tailState } = this.compileGroup(group, responseState, turn);
-            responseState = tailState;
-            if (playable !== null) {
-              this.stageResponseEvent(responseSession, playable);
-            }
-          },
-        },
-      )
-      // Single reaction (not .then().catch()): the fulfillment/rejection
-      // handler runs in ONE microtask, so by the time the confirm command is
-      // processed the session status is already settled — the repair decision
-      // at confirm never races the failure reaction.
+    const handle = this.generator.generateInputResponse({
+      turn: turn + 1,
+      state: this.storyState,
+      history: [...this.events],
+      interaction,
+      playerInput: text,
+      signal: controller.signal,
+      ...(brief !== undefined ? { brief } : {}),
+      tailVisualState: this.tailVisualState,
+    });
+
+    // 泵：把 handle 的事件流喂进 staging 路径（与旧 onGroup 直连等价）。
+    // 中止后的迟到组照旧丢弃并计数。
+    const pump = (async () => {
+      for await (const group of handle.events) {
+        if (controller.signal.aborted) {
+          this.metrics.recordStaleInputEventDropped();
+          continue;
+        }
+        const { playable, tailState } = this.compileGroup(group, responseState, turn);
+        responseState = tailState;
+        if (playable !== null) {
+          this.stageResponseEvent(responseSession, playable);
+        }
+      }
+    })();
+
+    // Single reaction (not .then().catch()): the fulfillment/rejection
+    // handler runs in ONE microtask, so by the time the confirm command is
+    // processed the session status is already settled — the repair decision
+    // at confirm never races the failure reaction.
+    const promise = handle.done
       .then(
-        (envelope) => {
+        () => {
+
           if (controller.signal.aborted) return;
-          // Envelope-format providers do not invoke onGroup; feed their
-          // groups through the same staging path.
-          if (responseSession.responseEvents.length === 0) {
-            if (envelope.groups !== undefined && envelope.groups.length > 0) {
-              const result = this.materializeDslGroups(envelope.groups, responseState, turn);
-              responseState = result.tailState;
-              for (const event of result.events) {
-                this.stageResponseEvent(responseSession, event);
-              }
-            }
-          }
           // The confirmed response's tail state becomes the new predictive
           // tail (docs §79): the next generation continues from where the
           // response leaves the stage.
@@ -2037,7 +2061,8 @@ export class Game {
             err.message
           );
         },
-      );
+      )
+      .finally(() => void pump);
 
     return { promise, controller };
   }
@@ -2207,25 +2232,21 @@ export class Game {
             text: o.text,
           })),
         };
-        const onDemandOptions: Parameters<typeof this.generator.generateBranchPrefetch>[6] = {};
         const onDemandBrief = this.makeBrief(turn + 1);
-        if (onDemandBrief) onDemandOptions.brief = onDemandBrief;
-
-        const genPromise = this.generator
-          .generateBranchPrefetch(
-            turn + 1,
-            this.storyState,
-            prefetchContext,
-            syntheticChoice,
-            { id: selected.id, text: selected.text },
-            undefined,
-            onDemandOptions,
-          )
-          .then((envelope) => {
-            const result = this.materializeDslGroups(envelope.groups ?? [], this.tailVisualState, turn);
-            return result.events;
-          });
-        preview = await genPromise;
+        const handle = this.generator.generateBranchPrefetch({
+          turn: turn + 1,
+          state: this.storyState,
+          history: prefetchContext,
+          choice: syntheticChoice,
+          option: { id: selected.id, text: selected.text },
+          ...(onDemandBrief !== undefined ? { brief: onDemandBrief } : {}),
+          tailVisualState: this.tailVisualState,
+        });
+        await handle.done;
+        const groups: EventGroupDraft[] = [];
+        for await (const group of handle.events) groups.push(group);
+        const result = this.materializeDslGroups(groups, this.tailVisualState, turn);
+        preview = result.events;
         this.registerBuffered(preview);
         this.status.removeJob("on-demand-branch");
       }
