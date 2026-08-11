@@ -5,12 +5,16 @@
 
 import { z } from "zod";
 
-import type { EpisodeImportance } from "./memory-types.js";
+import type { EpisodeImportance, PlotThreadKind } from "./memory-types.js";
 
 export interface ThreadOp {
   type: "touch" | "advance" | "resolve" | "abandon" | "create";
   id: string;
   progress?: string;
+  /** create 专用：新线程类型（audit P1-8）。 */
+  kind?: PlotThreadKind;
+  /** create 专用：importance 决定预算口径（major 查 major 预算）。 */
+  importance?: "major" | "minor";
 }
 
 export interface SetupOp {
@@ -28,11 +32,34 @@ export interface EpisodeSummaryOp {
   importance: EpisodeImportance;
 }
 
-export const ThreadOpSchema: z.ZodType<ThreadOp> = z.object({
-  type: z.enum(["touch", "advance", "resolve", "abandon", "create"]),
-  id: z.string().min(1),
-  progress: z.exactOptional(z.string().min(1)),
-});
+export const ThreadOpSchema: z.ZodType<ThreadOp> = z
+  .object({
+    type: z.enum(["touch", "advance", "resolve", "abandon", "create"]),
+    id: z.string().min(1),
+    progress: z.exactOptional(z.string().min(1)),
+    kind: z.exactOptional(
+      z.enum(["main", "character", "mystery", "relationship", "promise"]),
+    ),
+    importance: z.exactOptional(z.enum(["major", "minor"])),
+  })
+  .superRefine((op, ctx) => {
+    if (op.type === "create") {
+      if (op.kind === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["kind"],
+          message: "create 必须携带 kind",
+        });
+      }
+      if (op.importance === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["importance"],
+          message: "create 必须携带 importance",
+        });
+      }
+    }
+  });
 
 export const SetupOpSchema: z.ZodType<SetupOp> = z.object({
   type: z.enum(["seed", "reinforce", "payoff", "hold", "drop"]),

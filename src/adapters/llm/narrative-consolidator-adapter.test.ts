@@ -156,6 +156,8 @@ describe("NarrativeConsolidatorAdapter", () => {
     expect(sysContent).toContain("剧情记忆整理器");
     expect(sysContent).toContain("只整理事实");
     expect(sysContent).toContain("summary 不超过");
+    expect(sysContent).toContain("kind∈{main,character,mystery,relationship,promise}");
+    expect(sysContent).toContain("importance∈{major,minor}");
 
     // User message contains thread/setup ids in the right format
     const userContent = messages[1]!.content;

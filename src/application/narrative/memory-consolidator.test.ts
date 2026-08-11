@@ -384,8 +384,8 @@ describe("MemoryConsolidator", () => {
           // minor threads already, only the first may pass — the second
           // must see the first's shadow application.
           threadOps: [
-            { type: "create", id: "rt1" },
-            { type: "create", id: "rt2" },
+            { type: "create", id: "rt1", kind: "character", importance: "minor" },
+            { type: "create", id: "rt2", kind: "character", importance: "minor" },
           ],
           // Two seeds of the SAME setup: the second must be rejected
           // (status is seeded after the first applied to the shadow).
@@ -411,9 +411,16 @@ describe("MemoryConsolidator", () => {
       );
 
       // First create passes (2 + 1 = 3, at the cap); second rejected.
-      expect(outcome.threadOps).toEqual([{ type: "create", id: "rt1" }]);
+      expect(outcome.threadOps).toEqual([
+        { type: "create", id: "rt1", kind: "character", importance: "minor" },
+      ]);
       expect(outcome.rejected).toHaveLength(2);
-      expect(outcome.rejected[0]!.op).toEqual({ type: "create", id: "rt2" });
+      expect(outcome.rejected[0]!.op).toEqual({
+        type: "create",
+        id: "rt2",
+        kind: "character",
+        importance: "minor",
+      });
       expect(outcome.rejected[0]!.reason).toContain("上限");
       // First seed passes; second rejected (s1 is already seeded in shadow).
       expect(outcome.setupOps).toEqual([{ type: "seed", id: "s1" }]);

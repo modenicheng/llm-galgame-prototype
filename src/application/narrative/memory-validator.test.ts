@@ -15,6 +15,7 @@ import {
   validateEpisodeOp,
   classifySetup,
   setupPrerequisitesSatisfied,
+  applyThreadOpToState,
 } from "./memory-validator.js";
 
 import type { NarrativeConfig } from "../../config.js";
@@ -28,6 +29,7 @@ import type {
   SetupOp,
   EpisodeSummaryOp,
 } from "../../core/narrative/memory-operation.js";
+import { ThreadOpSchema } from "../../core/narrative/memory-operation.js";
 import type { SetupDirective } from "../../core/narrative/director-plan.js";
 
 // ---------------------------------------------------------------------------
@@ -113,13 +115,23 @@ describe("validateThreadOp", () => {
     const memory = makeMemory({
       threads: { "t-1": makeThread({ id: "t-1", importance: "major" }) },
     });
-    const op: ThreadOp = { type: "create", id: "t-new" };
+    const op: ThreadOp = {
+      type: "create",
+      id: "t-new",
+      kind: "main",
+      importance: "major",
+    };
     expectAccepted(validateThreadOp(op, memory, makeConfig()));
   });
 
   it("rejects create when the id already exists", () => {
     const memory = makeMemory({ threads: { "thread-1": makeThread() } });
-    const op: ThreadOp = { type: "create", id: "thread-1" };
+    const op: ThreadOp = {
+      type: "create",
+      id: "thread-1",
+      kind: "main",
+      importance: "minor",
+    };
     const reason = validateThreadOp(op, memory, makeConfig());
     expectRejected(reason);
     expect(reason).toContain("thread-1");
@@ -132,7 +144,12 @@ describe("validateThreadOp", () => {
         "t-2": makeThread({ id: "t-2", status: "developing", importance: "major" }),
       },
     });
-    const op: ThreadOp = { type: "create", id: "t-new" };
+    const op: ThreadOp = {
+      type: "create",
+      id: "t-new",
+      kind: "main",
+      importance: "major",
+    };
     expectRejected(validateThreadOp(op, memory, makeConfig({ maxMajorActive: 2 })));
   });
 
@@ -148,7 +165,12 @@ describe("validateThreadOp", () => {
         }),
       },
     });
-    const op: ThreadOp = { type: "create", id: "t-new" };
+    const op: ThreadOp = {
+      type: "create",
+      id: "t-new",
+      kind: "character",
+      importance: "minor",
+    };
     const reason = validateThreadOp(op, memory, makeConfig({ maxMinorActive: 3 }));
     expectRejected(reason);
     expect(reason).toContain("minor");
@@ -175,7 +197,12 @@ describe("validateThreadOp", () => {
         }),
       },
     });
-    const op: ThreadOp = { type: "create", id: "t-new" };
+    const op: ThreadOp = {
+      type: "create",
+      id: "t-new",
+      kind: "character",
+      importance: "minor",
+    };
     // Only t-minor-1 counts as an active minor; budget 2 is free.
     expectAccepted(
       validateThreadOp(op, memory, makeConfig({ maxMinorActive: 2 })),
@@ -195,7 +222,12 @@ describe("validateThreadOp", () => {
         "t-1": makeThread({ id: "t-1", importance: "major", status: "open" }),
       },
     });
-    const op: ThreadOp = { type: "create", id: "t-new" };
+    const op: ThreadOp = {
+      type: "create",
+      id: "t-new",
+      kind: "main",
+      importance: "major",
+    };
     // Only t-1 counts as an active major; budget 2 is free.
     expectAccepted(validateThreadOp(op, memory, makeConfig({ maxMajorActive: 2 })));
     // With budget 1 the single active major blocks creation.
@@ -280,6 +312,48 @@ describe("validateThreadOp", () => {
     expectRejected(
       validateThreadOp({ type: "abandon", id: "t-abandoned" }, memory, makeConfig()),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateThreadOp create budgets (audit P1-8)
+// ---------------------------------------------------------------------------
+
+describe("validateThreadOp create budgets", () => {
+  it("allows a minor create when only the major budget is exhausted", () => {
+    const memory = makeMemory({
+      threads: {
+        a: makeThread({ id: "a", importance: "major", status: "open" }),
+        b: makeThread({ id: "b", importance: "major", status: "open" }),
+      },
+    });
+    const config = makeConfig(); // max_major_active: 2, max_minor_active: 3
+    const op: ThreadOp = { type: "create", id: "new_minor", kind: "character", importance: "minor" };
+    expect(validateThreadOp(op, memory, config)).toBeNull();
+  });
+
+  it("rejects a major create when the major budget is exhausted", () => {
+    const memory = makeMemory({
+      threads: {
+        a: makeThread({ id: "a", importance: "major", status: "open" }),
+        b: makeThread({ id: "b", importance: "major", status: "open" }),
+      },
+    });
+    const op: ThreadOp = { type: "create", id: "new_major", kind: "main", importance: "major" };
+    expect(validateThreadOp(op, memory, makeConfig())).toContain("major");
+  });
+
+  it("rejects create ops missing kind or importance", () => {
+    const memory = makeMemory({});
+    const op: ThreadOp = { type: "create", id: "x" };
+    expect(validateThreadOp(op, memory, makeConfig())).toContain("kind");
+    expect(ThreadOpSchema.safeParse(op).success).toBe(false);
+  });
+
+  it("applies kind and importance from the op", () => {
+    const state = makeMemory({});
+    applyThreadOpToState(state, { type: "create", id: "x", kind: "mystery", importance: "major" }, 3);
+    expect(state.threads["x"]).toMatchObject({ kind: "mystery", importance: "major", status: "open", introducedAtCheckpoint: 3 });
   });
 });
 

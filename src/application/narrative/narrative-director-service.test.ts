@@ -643,6 +643,8 @@ describe("NarrativeDirectorService", () => {
             {
               type: "create",
               id: "t-new",
+              kind: "mystery",
+              importance: "minor",
               progress: "A new mystery emerges",
             },
           ],
@@ -659,6 +661,10 @@ describe("NarrativeDirectorService", () => {
       expect(saved.threads["t-new"]).toBeDefined();
       expect(saved.threads["t-new"]!.id).toBe("t-new");
       expect(saved.threads["t-new"]!.source).toBe("runtime");
+      expect(saved.threads["t-new"]!).toMatchObject({
+        kind: "mystery",
+        importance: "minor",
+      });
     });
 
     it("applies valid setup ops: seed/reinforce/payoff/hold/drop", async () => {

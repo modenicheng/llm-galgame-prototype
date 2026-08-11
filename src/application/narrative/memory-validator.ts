@@ -58,23 +58,26 @@ export function validateThreadOp(
       if (existing !== undefined) {
         return `线程 ${op.id} 已存在，不能重复创建`;
       }
-      let activeMajor = 0;
-      let activeMinor = 0;
+      if (op.kind === undefined || op.importance === undefined) {
+        return `线程 ${op.id} create 缺少 kind/importance`;
+      }
+      // 预算按自身 importance 口径（audit P1-8）：创建 minor 只查 minor 预算，
+      // 不能被占满的 major 预算误伤。
+      const budget =
+        op.importance === "major"
+          ? config.threads.max_major_active
+          : config.threads.max_minor_active;
+      let active = 0;
       for (const thread of Object.values(memory.threads)) {
-        if (!ACTIVE_THREAD_STATUSES.has(thread.status)) {
-          continue;
-        }
-        if (thread.importance === "major") {
-          activeMajor += 1;
-        } else if (thread.importance === "minor") {
-          activeMinor += 1;
+        if (
+          ACTIVE_THREAD_STATUSES.has(thread.status) &&
+          thread.importance === op.importance
+        ) {
+          active += 1;
         }
       }
-      if (activeMajor >= config.threads.max_major_active) {
-        return `活跃 major 线程数 ${activeMajor} 已达上限 ${config.threads.max_major_active}`;
-      }
-      if (activeMinor >= config.threads.max_minor_active) {
-        return `活跃 minor 线程数 ${activeMinor} 已达上限 ${config.threads.max_minor_active}`;
+      if (active >= budget) {
+        return `活跃 ${op.importance} 线程数 ${active} 已达上限 ${budget}`;
       }
       return null;
     }
@@ -250,10 +253,10 @@ export function applyThreadOpToState(
     case "create": {
       state.threads[op.id] = {
         id: op.id,
-        kind: "main",
+        kind: op.kind ?? "main",
         summary: op.progress ?? `Thread ${op.id}`,
         status: "open",
-        importance: "minor",
+        importance: op.importance ?? "minor",
         introducedAtCheckpoint: checkpoint,
         lastTouchedAtCheckpoint: checkpoint,
         source: "runtime",
