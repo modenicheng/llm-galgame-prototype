@@ -46,6 +46,20 @@ import type { GamePorts } from "./game.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Game core tests exercise repair / policy / command-scoping contracts; the
+ * §73–§76 low-water scheduler is out of scope here, so it is disabled via
+ * config: start_threshold 1 → no first-line hold; refill_threshold -1 →
+ * the invariant `ahead > threshold` always holds, so no refill ever starts.
+ * game-dsl.test.ts covers the scheduler with real thresholds.
+ */
+function makeGameConfig(overrides?: Parameters<typeof makeTestConfig>[0]): AppConfig {
+  return makeTestConfig({
+    text_buffer: { start_threshold_lines: 1, target_lines: 6, refill_threshold_lines: -1 },
+    ...overrides,
+  });
+}
+
 function makeMockGenerator(): StoryGenerator {
   return {
     generateOpening: vi.fn(),
@@ -195,7 +209,7 @@ describe("Game construction", () => {
   let media: MediaPlannerPort;
 
   beforeEach(() => {
-    config = makeTestConfig();
+    config = makeGameConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
     media = makeMockMedia();
@@ -245,7 +259,7 @@ describe("Session ID", () => {
   let media: MediaPlannerPort;
 
   beforeEach(() => {
-    config = makeTestConfig();
+    config = makeGameConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
     media = makeMockMedia();
@@ -286,7 +300,7 @@ describe("internal state access", () => {
   let media: MediaPlannerPort;
 
   beforeEach(() => {
-    config = makeTestConfig();
+    config = makeGameConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
     media = makeMockMedia();
@@ -325,7 +339,7 @@ describe("Line ID generation", () => {
 
   beforeEach(() => {
     game = new Game(
-      makeTestConfig(),
+      makeGameConfig(),
       makeMockGenerator(),
       makeMockStatus(),
       makeMockMedia(),
@@ -378,7 +392,7 @@ describe("recordPlayerChoice", () => {
   beforeEach(() => {
     gen = makeMockGenerator();
     game = new Game(
-      makeTestConfig(),
+      makeGameConfig(),
       gen,
       makeMockStatus(),
       makeMockMedia(),
@@ -427,7 +441,7 @@ describe("recordPlayerInput", () => {
 
   beforeEach(() => {
     game = new Game(
-      makeTestConfig(),
+      makeGameConfig(),
       makeMockGenerator(),
       makeMockStatus(),
       makeMockMedia(),
@@ -485,7 +499,7 @@ describe("Sequence numbering", () => {
 
   beforeEach(() => {
     game = new Game(
-      makeTestConfig(),
+      makeGameConfig(),
       makeMockGenerator(),
       makeMockStatus(),
       makeMockMedia(),
@@ -547,7 +561,7 @@ describe("registerBuffered", () => {
   beforeEach(() => {
     status = makeMockStatus();
     game = new Game(
-      makeTestConfig(),
+      makeGameConfig(),
       makeMockGenerator(),
       status,
       makeMockMedia(),
@@ -609,7 +623,7 @@ describe("JSONL store initialization", () => {
 
   it("should create the sessions directory during run()", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const generator = makeMockGenerator();
     const status = makeMockStatus();
     const media = makeMockMedia();
@@ -636,7 +650,7 @@ describe("JSONL store initialization", () => {
 
   it("should create a .jsonl file and write events to it during a successful run", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -660,7 +674,7 @@ describe("JSONL store initialization", () => {
 
   it("preserves generated events and repairs the segment when the opening stream fails", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -704,7 +718,7 @@ describe("JSONL store initialization", () => {
 
   it("keeps repairing after the budget is exhausted (no fatal on truncated tail)", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -749,7 +763,7 @@ describe("JSONL store initialization", () => {
 
   it("routes a repaired segment's choice into the normal branch flow", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -805,7 +819,7 @@ describe("JSONL store initialization", () => {
 
   it("does not crash when the continuation segment fails while the preview is still playing", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -902,7 +916,7 @@ describe("Input preview cancellation", () => {
 
   it("aborts the stale NPC response when the preview is cancelled; its events never render", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -973,7 +987,7 @@ describe("Input preview cancellation", () => {
 
   it("leaves no buffered/media residue when a completed response is cancelled", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1048,7 +1062,7 @@ describe("Input preview cancellation", () => {
 
 describe("Input bridge semantics", () => {
   it("assigns stable line_ids to bridge events when the input interaction arrives", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1110,7 +1124,7 @@ describe("Input bridge semantics", () => {
   });
 
   it("discards the bridge when a hybrid preset option is chosen", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1154,7 +1168,7 @@ describe("Input bridge semantics", () => {
   });
 
   it("keeps the bridge when hybrid free text is submitted", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1205,7 +1219,7 @@ describe("Input bridge semantics", () => {
   });
 
   it("hybrid free text discards the prefetched option candidates; bridge and NPC response play", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1301,7 +1315,7 @@ function inputInteractionFixture() {
 
 describe("Input response streaming", () => {
   it("stages streamed lines during preview without touching the formal state", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1353,7 +1367,7 @@ describe("Input response streaming", () => {
   });
 
   it("promotes a confirmed stream: late lines play without a second request", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1415,7 +1429,7 @@ describe("Input response streaming", () => {
   });
 
   it("discards late stream events after cancel", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1467,7 +1481,7 @@ describe("Input response streaming", () => {
   });
 
   it("never commits a state patch from a stale stream after cancel", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1538,7 +1552,7 @@ describe("Input response streaming", () => {
   });
 
   it("reuses the bridge across preview cancels", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1580,7 +1594,7 @@ describe("Input response streaming", () => {
   });
 
   it("commits the state patch only after confirm and request completion", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1616,7 +1630,7 @@ describe("Input response streaming", () => {
   });
 
   it("does not commit the patch while the request finishes during preview", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1649,7 +1663,7 @@ describe("Input response streaming", () => {
   });
 
   it("keeps the arrived prefix when a confirmed stream fails", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1705,7 +1719,7 @@ describe("Input response streaming", () => {
   });
 
   it("retries once when the response stream fails without events", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1742,7 +1756,7 @@ describe("Input response streaming", () => {
   });
 
   it("continues without a fake NPC response when the repair also fails", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1779,7 +1793,7 @@ describe("Input response streaming", () => {
   });
 
   it("records cancel, stale-drop, promotion and timing metrics", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1849,7 +1863,7 @@ describe("Input response streaming", () => {
   });
 
   it("commits immediately when preview confirmation is disabled", async () => {
-    const config = makeTestConfig({ input: { require_preview_confirmation: false } });
+    const config = makeGameConfig({ input: { require_preview_confirmation: false } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1905,7 +1919,7 @@ describe("State patch rejection", () => {
 
   it("should record a state patch rejection when applyPatch throws", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
     const metrics = new Metrics();
@@ -1930,7 +1944,7 @@ describe("State patch rejection", () => {
 
   it("should NOT record a rejection when the state patch is valid", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
     const metrics = new Metrics();
@@ -1953,7 +1967,7 @@ describe("State patch rejection", () => {
 
   it("should continue running after a patch rejection (non-fatal)", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
     const metrics = new Metrics();
@@ -1989,7 +2003,7 @@ describe("Metrics pass-through", () => {
   let media: MediaPlannerPort;
 
   beforeEach(() => {
-    config = makeTestConfig();
+    config = makeGameConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
     media = makeMockMedia();
@@ -2051,7 +2065,7 @@ describe("Hybrid interaction commands", () => {
 
   it("selects a preset option from a hybrid interaction via commands", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2100,7 +2114,7 @@ describe("Hybrid interaction commands", () => {
 
   it("after a preview cancel the hybrid re-arms BOTH paths and re-prefetches: a later select_choice is accepted and its branch plays", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2183,7 +2197,7 @@ describe("Narration-only branch handoff", () => {
 
   it("hands a narration-only branch over to the continuation once playable lines reach the threshold", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeTestConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2250,7 +2264,7 @@ describe("Narration-only branch handoff", () => {
 describe("Interaction policy enforcement", () => {
   /** Interaction config that forbids free-text input entirely. */
   function noInputConfig(): AppConfig {
-    return makeTestConfig({
+    return makeGameConfig({
       interaction: {
         allowed_modes: ["choice", "hybrid"],
         default_mode: "choice",
@@ -2477,7 +2491,7 @@ describe("Interaction policy enforcement", () => {
       onInputPreviewOpened: (output) => controller.confirm(output.previewId),
     });
     const game = new Game(
-      makeTestConfig(),
+      makeGameConfig(),
       generator,
       status,
       media,
@@ -2527,7 +2541,7 @@ describe("Interaction policy enforcement", () => {
       onInputPreviewOpened: (output) => controller.confirm(output.previewId),
     });
     const game = new Game(
-      makeTestConfig(),
+      makeGameConfig(),
       generator,
       status,
       media,
@@ -2550,7 +2564,7 @@ describe("Interaction policy enforcement", () => {
       envelope([narrationEvent("分支内容。")]),
     );
     const game = new Game(
-      makeTestConfig(),
+      makeGameConfig(),
       generator,
       makeMockStatus(),
       makeMockMedia(),
@@ -2589,7 +2603,7 @@ describe("Interaction policy enforcement", () => {
       onInputPreviewOpened: (output) => controller.confirm(output.previewId),
     });
     const game = new Game(
-      makeTestConfig(),
+      makeGameConfig(),
       generator,
       status,
       media,
@@ -2604,7 +2618,7 @@ describe("Interaction policy enforcement", () => {
   });
   it("caps the recent interaction-mode history at 8, dropping the oldest (§8.4)", () => {
     const game = new Game(
-      makeTestConfig(),
+      makeGameConfig(),
       makeMockGenerator(),
       makeMockStatus(),
       makeMockMedia(),
@@ -2631,7 +2645,7 @@ describe("Interaction policy enforcement", () => {
 
 describe("Interaction resolution publication", () => {
   it("emits interaction_resolved(choice) once a choice option exists, before adopting the branch", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2687,7 +2701,7 @@ describe("Interaction resolution publication", () => {
   });
 
   it("emits no interaction_resolved and errors on an unknown choice option", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2718,7 +2732,7 @@ describe("Interaction resolution publication", () => {
   });
 
   it("emits interaction_resolved(choice) for a hybrid preset option and discards the bridge", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2774,7 +2788,7 @@ describe("Interaction resolution publication", () => {
   });
 
   it("emits interaction_resolved(input) on confirm, before input_committed", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2809,7 +2823,7 @@ describe("Interaction resolution publication", () => {
   });
 
   it("emits no interaction_resolved on Esc; the interaction stays valid and can reopen", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2852,7 +2866,7 @@ describe("Interaction resolution publication", () => {
   });
 
   it("auto-confirm: first Enter resolves the interaction when confirmation is disabled", async () => {
-    const config = makeTestConfig({ input: { require_preview_confirmation: false } });
+    const config = makeGameConfig({ input: { require_preview_confirmation: false } });
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2931,7 +2945,7 @@ interface GameScopingInternals {
 
 describe("Interaction command scoping (stale / double-submit)", () => {
   it("choice flow: resolves once, records player_choice once, cancels unselected branches, plays the selected branch", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2975,7 +2989,7 @@ describe("Interaction command scoping (stale / double-submit)", () => {
   });
 
   it("input flow: preview → response generation started → confirm → resolved(input) → committed → player line → bridge → NPC response", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -3020,7 +3034,7 @@ describe("Interaction command scoping (stale / double-submit)", () => {
   });
 
   it("race: select_choice then preview_input in the same tick — only the first wins, the second is dropped, deferredCommands stays empty", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -3070,7 +3084,7 @@ describe("Interaction command scoping (stale / double-submit)", () => {
   });
 
   it("race: preview_input then select_choice in the same tick — only the first wins, the second is dropped, deferredCommands stays empty", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -3121,7 +3135,7 @@ describe("Interaction command scoping (stale / double-submit)", () => {
   });
 
   it("repeated submit: the same option clicked twice records once, adopts one branch, starts no second continuation", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -3168,7 +3182,7 @@ describe("Interaction command scoping (stale / double-submit)", () => {
   });
 
   it("stale preview: a late confirm for the cancelled preview is dropped; the new preview stays valid", async () => {
-    const config = makeTestConfig();
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -3283,7 +3297,7 @@ describe("NarrativeDirector integration", () => {
   let media: MediaPlannerPort;
 
   beforeEach(() => {
-    config = makeTestConfig();
+    config = makeGameConfig();
     generator = makeMockGenerator();
     status = makeMockStatus();
     media = makeMockMedia();

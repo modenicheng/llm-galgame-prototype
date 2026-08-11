@@ -162,7 +162,11 @@ function interactionOpenedOf(outputs: RuntimeOutput[]) {
 
 describe("DSL mode — opening groups", () => {
   it("streams groups into buffered events with characterId + stage presentation", async () => {
-    const config = makeDslConfig();
+    // refill_threshold 0：低水位只在玩家读完（ahead=0）时触发，保证续写
+    // 段拿到的 history 是完整的两条已提交事件（§75 提前续写会截断它）。
+    const config = makeDslConfig({
+      text_buffer: { start_threshold_lines: 2, target_lines: 6, refill_threshold_lines: 0 },
+    });
     const status = makeMockStatus();
     const media = makeMockMedia();
     const generator = makeDslMockGenerator();
@@ -440,7 +444,11 @@ describe("DSL mode — interaction compile", () => {
 
 describe("DSL mode — truncation recovery", () => {
   it("preserves committed groups and repairs via continuation when the segment is incomplete", async () => {
-    const config = makeDslConfig();
+    // threshold 1：失败段（无 @end、endStatus 恒空）若触发首句门槛会热旋转；
+    // 这里聚焦修复路径，门槛设为 1。
+    const config = makeDslConfig({
+      text_buffer: { start_threshold_lines: 1, target_lines: 6, refill_threshold_lines: 3 },
+    });
     const status = makeMockStatus();
     const media = makeMockMedia();
     const generator = makeDslMockGenerator();
@@ -457,6 +465,12 @@ describe("DSL mode — truncation recovery", () => {
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
       async (_t: number, _s: unknown, _history: unknown, prefetched: unknown, _sig: unknown, options?: StreamOptions) => {
+        // 第 1 次调用是 §75 低水位续写（玩家推进保留前缀时 ahead=0 ≤ 阈值，
+        // prefetched 为空）；第 2 次才是真正带保留前缀的修复续写。
+        if ((prefetched as unknown[]).length === 0) {
+          options?.onSegmentEnd?.(complete("buffer"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }
         // Repair continuation seeded with the preserved prefix.
         expect(prefetched).toHaveLength(1);
         options?.onGroup?.(dslNarration("修复后的续写。"));
@@ -510,5 +524,184 @@ describe("DSL mode — visual state", () => {
     expect(playbacks[1]!.event.type).toBe("dialogue");
     expect(playbacks[1]!.presentation).toBeUndefined();
     expect((playbacks[1]!.event as { stage?: unknown }).stage).toBeUndefined();
+  });
+});
+
+describe("DSL mode — low-water refill (§73–§76)", () => {
+  it("starts the refill while the player is still reading the segment tail (not after drain)", async () => {
+    const config = makeDslConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    game.subscribe((o) => outputs.push(o));
+
+    // 开场段：2 句旁白后 @end buffer。
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_turn: number, _state: unknown, _signal: unknown, options?: StreamOptions) => {
+        options?.onGroup?.(dslNarration("地下室里只亮着终端的一点蓝光。"));
+        options?.onGroup?.(dslNarration("键盘上落了一层灰。"));
+        options?.onSegmentEnd?.(complete("buffer"));
+        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+      },
+    );
+    // 续写段：记录被调用的时刻（玩家是否已读完开场最后一行）。
+    // 第 1 次调用 = 低水位提前续写（buffer，继续播放）；第 2 次调用 = 收尾
+    // 续写（ending，终止 run loop，避免无限续写）。
+    let continuationStartedWhileReadingTail = false;
+    let continuationCalls = 0;
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_turn: number, _state: unknown, _history: unknown, _prefetched: unknown, _signal: unknown, options?: StreamOptions) => {
+        continuationCalls += 1;
+        if (continuationCalls === 1) {
+          // 若玩家还没推进到最后一行（还有未消费的 playable），说明续写提前启动了。
+          const playback = playbackOf(outputs);
+          continuationStartedWhileReadingTail = playback.length < 2;
+          options?.onGroup?.(dslNarration("终端屏幕上浮现出一行字。"));
+          options?.onSegmentEnd?.(complete("buffer"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }
+        options?.onSegmentEnd?.(complete("ending"));
+        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+      },
+    );
+
+    const runPromise = game.run();
+    const controller = new MemoryController();
+    controller.attach(game);
+    await controller.advanceUntilInteractionOrEnd();
+    await runPromise;
+
+    expect(generator.generateContinuation).toHaveBeenCalledTimes(2);
+    expect(continuationStartedWhileReadingTail).toBe(true);
+    // 玩家最终看到了全部 3 句。
+    expect(playbackOf(outputs).map((o) => o.event.text)).toEqual([
+      "地下室里只亮着终端的一点蓝光。",
+      "键盘上落了一层灰。",
+      "终端屏幕上浮现出一行字。",
+    ]);
+  });
+
+  it("does NOT refill while the player has more than refill_threshold lines ahead", async () => {
+    const config = makeDslConfig({
+      text_buffer: { start_threshold_lines: 1, target_lines: 6, refill_threshold_lines: 3 },
+    });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    game.subscribe((o) => outputs.push(o));
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_turn: number, _state: unknown, _signal: unknown, options?: StreamOptions) => {
+        for (let i = 0; i < 5; i++) options?.onGroup?.(dslNarration(`第 ${i + 1} 句。`));
+        options?.onSegmentEnd?.(complete("buffer"));
+        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+      },
+    );
+    // 第 1 次 = 低水位续写（buffer）；第 2 次 = 收尾（ending，终止 run loop）。
+    let continuationCalls = 0;
+    let playedLinesAtContinuationStart = -1;
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_turn: number, _state: unknown, _history: unknown, _prefetched: unknown, _signal: unknown, options?: StreamOptions) => {
+        continuationCalls += 1;
+        if (continuationCalls === 1) {
+          // 续写启动时玩家已播放的行数：GREEN=2（还有 3 句 ahead），
+          // RED=5（玩家读空后才由 run loop 启动）。
+          playedLinesAtContinuationStart = playbackOf(outputs).length;
+          options?.onGroup?.(dslNarration("续写句。"));
+          options?.onSegmentEnd?.(complete("buffer"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }
+        options?.onSegmentEnd?.(complete("ending"));
+        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+      },
+    );
+
+    // 手动推进（onPlaybackReady 不自动 advance）：逐步观察低水位触发时机。
+    const runPromise = game.run();
+    const controller = new MemoryController({ onPlaybackReady: () => {} });
+    controller.attach(game);
+
+    await controller.advanceUntilPlayed(1); // 第 1 句播放
+    expect(continuationCalls).toBe(0);      // ahead=4 > 3 → 未触发
+    controller.advance();                    // 放行第 1 句 → 第 2 句播放
+    await controller.advanceUntilPlayed(2);
+    expect(continuationCalls).toBe(0);      // 尚未推进第 2 句 → 仍未触发
+    controller.advance();                    // 推进第 2 句 → ahead=3 ≤ 3 → 触发续写
+    await controller.advanceUntilPlayed(3); // 第 3 句播放
+    expect(continuationCalls).toBe(1);
+    expect(playedLinesAtContinuationStart).toBe(2); // 玩家还剩 3 句时续写已启动
+
+    // 收尾：持续推进直到会话结束（0ms 定时器只用于让微任务链排空）。
+    while (!controller.ended()) {
+      controller.advance();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    await runPromise;
+
+    expect(playbackOf(outputs).map((o) => o.event.text)).toEqual([
+      "第 1 句。",
+      "第 2 句。",
+      "第 3 句。",
+      "第 4 句。",
+      "第 5 句。",
+      "续写句。",
+    ]);
+  });
+
+  it("waits for start_threshold_lines before playing the first line", async () => {
+    const config = makeDslConfig({
+      text_buffer: { start_threshold_lines: 2, target_lines: 6, refill_threshold_lines: 3 },
+    });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    game.subscribe((o) => outputs.push(o));
+
+    let resolveFirstLine!: () => void;
+    const firstLineGate = new Promise<void>((r) => { resolveFirstLine = r; });
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_turn: number, _state: unknown, _signal: unknown, options?: StreamOptions) => {
+        options?.onGroup?.(dslNarration("第一句。"));
+        await firstLineGate; // 第二句延迟到达
+        options?.onGroup?.(dslNarration("第二句。"));
+        options?.onSegmentEnd?.(complete("buffer"));
+        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+      },
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_turn: number, _state: unknown, _history: unknown, _prefetched: unknown, _signal: unknown, options?: StreamOptions) => {
+        // 第 1 次 = 低水位续写（buffer）；第 2 次 = 收尾（ending，终止 run loop）。
+        const calls = (generator.generateContinuation as ReturnType<typeof vi.fn>).mock.calls.length;
+        if (calls === 1) {
+          options?.onGroup?.(dslNarration("续写句。"));
+          options?.onSegmentEnd?.(complete("buffer"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }
+        options?.onSegmentEnd?.(complete("ending"));
+        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+      },
+    );
+
+    const runPromise = game.run();
+    const controller = new MemoryController();
+    controller.attach(game);
+    await new Promise((r) => setTimeout(r, 30));
+    // 只有一句就绪 → 不应出现第一句的 playback_ready。
+    expect(playbackOf(outputs)).toHaveLength(0);
+    resolveFirstLine();
+    await controller.advanceUntilInteractionOrEnd();
+    await runPromise;
+
+    expect(playbackOf(outputs).map((o) => o.event.text)).toEqual([
+      "第一句。",
+      "第二句。",
+      "续写句。",
+    ]);
   });
 });

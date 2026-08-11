@@ -18,6 +18,18 @@ import type { ServerMessage } from "./shared/wire/server-message.js";
 
 const DUMMY_API_KEY = "sk-dummy";
 
+/**
+ * Branch-selection repro tests drive the REAL DSL generator; the §73–§76
+ * low-water scheduler is out of scope here, so it is disabled via config
+ * (see game.test.ts for the rationale). game-dsl.test.ts covers it.
+ */
+function makeGameConfig(overrides?: Parameters<typeof makeTestConfig>[0]): AppConfig {
+  return makeTestConfig({
+    text_buffer: { start_threshold_lines: 1, target_lines: 6, refill_threshold_lines: -1 },
+    ...overrides,
+  });
+}
+
 function makeTestPrompts() {
   return {
     characters: "角色A：勇敢的冒险者\n角色B：神秘的向导",
@@ -126,7 +138,7 @@ function outputSeq(outputs: RuntimeOutput[]): string[] {
 
 describe("repro2: real DSL generator — loaded branch selection", () => {
   it("branch lines reach PLAYING on the VM (not stuck at CONTENT_WAITING)", async () => {
-    const config: AppConfig = makeTestConfig({
+    const config: AppConfig = makeGameConfig({
       generation: { repair_attempts: 0 },
       prefetch: { branch_dialogue_lines: 3 },
     });
@@ -188,7 +200,7 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
   });
 
   it("branch prefetch failing (2 dialogues < required 3) → selection retry also fails → behavior", async () => {
-    const config: AppConfig = makeTestConfig({
+    const config: AppConfig = makeGameConfig({
       generation: { repair_attempts: 1 },
       prefetch: { branch_dialogue_lines: 3 },
     });
@@ -257,7 +269,7 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
 
 describe("hybrid preview-cancel re-arm then select (real generator)", () => {
   it("selecting an option after a cancel/re-arm does not corrupt the playback buffer", async () => {
-    const config: AppConfig = makeTestConfig({
+    const config: AppConfig = makeGameConfig({
       generation: { repair_attempts: 0 },
       prefetch: { branch_dialogue_lines: 3 },
     });
@@ -337,7 +349,7 @@ describe("hybrid preview-cancel re-arm then select (real generator)", () => {
 
 describe("aborted streamed input response then branch select (buffer race)", () => {
   it("selecting an option after aborting a streamed input response keeps buffer order", async () => {
-    const config: AppConfig = makeTestConfig({
+    const config: AppConfig = makeGameConfig({
       generation: { repair_attempts: 0 },
       prefetch: { branch_dialogue_lines: 3 },
     });
@@ -422,7 +434,7 @@ describe("aborted streamed input response then branch select (buffer race)", () 
 
 describe("stray group after the interaction terminal is discarded (docs §50)", () => {
   it("a dialogue group emitted after the interaction corrupts the buffer", async () => {
-    const config: AppConfig = makeTestConfig({
+    const config: AppConfig = makeGameConfig({
       generation: { repair_attempts: 0 },
       prefetch: { branch_dialogue_lines: 3 },
     });

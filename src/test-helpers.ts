@@ -283,6 +283,34 @@ export class MemoryController {
     this.dispatch({ type: "cancel_input", previewId });
   }
 
+  // ------------------------------------------------------------------
+  // Async wait helpers
+  // ------------------------------------------------------------------
+
+  /** Wait until `predicate` holds over the recorded outputs. */
+  private async waitFor(predicate: () => boolean): Promise<void> {
+    while (!predicate()) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 5);
+      await promise;
+    }
+  }
+
+  /**
+   * Wait until the Nth playback_ready event has been emitted.
+   * With the default onPlaybackReady handler each playback is auto-advanced;
+   * with a custom handler that suppresses advancing, this waits for
+   * playback only.
+   */
+  async advanceUntilPlayed(count: number): Promise<void> {
+    await this.waitFor(() => this.count("playback_ready") >= count);
+  }
+
+  /** Wait until an interaction opens or the session ends. */
+  async advanceUntilInteractionOrEnd(): Promise<void> {
+    await this.waitFor(() => this.ended() || this.count("interaction_opened") > 0);
+  }
+
   private async handle(output: RuntimeOutput): Promise<void> {
     switch (output.type) {
       case "playback_ready":

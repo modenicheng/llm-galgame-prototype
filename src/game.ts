@@ -221,6 +221,12 @@ export class Game {
   private readonly narrativeDirector: NarrativeDirectorPort | undefined;
   private readonly playbackBuffer = new PlaybackBuffer();
   private readonly generationScheduler = new GenerationScheduler();
+  /**
+   * §75：低水位触发时已启动、待 run loop 接管的续写段。
+   */
+  private pendingRefillSegment: ActiveSegment | null = null;
+  /** 当前正在播放的段 turn（reconcileTextBuffer 计算续写 turn 用）。 */
+  private activeSegmentTurn = 1;
   private readonly commands = new AsyncEventQueue<RuntimeCommand>();
   private readonly deferredCommands: RuntimeCommand[] = [];
 
@@ -344,15 +350,21 @@ export class Game {
         this.activePreviewId = null;
         this.status.setPhase("后台续写", "缓冲段自然收束，启动续写");
         const historyBefore = [...this.events];
-        const refillPromise = this.startActiveSegment(
-          "continuation",
-          outcome.nextTurn,
-          historyBefore,
-          [],
-        );
-        void refillPromise.done.catch(() => undefined);
+        // §75：低水位触发（任务收束钩子/玩家 advance）可能已提前启动续写；
+        // 直接接管，否则（防御路径）现场启动。提前启动消除了
+        // "读空 → 等 TTFT" 的空窗。
+        const refill =
+          this.pendingRefillSegment ??
+          this.startActiveSegment(
+            "continuation",
+            outcome.nextTurn,
+            historyBefore,
+            [],
+          );
+        this.pendingRefillSegment = null;
+        void refill.done.catch(() => undefined);
         const bufferTurn = outcome.nextTurn;
-        segment = await refillPromise;
+        segment = refill;
         outcome = await this.consumeActiveSegment(
           segment,
           bufferTurn,
@@ -376,6 +388,9 @@ export class Game {
       // scope, so a reconnecting client can never restore a resolved form.
       this.activeInteractionId = null;
       this.activePreviewId = null;
+      // 分支接管后，下一段的 turn 是 currentOutcome.nextTurn；提前更新以便
+      // 低水位续写在 preview 播放期间计算正确 turn。
+      this.activeSegmentTurn = currentOutcome.nextTurn;
       // The selected branch is already the next active generation task. Its
       // existing events enter the formal buffer now; later events are routed
       // into the same buffer by the live task subscription. No new LLM
@@ -606,6 +621,22 @@ export class Game {
     // whole process via Node's default unhandledRejection=throw.
     void segment.done.catch(() => undefined);
 
+    // §75：本段以 buffer 收束后立即评估低水位（不等玩家读空）——续写流
+    // 与玩家阅读尾部重叠，消除段间 TTFT 空窗。带拒绝处理以保持
+    // “每段 done 从出生即带 handler”的工厂不变量（失败段不产生
+    // 未处理拒绝）。
+    void segment.done.then(
+      () => {
+        if (
+          segment.endStatus?.kind === "complete" &&
+          segment.endStatus.reason === "buffer"
+        ) {
+          this.reconcileTextBuffer(segment.turn + 1);
+        }
+      },
+      () => undefined,
+    );
+
     return segment;
   }
 
@@ -615,6 +646,9 @@ export class Game {
     priorContext: StoryContextEvent[],
     repairBudget = Math.max(1, this.config.generation.repair_attempts),
   ): Promise<SegmentOutcome> {
+    let firstPlayableSeen = false;
+    // 供低水位续写计算 nextTurn（当前段 turn + 1）。
+    this.activeSegmentTurn = segment.turn;
     while (true) {
       const next = await segment.queue.next();
       if (next.done) {
@@ -723,6 +757,10 @@ export class Game {
 
       const event = next.value;
       if (isPlayableEvent(event)) {
+        if (!firstPlayableSeen) {
+          firstPlayableSeen = true;
+          await this.waitForStartThreshold(segment);
+        }
         await this.consumePlayableEvent(event, turn);
         continue;
       }
@@ -1496,6 +1534,52 @@ export class Game {
       (c) => c.type === "advance",
     );
     if (command.type !== "advance") throw new RuntimeShutdownError();
+    // §75：玩家推进后重新评估低水位（任务已结束而玩家仍有余量时，
+    // 在"剩 refill 句"处提前启动续写）。
+    this.reconcileTextBuffer(this.activeSegmentTurn + 1);
+  }
+
+  /**
+   * §75 低水位不变量：未来可播放文本 ≤ refill 阈值 且 无未消费交互 且
+   * 无活动路径任务 → 立即启动后台续写（不等玩家读空）。
+   * 触发点：路径任务以 buffer 收束、玩家每次 advance、run loop 的 buffer 分支。
+   */
+  private reconcileTextBuffer(nextTurn: number): void {
+    if (this.pendingRefillSegment !== null) return;
+    if (this.generationScheduler.hasActivePathTask()) return;
+    if (this.playbackBuffer.hasUnconsumedInteraction()) return;
+    if (
+      this.playbackBuffer.countTextLinesAhead() >
+      this.config.text_buffer.refill_threshold_lines
+    ) {
+      return;
+    }
+    this.pendingRefillSegment = this.startActiveSegment(
+      "continuation",
+      nextTurn,
+      [...this.events],
+      [],
+    );
+    void this.pendingRefillSegment.done.catch(() => undefined);
+  }
+
+  /**
+   * §74：播放达到 start_threshold 句才放行首句（防止首句即欠载）。
+   * 段结束（含失败）时立即放行。
+   */
+  private async waitForStartThreshold(segment: ActiveSegment): Promise<void> {
+    const threshold = this.config.text_buffer.start_threshold_lines;
+    if (threshold <= 1) return;
+    while (this.playbackBuffer.countTextLinesAhead() < threshold) {
+      if (segment.endStatus !== null) return;
+      await Promise.race([
+        segment.done.then(
+          () => undefined,
+          () => undefined,
+        ),
+        new Promise<void>((resolve) => setTimeout(resolve, 50)),
+      ]);
+    }
   }
 
   private nextLineId(): string {
