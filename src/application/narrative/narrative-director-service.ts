@@ -39,6 +39,7 @@ import type {
   NarrativeBrief,
   NarrativeBriefRequest,
 } from "../../core/narrative/narrative-brief.js";
+import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import {
   applyThreadOpToState,
   applySetupOpToState,
@@ -53,6 +54,13 @@ import {
   ACTIVE_THREAD_STATUSES,
 } from "./memory-consolidator.js";
 import type { MemoryConsolidatorPort } from "./memory-consolidator.js";
+import {
+  PlotPlanner,
+  PLANNER_RECENT_EVENTS_MAX,
+  validateAnchorOp,
+  applyAnchorOpToState,
+} from "./plot-planner.js";
+import type { PlotPlannerPort } from "./plot-planner.js";
 
 // ---------------------------------------------------------------------------
 // Consolidator port (implemented by Task 8 in memory-consolidator.ts;
@@ -113,8 +121,10 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   private readonly store: NarrativeMemoryStorePort;
   private readonly consolidator: MemoryConsolidator;
   private readonly hasConsolidator: boolean;
-  private readonly plan: StoryPlan;
+  private readonly storyPlan: StoryPlan;
   private readonly diagnostics: DiagnosticSink;
+  private readonly planner: PlotPlanner;
+  private readonly hasPlanner: boolean;
 
   // In-memory consolidated state
   private memory!: NarrativeMemoryState;
@@ -122,6 +132,17 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
   // Pending events not yet consolidated
   private pendingEvents: StoredEvent[] = [];
+
+  // Director plan lifecycle (Task 8)
+  private plan: DirectorPlan | undefined;
+  private planRunning = false;
+  private recentCommittedEvents: StoredEvent[] = [];
+  private lastBriefRequest: NarrativeBriefRequest | undefined;
+
+  // Serializes all "read this.memory → shadow → saveState → swap" writes
+  // (consolidation apply and anchor progression) so concurrent writers
+  // never overwrite each other's changes.
+  private memoryWriteChain: Promise<void> = Promise.resolve();
 
   // Scheduling state
   private lastConsolidateAt = 0;
@@ -131,12 +152,13 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     config: NarrativeConfig;
     store: NarrativeMemoryStorePort;
     consolidator: MemoryConsolidatorPort | undefined;
+    planner?: PlotPlannerPort;
     plan: StoryPlan;
     diagnostics?: DiagnosticSink;
   }) {
     this.config = normalizeNarrativeConfig(opts.config);
     this.store = opts.store;
-    this.plan = opts.plan;
+    this.storyPlan = opts.plan;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
     this.hasConsolidator = opts.consolidator !== undefined;
     // Wrap the optional Task 6 port in a MemoryConsolidator; an absent
@@ -146,6 +168,14 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       config: this.config,
       diagnostics: this.diagnostics,
     });
+    // Wrap the optional Task 7 port in a PlotPlanner; an absent port
+    // yields a null plan without calling anything.
+    this.planner = new PlotPlanner({
+      port: opts.planner,
+      config: this.config,
+      diagnostics: this.diagnostics,
+    });
+    this.hasPlanner = opts.planner !== undefined;
   }
 
   // -----------------------------------------------------------------------
@@ -165,15 +195,15 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
     // Build fresh state from loaded + plan seeds (loaded wins on id conflicts)
     const seedThreads: Record<string, PlotThread> = {};
-    for (const t of this.plan.threads) {
+    for (const t of this.storyPlan.threads) {
       seedThreads[t.id] = t;
     }
     const seedSetups: Record<string, SetupPayoff> = {};
-    for (const s of this.plan.setups) {
+    for (const s of this.storyPlan.setups) {
       seedSetups[s.id] = s;
     }
     const seedAnchors: Record<string, StoryAnchorState> = {};
-    for (const a of this.plan.anchors) {
+    for (const a of this.storyPlan.anchors) {
       seedAnchors[a.id] = a;
     }
 
@@ -193,6 +223,12 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     };
 
     this.episodes = [...loadedEpisodes];
+
+    // Resume the director plan (if any) from the store; a fresh session
+    // starts without one and the first checkpoint creates it. The store
+    // contract is `DirectorPlan | null` — normalize to undefined so every
+    // `this.plan !== undefined` guard holds.
+    this.plan = (await this.store.loadPlan()) ?? undefined;
   }
 
   // -----------------------------------------------------------------------
@@ -255,7 +291,20 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       return a.id.localeCompare(b.id);
     });
 
-    return {
+    // Director plan section: expose phase/goal/beats/revealLocks while the
+    // plan is still in effect. A hard-expired plan acts as a non-blocking
+    // barrier — the brief simply omits the plan section (the model keeps
+    // playing; replanning happens in the background) instead of blocking
+    // the turn on the LLM.
+    const planInEffect =
+      this.plan !== undefined &&
+      this.memory.checkpointCount <= this.plan.expiresAfterCheckpoint
+        ? this.plan
+        : undefined;
+
+    this.lastBriefRequest = request;
+
+    const brief: NarrativeBrief = {
       revision: this.memory.revision,
       consolidatedThroughEventSeq: this.memory.consolidatedThroughEventSeq,
       currentEventSeq: request.eventSeq,
@@ -266,8 +315,16 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       setupDirectives,
       relevantEpisodes,
       anchors,
-      revealLocks: [],
+      revealLocks: planInEffect?.revealLocks ?? [],
     };
+    // exactOptionalPropertyTypes: an explicit `undefined` is not assignable
+    // to an optional property — assign conditionally instead.
+    if (planInEffect !== undefined) {
+      brief.phase = planInEffect.phase;
+      brief.currentGoal = planInEffect.currentGoal;
+      brief.beats = planInEffect.beats;
+    }
+    return brief;
   }
 
   // -----------------------------------------------------------------------
@@ -276,6 +333,13 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
   observeCommitted(events: readonly StoredEvent[]): void {
     this.pendingEvents.push(...events);
+    // Rolling window of recently committed events for the planner.
+    this.recentCommittedEvents.push(...events);
+    if (this.recentCommittedEvents.length > PLANNER_RECENT_EVENTS_MAX) {
+      this.recentCommittedEvents = this.recentCommittedEvents.slice(
+        -PLANNER_RECENT_EVENTS_MAX,
+      );
+    }
     this.maybeSchedule();
   }
 
@@ -286,6 +350,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   checkpoint(_reason: NarrativeCheckpointReason): void {
     this.memory.checkpointCount += 1;
     this.maybeSchedule();
+    this.maybeReplan();
   }
 
   // -----------------------------------------------------------------------
@@ -370,8 +435,13 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       // batch is requeued and memory stays untouched; a retry regenerates
       // the same episode id (revision did not advance) so appendEpisodes
       // stays idempotent (load() dedupes by id).
+      //
+      // The apply/persist/swap section runs inside the memory-write mutex
+      // (Task 8): the callback re-reads the chain-latest this.memory so a
+      // concurrent replan's anchor progression is never overwritten (and
+      // vice versa). The LLM call above stays outside the chain — only the
+      // write section is serialized.
       const rejected = [...outcome.rejected];
-      let applied = 0;
 
       const batchLastSeq = batch[batch.length - 1]!.seq;
       // FIFO guarantees the batch's last seq is exactly the new continuous
@@ -380,83 +450,76 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       // needed — the front only ever moves forward.
       const newWatermark = batchLastSeq;
 
-      // Timeline fields are checkpoint units (narrative beats), not event
-      // seqs: classifySetup's age math compares them against the checkpoint
-      // counter (audit finding 3).
-      const nowCheckpoint = this.memory.checkpointCount;
+      const applied = await this.mutateMemory(async (current) => {
+        const shadow = structuredClone(current);
+        let appliedCount = 0;
 
-      const shadow = structuredClone(this.memory);
-      const nextEpisodes = [...this.episodes];
+        // Timeline fields are checkpoint units (narrative beats), not event
+        // seqs: classifySetup's age math compares them against the checkpoint
+        // counter (audit finding 3).
+        const nowCheckpoint = current.checkpointCount;
 
-      // 1) Episode
-      let newEpisode: EpisodeMemory | undefined;
-      if (outcome.episode !== null) {
-        newEpisode = outcome.episode;
-        nextEpisodes.push(newEpisode);
-        applied += 1;
-      }
+        // 1) Episode
+        if (outcome.episode !== null) {
+          shadow.recentEpisodeIds.unshift(outcome.episode.id);
+          if (shadow.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
+            shadow.recentEpisodeIds = shadow.recentEpisodeIds.slice(
+              0,
+              MAX_RECENT_EPISODE_IDS,
+            );
+          }
+          appliedCount += 1;
+        }
 
-      // 2) Thread ops (shared pure apply; timeline in checkpoint units)
-      for (const op of outcome.threadOps) {
-        applyThreadOpToState(shadow, op, nowCheckpoint);
-        applied += 1;
-      }
+        // 2) Thread ops (shared pure apply; timeline in checkpoint units)
+        for (const op of outcome.threadOps) {
+          applyThreadOpToState(shadow, op, nowCheckpoint);
+          appliedCount += 1;
+        }
 
-      // 3) Setup ops
-      for (const op of outcome.setupOps) {
-        applySetupOpToState(shadow, op, nowCheckpoint);
-        applied += 1;
-      }
+        // 3) Setup ops
+        for (const op of outcome.setupOps) {
+          applySetupOpToState(shadow, op, nowCheckpoint);
+          appliedCount += 1;
+        }
 
-      // --- Advance state (on the shadow) ---
-      shadow.revision += 1;
-      shadow.consolidatedThroughEventSeq = newWatermark;
+        // --- Advance state (on the shadow) ---
+        shadow.revision += 1;
+        shadow.consolidatedThroughEventSeq = newWatermark;
 
-      // Insert the episode id into recentEpisodeIds (the same id the
-      // consolidator generated for the appended episode).
-      if (newEpisode) {
-        shadow.recentEpisodeIds.unshift(newEpisode.id);
-        if (shadow.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
-          shadow.recentEpisodeIds = shadow.recentEpisodeIds.slice(
-            0,
-            MAX_RECENT_EPISODE_IDS,
+        // Persist — saveState is the commit point and goes first. Any
+        // failure: memory untouched, full batch requeued.
+        try {
+          await this.store.saveState(shadow);
+          if (outcome.episode !== null) {
+            await this.store.appendEpisodes([outcome.episode]);
+            // In-memory episode list swaps in sync with the state, inside
+            // the chain, so a concurrent writer cannot lose either half.
+            this.episodes = [...this.episodes, outcome.episode];
+          }
+        } catch (err) {
+          this.pendingEvents = [...pending, ...this.pendingEvents];
+          this.lastConsolidateAt = Date.now();
+          this.diagnostics.warn(
+            "NarrativeDirector",
+            `persist failed, batch requeued: ${String(err)}`,
           );
+          return { applied: 0, failed: true } as const;
         }
-      }
 
-      // Persist — saveState is the commit point and goes first. Any
-      // failure: memory untouched, full batch requeued.
-      try {
-        await this.store.saveState(shadow);
-        if (newEpisode) {
-          await this.store.appendEpisodes([newEpisode]);
-        }
-      } catch (err) {
-        this.pendingEvents = [...pending, ...this.pendingEvents];
-        this.diagnostics.warn(
-          "NarrativeDirector",
-          `persist failed, batch requeued: ${String(err)}`,
-        );
+        // Everything persisted → swap in the new state.
+        this.memory = shadow;
+        return { applied: appliedCount, failed: false } as const;
+      });
+
+      if (applied.failed) {
         return { applied: 0, rejected: [] };
       }
       if (rejected.length > 0) {
-        try {
-          await this.store.appendOps(rejected);
-        } catch (err) {
-          // Debug log only — not part of the memory commit.
-          this.diagnostics.warn(
-            "NarrativeDirector",
-            `appendOps failed (debug log only): ${String(err)}`,
-          );
-        }
+        await this.recordRejectedOps(rejected);
       }
-
-      // Everything persisted → swap in the new state.
-      this.memory = shadow;
-      this.episodes = nextEpisodes;
       this.lastConsolidateAt = Date.now();
-
-      return { applied, rejected };
+      return { applied: applied.applied, rejected };
     } finally {
       this.consolidateRunning = false;
       // Events observed WHILE this consolidation was in flight may now
@@ -465,6 +528,128 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       // is already released) so pending work drains without manual
       // intervention (audit finding 5).
       this.maybeSchedule();
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Director plan lifecycle (Task 8)
+  // -----------------------------------------------------------------------
+
+  private maybeReplan(): void {
+    if (!this.hasPlanner || this.planRunning) return;
+    if (this.plan === undefined) {
+      this.startReplan();
+      return;
+    }
+    const ahead = this.config.plan.replan_ahead_checkpoints;
+    const needsReplan =
+      this.memory.checkpointCount > this.plan.expiresAfterCheckpoint ||
+      (this.memory.revision > this.plan.basedOnMemoryRevision &&
+        this.memory.checkpointCount >=
+          this.plan.expiresAfterCheckpoint - ahead);
+    if (needsReplan) this.startReplan();
+  }
+
+  private startReplan(): void {
+    // NOTE (Task 8 deviation from the plan draft): replan() itself flips
+    // planRunning synchronously before its first await, so setting it here
+    // first would make the guard inside replan() early-return and wedge
+    // planRunning true forever (the scheduled plan would never be created).
+    // This mirrors the maybeSchedule/consolidatePending pattern: the
+    // public method owns its own running flag.
+    void this.replan().catch((err: unknown) => {
+      this.diagnostics.warn(
+        "NarrativeDirector",
+        `scheduled replan error: ${String(err)}`,
+      );
+    });
+  }
+
+  /** Public for testability — same pattern as consolidatePending. */
+  async replan(): Promise<void> {
+    if (!this.hasPlanner || this.planRunning) return;
+    this.planRunning = true;
+    try {
+      const outcome = await this.planner.plan({
+        events: [...this.recentCommittedEvents],
+        memory: this.memory,
+        currentPlan: this.plan,
+        location: this.lastBriefRequest?.location ?? "",
+        characters: this.lastBriefRequest?.characters ?? [],
+      });
+
+      if (outcome.plan === null) {
+        if (outcome.rejected.length > 0) {
+          await this.recordRejectedOps(outcome.rejected);
+        }
+        return; // 旧计划继续生效；下一次 checkpoint 重试
+      }
+
+      // 锚点推进：走内存写互斥，链内重新读取最新 memory
+      await this.mutateMemory(async (current) => {
+        const shadow = structuredClone(current);
+        let appliedAny = false;
+        for (const op of outcome.anchorOps) {
+          // Re-validate against the chain-latest anchor state; ops that no
+          // longer apply (e.g. an anchor another writer already reached)
+          // are silently skipped.
+          if (validateAnchorOp(op, shadow.anchors) === null) {
+            applyAnchorOpToState(shadow, op);
+            appliedAny = true;
+          }
+        }
+        if (!appliedAny) return;
+        shadow.revision += 1;
+        await this.store.saveState(shadow); // 提交点；失败 → 链 reject → 计划不换
+        this.memory = shadow;
+      });
+
+      this.plan = outcome.plan;
+      try {
+        await this.store.savePlan(outcome.plan); // 失败仅记日志，内存计划照常生效
+      } catch (err) {
+        this.diagnostics.warn(
+          "NarrativeDirector",
+          `savePlan failed (plan still active in memory): ${String(err)}`,
+        );
+      }
+      if (outcome.rejected.length > 0) {
+        await this.recordRejectedOps(outcome.rejected);
+      }
+    } finally {
+      this.planRunning = false;
+    }
+  }
+
+  /**
+   * 串行化所有"读 this.memory → 计算 shadow → saveState → swap"的内存写。
+   * fn 在链内执行并收到**链内最新**的 this.memory；返回的 T 透传给调用方。
+   * The chain itself never rejects (only the caller's promise does), so a
+   * failed write cannot wedge subsequent writers.
+   */
+  private mutateMemory<T>(
+    fn: (state: NarrativeMemoryState) => Promise<T>,
+  ): Promise<T> {
+    const run = this.memoryWriteChain.then(() => fn(this.memory));
+    this.memoryWriteChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
+   * Debug-log rejected ops to the store; failures are warn-only and never
+   * part of the memory commit (shared by consolidatePending and replan).
+   */
+  private async recordRejectedOps(ops: RejectedOp[]): Promise<void> {
+    try {
+      await this.store.appendOps(ops);
+    } catch (err) {
+      this.diagnostics.warn(
+        "NarrativeDirector",
+        `appendOps failed (debug log only): ${String(err)}`,
+      );
     }
   }
 

@@ -42,6 +42,10 @@ import type {
   ConsolidationRequest,
   ConsolidationResult,
 } from "./narrative-director-service.js";
+import type {
+  PlotPlannerPort,
+  PlannerProposal,
+} from "./plot-planner.js";
 
 // ---------------------------------------------------------------------------
 // Fakes / fixtures
@@ -78,6 +82,7 @@ class FakeStore implements NarrativeMemoryStorePort {
   saveStateCalls: NarrativeMemoryState[] = [];
   appendEpisodesCalls: EpisodeMemory[][] = [];
   appendOpsCalls: RejectedOp[][] = [];
+  savePlanCalls: DirectorPlan[] = [];
 
   // failure injection (audit finding 6: persistence failure atomicity)
   failNextSaveState = false;
@@ -118,6 +123,12 @@ class FakeStore implements NarrativeMemoryStorePort {
   }
 
   async savePlan(plan: DirectorPlan): Promise<void> {
+    this.savePlanCalls.push(plan);
+    this.plan = plan;
+  }
+
+  /** Seed a persisted plan so initialize() loads it. */
+  seedPlan(plan: DirectorPlan): void {
     this.plan = plan;
   }
 }
@@ -1560,6 +1571,436 @@ describe("NarrativeDirectorService", () => {
       await new Promise((r) => setTimeout(r, 100));
 
       expect(consolidateFn).toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // director plan lifecycle (Task 8)
+  // -----------------------------------------------------------------------
+  function makeFakePlanner(proposal: PlannerProposal): PlotPlannerPort {
+    return { plan: vi.fn().mockResolvedValue(proposal) };
+  }
+
+  const FAKE_PROPOSAL: PlannerProposal = {
+    phase: "development",
+    currentGoal: "推进对苏遥的怀疑",
+    beats: [{ purpose: "侧面证据" }],
+    focusThreads: ["t1"],
+    revealLocks: ["reveal_x"],
+    anchorOps: [{ type: "reach", id: "a2" }],
+  };
+
+  describe("director plan lifecycle", () => {
+    /** Access the private in-memory state (test seam). */
+    function serviceMemory(svc: NarrativeDirectorService): NarrativeMemoryState {
+      return (svc as unknown as { memory: NarrativeMemoryState }).memory;
+    }
+
+    /** Access the private active director plan (test seam). */
+    function servicePlan(
+      svc: NarrativeDirectorService,
+    ): DirectorPlan | undefined {
+      return (svc as unknown as { plan: DirectorPlan | undefined }).plan;
+    }
+
+    /** Anchor fixture: a1 reached, a2 pending behind a1 (matches the
+     * plot-planner.test.ts makeMemory shape). */
+    function anchorPlan(): StoryPlan {
+      return makePlan(
+        [makeThread({ id: "t1", status: "open" })],
+        [],
+        [
+          makeAnchor({ id: "a1", status: "reached" }),
+          makeAnchor({ id: "a2", prerequisites: ["a1"], status: "pending" }),
+        ],
+      );
+    }
+
+    it("loads a persisted plan on initialize", async () => {
+      const store = new FakeStore(emptyState());
+      store.seedPlan({
+        revision: 2,
+        basedOnMemoryRevision: 1,
+        phase: "escalation",
+        currentGoal: "查明真相",
+        beats: [{ purpose: "逼问苏遥" }],
+        focusThreads: [],
+        setupDirectives: [],
+        revealLocks: ["reveal_x"],
+        expiresAfterCheckpoint: 5,
+      });
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: undefined,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      const brief = svc.getBrief({
+        turn: 1,
+        eventSeq: 10,
+        location: "",
+        characters: [],
+      });
+      expect(brief.phase).toBe("escalation");
+      expect(brief.currentGoal).toBe("查明真相");
+      expect(brief.revealLocks).toEqual(["reveal_x"]);
+    });
+
+    it("creates the first plan after the first checkpoint when planner is present", async () => {
+      const store = new FakeStore(emptyState());
+      const planner = makeFakePlanner(FAKE_PROPOSAL);
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: undefined,
+        plan: anchorPlan(),
+        planner,
+      });
+      await svc.initialize();
+
+      svc.checkpoint("interaction_completed");
+      await vi.waitFor(() => expect(planner.plan).toHaveBeenCalledTimes(1));
+      // The anchor apply + plan swap happen after the planner resolves.
+      await vi.waitFor(() => expect(servicePlan(svc)).toBeDefined());
+
+      const brief = svc.getBrief({
+        turn: 1,
+        eventSeq: 10,
+        location: "",
+        characters: [],
+      });
+      expect(brief.phase).toBe("development");
+      expect(brief.currentGoal).toBe(FAKE_PROPOSAL.currentGoal);
+      expect(brief.beats).toEqual(FAKE_PROPOSAL.beats);
+      expect(brief.revealLocks).toEqual(["reveal_x"]);
+
+      // Plan persisted with revision 1 (first generation).
+      expect(store.savePlanCalls).toHaveLength(1);
+      expect(store.savePlanCalls[0]!.revision).toBe(1);
+
+      // Anchor a2 progressed inside the memory-write mutex and persisted.
+      const mem = serviceMemory(svc);
+      expect(mem.anchors["a2"]!.status).toBe("reached");
+      expect(mem.revision).toBe(1);
+      expect(store.saveStateCalls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("does not replan without planner, without memory progress, or while running", async () => {
+      // (a) No planner: checkpoints never create or refresh a plan.
+      const storeNoPlanner = new FakeStore(emptyState());
+      const svcNoPlanner = new NarrativeDirectorService({
+        config: makeConfig(),
+        store: storeNoPlanner,
+        consolidator: undefined,
+        plan: makePlan(),
+      });
+      await svcNoPlanner.initialize();
+      svcNoPlanner.checkpoint("interaction_completed");
+      svcNoPlanner.checkpoint("interaction_completed");
+      expect(servicePlan(svcNoPlanner)).toBeUndefined();
+
+      // (b) Plan exists and checkpointCount is far below expiry → no replan.
+      const storeFar = new FakeStore(emptyState());
+      storeFar.seedPlan({
+        revision: 1,
+        basedOnMemoryRevision: 0,
+        phase: "development",
+        currentGoal: "g",
+        beats: [{ purpose: "p" }],
+        focusThreads: [],
+        setupDirectives: [],
+        revealLocks: [],
+        expiresAfterCheckpoint: 10,
+      });
+      const plannerFar = makeFakePlanner(FAKE_PROPOSAL);
+      const svcFar = new NarrativeDirectorService({
+        config: makeConfig(),
+        store: storeFar,
+        consolidator: undefined,
+        plan: makePlan(),
+        planner: plannerFar,
+      });
+      await svcFar.initialize();
+      svcFar.checkpoint("interaction_completed");
+      expect(plannerFar.plan).not.toHaveBeenCalled();
+
+      // (c) Plan exists and checkpoints crossed the ahead-window, but
+      // memory.revision never advanced → no replan.
+      const storeNoProgress = new FakeStore(emptyState());
+      storeNoProgress.seedPlan({
+        revision: 1,
+        basedOnMemoryRevision: 1, // memory.revision stays 0 → no progress
+        phase: "development",
+        currentGoal: "g",
+        beats: [{ purpose: "p" }],
+        focusThreads: [],
+        setupDirectives: [],
+        revealLocks: [],
+        expiresAfterCheckpoint: 5,
+      });
+      const plannerNoProgress = makeFakePlanner(FAKE_PROPOSAL);
+      const svcNoProgress = new NarrativeDirectorService({
+        config: makeConfig(),
+        store: storeNoProgress,
+        consolidator: undefined,
+        plan: makePlan(),
+        planner: plannerNoProgress,
+      });
+      await svcNoProgress.initialize();
+      for (let i = 0; i < 4; i++) {
+        svcNoProgress.checkpoint("interaction_completed"); // count → 4 ≥ 5-1
+      }
+      expect(plannerNoProgress.plan).not.toHaveBeenCalled();
+
+      // (d) A replan in flight (pending planner promise) suppresses further
+      // checkpoints from starting a second planner call (single-flight).
+      let resolvePlanner!: (v: PlannerProposal) => void;
+      const deferred = new Promise<PlannerProposal>((resolve) => {
+        resolvePlanner = resolve;
+      });
+      const plannerBusy: PlotPlannerPort = {
+        plan: vi.fn().mockReturnValue(deferred),
+      };
+      const storeBusy = new FakeStore(emptyState());
+      const svcBusy = new NarrativeDirectorService({
+        config: makeConfig(),
+        store: storeBusy,
+        consolidator: undefined,
+        plan: anchorPlan(),
+        planner: plannerBusy,
+      });
+      await svcBusy.initialize();
+      svcBusy.checkpoint("interaction_completed"); // starts replan (pending)
+      svcBusy.checkpoint("interaction_completed"); // must be suppressed
+      expect(plannerBusy.plan).toHaveBeenCalledTimes(1);
+      resolvePlanner(FAKE_PROPOSAL);
+      await vi.waitFor(() => expect(servicePlan(svcBusy)).toBeDefined());
+    });
+
+    it("replans ahead of expiry with memory progress and slides the horizon", async () => {
+      const store = new FakeStore(emptyState());
+      const consolidateFn = vi.fn().mockResolvedValue({
+        episode: {
+          summary: "Progress episode",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      } satisfies ConsolidationResult);
+      const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
+      const planner = makeFakePlanner(FAKE_PROPOSAL);
+      const svc = new NarrativeDirectorService({
+        config: makeConfig({
+          consolidation: {
+            batch_min_events: 999, // suppress auto-schedule
+            max_events_per_call: 80,
+            min_checkpoint_gap_ms: 0,
+          },
+        }),
+        store,
+        consolidator,
+        plan: anchorPlan(),
+        planner,
+      });
+      await svc.initialize();
+
+      // First checkpoint → first plan. Horizon 3 → expires = 1 + 3 = 4.
+      svc.checkpoint("interaction_completed");
+      await vi.waitFor(() =>
+        expect(servicePlan(svc)?.expiresAfterCheckpoint).toBe(4),
+      );
+      expect(servicePlan(svc)!.revision).toBe(1);
+
+      // Advance memory.revision via one consolidation. Note: replan #1's
+      // anchor progression already bumped revision 0 → 1, so consolidation
+      // lands on 2 — the delta is what matters for replan scheduling.
+      svc.observeCommitted([makeEvent(1)]);
+      await svc.consolidatePending();
+      expect(serviceMemory(svc).revision).toBe(2);
+
+      // Two more checkpoints → count 3 ≥ 4 - 1 (ahead) with revision
+      // progress → replan. New plan slides the horizon: 3 + 3 = 6.
+      svc.checkpoint("interaction_completed");
+      svc.checkpoint("interaction_completed");
+      await vi.waitFor(() => expect(planner.plan).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(servicePlan(svc)?.revision).toBe(2));
+      expect(servicePlan(svc)!.expiresAfterCheckpoint).toBe(6);
+      expect(servicePlan(svc)!.basedOnMemoryRevision).toBe(2);
+    });
+
+    it("omits the plan section from the brief when the plan has hard-expired", async () => {
+      const store = new FakeStore(emptyState());
+      store.seedPlan({
+        revision: 1,
+        basedOnMemoryRevision: 0,
+        phase: "development",
+        currentGoal: "旧目标",
+        beats: [{ purpose: "旧节拍" }],
+        focusThreads: [],
+        setupDirectives: [],
+        revealLocks: ["reveal_x"],
+        expiresAfterCheckpoint: 4,
+      });
+      const planner: PlotPlannerPort = {
+        plan: vi.fn().mockRejectedValue(new Error("LLM down")),
+      };
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: undefined,
+        plan: makePlan(),
+        planner,
+      });
+      await svc.initialize();
+
+      // 5 checkpoints → count 5 > 4 (hard expiry); every replan attempt
+      // fails so the old (expired) plan stays.
+      for (let i = 0; i < 5; i++) {
+        svc.checkpoint("interaction_completed");
+      }
+      await vi.waitFor(() => expect(planner.plan).toHaveBeenCalled());
+
+      const brief = svc.getBrief({
+        turn: 1,
+        eventSeq: 10,
+        location: "",
+        characters: [],
+      });
+      expect(brief.currentGoal).toBeUndefined();
+      expect(brief.phase).toBeUndefined();
+      expect(brief.beats).toBeUndefined();
+      expect(brief.revealLocks).toEqual([]);
+    });
+
+    it("keeps the old plan when replan fails and records rejected ops", async () => {
+      // (a) Port throws → replan() resolves, old plan kept, no savePlan.
+      const store = new FakeStore(emptyState());
+      const oldPlan: DirectorPlan = {
+        revision: 1,
+        basedOnMemoryRevision: 0,
+        phase: "escalation",
+        currentGoal: "旧计划",
+        beats: [{ purpose: "逼问" }],
+        focusThreads: [],
+        setupDirectives: [],
+        revealLocks: [],
+        expiresAfterCheckpoint: 100,
+      };
+      store.seedPlan(oldPlan);
+      const failingPlanner: PlotPlannerPort = {
+        plan: vi.fn().mockRejectedValue(new Error("LLM down")),
+      };
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: undefined,
+        plan: makePlan(),
+        planner: failingPlanner,
+      });
+      await svc.initialize();
+
+      await expect(svc.replan()).resolves.toBeUndefined();
+      expect(servicePlan(svc)).toBe(oldPlan);
+      expect(store.savePlanCalls).toHaveLength(0);
+
+      // (b) Schema-invalid proposal (beats: []) → kind "plan" rejection
+      // recorded via store.appendOps.
+      const storeBad = new FakeStore(emptyState());
+      const badPlanner: PlotPlannerPort = {
+        plan: vi.fn().mockResolvedValue({ ...FAKE_PROPOSAL, beats: [] }),
+      };
+      const svcBad = new NarrativeDirectorService({
+        config: makeConfig(),
+        store: storeBad,
+        consolidator: undefined,
+        plan: anchorPlan(),
+        planner: badPlanner,
+      });
+      await svcBad.initialize();
+
+      await expect(svcBad.replan()).resolves.toBeUndefined();
+      expect(storeBad.appendOpsCalls.length).toBeGreaterThanOrEqual(1);
+      const recorded = storeBad.appendOpsCalls.flat();
+      expect(recorded.some((op) => op.kind === "plan")).toBe(true);
+      expect(servicePlan(svcBad)).toBeUndefined();
+    });
+
+    it("applies anchor ops inside the memory-write mutex without losing consolidation changes", async () => {
+      // Both consolidatePending and replan are in flight at the same time;
+      // their apply/persist/swap sections serialize through the mutex and
+      // each re-reads the latest memory inside the chain.
+      let resolveConsolidator!: (value: ConsolidationResult) => void;
+      const deferredConsolidation = new Promise<ConsolidationResult>((resolve) => {
+        resolveConsolidator = resolve;
+      });
+      const consolidateFn = vi.fn().mockReturnValue(deferredConsolidation);
+      const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
+
+      let resolvePlanner!: (v: PlannerProposal) => void;
+      const deferredPlan = new Promise<PlannerProposal>((resolve) => {
+        resolvePlanner = resolve;
+      });
+      const planner: PlotPlannerPort = { plan: vi.fn().mockReturnValue(deferredPlan) };
+
+      const store = new FakeStore(emptyState());
+      const svc = new NarrativeDirectorService({
+        config: makeConfig({
+          consolidation: {
+            batch_min_events: 999, // suppress auto-schedule
+            max_events_per_call: 80,
+            min_checkpoint_gap_ms: 0,
+          },
+        }),
+        store,
+        consolidator,
+        plan: anchorPlan(),
+        planner,
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeEvent(1)]);
+
+      const consolidationRun = svc.consolidatePending();
+      const replanRun = svc.replan();
+
+      // Resolve the planner first: anchor a2 reached, revision 0 → 1.
+      resolvePlanner(FAKE_PROPOSAL);
+      await replanRun;
+      let mem = serviceMemory(svc);
+      expect(mem.anchors["a2"]!.status).toBe("reached");
+      expect(mem.revision).toBe(1);
+
+      // Then resolve consolidation: it must apply ON TOP of the replan's
+      // state (thread change kept alongside the anchor change).
+      resolveConsolidator({
+        episode: {
+          summary: "Mutex episode",
+          characters: [],
+          locations: [],
+          threads: ["t1"],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [{ type: "advance", id: "t1" }],
+        setupOps: [],
+      });
+      await consolidationRun;
+
+      mem = serviceMemory(svc);
+      expect(mem.revision).toBe(2); // 1 (replan) + 1 (consolidation)
+      expect(mem.anchors["a2"]!.status).toBe("reached"); // replan kept
+      expect(mem.threads["t1"]!.status).toBe("developing"); // consolidation kept
+      expect(mem.consolidatedThroughEventSeq).toBe(1);
+      expect(mem.recentEpisodeIds).toHaveLength(1);
+      const appended = store.appendEpisodesCalls.flat();
+      expect(appended).toHaveLength(1);
+      expect(mem.recentEpisodeIds[0]).toBe(appended[0]!.id);
     });
   });
 });
