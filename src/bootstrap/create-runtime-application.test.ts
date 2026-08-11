@@ -775,12 +775,16 @@ function dashscopeConfig(): AppConfig {
     try {
       const first = await createRuntimeApplication({ config, sessionId: "sess-restart-1", sessionDir });
       const oldGame = first.game;
+      const oldSessionId = (oldGame as any).sessionId;
       const second = await first.restart();
       // restart() swaps the game in place and returns the same app object
       // so hosts keep a valid reference; the game itself is rebuilt with a
       // fresh session id (Task 10).
       expect(second).toBe(first);
       expect(second.game).not.toBe(oldGame);
+      // C7a: the fresh SessionIdGenerator id is the core restart contract —
+      // the new session must not reuse the old one.
+      expect((second.game as any).sessionId).not.toBe(oldSessionId);
     } finally {
       await rm(sessionDir, { recursive: true, force: true });
     }

@@ -33,7 +33,7 @@ function makeBrief(overrides: Partial<NarrativeBrief> = {}): NarrativeBrief {
 // ---------------------------------------------------------------------------
 
 describe("renderDirectorNote", () => {
-  it("renders the revision annotation with both seq numbers and maxRecentRawEvents", () => {
+  it("renders the revision annotation with both seq numbers", () => {
     const note = renderDirectorNote(makeBrief(), 40);
     expect(note).toContain("===== 导演便签 =====");
     expect(note).toContain(

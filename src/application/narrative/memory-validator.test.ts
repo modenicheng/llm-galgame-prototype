@@ -710,7 +710,7 @@ describe("classifySetup", () => {
     });
   });
 
-  it("ignores payoffBeforeAnchor when the current anchor is undefined (no anchor reached yet in step 1+2)", () => {
+  it("ignores payoffBeforeAnchor when the current anchor is undefined (every anchor resolved)", () => {
     const item = makeSetup({
       status: "seeded",
       payoffBeforeAnchor: "anchor-x",

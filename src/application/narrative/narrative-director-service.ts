@@ -577,7 +577,13 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
    * 落定、并重试计划落盘。幂等；可安全地在任意时刻调用。
    */
   async flush(): Promise<void> {
-    if (this.hasConsolidator && this.pendingEvents.length > 0) {
+    // C6: pending 为空但 consolidation 仍在飞（批在开始时已排空、LLM 调用
+    // 尚在跑）时也必须等它——consolidatePending 的单飞分支会返回在飞
+    // promise。否则 shutdown/restart 会在写入落定前返回，与 saveState 竞速。
+    if (
+      this.hasConsolidator &&
+      (this.pendingEvents.length > 0 || this.consolidateRunning)
+    ) {
       await this.consolidatePending();
     }
     await this.memoryWriteChain; // 等在链内所有写入（含在飞 consolidation）落定

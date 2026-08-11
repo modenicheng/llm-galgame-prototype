@@ -1082,6 +1082,72 @@ describe("NarrativeDirectorService", () => {
       expect(store.saveStateCalls).toHaveLength(0);
       expect(store.savePlanCalls).toHaveLength(0);
     });
+
+    it("awaits an in-flight consolidation whose pending events are already drained (C6)", async () => {
+      const store = new FakeStore(emptyState());
+      let releaseConsolidation!: () => void;
+      const consolidationGate = new Promise<void>((resolve) => {
+        releaseConsolidation = resolve;
+      });
+      const consolidateFn = vi.fn().mockImplementation(
+        (_request: ConsolidationRequest) =>
+          consolidationGate.then(
+            () =>
+              ({
+                episode: {
+                  summary: "Flush episode",
+                  characters: [],
+                  locations: [],
+                  threads: [],
+                  setups: [],
+                  importance: "normal",
+                },
+                threadOps: [],
+                setupOps: [],
+              }) satisfies ConsolidationResult,
+          ),
+      );
+      const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
+      const svc = new NarrativeDirectorService({
+        // batch_min_events 999 suppresses auto-schedule: the test starts the
+        // consolidation explicitly so the in-flight window is deterministic.
+        config: makeConfig({
+          consolidation: {
+            batch_min_events: 999,
+            max_events_per_call: 80,
+            min_checkpoint_gap_ms: 0,
+          },
+        }),
+        store,
+        consolidator,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeEvent(1), makeEvent(2), makeEvent(3)]);
+      const inFlight = svc.consolidatePending();
+      // Wait until the batch is drained and the consolidator call is in
+      // flight: pendingEvents is empty again while consolidateRunning is
+      // still true — the C6 race window.
+      await vi.waitFor(() => expect(consolidateFn).toHaveBeenCalledTimes(1));
+
+      const flushPromise = svc.flush();
+      // flush must await the in-flight consolidation (single-flight), not
+      // return while the write is still gated behind the consolidator.
+      let flushResolved = false;
+      void flushPromise.then(() => {
+        flushResolved = true;
+      });
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      expect(flushResolved).toBe(false);
+
+      releaseConsolidation();
+      await flushPromise;
+      await inFlight;
+      expect(flushResolved).toBe(true);
+      // The consolidation's write landed before flush returned.
+      expect(store.saveStateCalls.length).toBeGreaterThanOrEqual(1);
+    });
   });
 
   // -----------------------------------------------------------------------

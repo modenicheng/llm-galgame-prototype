@@ -888,6 +888,10 @@ export class Game {
             fullContext,
             playable,
             failure.message,
+            // M1: 强制收束语义必须穿过修复路径——强制段（event mode 已达上限）
+            // 失败后被修复的续写段同样是强制段，否则修复段可以再次打开交互
+            // 表单而不消耗 forcedEndingRetries 预算。
+            this.forceEnding,
           );
           void repaired.done.catch(() => undefined);
           const outcome = await this.consumeActiveSegment(
@@ -1853,7 +1857,15 @@ export class Game {
             }
           }
         })();
-        await handle.done;
+        try {
+          await handle.done;
+        } catch (error) {
+          // C5: done 拒绝时泵仍在后台排空缓冲组；若某组让 compileGroup
+          // 抛错，泵的拒绝会成为未处理拒绝（Node unhandledRejection=throw
+          // 崩溃进程）。带拒绝处理排空后再抛原始错误（与 I1 相同模式）。
+          await pump.catch(() => undefined);
+          throw error;
+        }
         await pump;
         this.branchTailStates.set(option.id, branchState);
         return materialized;
@@ -2171,6 +2183,11 @@ export class Game {
         }
       }
     })();
+    // C5: done 拒绝路径只标记失败、不排空泵；若某组让 compileGroup 抛错，
+    // 泵的拒绝会成为未处理拒绝（Node unhandledRejection=throw 崩溃进程）。
+    // 创建即挂上永不抛错的拒绝处理器（成功后 await pump 仍能看到拒绝，
+    // 由下方 ok 处理器标记失败）。
+    void pump.catch(() => undefined);
 
     // 单一反应（非 .then().catch()）：确认命令处理时会话状态已落定——
     // 修复决策在确认点不会与失败反应竞速。ok 处理器现在先排空泵（I2），

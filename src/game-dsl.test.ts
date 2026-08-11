@@ -904,4 +904,66 @@ describe("DSL mode — event mode max interactions (forced ending)", () => {
     expect(ended).toBeDefined();
     expect((generator.generateContinuation as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(3);
   });
+
+  it("threads the forced ending into the repair continuation when a forced segment fails (M1)", async () => {
+    const config = eventConfig(1);
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    game.subscribe((o) => outputs.push(o));
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (_request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("开场。"));
+          onGroup(dslInteraction({ prompt: "怎么办？", mode: "choice", optionTexts: ["走", "留"] }));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
+        }),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
+      (_request: BranchPrefetchRequest) =>
+        dslHandle("branch", async (_signal, onGroup) => {
+          onGroup(dslNarration("分支。"));
+          return { events: [], state_patch: {}, groups: [dslNarration("分支。")], segmentEnd: complete("buffer") };
+        }),
+    );
+    // 已达上限后的强制续写段：产出 1 句后失败（无 @end 哨兵）→ 触发修复
+    // 路径。修复续写必须继承强制收束语义（M1），不能再打开交互表单。
+    let continuationCalls = 0;
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          continuationCalls += 1;
+          if (request.repairReason === undefined) {
+            onGroup(dslNarration("收束前的叙述。"));
+            throw new Error("DSL 流截断：段结束时没有 @end 哨兵");
+          }
+          // 修复续写：直接以 @end ending 收束结局。
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
+    );
+
+    const runPromise = game.run();
+    const controller = new MemoryController();
+    controller.attach(game);
+    await controller.advanceUntilInteractionOrEnd();
+    const opened = interactionOpenedOf(controller.outputs);
+    expect(opened).toHaveLength(1);
+    controller.select(opened[0]!.interactionId, `${opened[0]!.interactionId}_opt_0`);
+    await controller.advanceUntilInteractionOrEnd();
+    await runPromise;
+
+    const calls = (generator.generateContinuation as ReturnType<typeof vi.fn>).mock.calls;
+    // bounded：强制段失败 + 1 次修复续写。
+    expect(calls).toHaveLength(2);
+    // 强制段本身带 endingRequired（上限已达成）。
+    expect((calls[0]![0] as ContinuationRequest).endingRequired).toBe(true);
+    // M1 契约：修复续写继承 endingRequired，保持强制收束语义。
+    expect((calls[1]![0] as ContinuationRequest).endingRequired).toBe(true);
+    // 全程只打开过一个交互表单；修复段直接收束结局。
+    expect(interactionOpenedOf(controller.outputs)).toHaveLength(1);
+    expect(outputs.some((o) => o.type === "session_ended")).toBe(true);
+  });
 });

@@ -4575,7 +4575,7 @@ build 全绿；全量验证记录见 `.superpowers/sdd/task-10-report.md`。
 - **叙事精度 Anchor 声明序**：`computeCurrentAnchorId` 按声明顺序（DAG）而非字典序取当前锚点（`src/application/narrative/setup-scheduler.ts`，Task 4）。
 - **叙事精度 规范 episode 标签**：consolidation 仅接受规范 episode id 的标签（`src/application/narrative/memory-consolidator.ts`，Task 5）。
 - **叙事精度 ThreadOp.create**：create 必须携带 kind/importance，按重要性预算校验（`src/core/narrative/memory-operation.ts`，Task 6）。
-- **端口依赖倒置**：Game 改为消费 `StoryGeneratorPort`（InputBridge / tailVisualState / repairReason），bootstrap 以 facade 适配（`src/game.ts`、`src/core/ports/story-generator-port.ts`，Task 7–8）。
+- **端口依赖倒置**：Game 改为消费 `StoryGeneratorPort`（InputBridge / tailVisualState / repairReason），bootstrap 以 `GeneratorPortFacade` 适配（`src/game.ts`、`src/core/ports/story-generator-port.ts`，Task 7–8）。
 - **会话目录统一 + flush**：narrative 文件与 JSONL 同入 `sessions/<sessionId>/`，director shutdown 时 flush 落盘（`src/adapters/storage/node-jsonl-session-store.ts`，Task 9）。
 - **EventMode 最小集**：`narrative.event.max_interactions`（0 = 不限；到达上限强制收束结局，模型连续不结束时运行时合成结局兜底）+ `restart_session` 命令（`src/config.ts`、`src/game.ts`、`src/core/runtime/runtime-command.ts`，Task 10）。
 - **文档清理**：README 修正 mode/bridge 描述，dsl-protocol 明确独立 `ch` 指令须携带 variant，DESIGN.md 归档，本文件 §73/§80/§116.5/known-gaps 更新（`README.md`、`prompts/dsl-protocol.txt`、`DESIGN.md`，Task 11）。
