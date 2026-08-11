@@ -767,6 +767,25 @@ function dashscopeConfig(): AppConfig {
     }
   });
 
+  it("restart rebuilds the runtime in place with a fresh game", async () => {
+    const config = makeTestConfig({
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+    const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-rs-"));
+    try {
+      const first = await createRuntimeApplication({ config, sessionId: "sess-restart-1", sessionDir });
+      const oldGame = first.game;
+      const second = await first.restart();
+      // restart() swaps the game in place and returns the same app object
+      // so hosts keep a valid reference; the game itself is rebuilt with a
+      // fresh session id (Task 10).
+      expect(second).toBe(first);
+      expect(second.game).not.toBe(oldGame);
+    } finally {
+      await rm(sessionDir, { recursive: true, force: true });
+    }
+  });
+
   it("tolerates a nonexistent story plan path (empty plan, game runs)", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "galgame-np-"));
     const sessionDir = path.join(dir, "sessions");

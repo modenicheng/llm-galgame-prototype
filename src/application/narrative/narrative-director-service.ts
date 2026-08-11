@@ -105,6 +105,7 @@ function normalizeNarrativeConfig(raw: NarrativeConfig): NarrativeConfig {
   return {
     mode: raw.mode ?? d.mode,
     story_plan_path: raw.story_plan_path ?? d.story_plan_path,
+    event: { ...d.event, ...raw.event },
     threads: { ...d.threads, ...raw.threads },
     setups: { ...d.setups, ...raw.setups },
     consolidation: { ...d.consolidation, ...raw.consolidation },

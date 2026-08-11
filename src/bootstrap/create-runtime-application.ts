@@ -143,7 +143,63 @@ export async function createRuntimeApplication(
   });
 
   const projection = new UiProjectionStoreImpl();
-  const store = new NodeJsonlSessionStore(options.sessionDir ?? config.game.sessions_dir);
+
+  /**
+   * Assemble the per-session game: fresh session store + (longform)
+   * narrative director + the Game itself. `restart()` reuses this to
+   * rebuild the runtime in place with a new session id (Task 10).
+   */
+  const buildGameFor = async (
+    config: AppConfig,
+    sessionId: string,
+    options: RuntimeApplicationOptions,
+  ): Promise<Game> => {
+    const store = new NodeJsonlSessionStore(options.sessionDir ?? config.game.sessions_dir);
+    // --- Narrative director assembly (§7.1) ---
+    const diagnostics = new ConsoleDiagnosticSink();
+    let narrativeDirector: NarrativeDirectorPort | undefined;
+    if (config.narrative.mode === "longform") {
+      const plan = await loadStoryPlan(
+        options.storyPlanPath ?? config.narrative.story_plan_path,
+        diagnostics,
+      );
+      const narrativeStore = new JsonNarrativeMemoryStore(
+        options.sessionDir ?? config.game.sessions_dir,
+        sessionId,
+      );
+      const consolidator = new NarrativeConsolidatorAdapter({
+        apiKey,
+        api: config.api,
+        config: config.narrative,
+        diagnostics,
+      });
+      const planner = new PlotPlannerAdapter({
+        apiKey,
+        api: config.api,
+        config: config.narrative,
+        diagnostics,
+      });
+      const service = new NarrativeDirectorService({
+        config: config.narrative,
+        store: narrativeStore,
+        consolidator,
+        planner,
+        plan,
+        diagnostics,
+      });
+      await service.initialize();
+      narrativeDirector = service;
+    }
+
+    return new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {
+      store,
+      clock: new SystemClock(),
+      ids: new SessionIdGenerator(),
+      sessionId,
+      diagnostics,
+      ...(narrativeDirector ? { narrativeDirector } : {}),
+    }, assetCatalog);
+  };
 
   // One session id for the whole runtime: the game's session file AND the
   // narrative-memory directory are bound to it (spec §6), so narrative
@@ -151,57 +207,13 @@ export async function createRuntimeApplication(
   // own memory.
   const sessionId =
     options.sessionId ?? new SessionIdGenerator().nextSessionId();
-
-  // --- Narrative director assembly (§7.1) ---
-  const diagnostics = new ConsoleDiagnosticSink();
-  let narrativeDirector: NarrativeDirectorPort | undefined;
-  if (config.narrative.mode === "longform") {
-    const plan = await loadStoryPlan(
-      options.storyPlanPath ?? config.narrative.story_plan_path,
-      diagnostics,
-    );
-    const narrativeStore = new JsonNarrativeMemoryStore(
-      options.sessionDir ?? config.game.sessions_dir,
-      sessionId,
-    );
-    const consolidator = new NarrativeConsolidatorAdapter({
-      apiKey,
-      api: config.api,
-      config: config.narrative,
-      diagnostics,
-    });
-    const planner = new PlotPlannerAdapter({
-      apiKey,
-      api: config.api,
-      config: config.narrative,
-      diagnostics,
-    });
-    const service = new NarrativeDirectorService({
-      config: config.narrative,
-      store: narrativeStore,
-      consolidator,
-      planner,
-      plan,
-      diagnostics,
-    });
-    await service.initialize();
-    narrativeDirector = service;
-  }
-
-  const game = new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {
-    store,
-    clock: new SystemClock(),
-    ids: new SessionIdGenerator(),
-    sessionId,
-    diagnostics,
-    ...(narrativeDirector ? { narrativeDirector } : {}),
-  }, assetCatalog);
+  let game = await buildGameFor(config, sessionId, options);
 
   // Every runtime output feeds the projection (§7.7) so a reconnecting
   // browser can restore the page without restarting the Game.
   game.subscribe((output) => projection.applyOutput(output));
 
-  return {
+  const app: RuntimeApplication = {
     game,
     audioCatalog: catalog,
     ttsTasks,
@@ -222,5 +234,19 @@ export async function createRuntimeApplication(
       // 关停落盘：导演 pending 事件整理 + 计划/快照持久化（audit P1-7）。
       await game.flush();
     },
+    restart: async () => {
+      // 关停旧会话（unwind + 落盘），再用新 session id 重建 game。
+      game.dispatch({ type: "shutdown" });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await game.flush();
+      const freshSessionId = new SessionIdGenerator().nextSessionId();
+      game = await buildGameFor(config, freshSessionId, options);
+      game.subscribe((output) => projection.applyOutput(output));
+      // 原地替换 game 字段并返回同一 app 对象：宿主持有的 app 引用保持有效，
+      // 只需重新调用 app.game.run()。
+      app.game = game;
+      return app;
+    },
   };
+  return app;
 }

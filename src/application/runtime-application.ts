@@ -27,6 +27,12 @@ export interface RuntimeApplication {
   /** Loaded asset catalog (docs §57–§60); hosts expose it via manifest + /game-assets. */
   assetCatalog: AssetCatalog;
   shutdown(): Promise<void>;
+  /**
+   * 结束当前会话并重建整个运行时（新 session id、新开场）。
+   * 返回同一 RuntimeApplication（game 已原地替换）；调用方只需重新
+   * 调用其 game.run() 即可开始新会话。
+   */
+  restart(): Promise<RuntimeApplication>;
   /** Subscribe to TTS task status events (hosts bridge these to the browser). */
   taskStatusSubscribe(listener: (event: TaskStatusEvent) => void): () => void;
 }

@@ -3,7 +3,7 @@ import { loadConfig } from "../config.js";
 import type { AppConfig } from "../config.js";
 import { createRuntimeApplication } from "../bootstrap/create-runtime-application.js";
 import type { RuntimeApplication } from "../application/runtime-application.js";
-import { RuntimeShutdownError } from "../game.js";
+import { RestartRequestedError, RuntimeShutdownError } from "../game.js";
 import type { Game } from "../game.js";
 import type { Metrics } from "../runtime/metrics.js";
 import { CliController } from "../apps/cli/cli-controller.js";
@@ -36,7 +36,15 @@ async function main(): Promise<void> {
   const controller = new CliController(ui, config);
   controller.attach(app.game);
 
-  await controller.run();
+  try {
+    await controller.run();
+  } catch (error) {
+    if (error instanceof RestartRequestedError) {
+      console.log("CLI 暂不支持会话内重启，请重新启动进程。");
+      return;
+    }
+    throw error;
+  }
   printMetrics(app.game, app.metrics);
 }
 

@@ -123,6 +123,9 @@ game:
 # 叙事导演配置（narrative director）：长线剧情线程、场景搭建、记忆整合与简报。
 narrative:
   mode: longform
+  # 活动模式策略：max_interactions=0 表示不限制；>0 时到达上限后强制收束结局。
+  event:
+    max_interactions: 0
   threads:
     max_major_active: 2
     max_minor_active: 3

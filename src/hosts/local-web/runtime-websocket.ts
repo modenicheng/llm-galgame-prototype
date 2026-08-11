@@ -44,7 +44,7 @@ interface ConnectionState {
 }
 
 export class RuntimeWebSocket {
-  private readonly game: Game;
+  private game: Game;
   private readonly projection: UiProjectionStore;
   private readonly catalog: AudioCatalogService;
   private readonly ttsStatus: (cb: (event: TaskStatusEvent) => void) => () => void;
@@ -77,6 +77,16 @@ export class RuntimeWebSocket {
   /** Stop accepting runtime commands (shutdown step 1, §15.3). */
   stopAcceptingCommands(): void {
     this.acceptingCommands = false;
+  }
+
+  /**
+   * Point the websocket at a freshly rebuilt game after a session restart
+   * (RuntimeApplication.restart + restart_session command). Existing
+   * connections keep their original subscription; new connections observe
+   * the new game.
+   */
+  rebase(game: Game): void {
+    this.game = game;
   }
 
   handle(ws: WebSocket, req: IncomingMessage): void {

@@ -47,4 +47,19 @@ describe("NodeJsonlSessionStore", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("does not write state.json to the cwd when saveSnapshot runs before initialize", async () => {
+    // flush()/shutdown/restart can run on a game that never started; the
+    // store must no-op instead of writing state.json into the working dir.
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-store-"));
+    try {
+      const store = new NodeJsonlSessionStore(dir);
+      await store.saveSnapshot({ state: createInitialState() });
+      expect(store.location).toBe("");
+      expect(existsSync(path.join(dir, "state.json"))).toBe(false);
+      expect(existsSync(path.resolve(process.cwd(), "state.json"))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

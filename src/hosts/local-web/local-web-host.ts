@@ -19,7 +19,7 @@ import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
 import type { RuntimeApplication } from "../../application/runtime-application.js";
 import type { AssetCatalog, PublicAssetManifest } from "../../core/assets/types.js";
 import { buildPublicAssetManifest } from "../../application/assets/asset-manifest.js";
-import { RuntimeShutdownError } from "../../game.js";
+import { RestartRequestedError, RuntimeShutdownError } from "../../game.js";
 import { isAllowedOrigin } from "./origin-guard.js";
 import { AudioStreamRoute } from "./audio-stream-route.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";
@@ -212,9 +212,28 @@ export class LocalWebHost {
     void this.app.game.run().catch((error: unknown) => {
       // RuntimeShutdownError is the expected shutdown path.
       if (error instanceof RuntimeShutdownError) return;
+      if (error instanceof RestartRequestedError) {
+        void this.handleRestart();
+        return;
+      }
       this.logger(
         `game run loop exited: ${error instanceof Error ? error.message : String(error)}`,
       );
+    });
+  }
+
+  /**
+   * Rebuild the runtime with a fresh session id and restart the run loop
+   * (Task 10: restart_session command). The websocket is rebased onto the
+   * new game so reconnecting clients observe the fresh session.
+   */
+  private async handleRestart(): Promise<void> {
+    this.logger("restarting session…");
+    await this.app.restart();
+    this.runtimeWs.rebase(this.app.game);
+    void this.app.game.run().catch((error: unknown) => {
+      if (error instanceof RuntimeShutdownError) return;
+      this.logger(`game run loop exited after restart: ${String(error)}`);
     });
   }
 

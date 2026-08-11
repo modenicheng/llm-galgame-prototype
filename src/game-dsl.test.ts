@@ -801,3 +801,107 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     expect(controller.ended()).toBe(true);
   });
 });
+
+describe("DSL mode — event mode max interactions (forced ending)", () => {
+  function eventConfig(max: number) {
+    return makeTestConfig({
+      narrative: { mode: "event", event: { max_interactions: max } },
+      text_buffer: { start_threshold_lines: 1, target_lines: 6, refill_threshold_lines: 3 },
+    });
+  }
+
+  it("forces the next continuation to end after the last interaction", async () => {
+    const config = eventConfig(1);
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    game.subscribe((o) => outputs.push(o));
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (_request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("开场。"));
+          onGroup(dslInteraction({ prompt: "怎么办？", mode: "choice", optionTexts: ["走", "留"] }));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
+        }),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
+      (_request: BranchPrefetchRequest) =>
+        dslHandle("branch", async (_signal, onGroup) => {
+          onGroup(dslNarration("分支。"));
+          return { events: [], state_patch: {}, groups: [dslNarration("分支。")], segmentEnd: complete("buffer") };
+        }),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (_request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          onGroup(dslNarration("最后的叙述。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
+    );
+
+    const runPromise = game.run();
+    const controller = new MemoryController();
+    controller.attach(game);
+    await controller.advanceUntilInteractionOrEnd();
+    const opened = interactionOpenedOf(controller.outputs);
+    expect(opened).toHaveLength(1);
+    controller.select(opened[0]!.interactionId, `${opened[0]!.interactionId}_opt_0`);
+    await controller.advanceUntilInteractionOrEnd();
+    await runPromise;
+
+    expect(outputs.some((o) => o.type === "session_ended")).toBe(true);
+  });
+
+  it("synthesizes an ending when the model refuses to end (bounded)", async () => {
+    const config = eventConfig(1);
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    game.subscribe((o) => outputs.push(o));
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (_request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("开场。"));
+          onGroup(dslInteraction({ prompt: "怎么办？", mode: "choice", optionTexts: ["走", "留"] }));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
+        }),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
+      (_request: BranchPrefetchRequest) =>
+        dslHandle("branch", async (_signal, onGroup) => {
+          onGroup(dslNarration("分支。"));
+          return { events: [], state_patch: {}, groups: [dslNarration("分支。")], segmentEnd: complete("buffer") };
+        }),
+    );
+    // 续写总是 buffer，拒绝 ending。
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (_request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          onGroup(dslNarration("还是不停。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }),
+    );
+
+    const runPromise = game.run();
+    const controller = new MemoryController();
+    controller.attach(game);
+    await controller.advanceUntilInteractionOrEnd();
+    const opened = interactionOpenedOf(controller.outputs);
+    expect(opened).toHaveLength(1);
+    controller.select(opened[0]!.interactionId, `${opened[0]!.interactionId}_opt_0`);
+    await controller.advanceUntilInteractionOrEnd();
+    await runPromise;
+
+    const ended = outputs.find(
+      (o): o is RuntimeOutput & { type: "session_ended" } => o.type === "session_ended",
+    );
+    expect(ended).toBeDefined();
+    expect((generator.generateContinuation as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(3);
+  });
+});

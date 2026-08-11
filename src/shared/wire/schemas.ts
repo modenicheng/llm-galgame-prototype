@@ -62,6 +62,7 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
     previewId: z.string().min(1),
   }),
   z.object({ type: z.literal("shutdown") }),
+  z.object({ type: z.literal("restart_session") }),
 ]);
 
 export const ClientMessageSchema = z.discriminatedUnion("type", [

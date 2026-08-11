@@ -428,6 +428,61 @@ describe("loadConfig narrative section", () => {
 
     await expect(loadConfig(filePath)).rejects.toThrow();
   });
+
+  it("defaults narrative.event.max_interactions to 0 (unlimited)", async () => {
+    const filePath = await writeTempYaml(
+      "cfg-event-default",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    enabled: false",
+        "game:",
+        "  history_events: 80",
+      ].join("\n"),
+    );
+
+    const config = await loadConfig(filePath);
+
+    expect(config.narrative.event.max_interactions).toBe(0);
+  });
+
+  it("parses narrative.event.max_interactions", async () => {
+    const filePath = await writeTempYaml(
+      "cfg-event-max",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    enabled: false",
+        "game:",
+        "  history_events: 80",
+        "narrative:",
+        "  mode: event",
+        "  event:",
+        "    max_interactions: 5",
+      ].join("\n"),
+    );
+
+    const config = await loadConfig(filePath);
+
+    expect(config.narrative.mode).toBe("event");
+    expect(config.narrative.event.max_interactions).toBe(5);
+  });
 });
 
 // ---------------------------------------------------------------------------

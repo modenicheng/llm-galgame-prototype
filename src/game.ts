@@ -104,6 +104,12 @@ interface ActiveSegment {
    * generation call).
    */
   failed: boolean;
+  /**
+   * Event mode（audit P2-10）：强制收束段。该段必须以 @end ending 收束；
+   * 以 buffer / interaction 收束时按 forcedEndingRetries 预算重试或由
+   * 运行时合成结局（防无限循环）。
+   */
+  endingRequired: boolean;
 }
 
 type ActiveSegmentKind = "opening" | "continuation";
@@ -177,6 +183,14 @@ export class RuntimeShutdownError extends Error {
   }
 }
 
+/** Raised when the driver sends `restart_session` — the host rebuilds the runtime. */
+export class RestartRequestedError extends Error {
+  constructor() {
+    super("运行时已收到重启指令");
+    this.name = "RestartRequestedError";
+  }
+}
+
 /** Raised when a generated interaction violates InteractionPolicy (§8.5). */
 export class InteractionPolicyViolationError extends Error {
   constructor(reason: string) {
@@ -187,6 +201,13 @@ export class InteractionPolicyViolationError extends Error {
 
 /** §8.4: keep only the most recent formally-opened interaction modes. */
 const MAX_INTERACTION_MODE_HISTORY = 8;
+
+/**
+ * Event mode（audit P2-10）：强制收束重试段带的修复语义——模型必须用
+ * `@end <nonce> ending` 收束，不得再打开新的交互表单。
+ */
+const FORCED_ENDING_REPAIR_REASON =
+  "玩家已达成最大互动次数，故事必须收束结局；用 @end {nonce} ending 结束，不得打开新的交互表单。";
 
 /** Registry fallback when no asset catalog is wired. */
 const emptyRegistry: CharacterRegistry = {
@@ -240,6 +261,12 @@ export class Game {
   private pendingRefillSegment: ActiveSegment | null = null;
   /** 当前正在播放的段 turn（reconcileTextBuffer 计算续写 turn 用）。 */
   private activeSegmentTurn = 1;
+  /** 已提交的 interaction 数量（event mode 上限计数）。 */
+  private interactionCount = 0;
+  /** 已达最大互动次数 → 后续生成必须收束结局。 */
+  private forceEnding = false;
+  /** 强制收束的重试次数（bounded：合计最多 1 次）。 */
+  private forcedEndingRetries = 0;
   private readonly commands = new AsyncEventQueue<RuntimeCommand>();
   private readonly deferredCommands: RuntimeCommand[] = [];
 
@@ -354,6 +381,32 @@ export class Game {
     let outcome = await this.consumeActiveSegment(segment, 1, []);
 
     while (outcome.type !== "end") {
+      // 强制收束（event mode）：强制段不得再打开交互表单。交互结果与
+      // buffer 分支的重试共享 forcedEndingRetries 预算；预算耗尽 →
+      // 运行时合成结局（防无限循环）。
+      if (this.forceEnding && segment.endingRequired && outcome.type === "choice") {
+        if (this.forcedEndingRetries < 1) {
+          this.forcedEndingRetries += 1;
+          this.diagnostics.warn(
+            "Game",
+            "强制收束：强制段再次打开交互，继续尝试收束",
+          );
+        } else {
+          this.diagnostics.warn(
+            "Game",
+            "强制收束失败：模型多次未以 @end ending 结束，运行时合成结局。",
+          );
+          this.emit({
+            type: "session_ended",
+            ending: {
+              type: "end",
+              ending_id: this.ids.nextGenerationId("ending"),
+              text: "（故事在此落幕。）",
+            },
+          });
+          return;
+        }
+      }
       // DSL mode: the segment ended cleanly with `@end ... buffer`. Its
       // events were already buffered and played while streaming; start a
       // low-water refill continuation from the committed history (docs
@@ -361,8 +414,63 @@ export class Game {
       if (outcome.type === "buffer") {
         this.activeInteractionId = null;
         this.activePreviewId = null;
-        this.status.setPhase("后台续写", "缓冲段自然收束，启动续写");
         const historyBefore = [...this.events];
+        if (this.forceEnding && segment.endingRequired) {
+          // 强制收束重试（bounded）：第一次仍以 buffer 收束 → 带修复语义
+          // 再试一次；仍不结束 → 运行时合成结局。
+          if (this.forcedEndingRetries < 1) {
+            this.forcedEndingRetries += 1;
+            this.status.setPhase("强制收束", "模型未收束结局，重试强制收束");
+            const retry = this.startActiveSegment(
+              "continuation",
+              outcome.nextTurn,
+              historyBefore,
+              [],
+              FORCED_ENDING_REPAIR_REASON,
+              true,
+            );
+            void retry.done.catch(() => undefined);
+            segment = retry;
+            outcome = await this.consumeActiveSegment(
+              segment,
+              outcome.nextTurn,
+              historyBefore,
+            );
+            if (outcome.type !== "end") {
+              this.status.removeJob(`continuation:${outcome.nextTurn}`);
+              // 仍不结束（buffer 或再次打开交互表单）→ 运行时合成结局（防死循环）。
+              this.diagnostics.warn(
+                "Game",
+                "强制收束失败：模型未以 @end ending 结束，运行时合成结局。",
+              );
+              this.emit({
+                type: "session_ended",
+                ending: {
+                  type: "end",
+                  ending_id: this.ids.nextGenerationId("ending"),
+                  text: "（故事在此落幕。）",
+                },
+              });
+              return;
+            }
+            await this.saveCurrentStateSnapshot();
+            continue;
+          }
+          this.diagnostics.warn(
+            "Game",
+            "强制收束失败：模型连续未以 @end ending 结束，运行时合成结局。",
+          );
+          this.emit({
+            type: "session_ended",
+            ending: {
+              type: "end",
+              ending_id: this.ids.nextGenerationId("ending"),
+              text: "（故事在此落幕。）",
+            },
+          });
+          return;
+        }
+        this.status.setPhase("后台续写", "缓冲段自然收束，启动续写");
         // §75：低水位触发（任务收束钩子/玩家 advance）可能已提前启动续写；
         // 直接接管，否则（防御路径）现场启动。提前启动消除了
         // "读空 → 等 TTFT" 的空窗。
@@ -373,6 +481,8 @@ export class Game {
             outcome.nextTurn,
             historyBefore,
             [],
+            undefined,
+            this.forceEnding,
           );
         this.pendingRefillSegment = null;
         void refill.done.catch(() => undefined);
@@ -475,6 +585,8 @@ export class Game {
             outcome.nextTurn,
             history,
             committed,
+            undefined,
+            this.forceEnding,
           );
         });
     }
@@ -486,6 +598,8 @@ export class Game {
           outcome.nextTurn,
           history,
           outcome.preview,
+          undefined,
+          this.forceEnding,
         ),
       );
     }
@@ -513,6 +627,8 @@ export class Game {
           outcome.nextTurn,
           history,
           selectedEvents,
+          undefined,
+          this.forceEnding,
         );
       });
   }
@@ -550,6 +666,7 @@ export class Game {
     history: StoryContextEvent[],
     prefetchedEvents: StoryContextEvent[],
     repairReason?: string,
+    endingRequired = false,
   ): ActiveSegment {
     const queue = new AsyncEventQueue<RuntimeModelEvent>();
     const taskId = this.ids.nextGenerationId(kind === "opening" ? "opening" : `continuation:${turn}`);
@@ -564,6 +681,7 @@ export class Game {
       schedulerReleased: false,
       endStatus: null,
       failed: false,
+      endingRequired,
     };
 
     const controller = this.generationScheduler.startActivePath(taskId);
@@ -601,6 +719,7 @@ export class Game {
               ...(brief !== undefined ? { brief } : {}),
               tailVisualState: this.tailVisualState,
               ...(repairReason !== undefined ? { repairReason } : {}),
+              ...(endingRequired ? { endingRequired: true } : {}),
             });
 
       // 泵：把 handle 的事件流喂进段队列（与旧 onGroup 直连语义等价）。
@@ -810,6 +929,20 @@ export class Game {
 
       this.advanceBufferedEvent(event);
       await this.recordModelEvent(event, turn);
+      // Event mode（audit P2-10）：交互提交时计数；达到上限后强制后续
+      // 生成收束结局。
+      this.interactionCount += 1;
+      if (
+        this.config.narrative.mode === "event" &&
+        this.config.narrative.event.max_interactions > 0 &&
+        this.interactionCount >= this.config.narrative.event.max_interactions
+      ) {
+        this.forceEnding = true;
+        this.diagnostics.info(
+          "Game",
+          `已达最大互动次数 ${this.interactionCount}，后续生成强制收束结局`,
+        );
+      }
       const context = [...priorContext, ...segment.events];
       // §8.4: the interaction is now formally opened (policy already passed
       // in handleDslGroup). Record its mode for consecutive-input tracking.
@@ -884,6 +1017,7 @@ export class Game {
       if (next.done) throw new RuntimeShutdownError();
       const command = next.value;
       if (command.type === "shutdown") throw new RuntimeShutdownError();
+      if (command.type === "restart_session") throw new RestartRequestedError();
       if (predicate(command)) return command;
       // The final judgment lives here: a stale interaction command is
       // dropped instead of parked in deferredCommands.
@@ -1590,6 +1724,9 @@ export class Game {
    * 触发点：路径任务以 buffer 收束、玩家每次 advance、run loop 的 buffer 分支。
    */
   private reconcileTextBuffer(nextTurn: number): void {
+    // 强制收束（event mode）：强制语义下不再有后台续写——后续生成必须
+    // 直接收束结局，低水位续写会与之竞争单槽调度器并拖延收束。
+    if (this.forceEnding) return;
     if (this.pendingRefillSegment !== null) return;
     if (this.generationScheduler.hasActivePathTask()) return;
     if (this.playbackBuffer.hasUnconsumedInteraction()) return;

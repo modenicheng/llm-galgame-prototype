@@ -31,4 +31,6 @@ export type RuntimeCommand =
       previewId: string;
     }
   /** Abort the whole run loop. */
-  | { type: "shutdown" };
+  | { type: "shutdown" }
+  /** 结束当前会话并重建运行时（新 session id、新开场）。 */
+  | { type: "restart_session" };

@@ -42,6 +42,11 @@ export class NodeJsonlSessionStore implements SessionStorePort {
   }
 
   async saveSnapshot(snapshot: RuntimeSnapshot): Promise<void> {
+    // Lifecycle guard: initialize() (game.run) assigns the per-session
+    // path. flush()/shutdown/restart may run on a game that never started
+    // (e.g. the web host shutting down before any player connected) — an
+    // uninitialized store must not write state.json into the cwd.
+    if (this.pathInternal === "") return;
     const statePath = path.join(path.dirname(this.pathInternal), "state.json");
     await saveStateSnapshot(snapshot.state, statePath);
   }
