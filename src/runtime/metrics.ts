@@ -71,10 +71,9 @@ export interface InputStats {
   response_promoted_live_count: number;
 }
 
-/** Schema / state-patch rejection counters. */
+/** Schema validation failure counters. */
 export interface ErrorStats {
   schema_validation_failures: number;
-  state_patch_rejections: number;
 }
 
 /** Player interaction latency samples. */
@@ -151,7 +150,6 @@ export class Metrics {
 
   // --- Errors ---
   private schemaValidationFailures = 0;
-  private statePatchRejections = 0;
 
   // --- Player timing ---
   private choiceToNextLineSamples: number[] = [];
@@ -251,11 +249,6 @@ export class Metrics {
     this.schemaValidationFailures += 1;
   }
 
-  /** Call when a StoryStatePatch is rejected during merge. */
-  recordStatePatchRejection(): void {
-    this.statePatchRejections += 1;
-  }
-
   /**
    * Record the wall-clock latency from the moment the player confirms a
    * choice until the first playable line of the selected branch is
@@ -331,7 +324,6 @@ export class Metrics {
       },
       errors: {
         schema_validation_failures: this.schemaValidationFailures,
-        state_patch_rejections: this.statePatchRejections,
       },
       player: {
         choice_to_next_line_ms: [...this.choiceToNextLineSamples],
@@ -365,7 +357,6 @@ export class Metrics {
     this.staleInputEventDroppedCount = 0;
     this.responsePromotedLiveCount = 0;
     this.schemaValidationFailures = 0;
-    this.statePatchRejections = 0;
     this.choiceToNextLineSamples = [];
     this.assetDiagnostics.clear();
   }

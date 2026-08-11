@@ -13,7 +13,6 @@
  *   generating/ready ──(cancel)──> canceled
  */
 import type { RuntimeNarrationEvent, RuntimePlayableEvent } from "../../schema.js";
-import type { StoryStatePatch } from "../../story/types.js";
 
 export type InputResponseStatus =
   | "generating"
@@ -37,7 +36,6 @@ export class InputResponseSession {
   readonly frozenText: string;
   readonly bridgeEvents: RuntimeNarrationEvent[];
   readonly responseEvents: RuntimePlayableEvent[] = [];
-  pendingStatePatch: StoryStatePatch | null = null;
   status: InputResponseStatus = "generating";
   failure: Error | null = null;
 
@@ -62,11 +60,6 @@ export class InputResponseSession {
     if (this.status === "canceled") return;
     this.responseEvents.push(event);
     for (const listener of this.listeners) listener(event);
-  }
-
-  /** Stage the state patch; committed only after confirm + generation end. */
-  setPendingPatch(patch: StoryStatePatch): void {
-    this.pendingStatePatch = patch;
   }
 
   /** Whether the generation stream has ended (ready or failed). */
@@ -106,10 +99,9 @@ export class InputResponseSession {
     this.status = "committed";
   }
 
-  /** Player cancelled: drop events and patch forever. */
+  /** Player cancelled: drop events forever. */
   cancel(): void {
     this.status = "canceled";
-    this.pendingStatePatch = null;
     this.responseEvents.length = 0;
     this.doneResolve();
   }

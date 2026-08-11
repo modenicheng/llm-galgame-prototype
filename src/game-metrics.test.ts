@@ -133,7 +133,6 @@ describe("Game Metrics integration", () => {
 
     // Errors
     expect(snap.errors.schema_validation_failures).toBe(0);
-    expect(snap.errors.state_patch_rejections).toBe(0);
 
     // Player
     expect(snap.player.choice_to_next_line_ms).toEqual([]);
@@ -194,11 +193,9 @@ describe("Game Metrics integration", () => {
 
     metrics.recordSchemaValidationFailure();
     metrics.recordSchemaValidationFailure();
-    metrics.recordStatePatchRejection();
 
     const snap = game.getMetrics();
     expect(snap.errors.schema_validation_failures).toBe(2);
-    expect(snap.errors.state_patch_rejections).toBe(1);
   });
 
   // ------------------------------------------------------------------

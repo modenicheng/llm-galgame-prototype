@@ -73,12 +73,11 @@ import type {
 import { isPlayableEvent } from "./schema.js";
 import { InteractionPolicy } from "./story/interaction-policy.js";
 import type { InteractionMode, InputSpec } from "./story/types.js";
-import { applyPatch } from "./story/patch.js";
+import { reconcileStoryState } from "./story/reconcile.js";
 import { createInitialState } from "./story/state.js";
 import type {
   GeneratedEvent,
   StoryState,
-  StoryStatePatch,
 } from "./story/types.js";
 import type { RuntimeStatus } from "./status.js";
 
@@ -204,6 +203,11 @@ const emptyRegistry: CharacterRegistry = {
 
 export class Game {
   private readonly events: StoredEvent[] = [];
+  /**
+   * §81：已提交但尚未 reconcile 的事件（microtask 单飞排空）。
+   */
+  private pendingReconcile: StoredEvent[] = [];
+  private reconcileScheduled = false;
   private readonly buffered = new Map<string, RuntimePlayableEvent>();
   private seq = 1;
   private readonly sessionId: string;
@@ -608,11 +612,6 @@ export class Game {
               onSegmentEnd(envelope.segmentEnd);
             }
           }
-        }
-        try {
-          this.storyState = applyPatch(this.storyState, envelope.state_patch);
-        } catch {
-          this.metrics.recordStatePatchRejection();
         }
       });
     }).finally(() => {
@@ -1927,10 +1926,8 @@ export class Game {
       );
 
       if (!liveSession) {
-        // Response finished before/during confirm: commit the staged patch
-        // (E3: committed && generation done), then return the fixed prefix.
+        // Response finished before/during confirm: return the fixed prefix.
         await responseSession.done;
-        this.applyInputPatch(responseSession);
         if (responseSession.failure) {
           this.diagnostics.warn("input", `NPC 回应生成失败 — ${responseSession.failure.message}`);
         }
@@ -1943,11 +1940,9 @@ export class Game {
         };
       }
 
-      // Live path: the patch is committed when the stream ends; the response
-      // prefix already staged plays first, late events flow to the formal
-      // buffer via consumeLiveInputResponse.
+      // Live path: the response prefix already staged plays first, late
+      // events flow to the formal buffer via consumeLiveInputResponse.
       void liveSession.done.then(() => {
-        this.applyInputPatch(liveSession);
         if (liveSession.failure) {
           this.diagnostics.warn("input", `NPC 回应生成失败 — ${liveSession.failure.message}`);
         }
@@ -2009,8 +2004,6 @@ export class Game {
       .then(
         (envelope) => {
           if (controller.signal.aborted) return;
-          // Defer state patch until the player confirms (second Enter).
-          responseSession.setPendingPatch(envelope.state_patch);
           // Envelope-format providers do not invoke onGroup; feed their
           // groups through the same staging path.
           if (responseSession.responseEvents.length === 0) {
@@ -2068,20 +2061,8 @@ export class Game {
   }
 
   /**
-   * Commit a staged state patch. E3 timing rule: only after the session is
-   * committed AND the generation has ended (callers await `done` first).
+   * Hybrid interaction: player can select a preset option OR type free text.
    */
-  private applyInputPatch(session: InputResponseSession): void {
-    if (session.status !== "committed") return;
-    if (session.pendingStatePatch === null) return;
-    try {
-      this.storyState = applyPatch(this.storyState, session.pendingStatePatch);
-    } catch {
-      this.metrics.recordStatePatchRejection();
-    }
-    session.pendingStatePatch = null;
-  }
-
   private makePlayerDialogue(interactionId: string, text: string): PlayerDialogueEvent {
     return {
       type: "player_dialogue",
@@ -2315,6 +2296,21 @@ export class Game {
     this.events.push(event);
     await this.store.append(event);
     this.narrativeDirector?.observeCommitted([event]);
+    this.scheduleReconcile(event);
+  }
+
+  /** §81: 事件正式提交后异步 reconcile StoryState（不在玩家等待关键路径）。 */
+  private scheduleReconcile(event: StoredEvent): void {
+    this.pendingReconcile.push(event);
+    if (this.reconcileScheduled) return;
+    this.reconcileScheduled = true;
+    queueMicrotask(() => {
+      this.reconcileScheduled = false;
+      if (this.pendingReconcile.length === 0) return;
+      const batch = this.pendingReconcile;
+      this.pendingReconcile = [];
+      this.storyState = reconcileStoryState(this.storyState, batch);
+    });
   }
 
   private makeBrief(turn: number): NarrativeBrief | undefined {

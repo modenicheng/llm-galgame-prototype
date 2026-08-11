@@ -1593,7 +1593,7 @@ describe("Input response streaming", () => {
     expect(played[3]!.text).toBe("回应。");
   });
 
-  it("commits the state patch only after confirm and request completion", async () => {
+  it("ignores envelope state_patch; storyState reconciles from committed events", async () => {
     const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
@@ -1617,7 +1617,9 @@ describe("Input response streaming", () => {
       onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
       onInputPreviewOpened: (output) => {
         controller.confirm(output.previewId);
-        // The patch only arrives AFTER the confirm.
+        // The envelope arrives AFTER the confirm, but its state_patch is
+        // legacy protocol (§96): never applied. Only committed events
+        // project StoryState.
         resolveResponse(
           envelope([narrationEvent("回应。")], { recent_summary: "玩家说了你好" }),
         );
@@ -1626,10 +1628,10 @@ describe("Input response streaming", () => {
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
-    expect((game as any).storyState.recent_summary).toBe("玩家说了你好");
+    expect((game as any).storyState.recent_summary).toBe("结尾。");
   });
 
-  it("does not commit the patch while the request finishes during preview", async () => {
+  it("never applies envelope patches; state reflects committed events only", async () => {
     const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
@@ -1649,17 +1651,19 @@ describe("Input response streaming", () => {
     const controller = new MemoryController({
       onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
       onInputPreviewOpened: async (output) => {
-        // Let the request finish while the preview is still open.
+        // Let the request finish while the preview is still open: its
+        // envelope patch is never applied — only committed events project.
         await new Promise((resolve) => setTimeout(resolve, 5));
-        expect((game as any).storyState.recent_summary).toBe("The story has just begun.");
+        expect((game as any).storyState.recent_summary).toBe("开场。");
         controller.confirm(output.previewId);
       },
     });
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
-    // After confirm + completion the patch commits.
-    expect((game as any).storyState.recent_summary).toBe("未确认的摘要");
+    // The unconfirmed envelope's patch is discarded forever; the summary
+    // comes from the last committed line.
+    expect((game as any).storyState.recent_summary).toBe("结尾。");
   });
 
   it("keeps the arrived prefix when a confirmed stream fails", async () => {
@@ -1903,92 +1907,42 @@ describe("Input response streaming", () => {
 });
 
 // ---------------------------------------------------------------------------
-// State patch rejection recording
+// StoryState reconciliation from committed events (§81)
 // ---------------------------------------------------------------------------
 
-describe("State patch rejection", () => {
-  let tempDir: string;
-
-  beforeEach(async () => {
-    tempDir = await mkdtemp(path.join(tmpdir(), "galgame-test-"));
-  });
-
-  afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true });
-  });
-
-  it("should record a state patch rejection when applyPatch throws", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+describe("StoryState reconciliation", () => {
+  it("reconciles storyState from committed events (after a microtask)", async () => {
+    const config = makeTestConfig();
+    const generator = makeMockGenerator();
     const status = makeMockStatus();
     const media = makeMockMedia();
-    const metrics = new Metrics();
-
-    const generator = makeMockGenerator();
-    // Return an envelope where state_patch.open_threads is a number,
-    // which will cause applyPatch to throw (not iterable)
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope(
-        [narrationEvent("First."), endEvent("end_1", "The end.")],
-        { open_threads: 123 as any },
-      ),
-    );
-
-    const game = new Game(config, generator, status, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
-    new MemoryController().attach(game);
-    await game.run();
-
-    const snap = game.getMetrics();
-    expect(snap.errors.state_patch_rejections).toBe(1);
-  });
-
-  it("should NOT record a rejection when the state patch is valid", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
-    const status = makeMockStatus();
-    const media = makeMockMedia();
-    const metrics = new Metrics();
-
-    const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope(
-        [narrationEvent("First."), endEvent("end_1", "The end.")],
-        {}, // valid empty patch
-      ),
-    );
-
-    const game = new Game(config, generator, status, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
-    new MemoryController().attach(game);
-    await game.run();
-
-    const snap = game.getMetrics();
-    expect(snap.errors.state_patch_rejections).toBe(0);
-  });
-
-  it("should continue running after a patch rejection (non-fatal)", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
-    const status = makeMockStatus();
-    const media = makeMockMedia();
-    const metrics = new Metrics();
-
-    const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockResolvedValue(
-      envelope(
-        [narrationEvent("First."), endEvent("end_1", "The end.")],
-        { open_threads: 123 as any }, // bad patch
-      ),
-    );
-
-    const game = new Game(config, generator, status, media, metrics, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
-    new MemoryController().attach(game);
-    // Should not throw — patch rejection is non-fatal
-    await expect(game.run()).resolves.toBeUndefined();
-
-    expect(game.getMetrics().errors.state_patch_rejections).toBe(1);
-    // Story state should remain the initial state since patch was rejected
-    const state = (game as any).storyState;
-    expect(state.scene.id).toBe("prologue");
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    await (game as any).record({
+      type: "narration",
+      text: "走进地下室。",
+      stage: [{ type: "background", assetId: "basement" }],
+      seq: 1,
+      turn: 1,
+      timestamp: "2026-08-11T00:00:00.000Z",
+      source: "model",
+    });
+    // reconcile runs on a microtask after record(); a macrotask yields past
+    // the whole microtask queue, so this is deterministic, not a duration guess.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect((game as any).storyState.scene.location).toBe("basement");
+    expect(Object.keys((game as any).storyState.characters)).toEqual([]);
+    await (game as any).record({
+      type: "dialogue",
+      characterId: "suyao",
+      speaker: "苏遥",
+      text: "你不该来这里。",
+      seq: 2,
+      turn: 1,
+      timestamp: "2026-08-11T00:00:00.000Z",
+      source: "model",
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(Object.keys((game as any).storyState.characters)).toEqual(["suyao"]);
   });
 });
 
@@ -2015,11 +1969,9 @@ describe("Metrics pass-through", () => {
 
     metrics.recordSchemaValidationFailure();
     metrics.recordSchemaValidationFailure();
-    metrics.recordStatePatchRejection();
 
     const snap = game.getMetrics();
     expect(snap.errors.schema_validation_failures).toBe(2);
-    expect(snap.errors.state_patch_rejections).toBe(1);
   });
 
   it("getMetrics returns a fresh snapshot each call", () => {

@@ -404,21 +404,6 @@ describe("Metrics error tracking", () => {
     const snap = m.snapshot();
     expect(snap.errors.schema_validation_failures).toBe(2);
   });
-
-  it("should track state patch rejections", () => {
-    m.recordStatePatchRejection();
-    const snap = m.snapshot();
-    expect(snap.errors.state_patch_rejections).toBe(1);
-  });
-
-  it("should track both error types independently", () => {
-    m.recordSchemaValidationFailure();
-    m.recordSchemaValidationFailure();
-    m.recordStatePatchRejection();
-    const snap = m.snapshot();
-    expect(snap.errors.schema_validation_failures).toBe(2);
-    expect(snap.errors.state_patch_rejections).toBe(1);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -503,7 +488,6 @@ describe("Metrics reset", () => {
     m.recordStaleInputEventDropped();
     m.recordInputResponsePromotedLive();
     m.recordSchemaValidationFailure();
-    m.recordStatePatchRejection();
     m.recordChoiceToNextLine(800);
 
     // Verify data was recorded
@@ -537,7 +521,6 @@ describe("Metrics reset", () => {
     expect(after.input.stale_input_event_dropped_count).toBe(0);
     expect(after.input.response_promoted_live_count).toBe(0);
     expect(after.errors.schema_validation_failures).toBe(0);
-    expect(after.errors.state_patch_rejections).toBe(0);
     expect(after.player.choice_to_next_line_ms).toEqual([]);
   });
 });

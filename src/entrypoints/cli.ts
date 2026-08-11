@@ -94,7 +94,6 @@ function printMetrics(game: Game, metrics: Metrics): void {
 
   console.log("\n── 错误 ──");
   console.log(`  Schema 校验失败：${snap.errors.schema_validation_failures}`);
-  console.log(`  状态补丁拒绝：    ${snap.errors.state_patch_rejections}`);
 
   console.log("\n── 玩家时机 ──");
   if (snap.player.choice_to_next_line_ms.length > 0) {
