@@ -459,6 +459,41 @@ describe("NarrativeDirectorService", () => {
       };
     }
 
+    it("passes the latest brief location/characters to consolidation", async () => {
+      const consolidateFn = vi.fn().mockResolvedValue({
+        episode: {
+          summary: "An episode",
+          characters: ["suyao"],
+          locations: ["clubroom"],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      });
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store: new FakeStore(emptyState()),
+        consolidator: { consolidate: consolidateFn },
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      svc.getBrief({
+        turn: 1,
+        eventSeq: 1,
+        location: "clubroom",
+        characters: ["suyao"],
+      });
+      svc.observeCommitted([makeEvent(1)]);
+      await svc.consolidatePending();
+
+      const request = consolidateFn.mock.calls[0]?.[0] as ConsolidationRequest;
+      expect(request.stateLocation).toBe("clubroom");
+      expect(request.stateCharacters).toEqual(["suyao"]);
+    });
+
     it("applies valid thread ops: touch updates lastTouchedAtCheckpoint + summary", async () => {
       const store = new FakeStore(emptyState());
       const plan = makePlan([

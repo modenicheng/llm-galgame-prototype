@@ -188,6 +188,9 @@ export class MemoryConsolidator {
     let episode: EpisodeMemory | null = null;
     const epReason = validateEpisodeOp(result.episode);
     if (epReason === null) {
+      // 把 episode 标签裁剪到权威 ID 集合（audit P1-6）：非规范标签（如
+      // LLM 自拟中文名）无法被 EpisodeRetriever 精确匹配，属于死数据。
+      filterCanonicalTags(result.episode, stateLocation, stateCharacters);
       episode = {
         id: `ep_${memory.revision + 1}_${fromSeq}`,
         fromEventSeq: fromSeq,
@@ -235,4 +238,24 @@ function emptyOutcome(): ConsolidationOutcome {
     setupOps: [],
     rejected: [],
   };
+}
+
+/**
+ * 把 episode 标签裁剪到权威 ID 集合（audit P1-6）。
+ * 集合为空 = 尚无权威（故事开局/event 模式），保留原样；
+ * 非空 = 只保留集合内的标签——非规范标签（如 LLM 自拟中文名）无法被
+ * EpisodeRetriever 精确匹配，属于死数据。
+ */
+function filterCanonicalTags(
+  op: EpisodeSummaryOp,
+  location: string,
+  characters: readonly string[],
+): void {
+  const characterSet = characters.length > 0 ? new Set(characters) : null;
+  if (characterSet !== null) {
+    op.characters = op.characters.filter((c) => characterSet.has(c));
+  }
+  if (location !== "") {
+    op.locations = op.locations.filter((l) => l === location);
+  }
 }

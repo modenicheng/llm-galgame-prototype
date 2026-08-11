@@ -424,8 +424,8 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       const outcome = await this.consolidator.consolidate(
         batch,
         this.memory,
-        "",
-        [],
+        this.lastBriefRequest?.location ?? "",
+        this.lastBriefRequest?.characters ?? [],
       );
 
       // Port failure → empty outcome: re-queue the FULL drained batch at

@@ -259,6 +259,67 @@ describe("MemoryConsolidator", () => {
   });
 
   // -----------------------------------------------------------------------
+  // Canonical tag filtering (audit P1-6)
+  // -----------------------------------------------------------------------
+  describe("consolidate — canonical tag filtering", () => {
+    it("filters episode tags outside the canonical sets (non-empty sets only)", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue({
+          episode: {
+            summary: "苏遥在终端前发现了异常。",
+            characters: ["苏遥", "linche"],
+            locations: ["clubroom", "basement"],
+            threads: [],
+            setups: [],
+            importance: "normal",
+          },
+          threadOps: [],
+          setupOps: [],
+        }),
+      };
+      const consolidator = makeConsolidator(port);
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(1), makeEvent(2)],
+        emptyState(),
+        "clubroom",
+        ["suyao", "linche"],
+      );
+
+      expect(outcome.episode?.characters).toEqual(["linche"]);
+      expect(outcome.episode?.locations).toEqual(["clubroom"]);
+      expect(outcome.rejected).toHaveLength(0);
+    });
+
+    it("keeps tags as-is when the canonical set is empty (no authority yet)", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue({
+          episode: {
+            summary: "新角色登场。",
+            characters: ["神秘女子"],
+            locations: [],
+            threads: [],
+            setups: [],
+            importance: "normal",
+          },
+          threadOps: [],
+          setupOps: [],
+        }),
+      };
+      const consolidator = makeConsolidator(port);
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "",
+        [],
+      );
+
+      expect(outcome.episode?.characters).toEqual(["神秘女子"]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Rejection paths
   // -----------------------------------------------------------------------
   describe("consolidate — rejection paths", () => {

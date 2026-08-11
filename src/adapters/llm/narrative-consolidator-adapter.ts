@@ -142,6 +142,19 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
       parts.push(`- ${s.id}（${s.status}）：${s.setup}`);
     }
 
+    // Canonical ids（audit P1-6）：episode 的 characters/locations 只能引用
+    // 权威 ID，否则 EpisodeRetriever 的精确匹配永远落空。
+    if (request.stateCharacters.length > 0) {
+      parts.push("===== 权威角色 ID =====");
+      parts.push(
+        `episode.characters 只能使用以下 ID：${request.stateCharacters.join("、")}`,
+      );
+    }
+    if (request.stateLocation !== "") {
+      parts.push("===== 当前地点 ID =====");
+      parts.push(`episode.locations 只能引用：${request.stateLocation}`);
+    }
+
     return parts.join("\n\n");
   }
 }

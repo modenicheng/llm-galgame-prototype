@@ -171,6 +171,44 @@ describe("NarrativeConsolidatorAdapter", () => {
     expect(userContent).toContain("测试叙述文本");
   });
 
+  it("embeds canonical character/location ids into the user message", async () => {
+    const fakeClient = makeFakeClient({
+      content: JSON.stringify({
+        episode: {
+          summary: "摘要",
+          characters: ["suyao"],
+          locations: ["clubroom"],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      }),
+    });
+    const adapter = new NarrativeConsolidatorAdapter({
+      apiKey: "k",
+      api: makeApiConfig(),
+      config: DEFAULT_NARRATIVE_CONFIG,
+      client: fakeClient,
+    });
+
+    await adapter.consolidate({
+      events: [],
+      threads: [],
+      setups: [],
+      stateLocation: "clubroom",
+      stateCharacters: ["suyao", "linche"],
+    });
+
+    const callArgs = (fakeClient.chat.completions.create as ReturnType<typeof vi.fn>)
+      .mock.calls[0] as [Record<string, unknown>, unknown?];
+    const messages = callArgs[0].messages as Array<{ role: string; content: string }>;
+    const userContent = messages[1]!.content;
+    expect(userContent).toContain("suyao");
+    expect(userContent).toContain("clubroom");
+  });
+
   it("parses a valid JSON response into ConsolidationResult", async () => {
     const episodeJson = {
       summary: "测试摘要",
