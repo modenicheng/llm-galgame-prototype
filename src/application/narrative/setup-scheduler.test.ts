@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { SetupPayoff, StoryAnchorState } from "../../core/narrative/memory-types.js";
+import type { AnchorStatus, SetupPayoff, StoryAnchorState } from "../../core/narrative/memory-types.js";
 import { computeCurrentAnchorId, scheduleSetups } from "./setup-scheduler.js";
 
 function makeSetup(overrides: Partial<SetupPayoff> = {}): SetupPayoff {
@@ -55,8 +55,13 @@ describe("scheduleSetups", () => {
 });
 
 describe("computeCurrentAnchorId", () => {
-  it("returns undefined when no anchor is reached or passed", () => {
-    expect(computeCurrentAnchorId({ a1: makeAnchor() })).toBeUndefined();
+  // New contract (audit P1-5): the current anchor is the first pending
+  // anchor whose prerequisites are ALL resolved — not "first after the last
+  // resolved one". A story with no resolved anchor yet now yields the first
+  // prerequisite-free pending anchor (payoffBeforeAnchor becomes live from
+  // the start), instead of undefined.
+  it("returns the first pending anchor even before any anchor is resolved", () => {
+    expect(computeCurrentAnchorId({ a1: makeAnchor() })).toBe("a1");
   });
 
   it("returns the first pending anchor after the last resolved one", () => {
@@ -73,5 +78,48 @@ describe("computeCurrentAnchorId", () => {
       a1: makeAnchor({ id: "a1", status: "passed" }),
     };
     expect(computeCurrentAnchorId(anchors)).toBeUndefined();
+  });
+});
+
+describe("computeCurrentAnchorId with declaration order", () => {
+  function anchor(id: string, status: AnchorStatus, prerequisites: string[] = []): StoryAnchorState {
+    return { id, purpose: id, prerequisites, required: true, status };
+  }
+
+  it("picks the first pending anchor whose prerequisites are satisfied, in declaration order", () => {
+    const anchors = {
+      // 字典序会先挑 reveal_secret；声明序应先挑 act2_entry。
+      reveal_secret: anchor("reveal_secret", "pending", ["final_choice"]),
+      act2_entry: anchor("act2_entry", "pending", []),
+      final_choice: anchor("final_choice", "pending", ["act2_entry"]),
+    };
+    const order = new Map([["act2_entry", 0], ["final_choice", 1], ["reveal_secret", 2]]);
+    expect(computeCurrentAnchorId(anchors, order)).toBe("act2_entry");
+  });
+
+  it("skips pending anchors with unsatisfied prerequisites", () => {
+    const anchors = {
+      a: anchor("a", "pending", []),
+      b: anchor("b", "pending", ["a"]),
+      c: anchor("c", "pending", ["b"]),
+    };
+    anchors.a.status = "reached";
+    const order = new Map([["a", 0], ["b", 1], ["c", 2]]);
+    expect(computeCurrentAnchorId(anchors, order)).toBe("b");
+  });
+
+  it("returns undefined when no pending anchor is reachable", () => {
+    const anchors = {
+      a: anchor("a", "pending", ["x"]), // x 不存在
+    };
+    expect(computeCurrentAnchorId(anchors)).toBeUndefined();
+  });
+
+  it("falls back to id order when no declaration order is provided", () => {
+    const anchors = {
+      b: anchor("b", "pending", []),
+      a: anchor("a", "pending", []),
+    };
+    expect(computeCurrentAnchorId(anchors)).toBe("a");
   });
 });

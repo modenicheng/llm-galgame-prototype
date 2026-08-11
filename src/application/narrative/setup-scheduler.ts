@@ -2,8 +2,9 @@
  * Pure setup scheduling helpers shared by NarrativeDirectorService and the
  * future PlotPlanner (Task 3 extraction).
  *
- * `computeCurrentAnchorId` was moved verbatim from the service's private
- * method; `scheduleSetups` replaces the inline getBrief directive pipeline
+ * `computeCurrentAnchorId` was extracted from the service's private
+ * method and reworked for prerequisites-DAG ordering (audit P1-5);
+ * `scheduleSetups` replaces the inline getBrief directive pipeline
  * (same filter set, same classifySetup semantics, same output shape).
  */
 
@@ -13,44 +14,35 @@ import { classifySetup } from "./memory-validator.js";
 import { NON_TERMINAL_SETUP_STATUSES } from "./memory-consolidator.js";
 
 /**
- * Find the first pending anchor AFTER the most recent reached/passed
- * anchor. Returns undefined when no anchor has been reached yet.
+ * 当前剧情路标 = 前置全部满足的 pending 锚点，按作者声明顺序取最先
+ * （audit P1-5）。顺序由 prerequisites DAG + 声明顺序决定——ID 字典序
+ * 不携带叙事时序语义，不能作为排序依据。
  *
- * Anchor progression (reach/pass) is a Step-3 PlotPlanner concern; in
- * Step 1+2 no anchor can ever become reached, so this returns undefined
- * and payoffBeforeAnchor directives stay inert — the brief must not
- * claim a payoff deadline it cannot honor (audit finding 3).
+ * 无声明顺序（orderById 未提供，例如测试或旧持久化数据）时退回 id 字典序，
+ * 保证确定性。
  */
 export function computeCurrentAnchorId(
   anchors: Readonly<Record<string, StoryAnchorState>>,
+  orderById?: ReadonlyMap<string, number>,
 ): string | undefined {
-  // Sort anchors by id for determinism
-  const sorted = Object.values(anchors).sort((a, b) =>
-    a.id.localeCompare(b.id),
-  );
+  const sorted = Object.values(anchors).sort((a, b) => {
+    const oa = orderById?.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const ob = orderById?.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    if (oa !== ob) return oa - ob;
+    return a.id.localeCompare(b.id);
+  });
 
-  // Find last reached/passed index
-  let lastResolvedIdx = -1;
-  for (let i = 0; i < sorted.length; i++) {
-    const status = sorted[i]!.status;
-    if (status === "reached" || status === "passed") {
-      lastResolvedIdx = i;
-    }
+  for (const anchor of sorted) {
+    if (anchor.status !== "pending") continue;
+    const ready = anchor.prerequisites.every((prereq) => {
+      const resolved = anchors[prereq];
+      return (
+        resolved !== undefined &&
+        (resolved.status === "reached" || resolved.status === "passed")
+      );
+    });
+    if (ready) return anchor.id;
   }
-
-  // No anchor has been reached yet → no "current" anchor exists
-  // (Step 2 has no anchor-progression mechanism).
-  if (lastResolvedIdx === -1) {
-    return undefined;
-  }
-
-  // Look for first pending after that index
-  for (let i = lastResolvedIdx + 1; i < sorted.length; i++) {
-    if (sorted[i]!.status === "pending") {
-      return sorted[i]!.id;
-    }
-  }
-
   return undefined;
 }
 

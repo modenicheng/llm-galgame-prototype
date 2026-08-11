@@ -52,6 +52,7 @@ export interface PlotPlannerRequest {
   events: StoredEvent[];                 // 最近已提交事件（玩家走向，≤10）
   memory: NarrativeMemoryState;          // 含 anchors / checkpointCount / revision
   currentPlan: DirectorPlan | undefined; // 上一份计划（无则首次规划）
+  anchorOrderById?: ReadonlyMap<string, number>; // 锚点作者声明序（audit P1-5）
   location: string;
   characters: string[];
 }
@@ -250,7 +251,7 @@ export class PlotPlanner {
       setupDirectives: scheduleSetups(
         Object.values(request.memory.setups),
         request.memory.checkpointCount,
-        computeCurrentAnchorId(request.memory.anchors),
+        computeCurrentAnchorId(request.memory.anchors, request.anchorOrderById),
         (id) => {
           const setup = request.memory.setups[id];
           return (

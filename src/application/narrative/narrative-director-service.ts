@@ -149,6 +149,10 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   private lastConsolidateAt = 0;
   private consolidateRunning = false;
 
+  // Author declaration order of plan anchors (audit P1-5): drives
+  // computeCurrentAnchorId ordering instead of id lexicographic order.
+  private readonly seedAnchorOrder: ReadonlyMap<string, number>;
+
   constructor(opts: {
     config: NarrativeConfig;
     store: NarrativeMemoryStorePort;
@@ -160,6 +164,9 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     this.config = normalizeNarrativeConfig(opts.config);
     this.store = opts.store;
     this.storyPlan = opts.plan;
+    this.seedAnchorOrder = new Map(
+      opts.plan.anchors.map((a, index) => [a.id, index]),
+    );
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
     this.hasConsolidator = opts.consolidator !== undefined;
     // Wrap the optional Task 6 port in a MemoryConsolidator; an absent
@@ -264,7 +271,10 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       });
 
     // Setup directives for all non-terminal setups
-    const currentAnchorId = computeCurrentAnchorId(this.memory.anchors);
+    const currentAnchorId = computeCurrentAnchorId(
+      this.memory.anchors,
+      this.seedAnchorOrder,
+    );
     // 前置满足集合（setup prerequisites：锚点/线程/伏笔引用，确定性判定）
     const satisfiedSetupIds = new Set(
       Object.values(this.memory.setups)
@@ -584,6 +594,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         events: [...this.recentCommittedEvents],
         memory: this.memory,
         currentPlan: this.plan,
+        anchorOrderById: this.seedAnchorOrder,
         location: this.lastBriefRequest?.location ?? "",
         characters: this.lastBriefRequest?.characters ?? [],
       });
