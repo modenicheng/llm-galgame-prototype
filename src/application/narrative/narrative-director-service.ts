@@ -508,6 +508,8 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         }
 
         // Everything persisted → swap in the new state.
+        // final review P3: checkpoint() 在克隆与交换之间同步递增时，保留该增量
+        shadow.checkpointCount = this.memory.checkpointCount;
         this.memory = shadow;
         return { applied: appliedCount, failed: false } as const;
       });
@@ -601,8 +603,16 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         if (!appliedAny) return;
         shadow.revision += 1;
         await this.store.saveState(shadow); // 提交点；失败 → 链 reject → 计划不换
+        // final review P3: checkpoint() 在克隆与交换之间同步递增时，保留该增量
+        shadow.checkpointCount = this.memory.checkpointCount;
         this.memory = shadow;
       });
+
+      // 计划激活时以链内最新内存为准重新锚定（final review P2）：
+      // 生成期间 consolidation 可能已推进 checkpointCount/revision。
+      outcome.plan.expiresAfterCheckpoint =
+        this.memory.checkpointCount + this.config.plan.horizon_checkpoints;
+      outcome.plan.basedOnMemoryRevision = this.memory.revision;
 
       this.plan = outcome.plan;
       try {

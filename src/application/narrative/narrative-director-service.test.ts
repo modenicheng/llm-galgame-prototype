@@ -2047,5 +2047,173 @@ describe("NarrativeDirectorService", () => {
       expect(persisted.anchors["a2"]!.status).toBe("reached");
       expect(persisted.threads["t1"]!.status).toBe("developing");
     });
+
+    it("anchors plan expiry to the chain-latest live memory at activation (final review P2)", async () => {
+      // Consolidation and replan both fire from checkpoint #1; the
+      // consolidation apply SWAPS this.memory while the planner call is
+      // still in flight. The planner (PlotPlanner class) builds the plan
+      // from request.memory — the pre-swap object, frozen at count N —
+      // so a checkpoint landing after the swap advances the NEW live
+      // object without touching the planner's snapshot. Without the
+      // service-side re-anchor, the stored plan expires at N + horizon
+      // even though the live count is already N+1.
+      //
+      // Discrimination: without the fix, replan() stores outcome.plan
+      // as-is → expiresAfterCheckpoint 1 + 3 = 4 and
+      // basedOnMemoryRevision 0 (the detached request-time snapshot).
+      // With the fix, activation re-reads the chain-latest memory after
+      // the anchor apply/swap → 2 + 3 = 5 and revision 2 — matching the
+      // last saveStateCalls entry (the fake's persisted activation state).
+      let resolvePlanner!: (v: PlannerProposal) => void;
+      const deferredPlan = new Promise<PlannerProposal>((resolve) => {
+        resolvePlanner = resolve;
+      });
+      const planner: PlotPlannerPort = {
+        plan: vi.fn().mockReturnValue(deferredPlan),
+      };
+
+      const consolidateFn = vi.fn().mockResolvedValue({
+        episode: {
+          summary: "Mid-flight episode",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      } satisfies ConsolidationResult);
+      const consolidator: MemoryConsolidatorPort = {
+        consolidate: consolidateFn,
+      };
+
+      const store = new FakeStore(emptyState());
+      const svc = new NarrativeDirectorService({
+        config: makeConfig({
+          consolidation: {
+            batch_min_events: 999, // suppress auto-schedule
+            max_events_per_call: 80,
+            min_checkpoint_gap_ms: 0,
+          },
+        }),
+        store,
+        consolidator,
+        plan: anchorPlan(),
+        planner,
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeEvent(1)]);
+      svc.checkpoint("interaction_completed"); // count → 1 (N); replan starts, planner deferred
+
+      // Consolidation's apply must COMPLETE (swap) while the planner is
+      // still deferred: that detaches the planner's request.memory (count
+      // N) from the live object. `await consolidationRun` guarantees the
+      // swap landed before we advance the live counter below — no gate
+      // needed, the planner's deferral provides the ordering.
+      const consolidationRun = svc.consolidatePending();
+      await consolidationRun;
+
+      svc.checkpoint("interaction_completed"); // live count N → N+1 (2), replan still in flight
+      expect(planner.plan).toHaveBeenCalledTimes(1); // single-flight held
+
+      resolvePlanner(FAKE_PROPOSAL);
+      await vi.waitFor(() => expect(servicePlan(svc)).toBeDefined());
+
+      const plan = servicePlan(svc)!;
+      // N + 1 + horizon = 2 + 3 (request-time snapshot would give 1 + 3).
+      expect(plan.expiresAfterCheckpoint).toBe(2 + 3);
+      // Activation-time revision: 1 (consolidation) + 1 (anchor apply).
+      expect(plan.basedOnMemoryRevision).toBe(2);
+
+      // The fake's saveStateCalls confirm the activation-time live state:
+      // the last persisted shadow is the replan's anchor apply.
+      expect(store.saveStateCalls).toHaveLength(2);
+      const persisted = store.saveStateCalls[store.saveStateCalls.length - 1]!;
+      expect(persisted.revision).toBe(2);
+      expect(persisted.checkpointCount).toBe(2);
+      expect(plan.basedOnMemoryRevision).toBe(persisted.revision);
+    });
+
+    it("preserves a checkpoint increment landing between clone and swap (final review P3)", async () => {
+      // checkpoint() mutates the live object synchronously. The
+      // consolidation mutateMemory callback clones the chain-latest state
+      // and swaps the persisted shadow in after saveState — a checkpoint
+      // landing after the clone but before the swap increments the OLD
+      // live object, and the swap would otherwise discard it (counter
+      // permanently one lower).
+      //
+      // Discrimination: without the fix, the swap restores
+      // checkpointCount 0 → the increment is lost and the next getBrief
+      // reports 0. With the fix, the callback copies the live count onto
+      // the shadow right before the swap → the brief reports
+      // pre-increment + 1.
+      const consolidateFn = vi.fn().mockResolvedValue({
+        episode: {
+          summary: "Gate episode",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      } satisfies ConsolidationResult);
+      const consolidator: MemoryConsolidatorPort = {
+        consolidate: consolidateFn,
+      };
+
+      const store = new FakeStore(emptyState());
+      const svc = new NarrativeDirectorService({
+        config: makeConfig({
+          consolidation: {
+            batch_min_events: 999, // suppress auto-schedule
+            max_events_per_call: 80,
+            min_checkpoint_gap_ms: 0,
+          },
+        }),
+        store,
+        consolidator,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeEvent(1)]);
+
+      // Block the writer at its commit point: cloned + applied, not yet
+      // swapped.
+      let releaseGate!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      store.saveStateGate = gate;
+
+      const consolidationRun = svc.consolidatePending();
+      // No timers: flush microtasks until the writer's saveState consumes
+      // the gate — i.e. it has cloned + applied and is blocked at its
+      // commit point, not yet swapped. The loop exits as soon as the gate
+      // is consumed (bounded only so a regression fails loudly instead of
+      // hanging).
+      for (let i = 0; i < 16 && store.saveStateGate !== undefined; i++) {
+        await Promise.resolve();
+      }
+      expect(store.saveStateGate).toBeUndefined(); // writer blocked at gate
+
+      svc.checkpoint("interaction_completed"); // live count 0 → 1, writer blocked
+      releaseGate();
+      await consolidationRun;
+
+      // The increment survived the swap: the next brief reports count 1.
+      const brief = svc.getBrief({
+        turn: 1,
+        eventSeq: 10,
+        location: "",
+        characters: [],
+      });
+      expect(brief.checkpointCount).toBe(1);
+      expect(serviceMemory(svc).checkpointCount).toBe(1);
+    });
   });
 });
