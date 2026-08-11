@@ -1,8 +1,8 @@
-# NarrativeDirector 长线剧情系统 — 设计（第 1+2 步）
+# NarrativeDirector 长线剧情系统 — 设计（第 1+2 步 + 第 3 步）
 
-日期：2026-08-09
-状态：已批准（作者确认）
-范围：NarrativeDirector 第 1+2 步（记忆存储 + MemoryConsolidator）。第 3 步（PlotPlanner/DirectorPlan）与第 4 步（belief/embedding/SQLite）明确不做，只预留位置。
+日期：2026-08-09（第 1+2 步）；2026-08-11（第 3 步批准并实现）
+状态：第 1+2 步已实现；第 3 步（PlotPlanner/DirectorPlan）于 2026-08-11 批准并实现，见 §13。第 4 步（belief/embedding/SQLite）明确不做，只预留位置。
+范围：NarrativeDirector 第 1+2 步（记忆存储 + MemoryConsolidator）与第 3 步（PlotPlanner/DirectorPlan，§13）。第 4 步（belief/embedding/SQLite）明确不做，只预留位置。
 
 ## 1. 目标与核心约束
 
@@ -13,7 +13,7 @@
 
 1. **只从正式 committed events 形成记忆** —— 候选分支、预览候选永不进入 NarrativeMemory。
 2. **未来计划永远不写入事实记忆** —— 第 1+2 步没有 planner，结构上保证。
-3. **Planner 只规划 checkpoint，不写未来台词** —— 第 3 步事项，本设计不实现。
+3. **Planner 只规划 checkpoint，不写未来台词** —— 第 3 步事项，本设计（第 1+2 步）不实现；第 3 步已落实，见 §13。
 
 ## 2. 范围
 
@@ -25,9 +25,9 @@
 - MemoryConsolidator：LLM 低频异步，episode summary + thread/setup ops + validator
 
 ### 不做（预留）
-- PlotPlanner / DirectorPlan（第 3 步）：不建 `director-plan.ts` 文件
+- ~~PlotPlanner / DirectorPlan（第 3 步）：不建 `director-plan.ts` 文件~~（已于 2026-08-11 实现，见 §13）
 - character belief / player knowledge / embedding / SQLite（第 4 步）
-- `checkpoint(reason)` 只作为 consolidation 触发点，不规划未来
+- ~~`checkpoint(reason)` 只作为 consolidation 触发点，不规划未来~~（第 3 步起同时触发 maybeReplan，见 §13）
 
 ## 3. 作者静态设定：story-plan.yaml
 
@@ -243,3 +243,70 @@ src/adapters/static/story-plan-loader.ts
 - 双 typecheck + build 通过
 - 一个端到端场景可验证：跑一局 → 提交事件 → observeCommitted → checkpoint → consolidator 生成 episode/ops → 下一段生成的 ctx 含 [DIRECTOR NOTE]；候选分支内容不出现在记忆里
 - 文档：docs/superpowers/specs/ 提交本设计；docs §116 记录变更
+
+## 13. 第 3 步（2026-08-11 批准）
+
+第 3 步（PlotPlanner / DirectorPlan）于 2026-08-11 批准并实现，提交
+14e3d8a..3618dd6（Task 1–9）。本步在"记忆过去"之上增加"规划未来"：
+模型在每个 checkpoint 周期生成未来 horizon 内的导演计划，随 brief 注入
+Writer 上下文。实现细节与偏差见 `docs/llm-outputs-refactor.md` §117；
+三条约束（§1）在本步全部落实：计划只进 director-plan.json + 锚点状态、
+consolidator 输入不含计划、锚点推进走内存写互斥。
+
+### 13.1 类型
+
+- `DirectorPlan`：revision（服务自增）/ basedOnMemoryRevision（生成时
+  memory.revision 快照）/ phase（setup|development|escalation|revelation
+  |climax|resolution）/ currentGoal（≤200 字）/ beats（1..6，purpose
+  ≤200 字）/ focusThreads（≤6 去重，须引用现存非终结线程）/
+  setupDirectives（SetupScheduler 快照，计划生成时）/ revealLocks（≤8
+  去重）/ expiresAfterCheckpoint（= 生成时 checkpointCount + horizon）。
+- `AnchorOp { type: "reach"|"pass"; id }`：reach 须满足该锚点全部前置
+  （同批先满足的算满足），required 锚点不能 pass。
+- `SetupDirective` 自 narrative-brief.ts 迁移至 director-plan.ts
+  （打断 brief↔plan 的 schema 循环依赖）；schema 与上限常量单一定义。
+
+### 13.2 调度
+
+- 首计划在 checkpoint 1 创建（第一次交互正式落库后）；`checkpoint()`
+  递增 checkpointCount 并调用 maybeReplan。
+- 低水位重规划：`checkpointCount >= expiresAfterCheckpoint -
+  replan_ahead` 且 memory.revision 有推进 → 后台 fire-and-forget；
+  `planRunning` 单飞防重入（replan() 自己翻转标志）。
+- 计划预算：horizon_checkpoints=3 / replan_ahead_checkpoints=1
+  （config.yaml + DEFAULT_NARRATIVE_CONFIG + zod 校验范围 1..10 / 0..5）。
+
+### 13.3 barrier（硬过期，非阻塞）
+
+计划过期（checkpointCount > expiresAfterCheckpoint）后，brief 省略
+[导演目标] 段（phase/goal/beats/revealLocks 不渲染），模型照常生成，
+重规划在后台完成——回合永不等待 LLM。
+
+### 13.4 预算
+
+- `narrative.plan.horizon_checkpoints`（3）/ `replan_ahead_checkpoints`
+  （1）：zod 校验（1..10 / 0..5），normalizeNarrativeConfig 深合并。
+- DirectorPlan 字段上限常量（MAX_PLAN_BEATS=6 / MAX_FOCUS_THREADS=6 /
+  MAX_REVEAL_LOCKS=8 / MAX_ANCHOR_OPS=8 / 长度 200）由 zod schema 与
+  adapter prompt 共用；planner 输入最近事件上限
+  PLANNER_RECENT_EVENTS_MAX=10。
+
+### 13.5 event mode 旁路
+
+`mode: event` 不组装 director：无 planner、不写 director-plan.json
+（bootstrap 集成测试验证该文件不存在），`getBrief` 返回 undefined，
+行为与引入前一致。
+
+### 13.6 模块布局
+
+- `src/core/narrative/director-plan.ts`（纯类型 + zod schema）
+- `src/application/narrative/setup-scheduler.ts`（computeCurrentAnchorId
+  + scheduleSetups 纯函数）
+- `src/application/narrative/plot-planner.ts`（PlotPlannerPort /
+  PlannerProposal schema / PlotPlanner 类，无 IO）
+- `src/adapters/llm/plot-planner-adapter.ts`（LLM 调用，非流式单轮
+  json_object，prompt 明确"不写具体台词"）
+- `sessions/<sessionId>/director-plan.json`（原子写；loadPlan 缺失/损坏
+  → null → `?? undefined` 归一化为无计划）
+- 测试：node 1298（84 文件）、web 263（23 文件），双 typecheck + build
+  全绿（全量验证见 docs §117 / `.superpowers/sdd/task-10-report.md`）。

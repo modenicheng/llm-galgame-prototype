@@ -4416,6 +4416,145 @@ story-plan、不建 store / consolidator；`Game` 的 `narrativeDirector` 可选
 
 ---
 
+# 117. NarrativeDirector 第 3 步：PlotPlanner / DirectorPlan（2026-08-11）
+
+在 §116（第 1+2 步，"记忆过去"）之上实现"规划未来"：新增 PlotPlanner /
+DirectorPlan，模型在每个 checkpoint 周期生成一份未来 horizon 内的导演
+计划（阶段/目标/节拍/聚焦线程/伏笔指令快照/揭示锁/锚点操作），经
+`getBrief` 随"导演便签"注入 Writer 上下文。三条硬约束（spec §1、
+§116.2）在本步全部落实：计划只进 director-plan.json + 锚点状态、
+consolidator 输入仍不含计划、锚点推进与 consolidation 共用内存写互斥。
+设计见 `docs/superpowers/specs/2026-08-09-narrative-director-design.md`
+§13；提交序列 14e3d8a..3618dd6（Task 1–9）。
+
+## 117.1 模块边界
+
+- **core/narrative/director-plan.ts**（纯类型与 schema，无 IO）：
+  DirectorPlan / PlannedBeat / AnchorOp / SetupDirective（Task 1 从
+  narrative-brief.ts 迁移至此，打断 brief↔plan 的 schema 循环依赖）+
+  zod schema + 上限常量（MAX_PLAN_BEATS=6 / MAX_FOCUS_THREADS=6 /
+  MAX_REVEAL_LOCKS=8 / MAX_ANCHOR_OPS=8 / 长度上限 200，schema 与
+  adapter prompt 共用同一来源）。
+- **application/narrative/setup-scheduler.ts**（纯函数，Task 3）：
+  `computeCurrentAnchorId`（自 service 私有方法原样搬移）与
+  `scheduleSetups`（替换 getBrief 内联指令流水线——同过滤集、同
+  classifySetup 语义、同输出形状），Service 与 PlotPlanner 共用。
+- **application/narrative/plot-planner.ts**（纯编排，Task 6）：定义
+  PlotPlannerPort / PlotPlannerRequest / PlannerProposal schema 与
+  PlotPlanner 类（proposal → 校验后的 DirectorPlan），无 IO——port 只
+  调用不实现；never-throw：缺 port 或 schema 失败 → null plan + 拒绝
+  记录；focusThreads 过滤到现存非终结线程（去重、首见序），anchorOps
+  在 shadow 上顺序校验（同批前置链可解析）。
+- **adapters/llm/plot-planner-adapter.ts**（Task 7）：独立 OpenAI
+  client（api 配置同 generator），非流式单轮
+  `response_format: json_object`，输出经 zod 校验；system prompt 明确
+  "只规划剧情走向与目的，不要写任何具体台词或对话"（spec 第三条约束在
+  提示词层的落实）。
+
+## 117.2 配置（narrative.plan）
+
+```yaml
+narrative:
+  plan:
+    horizon_checkpoints: 3        # 一份计划的生效 horizon（checkpoint 数）
+    replan_ahead_checkpoints: 1   # 到期前提前多少个 checkpoint 后台重规划
+```
+
+`normalizeNarrativeConfig` 对 plan 段同样深合并（`plan: { ...d.plan,
+...raw.plan }`，与 brief/consolidation 等段一致）。[实现注记] 该 spread
+随 Task 2（2b1253d，config.plan 落地）一并实现，而非计划草案排期的
+Task 8——T2 即 tsc 全绿，行为无差异。
+
+## 117.3 计划生命周期
+
+- **首计划**：`checkpoint()` 递增 checkpointCount 后调用 `maybeReplan`；
+  无计划且装配了 planner 时立即 `startReplan`——**首计划在 checkpoint 1
+  创建**（第一次交互正式落库后）。集成测试验证 checkpoint 后
+  director-plan.json 已写入且过 schema。
+- **低水位重规划**：`checkpointCount > expiresAfterCheckpoint`（硬过期）
+  或 `memory.revision > plan.basedOnMemoryRevision && checkpointCount >=
+  expiresAfterCheckpoint - replan_ahead`（memory 有推进且进入 ahead 窗口）
+  → 后台 fire-and-forget 重规划；`planRunning` 单飞防重入。
+- **硬过期 barrier（非阻塞）**：计划过期后 brief 直接省略计划段
+  （phase/goal/beats/revealLocks 不渲染），模型照常继续生成，重规划在
+  后台完成——**绝不阻塞回合等待 LLM**。
+- **replan()**：planner.plan({events=最近 committed ≤10, memory, 当前
+  计划, location, characters}) → proposal schema 校验 → 生成
+  DirectorPlan（revision 服务自增、basedOnMemoryRevision=生成时
+  memory.revision 快照、expiresAfterCheckpoint=生成时 checkpointCount +
+  horizon、setupDirectives=SetupScheduler 快照）→ savePlan（失败仅记
+  日志，内存计划照常生效）→ anchorOps 走内存写互斥应用 → 拒绝记录
+  appendOps。
+
+## 117.4 文件布局
+
+在 §116.4 的会话目录基础上追加：
+
+- `sessions/<sessionId>/director-plan.json` — 当前生效的导演计划
+  （单份覆盖写，原子写 tmp + rename）；`loadPlan()` 对缺失/损坏降级
+  返回 null，Service 以 `?? undefined` 归一化为"无计划"（首次启动/损坏
+  都从空计划开始，绝不抛错）。
+
+## 117.5 三条约束在本步的落实
+
+1. **planner 输出只进 director-plan.json + 锚点状态**：PlannerProposal
+   只含 phase/goal/beats/focusThreads/revealLocks/anchorOps——没有任何
+   可写事实 ops；计划经 savePlan 单独落盘，不经过 consolidatePending
+   的 apply 路径，也不进 episodes。
+2. **consolidator 输入不含计划**：consolidator 的输入/输出契约（§116）
+   未动——只含已发生事件文本与 threads/setups 摘要；DirectorPlan 只在
+   brief 里（面向 Writer），consolidator 永远看不到未来计划。
+3. **锚点推进走内存写互斥**：replan 的 anchorOps 与 consolidation 的
+   ops 都经 `mutateMemory`（memoryWriteChain 串行链）应用——链内重新
+   读取最新 memory → shadow clone → apply → saveState，两个写者互不
+   覆盖（revision 竞态测试在链被移除时真实失败，见 §117.6）。
+
+## 117.6 与设计稿的偏差（实现为准）
+
+- **同步 getBrief**：brief 携带计划段，但 `getBrief` 保持同步只读内存
+  缓存（计划在内存字段里），零 await、不现场调 LLM。
+- **StoryState 以最近事件代理**：planner 输入不含完整 StoryState——
+  `PlotPlannerRequest.events` = 最近 committed 事件（≤10，
+  PLANNER_RECENT_EVENTS_MAX），未来规划只看玩家走向与记忆快照。
+- **startReplan 不预置 planRunning**（Task 8）：`replan()` 自己同步
+  翻转单飞标志（第一个 await 前），startReplan 若先置位会让 replan
+  内的守卫提前返回、planRunning 永远卡 true（与 maybeSchedule/
+  consolidatePending 同一模式：公开方法持有自己的 running 标志）。
+- **ctor `planner?: PlotPlannerPort` 可选**：不传则 hasPlanner=false，
+  checkpoint 永不创建/刷新计划——测试与 event mode 友好。
+- **loadPlan null → `?? undefined`**：文件缺失/损坏与"从未规划"同义，
+  从空计划开始。
+- **savePlan 失败 warn-only**：持久化失败只记诊断，内存计划照常生效
+  （与 consolidatePending 的原子性不同——计划是覆盖写，无重入队列）。
+- **互斥竞态测试**：FakeStore 的 `saveStateGate`（可延迟的 saveState
+  门）把第一个写者挡在"克隆+apply 完成、commit 之前"，让 consolidation
+  与 replan 两个写者**真正重叠**；移除 memoryWriteChain 时该测试在
+  revision 覆写上真实失败（revision 停在 1、两个改动之一丢失）。
+- **T9 bootstrap 集成测试**：interaction 组用 DSL draft 形态
+  （`main.interaction = {prompt, mode, optionTexts}`）；`vi.mock`
+  plot-planner-adapter（mock 直接返回最小合法 proposal，不碰网络）；
+  被 mock 的 StoryGenerator 增加 `generatorState.continuation` 槽位
+  （T9 起 mock 化续写信封）。
+
+## 117.7 提交序列（14e3d8a..3618dd6）
+
+- 14e3d8a — Task 1：core 类型 + SetupDirective 迁移至 director-plan.ts
+- 2b1253d — Task 2：config.plan（含 normalizeNarrativeConfig spread）
+- 24ac2d8 — Task 3：setup-scheduler
+- 998b786 — Task 4：store loadPlan/savePlan + FakeStore 桩
+- 59e1067 — Task 5：brief 字段 + [导演目标] 渲染
+- f6cce40 — Task 6：plot-planner
+- 190caa7 — Task 7：plot-planner-adapter
+- 2e0bcfd — Task 8：service 生命周期 + memoryWriteChain 互斥
+- 72d20fd — Task 8 修复：FakeStore saveStateGate 重叠竞态测试 +
+  revealLocks 文档修正
+- 3618dd6 — Task 9：bootstrap 组合 + 集成测试
+
+测试：node 1298（84 个文件）、web 263（23 个文件），双 typecheck 与
+build 全绿；全量验证记录见 `.superpowers/sdd/task-10-report.md`。
+
+---
+
 # 附录 A：实施状态（2025-08 迁移快照）
 
 本文档其余部分为设计。以下是本仓库 `main` 分支当前已完成 / 未完成的对照，供后续开发定位。
