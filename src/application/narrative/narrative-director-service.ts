@@ -148,6 +148,11 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   // Scheduling state
   private lastConsolidateAt = 0;
   private consolidateRunning = false;
+  /** In-flight consolidation (single-flight); flush() awaits it. */
+  private consolidationPromise: Promise<{
+    applied: number;
+    rejected: RejectedOp[];
+  }> | null = null;
 
   // Author declaration order of plan anchors (audit P1-5): drives
   // computeCurrentAnchorId ordering instead of id lexicographic order.
@@ -384,170 +389,206 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       return { applied: 0, rejected: [] };
     }
 
-    // Guard against concurrent calls (safe for both direct and scheduled)
+    // Guard against concurrent calls (safe for both direct and scheduled):
+    // a caller that arrives while a consolidation is in flight gets the
+    // in-flight promise so flush() can wait for it to settle.
     if (this.consolidateRunning) {
-      return { applied: 0, rejected: [] };
+      return this.consolidationPromise ?? { applied: 0, rejected: [] };
     }
     this.consolidateRunning = true;
-
+    this.consolidationPromise = this.runConsolidatePending();
     try {
-      // Atomically drain pending events at the start so observeCommitted
-      // during async consolidation does not lose events.
-      const pending = this.pendingEvents;
-      this.pendingEvents = [];
-
-      if (pending.length === 0) {
-        return { applied: 0, rejected: [] };
-      }
-
-      // FIFO batching: take the OLDEST max_events_per_call events first
-      // (the continuous front of the watermark). Newer overflow events stay
-      // pending and are requeued on success — narrative time order is
-      // preserved and the watermark advances continuously. The
-      // MemoryConsolidator also caps internally (defense in depth, now
-      // idempotent since the director already capped).
-      const maxEvents = this.config.consolidation.max_events_per_call;
-      const batch =
-        pending.length > maxEvents ? pending.slice(0, maxEvents) : pending;
-      const overflow =
-        pending.length > maxEvents ? pending.slice(maxEvents) : [];
-
-      if (overflow.length > 0) {
-        this.diagnostics.info(
-          "NarrativeDirector",
-          `Batch capped to ${maxEvents} oldest events; ${overflow.length} newer events deferred to a later call`,
-        );
-      }
-
-      // Delegate the pipeline (port call, validator filtering, episode id
-      // generation) to the MemoryConsolidator. The batch is already capped.
-      const outcome = await this.consolidator.consolidate(
-        batch,
-        this.memory,
-        this.lastBriefRequest?.location ?? "",
-        this.lastBriefRequest?.characters ?? [],
-      );
-
-      // Port failure → empty outcome: re-queue the FULL drained batch at
-      // the front so events are not permanently lost on consolidation
-      // failure. lastConsolidateAt is also advanced so the retry is
-      // throttled by min_checkpoint_gap_ms (no failure storm).
-      if (outcome.result === null) {
-        this.pendingEvents = [...pending, ...this.pendingEvents];
-        this.lastConsolidateAt = Date.now();
-        return { applied: 0, rejected: [] };
-      }
-
-      // --- Success: defer the newer overflow events to a later call ---
-      if (overflow.length > 0) {
-        this.pendingEvents = [...overflow, ...this.pendingEvents];
-        this.diagnostics.info(
-          "NarrativeDirector",
-          `${overflow.length} newer events deferred for next consolidation`,
-        );
-      }
-
-      // --- Apply results onto a SHADOW, persist, then swap ---
-      // Copy-on-write (audit finding 6): nothing touches live memory until
-      // every persistence step succeeded. On any failure the full drained
-      // batch is requeued and memory stays untouched; a retry regenerates
-      // the same episode id (revision did not advance) so appendEpisodes
-      // stays idempotent (load() dedupes by id).
-      //
-      // The apply/persist/swap section runs inside the memory-write mutex
-      // (Task 8): the callback re-reads the chain-latest this.memory so a
-      // concurrent replan's anchor progression is never overwritten (and
-      // vice versa). The LLM call above stays outside the chain — only the
-      // write section is serialized.
-      const rejected = [...outcome.rejected];
-
-      const batchLastSeq = batch[batch.length - 1]!.seq;
-      // FIFO guarantees the batch's last seq is exactly the new continuous
-      // front: every event up to batchLastSeq has now been consolidated
-      // (older events were consolidated in previous calls). No Math.max
-      // needed — the front only ever moves forward.
-      const newWatermark = batchLastSeq;
-
-      const applied = await this.mutateMemory(async (current) => {
-        const shadow = structuredClone(current);
-        let appliedCount = 0;
-
-        // Timeline fields are checkpoint units (narrative beats), not event
-        // seqs: classifySetup's age math compares them against the checkpoint
-        // counter (audit finding 3).
-        const nowCheckpoint = current.checkpointCount;
-
-        // 1) Episode
-        if (outcome.episode !== null) {
-          shadow.recentEpisodeIds.unshift(outcome.episode.id);
-          if (shadow.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
-            shadow.recentEpisodeIds = shadow.recentEpisodeIds.slice(
-              0,
-              MAX_RECENT_EPISODE_IDS,
-            );
-          }
-          appliedCount += 1;
-        }
-
-        // 2) Thread ops (shared pure apply; timeline in checkpoint units)
-        for (const op of outcome.threadOps) {
-          applyThreadOpToState(shadow, op, nowCheckpoint);
-          appliedCount += 1;
-        }
-
-        // 3) Setup ops
-        for (const op of outcome.setupOps) {
-          applySetupOpToState(shadow, op, nowCheckpoint);
-          appliedCount += 1;
-        }
-
-        // --- Advance state (on the shadow) ---
-        shadow.revision += 1;
-        shadow.consolidatedThroughEventSeq = newWatermark;
-
-        // Persist — saveState is the commit point and goes first. Any
-        // failure: memory untouched, full batch requeued.
-        try {
-          await this.store.saveState(shadow);
-          if (outcome.episode !== null) {
-            await this.store.appendEpisodes([outcome.episode]);
-            // In-memory episode list swaps in sync with the state, inside
-            // the chain, so a concurrent writer cannot lose either half.
-            this.episodes = [...this.episodes, outcome.episode];
-          }
-        } catch (err) {
-          this.pendingEvents = [...pending, ...this.pendingEvents];
-          this.lastConsolidateAt = Date.now();
-          this.diagnostics.warn(
-            "NarrativeDirector",
-            `persist failed, batch requeued: ${String(err)}`,
-          );
-          return { applied: 0, failed: true } as const;
-        }
-
-        // Everything persisted → swap in the new state.
-        // final review P3: checkpoint() 在克隆与交换之间同步递增时，保留该增量
-        shadow.checkpointCount = this.memory.checkpointCount;
-        this.memory = shadow;
-        return { applied: appliedCount, failed: false } as const;
-      });
-
-      if (applied.failed) {
-        return { applied: 0, rejected: [] };
-      }
-      if (rejected.length > 0) {
-        await this.recordRejectedOps(rejected);
-      }
-      this.lastConsolidateAt = Date.now();
-      return { applied: applied.applied, rejected };
+      return await this.consolidationPromise;
     } finally {
       this.consolidateRunning = false;
+      this.consolidationPromise = null;
       // Events observed WHILE this consolidation was in flight may now
       // cross the batch threshold — re-check the scheduler (the gap
       // throttle and batch_min guard still apply; the single-flight flag
       // is already released) so pending work drains without manual
       // intervention (audit finding 5).
       this.maybeSchedule();
+    }
+  }
+
+  /** consolidatePending 主体（原 try 块内逻辑，含批量、port 调用、mutateMemory）。 */
+  private async runConsolidatePending(): Promise<{
+    applied: number;
+    rejected: RejectedOp[];
+  }> {
+    // Atomically drain pending events at the start so observeCommitted
+    // during async consolidation does not lose events.
+    const pending = this.pendingEvents;
+    this.pendingEvents = [];
+
+    if (pending.length === 0) {
+      return { applied: 0, rejected: [] };
+    }
+
+    // FIFO batching: take the OLDEST max_events_per_call events first
+    // (the continuous front of the watermark). Newer overflow events stay
+    // pending and are requeued on success — narrative time order is
+    // preserved and the watermark advances continuously. The
+    // MemoryConsolidator also caps internally (defense in depth, now
+    // idempotent since the director already capped).
+    const maxEvents = this.config.consolidation.max_events_per_call;
+    const batch =
+      pending.length > maxEvents ? pending.slice(0, maxEvents) : pending;
+    const overflow =
+      pending.length > maxEvents ? pending.slice(maxEvents) : [];
+
+    if (overflow.length > 0) {
+      this.diagnostics.info(
+        "NarrativeDirector",
+        `Batch capped to ${maxEvents} oldest events; ${overflow.length} newer events deferred to a later call`,
+      );
+    }
+
+    // Delegate the pipeline (port call, validator filtering, episode id
+    // generation) to the MemoryConsolidator. The batch is already capped.
+    const outcome = await this.consolidator.consolidate(
+      batch,
+      this.memory,
+      this.lastBriefRequest?.location ?? "",
+      this.lastBriefRequest?.characters ?? [],
+    );
+
+    // Port failure → empty outcome: re-queue the FULL drained batch at
+    // the front so events are not permanently lost on consolidation
+    // failure. lastConsolidateAt is also advanced so the retry is
+    // throttled by min_checkpoint_gap_ms (no failure storm).
+    if (outcome.result === null) {
+      this.pendingEvents = [...pending, ...this.pendingEvents];
+      this.lastConsolidateAt = Date.now();
+      return { applied: 0, rejected: [] };
+    }
+
+    // --- Success: defer the newer overflow events to a later call ---
+    if (overflow.length > 0) {
+      this.pendingEvents = [...overflow, ...this.pendingEvents];
+      this.diagnostics.info(
+        "NarrativeDirector",
+        `${overflow.length} newer events deferred for next consolidation`,
+      );
+    }
+
+    // --- Apply results onto a SHADOW, persist, then swap ---
+    // Copy-on-write (audit finding 6): nothing touches live memory until
+    // every persistence step succeeded. On any failure the full drained
+    // batch is requeued and memory stays untouched; a retry regenerates
+    // the same episode id (revision did not advance) so appendEpisodes
+    // stays idempotent (load() dedupes by id).
+    //
+    // The apply/persist/swap section runs inside the memory-write mutex
+    // (Task 8): the callback re-reads the chain-latest this.memory so a
+    // concurrent replan's anchor progression is never overwritten (and
+    // vice versa). The LLM call above stays outside the chain — only the
+    // write section is serialized.
+    const rejected = [...outcome.rejected];
+
+    const batchLastSeq = batch[batch.length - 1]!.seq;
+    // FIFO guarantees the batch's last seq is exactly the new continuous
+    // front: every event up to batchLastSeq has now been consolidated
+    // (older events were consolidated in previous calls). No Math.max
+    // needed — the front only ever moves forward.
+    const newWatermark = batchLastSeq;
+
+    const applied = await this.mutateMemory(async (current) => {
+      const shadow = structuredClone(current);
+      let appliedCount = 0;
+
+      // Timeline fields are checkpoint units (narrative beats), not event
+      // seqs: classifySetup's age math compares them against the checkpoint
+      // counter (audit finding 3).
+      const nowCheckpoint = current.checkpointCount;
+
+      // 1) Episode
+      if (outcome.episode !== null) {
+        shadow.recentEpisodeIds.unshift(outcome.episode.id);
+        if (shadow.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
+          shadow.recentEpisodeIds = shadow.recentEpisodeIds.slice(
+            0,
+            MAX_RECENT_EPISODE_IDS,
+          );
+        }
+        appliedCount += 1;
+      }
+
+      // 2) Thread ops (shared pure apply; timeline in checkpoint units)
+      for (const op of outcome.threadOps) {
+        applyThreadOpToState(shadow, op, nowCheckpoint);
+        appliedCount += 1;
+      }
+
+      // 3) Setup ops
+      for (const op of outcome.setupOps) {
+        applySetupOpToState(shadow, op, nowCheckpoint);
+        appliedCount += 1;
+      }
+
+      // --- Advance state (on the shadow) ---
+      shadow.revision += 1;
+      shadow.consolidatedThroughEventSeq = newWatermark;
+
+      // Persist — saveState is the commit point and goes first. Any
+      // failure: memory untouched, full batch requeued.
+      try {
+        await this.store.saveState(shadow);
+        if (outcome.episode !== null) {
+          await this.store.appendEpisodes([outcome.episode]);
+          // In-memory episode list swaps in sync with the state, inside
+          // the chain, so a concurrent writer cannot lose either half.
+          this.episodes = [...this.episodes, outcome.episode];
+        }
+      } catch (err) {
+        this.pendingEvents = [...pending, ...this.pendingEvents];
+        this.lastConsolidateAt = Date.now();
+        this.diagnostics.warn(
+          "NarrativeDirector",
+          `persist failed, batch requeued: ${String(err)}`,
+        );
+        return { applied: 0, failed: true } as const;
+      }
+
+      // Everything persisted → swap in the new state.
+      // final review P3: checkpoint() 在克隆与交换之间同步递增时，保留该增量
+      shadow.checkpointCount = this.memory.checkpointCount;
+      this.memory = shadow;
+      return { applied: appliedCount, failed: false } as const;
+    });
+
+    if (applied.failed) {
+      return { applied: 0, rejected: [] };
+    }
+    if (rejected.length > 0) {
+      await this.recordRejectedOps(rejected);
+    }
+    this.lastConsolidateAt = Date.now();
+    return { applied: applied.applied, rejected };
+  }
+
+  // -----------------------------------------------------------------------
+  // flush — normal shutdown drain (audit P1-7)
+  // -----------------------------------------------------------------------
+
+  /**
+   * flush（audit P1-7）——正常关停：整理最后的 pending 事件、等待在飞写入
+   * 落定、并重试计划落盘。幂等；可安全地在任意时刻调用。
+   */
+  async flush(): Promise<void> {
+    if (this.hasConsolidator && this.pendingEvents.length > 0) {
+      await this.consolidatePending();
+    }
+    await this.memoryWriteChain; // 等在链内所有写入（含在飞 consolidation）落定
+    if (this.plan !== undefined) {
+      try {
+        await this.store.savePlan(this.plan);
+      } catch (err) {
+        this.diagnostics.warn(
+          "NarrativeDirector",
+          `flush savePlan failed: ${String(err)}`,
+        );
+      }
     }
   }
 

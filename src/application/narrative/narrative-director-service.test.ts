@@ -1008,6 +1008,83 @@ describe("NarrativeDirectorService", () => {
   });
 
   // -----------------------------------------------------------------------
+  // flush — normal shutdown drain (audit P1-7)
+  // -----------------------------------------------------------------------
+  describe("flush", () => {
+    it("drains pending events and persists the plan", async () => {
+      const store = new FakeStore(emptyState());
+      store.seedPlan({
+        revision: 1,
+        basedOnMemoryRevision: 0,
+        phase: "development",
+        currentGoal: "g",
+        beats: [{ purpose: "p" }],
+        focusThreads: [],
+        setupDirectives: [],
+        revealLocks: [],
+        expiresAfterCheckpoint: 100,
+      });
+      const consolidateFn = vi.fn().mockResolvedValue({
+        episode: {
+          summary: "Flush episode",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+      } satisfies ConsolidationResult);
+      const consolidator: MemoryConsolidatorPort = {
+        consolidate: consolidateFn,
+      };
+      const svc = new NarrativeDirectorService({
+        // batch_min_events 999 suppresses auto-schedule: flush is the only
+        // trigger, so the assertion really is about flush draining.
+        config: makeConfig({
+          consolidation: {
+            batch_min_events: 999,
+            max_events_per_call: 80,
+            min_checkpoint_gap_ms: 0,
+          },
+        }),
+        store,
+        consolidator,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([
+        makeEvent(1),
+        makeEvent(2),
+        makeEvent(3),
+        makeEvent(4),
+      ]);
+      await svc.flush();
+
+      expect(consolidateFn).toHaveBeenCalled();
+      expect(store.saveStateCalls.length).toBeGreaterThanOrEqual(1);
+      expect(store.savePlanCalls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("is a no-op without a consolidator and without pending events", async () => {
+      const store = new FakeStore(emptyState());
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: undefined,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+
+      await expect(svc.flush()).resolves.toBeUndefined();
+      expect(store.saveStateCalls).toHaveLength(0);
+      expect(store.savePlanCalls).toHaveLength(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // getBrief — content
   // -----------------------------------------------------------------------
   describe("getBrief", () => {
@@ -1558,14 +1635,13 @@ describe("NarrativeDirectorService", () => {
       svc.observeCommitted([makeEvent(1)]);
 
       const p1 = svc.consolidatePending();
-      // Second call while first is running should early-return
-      const result2 = await svc.consolidatePending();
-
-      expect(result2.applied).toBe(0);
-      expect(result2.rejected).toEqual([]);
+      // Second call while the first is in flight must NOT start a second
+      // consolidation; it shares the SAME in-flight promise (single-flight,
+      // audit P1-7 flush waits on it) and settles with the same outcome.
+      const p2 = svc.consolidatePending();
       expect(consolidator.consolidate).toHaveBeenCalledTimes(1);
 
-      // Cleanup: resolve the first call
+      // Resolve the blocked consolidator: both callers settle together.
       resolveConsolidator({
         episode: {
           summary: "Done",
@@ -1578,7 +1654,12 @@ describe("NarrativeDirectorService", () => {
         threadOps: [],
         setupOps: [],
       });
-      await p1;
+      const result1 = await p1;
+      const result2 = await p2;
+
+      expect(result1.applied).toBeGreaterThanOrEqual(1);
+      expect(result2).toEqual(result1);
+      expect(consolidator.consolidate).toHaveBeenCalledTimes(1);
     });
 
     it("checkpoint triggers maybeSchedule after incrementing count", async () => {

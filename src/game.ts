@@ -2374,6 +2374,16 @@ export class Game {
   }
 
   /**
+   * 关停清理（audit P1-7）：导演层整理并落盘，游戏状态快照落盘。
+   */
+  async flush(): Promise<void> {
+    if (this.narrativeDirector !== undefined) {
+      await this.narrativeDirector.flush();
+    }
+    await this.store.saveSnapshot({ state: this.storyState });
+  }
+
+  /**
    * Check the formal playback watermark.
    */
   private async runTrackedJob<T>(

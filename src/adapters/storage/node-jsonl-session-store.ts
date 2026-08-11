@@ -1,9 +1,11 @@
 /**
  * Node.js JSONL session store.
  *
- * Owns all filesystem concerns for a session: the `.jsonl` event log and
- * the adjacent `state.json` snapshot. The core only sees the
- * `SessionStorePort` surface.
+ * Owns all filesystem concerns for a session: the `events.jsonl` event log
+ * and the adjacent `state.json` snapshot, both under the per-session
+ * directory `sessions/<sessionId>/` (audit P1-7) — the same directory the
+ * narrative-memory store writes into, so artifacts never leak across
+ * sessions. The core only sees the `SessionStorePort` surface.
  */
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -25,9 +27,12 @@ export class NodeJsonlSessionStore implements SessionStorePort {
   }
 
   async initialize(metadata: SessionMetadata): Promise<void> {
+    // 会话目录统一（audit P1-7）：sessions/<sessionId>/events.jsonl +
+    // state.json，与 narrative-memory 文件同目录，避免跨会话覆盖。
     this.pathInternal = path.resolve(
       this.sessionsDir,
-      `${metadata.sessionId}.jsonl`,
+      metadata.sessionId,
+      "events.jsonl",
     );
     await mkdir(path.dirname(this.pathInternal), { recursive: true });
   }

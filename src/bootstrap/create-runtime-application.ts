@@ -219,6 +219,8 @@ export async function createRuntimeApplication(
       // unwinding completes before we resolve.
       game.dispatch({ type: "shutdown" });
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      // 关停落盘：导演 pending 事件整理 + 计划/快照持久化（audit P1-7）。
+      await game.flush();
     },
   };
 }

@@ -11,9 +11,11 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRuntimeApplication } from "./create-runtime-application.js";
+import type { RuntimeApplication } from "../application/runtime-application.js";
 import { makeTestConfig, MemoryController } from "../test-helpers.js";
 import { NarrativeDirectorService } from "../application/narrative/narrative-director-service.js";
 import { DirectorPlanSchema } from "../core/narrative/director-plan.js";
@@ -489,9 +491,92 @@ function dashscopeConfig(): AppConfig {
     await rm(sessionDir, { recursive: true, force: true });
   });
 
+  it("shutdown flushes narrative pending events and game snapshot into the session dir", async () => {
+    const config = makeTestConfig({
+      characters: {
+        suyao: { name: "苏遥", voice_profile: "suyao_main" },
+      },
+    });
+    const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-flush-"));
+    // Opening commits a narration event, then parks inside the input
+    // interaction so run() stays pending until shutdown.
+    generatorState.opening = {
+      events: [],
+      groups: [
+        { prelude: [], main: { type: "narration", text: "第一幕" } },
+        {
+          prelude: [],
+          main: {
+            type: "interaction",
+            interaction: {
+              prompt: "说什么？",
+              mode: "input",
+              inputPlaceholder: "...",
+            },
+          },
+        },
+      ],
+      state_patch: undefined,
+      segmentEnd: undefined,
+    };
+
+    const app = await createRuntimeApplication({
+      config,
+      sessionDir,
+      sessionId: "sess-flush",
+    });
+
+    // Default MemoryController handlers auto-advance narration playback
+    // (playback_ready → advance) so the loop reaches the input interaction
+    // and parks there, exactly like the shutdown test above.
+    const controller = new MemoryController();
+    controller.attach(app.game);
+
+    const runPromise = app.game.run().catch((error: unknown) => error);
+    await controller.advanceUntilInteractionOrEnd();
+
+    await app.shutdown();
+    await runPromise;
+
+    // 会话目录统一（audit P1-7）：事件日志与状态快照都落在
+    // sessions/<sessionId>/ 下，而不是基目录的平铺文件（跨会话互相覆盖）。
+    expect(existsSync(path.join(sessionDir, "sess-flush", "events.jsonl"))).toBe(true);
+    expect(existsSync(path.join(sessionDir, "sess-flush", "state.json"))).toBe(true);
+    // The old flat paths must not exist.
+    expect(existsSync(path.join(sessionDir, "sess-flush.jsonl"))).toBe(false);
+    expect(existsSync(path.join(sessionDir, "state.json"))).toBe(false);
+
+    await rm(sessionDir, { recursive: true, force: true });
+  });
+
   // -------------------------------------------------------------------
   // Narrative director assembly tests (Task 11)
   // -------------------------------------------------------------------
+
+  /**
+   * Poll until the director's background consolidation has FULLY settled:
+   * no consolidation in flight and no pending events left. A mere file
+   * existence check is not enough — two narrations can trigger two
+   * consolidations, and teardown racing the second one's atomic rename is
+   * the Windows ENOTEMPTY flake.
+   */
+  async function waitForDirectorSettled(app: RuntimeApplication): Promise<void> {
+    await vi.waitFor(() => {
+      // Test seam: the game holds the director privately; read its
+      // single-flight settle state to know when background consolidation
+      // is fully done.
+      const gameWithDirector = app.game as unknown as {
+        narrativeDirector: NarrativeDirectorService;
+      };
+      const director = gameWithDirector.narrativeDirector;
+      const settleState = director as unknown as {
+        consolidateRunning: boolean;
+        pendingEvents: unknown[];
+      };
+      expect(settleState.consolidateRunning).toBe(false);
+      expect(settleState.pendingEvents).toHaveLength(0);
+    });
+  }
 
   /** Write a minimal story-plan.yaml to dir and return its path. */
   async function writeStoryPlan(dir: string): Promise<string> {
@@ -553,13 +638,14 @@ function dashscopeConfig(): AppConfig {
     controller.attach(app.game);
     await app.game.run();
 
-    // Consolidation runs fire-and-forget; yield the microtask queue so the
-    // schedule completes and writes state files.
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Consolidation runs fire-and-forget; wait until the director's
+    // background work has fully settled so teardown never races an
+    // in-flight write (Windows ENOTEMPTY flake).
+    await waitForDirectorSettled(app);
 
-    // Verify the store wrote a narrative-state.json file.
-    // The narrative-memory store writes directly into the sessions
-    // base directory (same dir as events.jsonl).
+    // Verify the store wrote a narrative-state.json file — inside the
+    // session directory, alongside the session store's events.jsonl
+    // (audit P1-7: everything lives under sessions/<sessionId>/).
     await expect(
       access(path.join(sessionDir, "test-session", "narrative-state.json")),
     ).resolves.toBeUndefined();
@@ -638,8 +724,12 @@ function dashscopeConfig(): AppConfig {
     controller.attach(app.game);
     await app.game.run();
 
-    // checkpoint → maybeReplan → 首轮计划（fire-and-forget）；让出 microtask 队列
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // checkpoint → maybeReplan → 首轮计划（fire-and-forget）。计划写入是
+    // 异步链（mutateMemory → saveState → savePlan）；等待文件出现而不是
+    // 固定 sleep，避免全量测试负载下的时序抖动。
+    await vi.waitFor(async () => {
+      await access(path.join(sessionDir, "test-session", "director-plan.json"));
+    });
 
     // director-plan.json 已写入且通过 schema
     const planRaw = await readFile(
@@ -724,8 +814,9 @@ function dashscopeConfig(): AppConfig {
     controller.attach(app.game);
     await expect(app.game.run()).resolves.toBeUndefined();
 
-    // Consolidation runs fire-and-forget; yield the microtask queue.
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Consolidation runs fire-and-forget; wait for full settle so teardown
+    // never races an in-flight write (Windows ENOTEMPTY flake).
+    await waitForDirectorSettled(app);
     await expect(
       access(path.join(sessionDir, "test-session", "narrative-state.json")),
     ).resolves.toBeUndefined();

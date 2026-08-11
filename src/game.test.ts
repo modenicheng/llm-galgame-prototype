@@ -3431,7 +3431,8 @@ describe("Interaction command scoping (stale / double-submit)", () => {
 type DirectorCall =
   | { type: "observeCommitted"; events: readonly StoredEvent[] }
   | { type: "checkpoint"; reason: string }
-  | { type: "getBrief"; request: NarrativeBriefRequest };
+  | { type: "getBrief"; request: NarrativeBriefRequest }
+  | { type: "flush" };
 
 function makeDirectorFake(
   briefOverrides?: Partial<NarrativeBrief>,
@@ -3467,6 +3468,9 @@ function makeDirectorFake(
     },
     checkpoint(reason: string): void {
       calls.push({ type: "checkpoint", reason });
+    },
+    async flush(): Promise<void> {
+      calls.push({ type: "flush" });
     },
   };
 }

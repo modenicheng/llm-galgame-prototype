@@ -24,4 +24,7 @@ export interface NarrativeDirectorPort {
 
   /** Increment checkpointCount and optionally schedule consolidation. */
   checkpoint(reason: NarrativeCheckpointReason): void;
+
+  /** 正常关停：整理最后的 pending 事件并确保计划落盘（幂等）。 */
+  flush(): Promise<void>;
 }
