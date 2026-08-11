@@ -56,16 +56,18 @@ export function computeCurrentAnchorId(
 
 /**
  * Classify every non-terminal setup into a directive, dropping setups the
- * validator does not want scheduled (paid_off/dropped). Input order is
- * preserved.
+ * validator does not want scheduled (paid_off/dropped). `satisfied` decides
+ * whether a setup's prerequisites are met (fed to classifySetup's gate).
+ * Input order is preserved.
  */
 export function scheduleSetups(
   setups: readonly SetupPayoff[],
   checkpoint: number,
   currentAnchorId: string | undefined,
+  satisfied: (id: string) => boolean,
 ): SetupDirective[] {
   return setups
     .filter((s) => NON_TERMINAL_SETUP_STATUSES.has(s.status))
-    .map((s) => classifySetup(s, checkpoint, currentAnchorId))
+    .map((s) => classifySetup(s, checkpoint, currentAnchorId, satisfied(s.id)))
     .filter((d): d is SetupDirective => d !== undefined);
 }

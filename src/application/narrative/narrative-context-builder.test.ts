@@ -41,6 +41,23 @@ describe("renderDirectorNote", () => {
     );
   });
 
+  it("renders setup premises and payoff targets (payoff only)", () => {
+    const brief = makeBrief({
+      setupDirectives: [
+        { id: "s1", action: "reinforce", urgency: "soon", premise: "终端似乎会对苏遥产生异常响应。" },
+        { id: "s2", action: "payoff", urgency: "now", premise: "教授失踪。", payoff: "揭示教授的去向。" },
+      ],
+    });
+    const note = renderDirectorNote(brief, 80);
+    expect(note).toContain("REINFORCE s1（soon）；前提：终端似乎会对苏遥产生异常响应。");
+    expect(note).toContain("PAYOFF s2（now）；前提：教授失踪。；目标：揭示教授的去向。");
+  });
+
+  it("annotates the raw-history window with the exact count passed in", () => {
+    const note = renderDirectorNote(makeBrief(), 80);
+    expect(note).toContain("最近 80 条原始事件见下方剧情历史");
+  });
+
   it("renders threads, setups, episodes, anchors and revealLocks sections", () => {
     const brief = makeBrief({
       activeThreads: [

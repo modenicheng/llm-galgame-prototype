@@ -173,7 +173,6 @@ export class StoryGenerator {
     }
     if (options?.brief) {
       ctx.directorBrief = options.brief;
-      ctx.maxRecentRawEvents = this.config.narrative.brief.max_recent_raw_events;
     }
     if (this.modelCatalog) {
       ctx.modelAssetCatalog = this.modelCatalog;

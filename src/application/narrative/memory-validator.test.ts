@@ -14,6 +14,7 @@ import {
   validateSetupOp,
   validateEpisodeOp,
   classifySetup,
+  setupPrerequisitesSatisfied,
 } from "./memory-validator.js";
 
 import type { NarrativeConfig } from "../../config.js";
@@ -554,12 +555,12 @@ describe("classifySetup", () => {
       payoffBeforeAnchor: "anchor-x",
       lastTouchedAtCheckpoint: 0,
     });
-    expect(classifySetup(item, 10, "anchor-x")).toBeUndefined();
+    expect(classifySetup(item, 10, "anchor-x", true)).toBeUndefined();
   });
 
   it("returns undefined for dropped", () => {
     const item = makeSetup({ status: "dropped", lastTouchedAtCheckpoint: 0 });
-    expect(classifySetup(item, 10, undefined)).toBeUndefined();
+    expect(classifySetup(item, 10, undefined, true)).toBeUndefined();
   });
 
   it("returns payoff/now when payoffBeforeAnchor matches the current anchor", () => {
@@ -568,10 +569,11 @@ describe("classifySetup", () => {
       payoffBeforeAnchor: "anchor-x",
       lastTouchedAtCheckpoint: 0,
     });
-    expect(classifySetup(item, 10, "anchor-x")).toEqual({
+    expect(classifySetup(item, 10, "anchor-x", true)).toEqual({
       id: "setup-1",
       action: "payoff",
       urgency: "now",
+      premise: "The brass key under the floorboard",
     });
   });
 
@@ -582,10 +584,11 @@ describe("classifySetup", () => {
         payoffBeforeAnchor: "anchor-x",
         lastTouchedAtCheckpoint: 0,
       });
-      expect(classifySetup(item, 10, "anchor-x")).toEqual({
+      expect(classifySetup(item, 10, "anchor-x", true)).toEqual({
         id: "setup-1",
         action: "payoff",
         urgency: "now",
+        premise: "The brass key under the floorboard",
       });
     }
   });
@@ -598,10 +601,11 @@ describe("classifySetup", () => {
       seededAtCheckpoint: 0,
     });
     // checkpoint - lastTouchedAtCheckpoint = 10 >= 2, but the anchor match wins.
-    expect(classifySetup(item, 10, "anchor-x")).toEqual({
+    expect(classifySetup(item, 10, "anchor-x", true)).toEqual({
       id: "setup-1",
       action: "payoff",
       urgency: "now",
+      premise: "The brass key under the floorboard",
     });
   });
 
@@ -611,10 +615,11 @@ describe("classifySetup", () => {
       payoffBeforeAnchor: "anchor-x",
       lastTouchedAtCheckpoint: 9,
     });
-    expect(classifySetup(item, 10, "anchor-y")).toEqual({
+    expect(classifySetup(item, 10, "anchor-y", true)).toEqual({
       id: "setup-1",
       action: "hold",
       urgency: "normal",
+      premise: "The brass key under the floorboard",
     });
   });
 
@@ -623,10 +628,11 @@ describe("classifySetup", () => {
       status: "planned",
       payoffBeforeAnchor: "anchor-x",
     });
-    expect(classifySetup(item, 10, "anchor-x")).toEqual({
+    expect(classifySetup(item, 10, "anchor-x", true)).toEqual({
       id: "setup-1",
       action: "hold",
       urgency: "normal",
+      premise: "The brass key under the floorboard",
     });
   });
 
@@ -636,66 +642,73 @@ describe("classifySetup", () => {
       payoffBeforeAnchor: "anchor-x",
       lastTouchedAtCheckpoint: 9,
     });
-    expect(classifySetup(item, 10, undefined)).toEqual({
+    expect(classifySetup(item, 10, undefined, true)).toEqual({
       id: "setup-1",
       action: "hold",
       urgency: "normal",
+      premise: "The brass key under the floorboard",
     });
   });
 
   it("returns reinforce/soon for a stale seeded setup (gap >= 2)", () => {
     const item = makeSetup({ status: "seeded", lastTouchedAtCheckpoint: 8 });
-    expect(classifySetup(item, 10, undefined)).toEqual({
+    expect(classifySetup(item, 10, undefined, true)).toEqual({
       id: "setup-1",
       action: "reinforce",
       urgency: "soon",
+      premise: "The brass key under the floorboard",
     });
   });
 
   it("uses seededAtCheckpoint when lastTouchedAtCheckpoint is absent", () => {
     const item = makeSetup({ status: "seeded", seededAtCheckpoint: 7 });
-    expect(classifySetup(item, 10, undefined)).toEqual({
+    expect(classifySetup(item, 10, undefined, true)).toEqual({
       id: "setup-1",
       action: "reinforce",
       urgency: "soon",
+      premise: "The brass key under the floorboard",
     });
   });
 
   it("returns hold/normal for a fresh seeded setup (gap < 2)", () => {
     const item = makeSetup({ status: "seeded", lastTouchedAtCheckpoint: 9 });
-    expect(classifySetup(item, 10, undefined)).toEqual({
+    expect(classifySetup(item, 10, undefined, true)).toEqual({
       id: "setup-1",
       action: "hold",
       urgency: "normal",
+      premise: "The brass key under the floorboard",
     });
   });
 
   it("returns hold/normal when seededAtCheckpoint and lastTouchedAtCheckpoint are both absent", () => {
     const item = makeSetup({ status: "seeded" });
-    expect(classifySetup(item, 10, undefined)).toEqual({
+    expect(classifySetup(item, 10, undefined, true)).toEqual({
       id: "setup-1",
       action: "hold",
       urgency: "normal",
+      premise: "The brass key under the floorboard",
     });
   });
 
   it("returns hold/normal for non-seeded active statuses even when stale", () => {
     for (const status of ["reinforced", "ready"] as const) {
       const item = makeSetup({ status, lastTouchedAtCheckpoint: 0 });
-      expect(classifySetup(item, 10, undefined)).toEqual({
+      expect(classifySetup(item, 10, undefined, true)).toEqual({
         id: "setup-1",
         action: "hold",
         urgency: "normal",
+        premise: "The brass key under the floorboard",
       });
     }
   });
 
   it("returns hold/normal for planned setups with no anchor dependency", () => {
     const item = makeSetup({ status: "planned" });
-    expect(classifySetup(item, 10, undefined)).toEqual({
+    expect(classifySetup(item, 10, undefined, true)).toEqual({
       id: "setup-1",
       action: "hold",
       urgency: "normal",
+      premise: "The brass key under the floorboard",
     });
   });
 
@@ -704,7 +717,66 @@ describe("classifySetup", () => {
       makeSetup({ id: "custom-id", status: "seeded", lastTouchedAtCheckpoint: 8 }),
       10,
       undefined,
+      true,
     ) as SetupDirective;
     expect(directive.id).toBe("custom-id");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setupPrerequisitesSatisfied
+// ---------------------------------------------------------------------------
+
+describe("setupPrerequisitesSatisfied", () => {
+  it("satisfies anchors that are reached/passed", () => {
+    const memory = makeMemory({
+      anchors: {
+        discover_terminal: { id: "discover_terminal", purpose: "p", prerequisites: [], required: true, status: "reached" },
+        doubt_suyao_identity: { id: "doubt_suyao_identity", purpose: "p", prerequisites: ["discover_terminal"], required: true, status: "pending" },
+      },
+    });
+    expect(setupPrerequisitesSatisfied(["discover_terminal"], memory)).toBe(true);
+    expect(setupPrerequisitesSatisfied(["doubt_suyao_identity"], memory)).toBe(false);
+  });
+
+  it("satisfies non-terminal threads and activated setups", () => {
+    const memory = makeMemory({
+      threads: { t1: makeThread({ id: "t1", status: "open" }), t2: makeThread({ id: "t2", status: "resolved" }) },
+      setups: { s1: makeSetup({ id: "s1", status: "seeded" }), s2: makeSetup({ id: "s2", status: "planned" }) },
+    });
+    expect(setupPrerequisitesSatisfied(["t1", "s1"], memory)).toBe(true);
+    expect(setupPrerequisitesSatisfied(["t2"], memory)).toBe(false);
+    expect(setupPrerequisitesSatisfied(["s2"], memory)).toBe(false);
+  });
+
+  it("treats unknown ids as unsatisfied", () => {
+    const memory = makeMemory({});
+    expect(setupPrerequisitesSatisfied(["player_has_questioned_suyao_identity"], memory)).toBe(false);
+    expect(setupPrerequisitesSatisfied([], memory)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifySetup with prerequisites (audit P1-4 gate)
+// ---------------------------------------------------------------------------
+
+describe("classifySetup with prerequisites", () => {
+  it("holds an unsatisfied setup instead of reinforcing/paying off", () => {
+    const seeded = makeSetup({ id: "s1", status: "seeded", prerequisites: ["doubt_suyao_identity"] });
+    expect(classifySetup(seeded, 10, undefined, false)).toEqual({
+      id: "s1", action: "hold", urgency: "normal", premise: seeded.setup,
+    });
+  });
+
+  it("carries premise on every directive and payoff only for payoff actions", () => {
+    const ready = makeSetup({ id: "s1", status: "ready", prerequisites: [], intendedPayoff: "真相", payoffBeforeAnchor: "a1" });
+    expect(classifySetup(ready, 5, "a1", true)).toMatchObject({
+      id: "s1", action: "payoff", urgency: "now", premise: ready.setup, payoff: "真相",
+    });
+    // Stale seeded setup (gap >= 2) so the reinforce branch is reachable.
+    const seeded = makeSetup({ id: "s2", status: "seeded", prerequisites: [], lastTouchedAtCheckpoint: 8 });
+    const reinforced = classifySetup(seeded, 10, undefined, true);
+    expect(reinforced).toMatchObject({ id: "s2", action: "reinforce", urgency: "soon", premise: seeded.setup });
+    expect("payoff" in reinforced!).toBe(false);
   });
 });

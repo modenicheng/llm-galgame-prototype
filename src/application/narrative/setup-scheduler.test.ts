@@ -24,6 +24,7 @@ describe("scheduleSetups", () => {
       ],
       10,
       undefined,
+      () => true,
     );
     expect(directives.map((d) => d.id)).toEqual(["s1", "s3"]);
     expect(directives[0]!.action).toBe("reinforce"); // seeded 且 age 2 → reinforce/soon
@@ -35,8 +36,21 @@ describe("scheduleSetups", () => {
       [makeSetup({ id: "s1", status: "ready", payoffBeforeAnchor: "a2" })],
       10,
       "a2",
+      () => true,
     );
-    expect(directives[0]).toEqual({ id: "s1", action: "payoff", urgency: "now" });
+    expect(directives[0]).toEqual({
+      id: "s1", action: "payoff", urgency: "now", premise: "终端对苏遥异常响应",
+    });
+  });
+
+  it("passes the satisfied predicate through to classifySetup", () => {
+    // Stale seeded setup (gap >= 2) so the reinforce branch is reachable.
+    const setups = [makeSetup({ id: "s1", status: "seeded", prerequisites: ["a1"], lastTouchedAtCheckpoint: 1 })];
+    const directives = scheduleSetups(setups, 3, undefined, (id) => id === "s1");
+    expect(directives).toEqual([{ id: "s1", action: "reinforce", urgency: "soon", premise: setups[0]!.setup }]);
+    expect(scheduleSetups(setups, 3, undefined, () => false)).toEqual([
+      { id: "s1", action: "hold", urgency: "normal", premise: setups[0]!.setup },
+    ]);
   });
 });
 

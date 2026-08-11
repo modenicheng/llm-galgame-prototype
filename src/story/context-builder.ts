@@ -7,10 +7,7 @@
  */
 
 import type { AuthorConfig } from "../config.js";
-import {
-  DEFAULT_MAX_RECENT_RAW_EVENTS,
-  renderDirectorNote,
-} from "../application/narrative/narrative-context-builder.js";
+import { renderDirectorNote } from "../application/narrative/narrative-context-builder.js";
 import type { NarrativeBrief } from "../core/narrative/narrative-brief.js";
 import type { ModelAssetCatalog } from "../core/assets/types.js";
 import type { VisualState } from "../core/presentation/types.js";
@@ -215,8 +212,6 @@ export interface DslContextInput extends ContextInput {
   tailVisualState?: VisualState;
   /** Model-facing asset catalog (logical ids only, docs §59). */
   modelAssetCatalog?: ModelAssetCatalog;
-  /** Raw event window size referenced by the director note (default 40). */
-  maxRecentRawEvents?: number;
 }
 
 /**
@@ -249,10 +244,7 @@ export function buildDslUserPrompt(
 
   if (input.directorBrief) {
     sections.push(
-      renderDirectorNote(
-        input.directorBrief,
-        input.maxRecentRawEvents ?? DEFAULT_MAX_RECENT_RAW_EVENTS,
-      ),
+      renderDirectorNote(input.directorBrief, input.recentEvents.length),
     );
   }
 

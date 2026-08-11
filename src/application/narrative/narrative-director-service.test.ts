@@ -996,7 +996,7 @@ describe("NarrativeDirectorService", () => {
         },
       ]);
       const svc = new NarrativeDirectorService({
-        config: makeConfig({ brief: { max_relevant_episodes: 2, max_recent_raw_events: 40 } }),
+        config: makeConfig({ brief: { max_relevant_episodes: 2 } }),
         store,
         consolidator: undefined,
         plan: makePlan(),
@@ -1167,10 +1167,6 @@ describe("NarrativeDirectorService", () => {
       // Caller override wins where specified
       expect((svc as any).config.story_plan_path).toBe("/custom/path.yaml");
       expect((svc as any).config.brief.max_relevant_episodes).toBe(3);
-      // Unspecified sub-keys fall back to defaults
-      expect((svc as any).config.brief.max_recent_raw_events).toBe(
-        DEFAULT_NARRATIVE_CONFIG.brief.max_recent_raw_events,
-      );
       // Unspecified sections fall back to defaults entirely
       expect((svc as any).config.threads.max_major_active).toBe(
         DEFAULT_NARRATIVE_CONFIG.threads.max_major_active,

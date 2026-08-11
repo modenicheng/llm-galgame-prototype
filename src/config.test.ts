@@ -286,7 +286,6 @@ describe("loadConfig narrative section", () => {
     });
     expect(config.narrative.brief).toEqual({
       max_relevant_episodes: 6,
-      max_recent_raw_events: 40,
     });
     expect(config.narrative.story_plan_path).toBe("story-plan.yaml");
   });
@@ -322,7 +321,6 @@ describe("loadConfig narrative section", () => {
         "    min_checkpoint_gap_ms: 10000",
         "  brief:",
         "    max_relevant_episodes: 3",
-        "    max_recent_raw_events: 20",
         "  story_plan_path: custom/story-plan.yaml",
       ].join("\n"),
     );
@@ -339,7 +337,6 @@ describe("loadConfig narrative section", () => {
     });
     expect(config.narrative.brief).toEqual({
       max_relevant_episodes: 3,
-      max_recent_raw_events: 20,
     });
     expect(config.narrative.story_plan_path).toBe("custom/story-plan.yaml");
   });

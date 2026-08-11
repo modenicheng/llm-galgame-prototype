@@ -96,7 +96,7 @@ export interface NarrativeConfig {
     max_events_per_call: number;
     min_checkpoint_gap_ms: number;
   };
-  brief: { max_relevant_episodes: number; max_recent_raw_events: number };
+  brief: { max_relevant_episodes: number };
   plan: { horizon_checkpoints: number; replan_ahead_checkpoints: number };
   story_plan_path: string;
 }
@@ -110,7 +110,7 @@ export const DEFAULT_NARRATIVE_CONFIG: NarrativeConfig = {
     max_events_per_call: 80,
     min_checkpoint_gap_ms: 5000,
   },
-  brief: { max_relevant_episodes: 6, max_recent_raw_events: 40 },
+  brief: { max_relevant_episodes: 6 },
   plan: { horizon_checkpoints: 3, replan_ahead_checkpoints: 1 },
   story_plan_path: "story-plan.yaml",
 };
@@ -389,9 +389,8 @@ const NarrativeConfigSchema = z
     brief: z
       .object({
         max_relevant_episodes: z.number().int().min(1).max(50).default(6),
-        max_recent_raw_events: z.number().int().min(1).max(200).default(40),
       })
-      .default({ max_relevant_episodes: 6, max_recent_raw_events: 40 }),
+      .default({ max_relevant_episodes: 6 }),
     plan: z
       .object({
         horizon_checkpoints: z.number().int().min(1).max(10),

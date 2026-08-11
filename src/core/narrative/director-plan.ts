@@ -33,6 +33,10 @@ export interface SetupDirective {
   id: string;
   action: "seed" | "reinforce" | "payoff" | "hold";
   urgency: "now" | "soon" | "normal";
+  /** 伏笔前提（作者预设文字）——Writer 需要知道这个 ID 具体指什么。 */
+  premise?: string;
+  /** 仅 action === "payoff" 时携带——避免提前把真相泄露给 Writer。 */
+  payoff?: string;
 }
 
 export interface DirectorPlan {
@@ -77,6 +81,8 @@ export const SetupDirectiveSchema: z.ZodType<SetupDirective> = z.object({
   id: z.string().min(1),
   action: z.enum(["seed", "reinforce", "payoff", "hold"]),
   urgency: z.enum(["now", "soon", "normal"]),
+  premise: z.exactOptional(z.string().min(1)),
+  payoff: z.exactOptional(z.string().min(1)),
 });
 
 export const DirectorPlanSchema: z.ZodType<DirectorPlan> = z.object({

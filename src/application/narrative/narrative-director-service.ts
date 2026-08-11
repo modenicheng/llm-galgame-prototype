@@ -43,6 +43,7 @@ import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import {
   applyThreadOpToState,
   applySetupOpToState,
+  setupPrerequisitesSatisfied,
 } from "./memory-validator.js";
 import {
   computeCurrentAnchorId,
@@ -264,10 +265,17 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
     // Setup directives for all non-terminal setups
     const currentAnchorId = computeCurrentAnchorId(this.memory.anchors);
+    // 前置满足集合（setup prerequisites：锚点/线程/伏笔引用，确定性判定）
+    const satisfiedSetupIds = new Set(
+      Object.values(this.memory.setups)
+        .filter((s) => setupPrerequisitesSatisfied(s.prerequisites, this.memory))
+        .map((s) => s.id),
+    );
     const setupDirectives = scheduleSetups(
       Object.values(this.memory.setups),
       this.memory.checkpointCount,
       currentAnchorId,
+      (id) => satisfiedSetupIds.has(id),
     );
 
     // Relevant episodes via retriever: active threads only (resolved/

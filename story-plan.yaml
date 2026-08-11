@@ -39,8 +39,11 @@ setups:
     kind: foreshadow
     setup: 终端似乎会对苏遥产生异常响应。
     intended_payoff: 揭示终端能够识别她记忆中留下的特征。
+    # prerequisites 引用三类实体：锚点 id（reached/passed）、剧情线 id（非终结）、
+    # 伏笔 id（已激活）。示例引用"对苏遥身份产生怀疑"锚点——只有该锚点到达后
+    # 此伏笔才允许 reinforce/payoff。
     prerequisites:
-      - player_has_questioned_suyao_identity
+      - doubt_suyao_identity
     payoff_before_anchor: reveal_suyao_origin
 
   # 谜团线索：教授的失踪

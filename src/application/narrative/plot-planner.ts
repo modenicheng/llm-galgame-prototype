@@ -38,6 +38,7 @@ import type {
 } from "../../core/narrative/memory-types.js";
 import type { RejectedOp } from "../../core/narrative/memory-operation.js";
 import { scheduleSetups, computeCurrentAnchorId } from "./setup-scheduler.js";
+import { setupPrerequisitesSatisfied } from "./memory-validator.js";
 import { ACTIVE_THREAD_STATUSES } from "./memory-consolidator.js";
 import type { NarrativeConfig } from "../../config.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
@@ -250,6 +251,13 @@ export class PlotPlanner {
         Object.values(request.memory.setups),
         request.memory.checkpointCount,
         computeCurrentAnchorId(request.memory.anchors),
+        (id) => {
+          const setup = request.memory.setups[id];
+          return (
+            setup !== undefined &&
+            setupPrerequisitesSatisfied(setup.prerequisites, request.memory)
+          );
+        },
       ),
       revealLocks: keptRevealLocks,
       expiresAfterCheckpoint:

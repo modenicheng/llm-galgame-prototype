@@ -36,6 +36,12 @@ const ACTIVE_SETUP_STATUSES: ReadonlySet<SetupPayoff["status"]> = new Set([
   "ready",
 ]);
 
+/** Thread statuses that are terminal (setup prerequisite 满足判定用). */
+const TERMINAL_THREAD_STATUSES: ReadonlySet<PlotThread["status"]> = new Set([
+  "resolved",
+  "abandoned",
+]);
+
 /**
  * Validate a thread operation against the current memory state.
  * Returns null when the op may be applied, otherwise a rejection reason.
@@ -332,8 +338,35 @@ export function validateEpisodeOp(op: EpisodeSummaryOp): string | null {
 }
 
 /**
+ * 伏笔前置是否全部满足（确定性）：引用锚点（reached/passed）、剧情线
+ * （非终结）或伏笔（非 planned/dropped）。未知 id → 未满足。
+ */
+export function setupPrerequisitesSatisfied(
+  prerequisites: readonly string[],
+  memory: NarrativeMemoryState,
+): boolean {
+  return prerequisites.every((id) => {
+    const anchor = memory.anchors[id];
+    if (anchor !== undefined) {
+      return anchor.status === "reached" || anchor.status === "passed";
+    }
+    const thread = memory.threads[id];
+    if (thread !== undefined) {
+      return !TERMINAL_THREAD_STATUSES.has(thread.status);
+    }
+    const setup = memory.setups[id];
+    if (setup !== undefined) {
+      return setup.status !== "planned" && setup.status !== "dropped";
+    }
+    return false;
+  });
+}
+
+/**
  * Decide the directive for one setup at a checkpoint.
  * - paid_off/dropped → undefined (no directive)
+ * - prerequisites unsatisfied → hold (audit P1-4: must not reinforce/payoff
+ *   before the player has triggered the prerequisite)
  * - payoffBeforeAnchor matches the current anchor → payoff now (only for
  *   states the validator accepts a payoff from: seeded|reinforced|ready —
  *   otherwise the director would issue an instruction the validator
@@ -345,9 +378,14 @@ export function classifySetup(
   item: SetupPayoff,
   checkpoint: number,
   currentAnchorId: string | undefined,
+  prerequisitesSatisfied: boolean,
 ): SetupDirective | undefined {
   if (item.status === "paid_off" || item.status === "dropped") {
     return undefined;
+  }
+  // 前置未满足：只能 hold——不得在玩家尚未触发前置前强化/兑现（audit P1-4）。
+  if (!prerequisitesSatisfied) {
+    return { id: item.id, action: "hold", urgency: "normal", premise: item.setup };
   }
   if (
     item.payoffBeforeAnchor !== undefined &&
@@ -356,7 +394,16 @@ export function classifySetup(
       item.status === "reinforced" ||
       item.status === "ready")
   ) {
-    return { id: item.id, action: "payoff", urgency: "now" };
+    const directive: SetupDirective = {
+      id: item.id,
+      action: "payoff",
+      urgency: "now",
+      premise: item.setup,
+    };
+    if (item.intendedPayoff !== undefined) {
+      directive.payoff = item.intendedPayoff;
+    }
+    return directive;
   }
   if (item.status === "seeded") {
     // Timeline fields are checkpoint units (narrative beats), so the age
@@ -364,8 +411,8 @@ export function classifySetup(
     const lastTouched =
       item.lastTouchedAtCheckpoint ?? item.seededAtCheckpoint ?? checkpoint;
     if (checkpoint - lastTouched >= 2) {
-      return { id: item.id, action: "reinforce", urgency: "soon" };
+      return { id: item.id, action: "reinforce", urgency: "soon", premise: item.setup };
     }
   }
-  return { id: item.id, action: "hold", urgency: "normal" };
+  return { id: item.id, action: "hold", urgency: "normal", premise: item.setup };
 }

@@ -10,9 +10,6 @@
 
 import type { NarrativeBrief } from "../../core/narrative/narrative-brief.js";
 
-/** Default number of recent raw events referenced by the brief annotation. */
-export const DEFAULT_MAX_RECENT_RAW_EVENTS = 40;
-
 /**
  * Render the NarrativeBrief as a director-note section for the writer
  * prompt. `maxRecentRawEvents` is baked into the revision annotation so the
@@ -56,7 +53,14 @@ export function renderDirectorNote(
   if (brief.setupDirectives.length > 0) {
     lines.push("[伏笔任务]");
     for (const setup of brief.setupDirectives) {
-      lines.push(`- ${setup.action.toUpperCase()} ${setup.id}（${setup.urgency}）`);
+      let line = `- ${setup.action.toUpperCase()} ${setup.id}（${setup.urgency}）`;
+      if (setup.premise !== undefined) {
+        line += `；前提：${setup.premise}`;
+      }
+      if (setup.payoff !== undefined) {
+        line += `；目标：${setup.payoff}`;
+      }
+      lines.push(line);
     }
   }
 
