@@ -23,6 +23,7 @@ import type {
   RejectedOp,
 } from "../../core/narrative/memory-operation.js";
 import type { NarrativeBriefRequest } from "../../core/narrative/narrative-brief.js";
+import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import type { NarrativeMemoryStorePort } from "../../core/ports/narrative-memory-store-port.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { StoryPlan } from "../../adapters/static/story-plan-loader.js";
@@ -71,6 +72,7 @@ class FakeStore implements NarrativeMemoryStorePort {
 
   private state: NarrativeMemoryState = emptyState();
   private episodes: EpisodeMemory[] = [];
+  private plan: DirectorPlan | null = null;
 
   // recording
   saveStateCalls: NarrativeMemoryState[] = [];
@@ -109,6 +111,14 @@ class FakeStore implements NarrativeMemoryStorePort {
 
   async appendOps(ops: RejectedOp[]): Promise<void> {
     this.appendOpsCalls.push(ops);
+  }
+
+  async loadPlan(): Promise<DirectorPlan | null> {
+    return this.plan;
+  }
+
+  async savePlan(plan: DirectorPlan): Promise<void> {
+    this.plan = plan;
   }
 }
 

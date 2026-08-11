@@ -8,14 +8,18 @@
  *   atomically (write tmp file, then rename).
  * - `episodes.jsonl` — one `EpisodeMemory` JSON per line.
  * - `narrative-ops.jsonl` — one `RejectedOp` JSON per line.
+ * - `director-plan.json` — the director's future plan, kept out of the
+ *   consolidated state by design; written atomically like the state file.
  *
  * `load()` degrades missing or corrupt files to empty values instead of
  * throwing: corrupt state file → empty state; corrupt episode line → that
- * line is skipped.
+ * line is skipped. `loadPlan()` degrades the same way to `null`.
  */
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NarrativeMemoryStorePort } from "../../core/ports/narrative-memory-store-port.js";
+import { DirectorPlanSchema } from "../../core/narrative/director-plan.js";
+import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import {
   EpisodeMemorySchema,
   NarrativeMemoryStateSchema,
@@ -29,6 +33,7 @@ import type { RejectedOp } from "../../core/narrative/memory-operation.js";
 const STATE_FILE = "narrative-state.json";
 const EPISODES_FILE = "episodes.jsonl";
 const OPS_FILE = "narrative-ops.jsonl";
+const PLAN_FILE = "director-plan.json";
 
 const EMPTY_STATE: NarrativeMemoryState = {
   revision: 0,
@@ -67,6 +72,10 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
 
   private get opsPath(): string {
     return path.join(this.dir, OPS_FILE);
+  }
+
+  private get planPath(): string {
+    return path.join(this.dir, PLAN_FILE);
   }
 
   async load(): Promise<{ state: NarrativeMemoryState; episodes: EpisodeMemory[] }> {
@@ -135,5 +144,30 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
     await mkdir(this.dir, { recursive: true });
     const lines = ops.map((op) => JSON.stringify(op)).join("\n");
     await appendFile(this.opsPath, `${lines}\n`, "utf8");
+  }
+
+  async loadPlan(): Promise<DirectorPlan | null> {
+    try {
+      const raw = await readFile(this.planPath, "utf8");
+      if (raw.trim().length > 0) {
+        const parsed: unknown = JSON.parse(raw);
+        // Structural corruption (valid JSON, wrong shape) degrades the same
+        // way as syntax corruption: only a zod-valid plan is returned.
+        const checked = DirectorPlanSchema.safeParse(parsed);
+        if (checked.success) {
+          return checked.data;
+        }
+      }
+    } catch {
+      // Missing or corrupt plan file → no plan, never throw.
+    }
+    return null;
+  }
+
+  async savePlan(plan: DirectorPlan): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    const tmpPath = `${this.planPath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tmpPath, JSON.stringify(plan), "utf8");
+    await rename(tmpPath, this.planPath);
   }
 }

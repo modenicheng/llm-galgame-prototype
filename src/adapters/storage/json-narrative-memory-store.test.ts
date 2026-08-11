@@ -5,7 +5,7 @@
  * touches real session data.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { appendFile, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { JsonNarrativeMemoryStore } from "./json-narrative-memory-store.js";
@@ -14,6 +14,7 @@ import type {
   NarrativeMemoryState,
 } from "../../core/narrative/memory-types.js";
 import type { RejectedOp } from "../../core/narrative/memory-operation.js";
+import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 
 const EMPTY_STATE: NarrativeMemoryState = {
   revision: 0,
@@ -201,5 +202,32 @@ describe("JsonNarrativeMemoryStore", () => {
     const lines = raw.split("\n").filter((l) => l.trim().length > 0);
     expect(lines).toHaveLength(3);
     expect(lines.map((l) => JSON.parse(l))).toEqual([...first, ...second]);
+  });
+
+  it("persists and loads a director plan", async () => {
+    const plan: DirectorPlan = {
+      revision: 2,
+      basedOnMemoryRevision: 7,
+      phase: "development",
+      currentGoal: "推进对苏遥的怀疑",
+      beats: [{ purpose: "侧面证据" }],
+      focusThreads: ["terminal_origin"],
+      setupDirectives: [],
+      revealLocks: ["suyao_memory_origin"],
+      expiresAfterCheckpoint: 4,
+    };
+    await store.savePlan(plan);
+    const reloaded = await store.loadPlan();
+    expect(reloaded).toEqual(plan);
+    // 文件存在：<store.location>/director-plan.json
+    const raw = await readFile(path.join(dir, "test-session", "director-plan.json"), "utf8");
+    expect(JSON.parse(raw)).toEqual(plan);
+  });
+
+  it("loadPlan returns null for a missing or corrupt plan file", async () => {
+    expect(await store.loadPlan()).toBeNull();
+    await mkdir(path.join(dir, "test-session"), { recursive: true });
+    await writeFile(path.join(dir, "test-session", "director-plan.json"), "{corrupt", "utf8");
+    expect(await store.loadPlan()).toBeNull();
   });
 });
