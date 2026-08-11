@@ -623,6 +623,11 @@ export class Game {
         // 与修复路径竞争单槽调度器，任何微任务延迟都会让杂散续写先占住
         // startActivePath（修复 startActiveSegment 抛错杀死 run()）。
         segment.failed = true;
+        // I1：失败路径也要排空泵。done 拒绝时泵仍在后台排空缓冲组；若某
+        // 组让 handleDslGroup 抛错（如 InteractionPolicy 拒绝），泵的拒绝
+        // 会成为未处理拒绝（Node unhandledRejection=throw 崩溃进程），且
+        // 失败快照读取前段事件未全部落位。带拒绝处理排空后再抛原始错误。
+        await pump.catch(() => undefined);
         throw error;
       }
     }).finally(() => {
@@ -2030,15 +2035,32 @@ export class Game {
       }
     })();
 
-    // Single reaction (not .then().catch()): the fulfillment/rejection
-    // handler runs in ONE microtask, so by the time the confirm command is
-    // processed the session status is already settled — the repair decision
-    // at confirm never races the failure reaction.
+    // 单一反应（非 .then().catch()）：确认命令处理时会话状态已落定——
+    // 修复决策在确认点不会与失败反应竞速。ok 处理器现在先排空泵（I2），
+    // 落定多出若干微任务，但确认点的 setTimeout(0) 排空覆盖同一轮
+    // macrotask，分类确定性保持不变。
     const promise = handle.done
       .then(
-        () => {
-
+        async () => {
           if (controller.signal.aborted) return;
+          // I2：泵可能仍在处理最终一批组（final burst）——先排空泵再读取
+          // responseState，保证预测尾部（docs §79）包含全部组的 stage 贡献。
+          // 泵拒绝（组编译失败）与 done 拒绝同语义：标记失败，不得让会话
+          // 停留在 generating。
+          try {
+            await pump;
+          } catch (error) {
+            if (controller.signal.aborted) return;
+            const err = error instanceof Error ? error : new Error(String(error));
+            responseSession.markFailed(err);
+            this.status.setJob(
+              "input-response",
+              `NPC 回应：${text.slice(0, 30)}`,
+              "failed",
+              err.message
+            );
+            return;
+          }
           // The confirmed response's tail state becomes the new predictive
           // tail (docs §79): the next generation continues from where the
           // response leaves the stage.

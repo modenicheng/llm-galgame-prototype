@@ -49,6 +49,7 @@ import type {
   NarrativeBriefRequest,
 } from "./core/narrative/narrative-brief.js";
 import type { GamePorts } from "./game.js";
+import type { VisualState } from "./core/presentation/types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1970,6 +1971,116 @@ describe("Input response streaming", () => {
       "结尾。",
     ]);
   });
+
+  it("seeds the predictive tail from the FULL response burst (no truncation on a final multi-group batch)", async () => {
+    const config = makeGameConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    // Production shape: one early group, then a FINAL synchronous burst of
+    // many groups; the last group carries a background cue. The ok handler
+    // must await the pump so the predictive tail (docs §79) includes the
+    // whole burst — not just the groups staged before handle.done resolved
+    // (review I2).
+    let emitGroup!: (draft: EventGroupDraft) => void;
+    let completeResponse!: () => void;
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: InputResponseRequest) =>
+        createGenerationHandle("input", async (_signal, onGroup) => {
+          onGroup(groupFromEvent({ type: "narration", text: "早到回应。" }));
+          const { promise, resolve } = Promise.withResolvers<GenerationEnvelope>();
+          emitGroup = onGroup;
+          completeResponse = () => resolve(envelope([]));
+          return promise;
+        }),
+    );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
+    );
+    let continuationTail: VisualState | undefined;
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) => {
+        continuationTail = request.tailVisualState;
+        return handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]);
+      },
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+      onInputPreviewOpened: (output) => {
+        // The pump is already draining: push the final burst while it waits,
+        // then resolve the runner right after — the ok handler races the
+        // drain exactly like the production final batch.
+        for (let i = 0; i < 12; i += 1) {
+          const draft: EventGroupDraft = {
+            prelude: i === 11 ? [{ type: "background", assetId: "basement" }] : [],
+            main: { type: "narration", text: `回应片段${i}。` },
+          };
+          emitGroup(draft);
+        }
+        completeResponse();
+        controller.confirm(output.previewId);
+      },
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // The last burst group's stage cue must seed the next generation's
+    // request (docs §79) — a truncated tail would drop it.
+    expect(continuationTail?.background).toBe("basement");
+  });
+
+  it("single-Enter flow: an instantly-settled failed stream is retried, not live-promoted", async () => {
+    const config = makeGameConfig({ input: { require_preview_confirmation: false } });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    // The response fails in the same tick the input is submitted; the
+    // confirm-point microtask drain classifies it as a repair attempt.
+    (generator.generateInputResponse as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(() =>
+        createGenerationHandle("input", async () => {
+          throw new Error("首轮失败");
+        }),
+      )
+      .mockImplementationOnce(() =>
+        handleFromDrafts("input", [narrationEvent("修复回应。")]),
+      );
+    (generator.generateInputBridge as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("bridge", [narrationEvent("她等着你开口。")]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
+    });
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // Original attempt + one repair — the failed stream is NOT promoted
+    // live, and the repaired response plays.
+    expect(generator.generateInputResponse).toHaveBeenCalledTimes(2);
+    const played = controller.playbackEvents().map((output) => output.event);
+    expect(played.map((e) => e.text)).toEqual([
+      "开场。",
+      "你好",
+      "她等着你开口。",
+      "修复回应。",
+      "结尾。",
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2465,6 +2576,58 @@ describe("Interaction policy enforcement", () => {
 
     expect(controller.count("interaction_opened")).toBe(1);
     expect(generator.generateContinuation).toHaveBeenCalledTimes(2);
+    expect(controller.ended()).toBe(true);
+  });
+
+  it("settles the generation pump when the segment fails mid-stream (no orphaned rejection, playable prefix preserved)", async () => {
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    // The opening publishes a playable line, then an ILLEGAL interaction,
+    // and the runner itself fails (network error). The buffered illegal
+    // group makes the pump reject with a policy error on the failure path;
+    // the catch must settle the pump (review I1) or the rejection is
+    // orphaned → Node's unhandledRejection=throw kills the run.
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: OpeningRequest) =>
+        createGenerationHandle("opening", async (_signal, onGroup) => {
+          onGroup(groupFromEvent({ type: "narration", text: "半句。" }));
+          onGroup(groupFromEvent(inputInteraction("int_illegal")));
+          throw new Error("网络中断");
+        }),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) => {
+        // The repair continuation receives the playable prefix that
+        // survived the failure.
+        expect(
+          request.prefetchedEvents.some(
+            (event) => event.type === "narration" && event.text === "半句。",
+          ),
+        ).toBe(true);
+        return handleFromDrafts("continuation", [narrationEvent("修复段。"), endEvent("end_1", "Fin.")]);
+      },
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
+    );
+
+    const controller = new MemoryController();
+    const game = new Game(
+      noInputConfig(),
+      generator,
+      status,
+      media,
+      undefined,
+      makeTestPorts(),
+    );
+    controller.attach(game);
+    // Without the fix the orphaned pump rejection fails the run; with the
+    // fix the failure is repairable and the run completes.
+    await expect(game.run()).resolves.toBeUndefined();
+
+    expect(generator.generateContinuation).toHaveBeenCalledTimes(1);
     expect(controller.ended()).toBe(true);
   });
   it("rejects a second consecutive pure input at the Game level", async () => {
