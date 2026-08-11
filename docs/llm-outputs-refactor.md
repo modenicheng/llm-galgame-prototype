@@ -2468,7 +2468,9 @@ Prompt 必须强调：
 
 ---
 
-# 73. 当前低水位实现差距
+# 73. 低水位调度（已实现 2026-08-11）
+
+低水位续写已在 run loop 落地（`reconcileTextBuffer` 在任务收束/玩家推进/缓冲分支评估 §75 不变量；`start_threshold_lines` 用于首句门槛；段间 TTFT 空窗消除）。
 
 当前 `PlaybackBuffer` 已经有：
 
@@ -2692,7 +2694,9 @@ input response
 
 ---
 
-# 80. StoryStatePatch 从主 DSL 移除
+# 80. StoryStateReconciler（已实现 2026-08-11）
+
+reconciler 为确定性纯函数（`src/story/reconcile.ts`），消费已提交事件投影 location/characters/recent_summary；主 DSL 的 `state_patch` 应用路径已删除（协议字段保留为 legacy）。
 
 当前模型可以在 JSONL 中输出：
 
@@ -4346,6 +4350,10 @@ story-plan、不建 store / consolidator；`Game` 的 `narrativeDirector` 可选
 依赖缺省 → `getBrief` 返回 undefined（提示词零变化）、无 observeCommitted
 / checkpoint 调用，行为与引入前完全一致。
 
+`mode: event` 现在支持 `narrative.event.max_interactions`（0 = 不限；到达上限后强制
+收束结局，模型连续不结束时运行时合成结局兜底）与 `restart_session` 命令（应用级
+重建，新 session id）。
+
 ## 116.6 整合与 consolidation 流程
 
 - **提交**：`record()` 落库后旁同步 `observeCommitted([stored])` → pending
@@ -4555,6 +4563,28 @@ build 全绿；全量验证记录见 `.superpowers/sdd/task-10-report.md`。
 
 ---
 
+# 118. 基础设施审计修复（2026-08-11）
+
+本波（Step 4，plan：`docs/superpowers/plans/2026-08-11-step4-audit-fixes.md`）
+修复 2026-08-11 静态审计确认的 11 项偏差，每项一句话 + 关联文件：
+
+- **P0 低水位续写**（§73–§76）：`reconcileTextBuffer` 在任务收束/玩家推进/缓冲分支评估 §75 不变量，`start_threshold_lines` 作首句门槛，消除段间 TTFT 空窗（`src/game.ts`，Task 1）。
+- **P0 StoryStateReconciler**（§80–§81）：确定性纯函数消费已提交事件投影 location/characters/recent_summary；主 DSL `state_patch` 应用路径删除、协议字段保留为 legacy（`src/story/reconcile.ts`，Task 2）。
+- **叙事精度 setup prerequisites**：仅当 prerequisites 满足才调度 setup，satisfied 谓词传入 planner 与上下文（`src/application/narrative/setup-scheduler.ts`、`memory-validator.ts`，Task 3）。
+- **叙事精度 SetupDirective 投影**：plan 的 setupDirectives 以带 action/urgency 语义的 SetupDirective 快照投影（`src/core/narrative/director-plan.ts`，Task 3）。
+- **叙事精度 Anchor 声明序**：`computeCurrentAnchorId` 按声明顺序（DAG）而非字典序取当前锚点（`src/application/narrative/setup-scheduler.ts`，Task 4）。
+- **叙事精度 规范 episode 标签**：consolidation 仅接受规范 episode id 的标签（`src/application/narrative/memory-consolidator.ts`，Task 5）。
+- **叙事精度 ThreadOp.create**：create 必须携带 kind/importance，按重要性预算校验（`src/core/narrative/memory-operation.ts`，Task 6）。
+- **端口依赖倒置**：Game 改为消费 `StoryGeneratorPort`（InputBridge / tailVisualState / repairReason），bootstrap 以 facade 适配（`src/game.ts`、`src/core/ports/story-generator-port.ts`，Task 7–8）。
+- **会话目录统一 + flush**：narrative 文件与 JSONL 同入 `sessions/<sessionId>/`，director shutdown 时 flush 落盘（`src/adapters/storage/node-jsonl-session-store.ts`，Task 9）。
+- **EventMode 最小集**：`narrative.event.max_interactions`（0 = 不限；到达上限强制收束结局，模型连续不结束时运行时合成结局兜底）+ `restart_session` 命令（`src/config.ts`、`src/game.ts`、`src/core/runtime/runtime-command.ts`，Task 10）。
+- **文档清理**：README 修正 mode/bridge 描述，dsl-protocol 明确独立 `ch` 指令须携带 variant，DESIGN.md 归档，本文件 §73/§80/§116.5/known-gaps 更新（`README.md`、`prompts/dsl-protocol.txt`、`DESIGN.md`，Task 11）。
+
+配套清理：`narrative.brief.max_recent_raw_events` 删除，原始事件窗口唯一来源为
+`game.history_events`（Task 3；§116.3 的配置样例保留该字段仅作历史记录）。
+
+---
+
 # 附录 A：实施状态（2025-08 迁移快照）
 
 本文档其余部分为设计。以下是本仓库 `main` 分支当前已完成 / 未完成的对照，供后续开发定位。
@@ -4574,13 +4604,12 @@ build 全绿；全量验证记录见 `.superpowers/sdd/task-10-report.md`。
 
 ## 未完成 / 简化（后续阶段）
 
-- **低水位精细调度**（§73–§76）：`@end buffer` 已驱动立即续写；`text_buffer.start/refill_threshold` 已配置但未用于"读剩 3 句才启动续写"的中途触发（run 循环结构限制，见 §95 之后跟进）。
-- **StoryStateReconciler**（§80–§81）：主 DSL 已不含 state_patch；模型状态补丁仍为空，reconciler 未实现（JSONL state_patch 保留为 legacy）。
-- **PlaybackBuffer<EventGroup>**（§94）：采用 §63 的展平方案（事件携带 `stage`），缓冲类型未迁移。
-- **beat 播放时机**：beat 组在提交时立即应用（stage_beat_ready），不做缓冲时序。
-- **BGM/SE 实际音频**：仅进入 VisualState 与 presentation，无播放器；`web/src/stage/bgm-controller.ts` 为占位。
-- **Web 资源 src 解析**：舞台为占位渲染（逻辑 id 标签 + 确定性色块）；真实美术接入时补 Runtime → URL 解析。
-- **删除模型 JSONL**（§97）：`parseTerminalModelJsonl` / `parsePrefetchModelJsonl` / jsonl `output_protocol` 保留供回滚；SessionStore JSONL 不受影响。
+- ~~低水位精细调度（§73–§76）~~：已实现（2026-08-11，`reconcileTextBuffer` + start threshold）。
+- ~~StoryStateReconciler（§80–§81）~~：已实现（2026-08-11，`src/story/reconcile.ts`，确定性投影）。
+- PlaybackBuffer<EventGroup>（§94）：采用 §63 的展平方案（事件携带 `stage`），缓冲类型未迁移。
+- beat 播放时机：beat 组在提交时立即应用（stage_beat_ready），不做缓冲时序。
+- BGM/SE 实际音频：仅进入 VisualState 与 presentation，无播放器；`web/src/stage/bgm-controller.ts` 为占位。
+- 完整会话恢复闭环：SessionStorePort 无 load/resume，重启后从新开场开始（延迟到后续波）。
 
 ## 验收对照（§110）
 

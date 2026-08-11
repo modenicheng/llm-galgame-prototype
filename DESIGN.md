@@ -1,5 +1,12 @@
 # LLM 实时生成 GalGame：预取式预研版设计
 
+> **已归档（2026-08-11）**：本文档描述 model-jsonl 时代的旧架构（interaction 内嵌
+> `input_bridge`、模型输出 mode、JSONL 逐行协议），与当前代码不再一致，仅作历史参考。
+> 权威文档：
+> - 运行方式与配置：`README.md`
+> - DSL 协议 / 低水位 / 状态整理：`docs/llm-outputs-refactor.md`
+> - 长线记忆设计：`docs/superpowers/specs/2026-08-09-narrative-director-design.md`
+
 ## 1. 目标
 
 本版验证一条低等待、可扩展到语音和图像资源的运行链路：
