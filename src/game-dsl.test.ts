@@ -108,6 +108,8 @@ function makeDslMockGenerator(): StoryGenerator {
 type StreamOptions = {
   onGroup?: (group: EventGroupDraft) => void;
   onSegmentEnd?: (status: SegmentEndStatus) => void;
+  /** Present only on repair continuations (Game repair path, docs §8.5). */
+  repairReason?: string;
 };
 
 function dslNarration(text: string, cues: EventGroupDraft["prelude"] = []): EventGroupDraft {
@@ -465,8 +467,10 @@ describe("DSL mode — truncation recovery", () => {
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
       async (_t: number, _s: unknown, _history: unknown, prefetched: unknown, _sig: unknown, options?: StreamOptions) => {
-        // 第 1 次调用是 §75 低水位续写（玩家推进保留前缀时 ahead=0 ≤ 阈值，
-        // prefetched 为空）；第 2 次才是真正带保留前缀的修复续写。
+        // fix(F) 后 advance-trigger 对失败段跳过低水续写：第一次（也是唯一
+        // 一次）续写调用就是带保留前缀的修复。prefetched=[] 分支保留为
+        // 回归哨兵（若 advance-trigger 对失败段误触发，杂散续写会先占住
+        // 单槽调度器，修复路径的 startActivePath 将抛错）。
         if ((prefetched as unknown[]).length === 0) {
           options?.onSegmentEnd?.(complete("buffer"));
           return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
@@ -703,5 +707,70 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
       "第二句。",
       "续写句。",
     ]);
+  });
+
+  it("does not start a low-water refill on a failed segment; the repair owns the scheduler", async () => {
+    // 生产默认阈值（start_threshold_lines 2 / refill_threshold_lines 3）。
+    // 开场段只产出 1 句就失败（mock 抛错、无 @end）：
+    //  - 首句门槛必须放行（段 done 已 settled，不论成败）；
+    //  - 玩家推进后不得启动杂散低水续写——修复路径即将接管单槽调度器，
+    //    续写会与修复竞争（startActivePath 抛错，run() 死亡）并浪费一次生成。
+    const config = makeDslConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    game.subscribe((o) => outputs.push(o));
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_turn: number, _state: unknown, _signal: unknown, options?: StreamOptions) => {
+        options?.onGroup?.(dslNarration("第一句。"));
+        // 截断：产出 1 句后请求失败（无 @end 哨兵），endStatus 恒空。
+        throw new Error("DSL 流截断：段结束时没有 @end 哨兵");
+      },
+    );
+    // 修复前不得出现无 repairReason 的杂散续写：若出现，记录并挂起
+    // （模拟真实 LLM 长请求，使修复路径的 startActivePath 必然抛错）。
+    let spuriousRefill = false;
+    let continuationCalls = 0;
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_turn: number, _state: unknown, _history: unknown, _prefetched: unknown, _signal: unknown, options?: StreamOptions) => {
+        continuationCalls += 1;
+        if (options?.repairReason === undefined) {
+          if (continuationCalls === 1) {
+            spuriousRefill = true;
+            await new Promise<never>(() => {}); // 永不 resolve（gated）
+          }
+          // 修复后的正常低水续写：buffer 段收尾后由 run loop 启动 → ending。
+          options?.onSegmentEnd?.(complete("ending"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }
+        // 修复续写：带保留前缀，产出 2 句后 @end buffer（正常段边界）。
+        options?.onGroup?.(dslNarration("修复第一句。"));
+        options?.onGroup?.(dslNarration("修复第二句。"));
+        options?.onSegmentEnd?.(complete("buffer"));
+        return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+      },
+    );
+
+    const runPromise = game.run();
+    const controller = new MemoryController();
+    controller.attach(game);
+    await controller.advanceUntilInteractionOrEnd();
+    await runPromise;
+
+    // 修复前没有杂散续写：第一次续写调用就是带 repairReason 的修复。
+    expect(spuriousRefill).toBe(false);
+    expect(continuationCalls).toBe(2);
+    const firstContinuationCall = (generator.generateContinuation as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect((firstContinuationCall[5] as StreamOptions | undefined)?.repairReason).toBeDefined();
+    // 保留前缀 + 修复续写句全部播放，故事正常结束。
+    expect(playbackOf(outputs).map((o) => o.event.text)).toEqual([
+      "第一句。",
+      "修复第一句。",
+      "修复第二句。",
+    ]);
+    expect(controller.ended()).toBe(true);
   });
 });

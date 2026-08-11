@@ -96,6 +96,15 @@ interface ActiveSegment {
    * (docs §46/§76). A clean buffer end is NOT a failure.
    */
   endStatus: SegmentEndStatus | null;
+  /**
+   * Set when the segment's generation task settles with a rejection
+   * (segment.done rejected). The advance-trigger must not start a low-water
+   * refill while the current segment has failed — the repair path is about
+   * to take over the single-slot generation scheduler, and a concurrent
+   * refill would make startActivePath throw and kill run() (and waste a
+   * generation call).
+   */
+  failed: boolean;
 }
 
 type ActiveSegmentKind = "opening" | "continuation";
@@ -550,6 +559,7 @@ export class Game {
       terminal: null,
       schedulerReleased: false,
       endStatus: null,
+      failed: false,
     };
 
     const controller = this.generationScheduler.startActivePath(taskId);
@@ -625,17 +635,25 @@ export class Game {
     // 与玩家阅读尾部重叠，消除段间 TTFT 空窗。带拒绝处理以保持
     // “每段 done 从出生即带 handler”的工厂不变量（失败段不产生
     // 未处理拒绝）。
-    void segment.done.then(
-      () => {
-        if (
-          segment.endStatus?.kind === "complete" &&
-          segment.endStatus.reason === "buffer"
-        ) {
-          this.reconcileTextBuffer(segment.turn + 1);
-        }
-      },
-      () => undefined,
-    );
+    void segment.done
+      .then(
+        () => {
+          if (
+            segment.endStatus?.kind === "complete" &&
+            segment.endStatus.reason === "buffer"
+          ) {
+            this.reconcileTextBuffer(segment.turn + 1);
+          }
+        },
+        () => {
+          // 失败段标记：advance-trigger 据此跳过低水续写（修复路径即将
+          // 接管单槽调度器，杂散续写会让 startActivePath 抛错杀死 run()）。
+          segment.failed = true;
+        },
+      )
+      // MINOR D: 若 ok 回调抛错（如 reconcileTextBuffer → startActiveSegment
+      // 抛错），派生 promise 会未处理拒绝——显式吞掉。
+      .catch(() => undefined);
 
     return segment;
   }
@@ -761,7 +779,7 @@ export class Game {
           firstPlayableSeen = true;
           await this.waitForStartThreshold(segment);
         }
-        await this.consumePlayableEvent(event, turn);
+        await this.consumePlayableEvent(event, turn, segment);
         continue;
       }
 
@@ -1319,9 +1337,10 @@ export class Game {
 
   private async consumePlayableEvents(
     events: RuntimePlayableEvent[],
-    turn: number
+    turn: number,
+    segment?: ActiveSegment
   ): Promise<void> {
-    for (const event of events) await this.consumePlayableEvent(event, turn);
+    for (const event of events) await this.consumePlayableEvent(event, turn, segment);
   }
 
   /**
@@ -1479,7 +1498,8 @@ export class Game {
 
   private async consumePlayableEvent(
     event: RuntimePlayableEvent,
-    turn: number
+    turn: number,
+    segment?: ActiveSegment
   ): Promise<void> {
     this.advanceBufferedEvent(event);
 
@@ -1526,16 +1546,18 @@ export class Game {
       event,
       ...(presentation !== undefined ? { presentation } : {}),
     });
-    await this.waitForAdvance();
+    await this.waitForAdvance(segment);
   }
 
-  private async waitForAdvance(): Promise<void> {
+  private async waitForAdvance(segment?: ActiveSegment): Promise<void> {
     const command = await this.waitForCommand(
       (c) => c.type === "advance",
     );
     if (command.type !== "advance") throw new RuntimeShutdownError();
     // §75：玩家推进后重新评估低水位（任务已结束而玩家仍有余量时，
-    // 在"剩 refill 句"处提前启动续写）。
+    // 在"剩 refill 句"处提前启动续写）。当前段已失败时跳过：修复路径即将
+    // 接管单槽调度器，杂散续写会让 startActivePath 抛错杀死 run()。
+    if (segment?.failed) return;
     this.reconcileTextBuffer(this.activeSegmentTurn + 1);
   }
 
@@ -1570,8 +1592,20 @@ export class Game {
   private async waitForStartThreshold(segment: ActiveSegment): Promise<void> {
     const threshold = this.config.text_buffer.start_threshold_lines;
     if (threshold <= 1) return;
+    // §74：段 done 一旦 settled（无论成败）即放行。失败段 endStatus 恒空
+    // （handleSegmentEnd 只在干净 @end 时触发），只等 endStatus 会在
+    // “前缀不足 threshold 且已失败”时热旋转（race 立即返回的忙循环）。
+    let settled = false;
+    void segment.done.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
     while (this.playbackBuffer.countTextLinesAhead() < threshold) {
-      if (segment.endStatus !== null) return;
+      if (segment.endStatus !== null || settled) return;
       await Promise.race([
         segment.done.then(
           () => undefined,
