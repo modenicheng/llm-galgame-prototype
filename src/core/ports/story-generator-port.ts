@@ -16,6 +16,7 @@ import type {
 import type { EventGroupDraft } from "../protocol/gal-dsl/types.js";
 import type { GenerationEnvelope, StoryState } from "../../story/types.js";
 import type { NarrativeBrief } from "../narrative/narrative-brief.js";
+import type { VisualState } from "../presentation/types.js";
 import { AsyncEventQueue } from "../runtime/async-event-queue.js";
 
 export interface OpeningRequest {
@@ -23,6 +24,8 @@ export interface OpeningRequest {
   state: StoryState;
   signal?: AbortSignal;
   brief?: NarrativeBrief;
+  /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
+  tailVisualState?: VisualState;
 }
 
 export interface ContinuationRequest {
@@ -32,6 +35,10 @@ export interface ContinuationRequest {
   prefetchedEvents: StoryContextEvent[];
   signal?: AbortSignal;
   brief?: NarrativeBrief;
+  /** §8.5 修复原因：上一段失败的上下文，嵌入用户 prompt。 */
+  repairReason?: string;
+  /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
+  tailVisualState?: VisualState;
 }
 
 export interface BranchPrefetchRequest {
@@ -42,6 +49,8 @@ export interface BranchPrefetchRequest {
   option: ChoiceOption;
   signal?: AbortSignal;
   brief?: NarrativeBrief;
+  /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
+  tailVisualState?: VisualState;
 }
 
 export interface InputResponseRequest {
@@ -52,6 +61,18 @@ export interface InputResponseRequest {
   playerInput: string;
   signal?: AbortSignal;
   brief?: NarrativeBrief;
+  /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
+  tailVisualState?: VisualState;
+}
+
+export interface InputBridgeRequest {
+  turn: number;
+  state: StoryState;
+  interaction: InteractionEvent;
+  signal?: AbortSignal;
+  brief?: NarrativeBrief;
+  /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
+  tailVisualState?: VisualState;
 }
 
 export interface GenerationHandle {
@@ -70,6 +91,7 @@ export interface StoryGeneratorPort {
   generateContinuation(request: ContinuationRequest): GenerationHandle;
   generateBranchPrefetch(request: BranchPrefetchRequest): GenerationHandle;
   generateInputResponse(request: InputResponseRequest): GenerationHandle;
+  generateInputBridge(request: InputBridgeRequest): GenerationHandle;
 }
 
 /** Shape of the underlying promise-based provider a handle wraps. */

@@ -37,6 +37,7 @@ import {
   type BranchPrefetchRequest,
   type ContinuationRequest,
   type GenerationHandle,
+  type InputBridgeRequest,
   type InputResponseRequest,
   type OpeningRequest,
   type StoryGeneratorPort,
@@ -590,6 +591,9 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
       this.inner.generateOpening(request.turn, request.state, signal, {
         onGroup,
         ...(request.brief ? { brief: request.brief } : {}),
+        ...(request.tailVisualState
+          ? { tailVisualState: request.tailVisualState }
+          : {}),
       }),
     );
   }
@@ -605,6 +609,12 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         {
           onGroup,
           ...(request.brief ? { brief: request.brief } : {}),
+          ...(request.tailVisualState
+            ? { tailVisualState: request.tailVisualState }
+            : {}),
+          ...(request.repairReason
+            ? { repairReason: request.repairReason }
+            : {}),
         },
       ),
     );
@@ -622,6 +632,9 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         {
           onGroup,
           ...(request.brief ? { brief: request.brief } : {}),
+          ...(request.tailVisualState
+            ? { tailVisualState: request.tailVisualState }
+            : {}),
         },
       ),
     );
@@ -639,8 +652,31 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         {
           onGroup,
           ...(request.brief ? { brief: request.brief } : {}),
+          ...(request.tailVisualState
+            ? { tailVisualState: request.tailVisualState }
+            : {}),
         },
       ),
+    );
+  }
+
+  generateInputBridge(request: InputBridgeRequest): GenerationHandle {
+    return createGenerationHandle(
+      `bridge:${request.interaction.interaction_id}`,
+      (signal, onGroup) =>
+        this.inner.generateInputBridge(
+          request.turn,
+          request.state,
+          request.interaction,
+          signal,
+          {
+            onGroup,
+            ...(request.brief ? { brief: request.brief } : {}),
+            ...(request.tailVisualState
+              ? { tailVisualState: request.tailVisualState }
+              : {}),
+          },
+        ),
     );
   }
 }
