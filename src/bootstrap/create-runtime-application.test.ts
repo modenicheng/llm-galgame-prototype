@@ -10,12 +10,13 @@
  * envelopes come from `generatorState`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRuntimeApplication } from "./create-runtime-application.js";
 import { makeTestConfig, MemoryController } from "../test-helpers.js";
 import { NarrativeDirectorService } from "../application/narrative/narrative-director-service.js";
+import { DirectorPlanSchema } from "../core/narrative/director-plan.js";
 import { DEFAULT_NARRATIVE_CONFIG } from "../config.js";
 import type { AppConfig } from "../config.js";
 import type { GeneratedEvent } from "../story/types.js";
@@ -68,9 +69,35 @@ vi.mock("../adapters/llm/narrative-consolidator-adapter.js", () => ({
   },
 }));
 
+// Mock PlotPlannerAdapter so the composition root never calls the real
+// LLM — the mock succeeds trivially with a minimal well-formed proposal.
+vi.mock("../adapters/llm/plot-planner-adapter.js", () => ({
+  PlotPlannerAdapter: class {
+    constructor(_opts: unknown) {
+      /* no-op — never touches the network */
+    }
+    async plan(_request: unknown) {
+      return {
+        phase: "development",
+        currentGoal: "推进测试剧情",
+        beats: [{ purpose: "测试节拍" }],
+        focusThreads: [],
+        revealLocks: [],
+        anchorOps: [],
+      };
+    }
+  },
+}));
+
 /** Mutable envelopes the mocked StoryGenerator returns (per test). */
 const generatorState = vi.hoisted(() => ({
   opening: {
+    events: [] as GeneratedEvent[],
+    state_patch: undefined as unknown,
+    groups: undefined as unknown,
+    segmentEnd: undefined as unknown,
+  },
+  continuation: {
     events: [] as GeneratedEvent[],
     state_patch: undefined as unknown,
     groups: undefined as unknown,
@@ -87,7 +114,7 @@ vi.mock("../adapters/llm/openai-compatible-generator.js", () => ({
     generateOpening = vi.fn(async () => generatorState.opening);
     generateBranchPrefetch = vi.fn(async () => ({ events: [], state_patch: undefined }));
     generateInputResponse = vi.fn(async () => ({ events: [], state_patch: undefined }));
-    generateContinuation = vi.fn(async () => ({ events: [], state_patch: undefined }));
+    generateContinuation = vi.fn(async () => generatorState.continuation);
     generateInputBridge = vi.fn(async () => ({ events: [], state_patch: undefined }));
   },
 }));
@@ -497,6 +524,82 @@ function dashscopeConfig(): AppConfig {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it("writes a director plan after an interaction checkpoint in longform mode", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-plan-"));
+    const sessionDir = path.join(dir, "sessions");
+    const storyPlanPath = await writeStoryPlan(dir);
+
+    const config = makeTestConfig({
+      narrative: {
+        ...DEFAULT_NARRATIVE_CONFIG,
+        mode: "longform" as const,
+        consolidation: {
+          ...DEFAULT_NARRATIVE_CONFIG.consolidation,
+          batch_min_events: 1,
+          min_checkpoint_gap_ms: 0,
+        },
+      },
+      game: { sessions_dir: sessionDir },
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+
+    // 开场：一段旁白 + 一个 choice 交互；选择后走 post-choice 续写结束。
+    generatorState.opening = {
+      events: [],
+      groups: [
+        { prelude: [], main: { type: "narration", text: "第一幕" } },
+        {
+          prelude: [],
+          main: {
+            type: "interaction",
+            interaction: {
+              prompt: "怎么做？",
+              mode: "choice",
+              optionTexts: ["选项A", "选项B"],
+            },
+          },
+        },
+      ],
+      state_patch: undefined,
+      segmentEnd: { kind: "complete", nonce: "aaaa", reason: "ending" },
+    };
+    generatorState.continuation = {
+      events: [],
+      groups: [{ prelude: [], main: { type: "narration", text: "结尾。" } }],
+      state_patch: undefined,
+      segmentEnd: { kind: "complete", nonce: "bbbb", reason: "ending" },
+    };
+
+    const app = await createRuntimeApplication({
+      config,
+      sessionDir,
+      storyPlanPath,
+      sessionId: "test-session",
+    });
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        controller.select(
+          output.interactionId,
+          (output.interaction as { options: Array<{ id: string }> }).options[0]!.id,
+        );
+      },
+    });
+    controller.attach(app.game);
+    await app.game.run();
+
+    // checkpoint → maybeReplan → 首轮计划（fire-and-forget）；让出 microtask 队列
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // director-plan.json 已写入且通过 schema
+    const planRaw = await readFile(
+      path.join(sessionDir, "test-session", "director-plan.json"),
+      "utf8",
+    );
+    expect(DirectorPlanSchema.safeParse(JSON.parse(planRaw)).success).toBe(true);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it("does not assemble a narrative director for event mode", async () => {
     const config = makeTestConfig({
       narrative: { mode: "event" },
@@ -514,6 +617,10 @@ function dashscopeConfig(): AppConfig {
     try {
       const app = await createRuntimeApplication({ config, sessionDir });
       expect((app.game as any).narrativeDirector).toBeUndefined();
+      // Event mode never assembles a director, so no plan file can exist.
+      await expect(
+        access(path.join(sessionDir, "test-session", "director-plan.json")),
+      ).rejects.toThrow();
     } finally {
       await rm(sessionDir, { recursive: true, force: true });
     }
