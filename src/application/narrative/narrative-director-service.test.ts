@@ -88,6 +88,14 @@ class FakeStore implements NarrativeMemoryStorePort {
   failNextSaveState = false;
   failNextAppendEpisodes = false;
 
+  /**
+   * Optional deferred saveState gate: when set, the next saveState awaits it
+   * before persisting (consumed on first use). Lets a test block a writer
+   * mid-critical-section — after it cloned/applied but before commit — so
+   * concurrent writers genuinely overlap.
+   */
+  saveStateGate: Promise<void> | undefined;
+
   constructor(initialState?: NarrativeMemoryState, episodes?: EpisodeMemory[]) {
     if (initialState) this.state = initialState;
     if (episodes) this.episodes = episodes;
@@ -101,6 +109,11 @@ class FakeStore implements NarrativeMemoryStorePort {
     if (this.failNextSaveState) {
       this.failNextSaveState = false;
       throw new Error("disk write failed (saveState)");
+    }
+    if (this.saveStateGate !== undefined) {
+      const gate = this.saveStateGate;
+      this.saveStateGate = undefined; // consume: blocks only the first writer
+      await gate;
     }
     this.saveStateCalls.push(state);
     this.state = state;
@@ -1935,6 +1948,16 @@ describe("NarrativeDirectorService", () => {
       // Both consolidatePending and replan are in flight at the same time;
       // their apply/persist/swap sections serialize through the mutex and
       // each re-reads the latest memory inside the chain.
+      //
+      // Discrimination: without the chain, the second writer's callback
+      // clones `this.memory` BEFORE the first writer's swap lands — the
+      // first writer is blocked at the saveState gate, so it has cloned and
+      // applied but not yet committed. Both then commit their shadows and
+      // the later swap clobbers the earlier one (revision stays 1 and one
+      // of the two changes — thread advance / anchor reached — is lost).
+      // With the chain, the second callback only starts after the first has
+      // fully committed, so it clones the post-swap state and both changes
+      // survive (final revision 2).
       let resolveConsolidator!: (value: ConsolidationResult) => void;
       const deferredConsolidation = new Promise<ConsolidationResult>((resolve) => {
         resolveConsolidator = resolve;
@@ -1966,18 +1989,22 @@ describe("NarrativeDirectorService", () => {
 
       svc.observeCommitted([makeEvent(1)]);
 
+      // Gate the next saveState: the first writer to reach its commit point
+      // blocks mid-critical-section (cloned + applied, not yet swapped).
+      let releaseGate!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      store.saveStateGate = gate;
+
       const consolidationRun = svc.consolidatePending();
       const replanRun = svc.replan();
 
-      // Resolve the planner first: anchor a2 reached, revision 0 → 1.
+      // Resolve BOTH in-flight calls before awaiting either run, so both
+      // write callbacks are enqueued on the chain while the first is
+      // blocked at the gate. (Which callback lands first is irrelevant: it
+      // blocks, and the other is chained behind it.)
       resolvePlanner(FAKE_PROPOSAL);
-      await replanRun;
-      let mem = serviceMemory(svc);
-      expect(mem.anchors["a2"]!.status).toBe("reached");
-      expect(mem.revision).toBe(1);
-
-      // Then resolve consolidation: it must apply ON TOP of the replan's
-      // state (thread change kept alongside the anchor change).
       resolveConsolidator({
         episode: {
           summary: "Mutex episode",
@@ -1990,9 +2017,19 @@ describe("NarrativeDirectorService", () => {
         threadOps: [{ type: "advance", id: "t1" }],
         setupOps: [],
       });
-      await consolidationRun;
 
-      mem = serviceMemory(svc);
+      // No timers: the two resolves each schedule one continuation (both
+      // mutateMemory callbacks get enqueued), and one more microtask turn
+      // lets the first callback actually reach — and block at — the gate.
+      await Promise.resolve();
+      await Promise.resolve();
+      releaseGate();
+
+      await Promise.all([replanRun, consolidationRun]);
+
+      // Final memory: revision 2 (replan + consolidation), with BOTH the
+      // consolidation's thread advance and the replan's anchor reached.
+      const mem = serviceMemory(svc);
       expect(mem.revision).toBe(2); // 1 (replan) + 1 (consolidation)
       expect(mem.anchors["a2"]!.status).toBe("reached"); // replan kept
       expect(mem.threads["t1"]!.status).toBe("developing"); // consolidation kept
@@ -2001,6 +2038,14 @@ describe("NarrativeDirectorService", () => {
       const appended = store.appendEpisodesCalls.flat();
       expect(appended).toHaveLength(1);
       expect(mem.recentEpisodeIds[0]).toBe(appended[0]!.id);
+
+      // Persisted state matches the in-memory swap: both writes committed
+      // through the gate, none clobbered.
+      expect(store.saveStateCalls).toHaveLength(2);
+      const persisted = store.saveStateCalls[store.saveStateCalls.length - 1]!;
+      expect(persisted.revision).toBe(2);
+      expect(persisted.anchors["a2"]!.status).toBe("reached");
+      expect(persisted.threads["t1"]!.status).toBe("developing");
     });
   });
 });

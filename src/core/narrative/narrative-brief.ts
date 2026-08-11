@@ -4,7 +4,8 @@
  *
  * A NarrativeBrief is the per-turn digest the runtime sends to the model so
  * it can keep longform promises, setups and threads coherent (see the
- * narrative-director plan). `revealLocks` is always [] in this plan.
+ * narrative-director plan). `revealLocks` come from the active director
+ * plan (empty when no plan is in effect).
  */
 
 import { z } from "zod";
@@ -57,7 +58,7 @@ export interface NarrativeBrief {
   setupDirectives: SetupDirective[];
   relevantEpisodes: EpisodeMemory[];
   anchors: StoryAnchorState[];
-  /** Always [] in this plan. */
+  /** From the active director plan; empty when no plan is in effect. */
   revealLocks: string[];
   // 第 3 步新增（可选；无有效计划时为 undefined → 渲染省略 [导演目标]）
   phase?: DirectorPhase;
