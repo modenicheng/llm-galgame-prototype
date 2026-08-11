@@ -98,6 +98,7 @@ function normalizeNarrativeConfig(raw: NarrativeConfig): NarrativeConfig {
     setups: { ...d.setups, ...raw.setups },
     consolidation: { ...d.consolidation, ...raw.consolidation },
     brief: { ...d.brief, ...raw.brief },
+    plan: { ...d.plan, ...raw.plan },
   };
 }
 

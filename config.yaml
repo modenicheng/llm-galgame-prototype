@@ -135,6 +135,10 @@ narrative:
   brief:
     max_relevant_episodes: 6
     max_recent_raw_events: 40
+  plan:
+    # 一份导演计划的 horizon（未来几个 checkpoint 内有效）；到期前 replan_ahead 个 checkpoint 提前后台重规划
+    horizon_checkpoints: 3
+    replan_ahead_checkpoints: 1
   story_plan_path: story-plan.yaml
 
 debug:
