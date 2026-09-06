@@ -1,7 +1,7 @@
 # NarrativeDirector 长线剧情系统 — 设计（第 1+2 步 + 第 3 步）
 
 日期：2026-08-09（第 1+2 步）；2026-08-11（第 3 步批准并实现）
-状态：第 1+2 步已实现；第 3 步（PlotPlanner/DirectorPlan）于 2026-08-11 批准并实现，见 §13。第 4 步（belief/embedding/SQLite）明确不做，只预留位置。
+状态：第 1+2 步已实现；第 3 步（PlotPlanner/DirectorPlan）于 2026-08-11 批准并实现，见 §13。第 4 步（belief/embedding/SQLite）明确不做，只预留位置——belief 的最小子集（角色认知表）与 facts/lessons/audit 已于 2026-09-06 单独立项，见 `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md`。
 范围：NarrativeDirector 第 1+2 步（记忆存储 + MemoryConsolidator）与第 3 步（PlotPlanner/DirectorPlan，§13）。第 4 步（belief/embedding/SQLite）明确不做，只预留位置。
 
 ## 1. 目标与核心约束
@@ -249,7 +249,8 @@ src/adapters/static/story-plan-loader.ts
 第 3 步（PlotPlanner / DirectorPlan）于 2026-08-11 批准并实现，提交
 14e3d8a..3618dd6（Task 1–9）。本步在"记忆过去"之上增加"规划未来"：
 模型在每个 checkpoint 周期生成未来 horizon 内的导演计划，随 brief 注入
-Writer 上下文。实现细节与偏差见 `docs/llm-outputs-refactor.md` §117；
+Writer 上下文。实现细节与偏差见 `docs/changelog.md`（原 llm-outputs-refactor
+§117 摘编）；
 三条约束（§1）在本步全部落实：计划只进 director-plan.json + 锚点状态、
 consolidator 输入不含计划、锚点推进走内存写互斥。
 

@@ -1,160 +1,27 @@
-# LLM GalGame 演出 DSL 与视觉资源系统重构设计
+# LLM GalGame 演出 DSL 与视觉资源系统 — 设计参考
+
+> **文档职能（2026-09-04 拆分）**：本文是 Gal DSL 协议与运行时架构的**规范性设计参考**。
+> 原 87KB 单文件已按职能拆分：
+>
+> - 进度对照（已完成 / 未完成，与代码同步）：`docs/status.md`
+> - 实施日志（原 §114–§118 摘编）：`docs/changelog.md`
+> - 长线剧情系统：`docs/superpowers/specs/2026-08-09-narrative-director-design.md`
+> - 浏览器资源管线：`docs/superpowers/specs/2026-08-08-asset-pipeline-browser-design.md`
+>
+> 为保持源码注释中的 § 引用有效，保留章节**沿用原编号**；已删除章节的编号留空：
+> §1–§2（JSONL 时代基线与差异，该协议已于 2026-08-09 全量移除）、§84–§85（旧会话兼容与旧目录树）、
+> §88–§97（迁移顺序，均已落地）、§108–§109（迁移纪律与第一阶段闭环，已完成）、
+> §114–§118（实施日志 → changelog.md）、附录 A（实施状态 → status.md）。
 
 ## 0. 文档目的
 
-本文基于当前 `modenicheng/llm-galgame-prototype` `main` 分支实际代码，以及近期已经确定的设计，给出下一阶段完整重构方案。
+定义 Writer LLM 与 Runtime 之间的行式演出协议（Gal DSL），以及 Runtime 各模块的职责边界。
 
-本轮重构主要解决四个问题：
-
-1. 当前模型使用 JSONL 输出剧情，格式 Token 占用较高，模型容易产生 JSON 格式错误。
-2. 当前演出协议主要只有 dialogue 上的 `portrait`，尚不能自然控制背景、BGM、角色持续视觉状态等 GalGame 核心演出。
-3. 当前 interaction JSON 结构较重，模型需要自行生成 mode、interaction ID、option ID、InputSpec 等大量机器字段。
-4. 现有逐行流式模型以“一行 JSON = 一个事件”为核心，难以表达“切背景 + 换 BGM + 改立绘 + 显示一句台词”这一原子演出边界。
-
-重构后的核心原则：
+核心原则：
 
 > 模型输出紧凑、有限、面向演出的行式 DSL；Runtime 将 DSL 编译成内部类型，并继续负责 ID、状态、分支、持久化、媒体和 UI。
 
-模型协议不再等同于内部 RuntimeEvent，也不再等同于持久化格式。
-
----
-
-# 1. 当前仓库基线
-
-当前仓库已经完成较多运行时基础设施，不应推倒重建。
-
-## 1.1 当前已经具备的能力
-
-仓库当前已经实现：
-
-* OpenAI-compatible 流式 LLM 调用。
-* 按换行增量解析模型输出。
-* JSONL Schema 校验与修复重试。
-* dialogue / narration。
-* choice 兼容层。
-* `interaction` 三种模式：
-
-  * choice
-  * input
-  * hybrid
-* input bridge。
-* 自由输入 Preview → Confirm / Cancel 流程。
-* hybrid 中选项与自由输入双路径。
-* 固定选项 BranchManager 与候选分支预生成。
-* candidate → active 分支提升。
-* PlaybackBuffer。
-* StoryState / state_patch。
-* RuntimeCommand / RuntimeOutput。
-* Node/Web Host 分层。
-* WebSocket wire。
-* Web `InteractionPanel`。
-* Web 重连后的 UiProjection。
-* TTS / CosyVoice / 音频缓冲与缓存。
-* JSONL session 持久化。
-
-当前模型协议仍由 `prompts/instructions.yaml` 定义为严格 JSONL，`openai-compatible-generator.ts` 按完整行执行：
-
-```text
-chunk
-→ newline
-→ JSON.parse
-→ StatePatch / ModelEvent Schema
-→ validateEvent
-→ onEvent
-```
-
-随后请求结束后再次做整段 terminal contract 校验。
-
-当前 `model-jsonl.ts` 对 opening / continuation 要求：
-
-```text
-完整剧情段
-→ 最后一条必须是
-   choice / interaction / end
-```
-
-而 branch prefetch：
-
-```text
-只允许 narration / dialogue
-```
-
-当前这些规则已经较稳定，因此 DSL 重构应该尽可能保留：
-
-```text
-流式增量发布
-分支生命周期
-InteractionPolicy
-输入 Preview
-InputResponse
-TTS
-RuntimeCommand / RuntimeOutput
-SessionStore
-```
-
-而不是重新实现整套 Game。
-
----
-
-# 2. 当前仓库与目标设计的主要差异
-
-## 2.1 模型协议
-
-当前：
-
-```json
-{"type":"dialogue","speaker":"苏遥","text":"别碰它。","portrait":{"character":"suyao","expression":"anxious","position":"left"}}
-```
-
-目标：
-
-```text
-苏遥[anxious|left]: 别碰它。
-```
-
-当前 interaction：
-
-```json
-{
-  "type": "interaction",
-  "interaction_id": "int_1",
-  "prompt": "怎么回应？",
-  "mode": "hybrid",
-  "options": [
-    {
-      "id": "ask_reason",
-      "text": "继续追问"
-    }
-  ],
-  "input": {
-    "kind": "free_text",
-    "placeholder": "输入自己的回答……",
-    "max_length": 200
-  },
-  "input_bridge": {
-    "events": [...]
-  }
-}
-```
-
-目标：
-
-```text
-? 怎么回应？
-+ 继续追问
-= 输入自己的回答……
-/?
-```
-
-模式由 DSL 内容推导，不再要求模型输出：
-
-```text
-mode
-interaction_id
-option.id
-input.kind
-input.max_length
-```
+模型协议 ≠ 内部 RuntimeEvent ≠ 持久化格式。
 
 ---
 
@@ -163,589 +30,212 @@ input.max_length
 DSL 只负责：
 
 ```text
-剧情正文
-角色发言
-背景变化
-角色立绘变化
-角色位置
-显示名称
-BGM
-音效
-玩家交互表单
-必要的纯演出节点
-生成段结束
+剧情正文 / 角色发言 / 背景变化 / 角色立绘变化 / 角色位置 / 显示名称
+BGM / 音效 / 玩家交互表单 / 必要的纯演出节点 / 生成段结束
 ```
 
 DSL 不负责：
 
 ```text
-event_id
-line_id
-interaction_id
-option_id
-branch_id
-generation_id
-
-StoryStatePatch
-玩家历史
-数据库字段
-TTS provider
-voice ID
-
-资源真实 URL / 文件路径
-像素坐标
-z-index
-CSS
-动画具体时间
+event_id / line_id / interaction_id / option_id / branch_id / generation_id
+StoryStatePatch / 玩家历史 / 数据库字段 / TTS provider / voice ID
+资源真实 URL / 像素坐标 / z-index / CSS / 动画具体时间
 ```
 
-因此架构应明确分成：
+架构分层：
 
 ```text
-Writer LLM
-    │
-    ▼
-Gal DSL
-    │
-    ▼
-DSL Parser / Compiler
-    │
-    ▼
-Runtime EventGroup
-    │
-    ├── Story Runtime
-    ├── Visual Runtime
-    ├── Branch Runtime
-    ├── Media Runtime
-    └── Persistence
+Writer LLM → Gal DSL → DSL Parser / Compiler → Runtime EventGroup
+    → Story Runtime / Visual Runtime / Branch Runtime / Media Runtime / Persistence
 ```
 
 ---
 
-# 4. DSL 基础语法
+# 4. 旁白
 
-## 4.1 旁白
+普通非命令文本即 narration，不需要 `n` / `narration` / `旁白:` 前缀。
 
-普通非命令文本：
-
-```text
-地下室没有开灯。
-```
-
-即 narration。
-
-不需要：
-
-```text
-n
-narration
-旁白:
-```
+模型层判定标准（详见 `prompts/dsl-protocol.txt`）：旁白是叙述者的声音——环境、动作、
+他人行为观察、时间流逝、移动、氛围；**主角的第一人称动作/观察描写也是旁白**，不挂角色名。
+判定方法：能否想象角色开口发声？能 → 台词；不能 → 旁白。
 
 ---
 
-# 5. 角色台词
-
-完整格式：
+# 5. 角色台词（完整格式）
 
 ```text
 <角色>[<sprite>|<position>](<display_name>): <text>
 ```
 
-例如：
-
-```text
-苏遥[anxious|left](神秘女子): 你问我是谁？保密。
-```
-
-三个部分都支持缺省。
+例：`苏遥[anxious|left](神秘女子): 你问我是谁？保密。` 三个部分都支持缺省。
 
 ---
 
-# 6. 最简角色台词
+# 6. 最简台词与状态继承
 
-```text
-苏遥: 我已经说过了。
-```
-
-表示：
-
-```text
-角色 = 苏遥
-
-sprite       KEEP
-position     KEEP
-display_name KEEP
-visibility   KEEP
-```
-
-如果角色从未建立 PresentationState，Runtime 才从资源配置初始化默认值。
+`苏遥: 我已经说过了。` 表示 sprite / position / display_name / visibility 全部 KEEP。
+角色从未建立 PresentationState 时，Runtime 才从资源配置初始化默认值。
 
 ---
 
 # 7. 默认 Sprite Set
 
-角色通过资源配置绑定默认 sprite set：
+角色通过资源配置绑定默认素材组（`resources.yaml` 的 `characters` 段）：
 
 ```yaml
 characters:
   suyao:
     script_name: 苏遥
     display_name: 苏遥
-
     sprite_set: suyao
     default_variant: normal
     default_position: left
 ```
 
-因此：
-
-```text
-苏遥[anxious]: ...
-```
-
-等价于：
-
-```text
-character = suyao
-sprite_set = suyao
-variant = anxious
-```
-
+因此 `苏遥[anxious]: ...` 等价于 `character=suyao, sprite_set=suyao, variant=anxious`，
 模型不需要重复输出 `suyao:`。
 
 ---
 
 # 8. 覆写 Sprite Set
 
-需要特殊素材时：
+`苏遥[placeholder_char:anxious]: ...` 表示 sprite_set 换为 `placeholder_char`。
+也可与位置组合：`苏遥[placeholder_char:anxious|right]: ...`。
 
-```text
-苏遥[placeholder_char:anxious]: ...
-```
-
-表示：
-
-```text
-character = suyao
-
-sprite_set = placeholder_char
-variant = anxious
-```
-
-**§15 限制（本轮新增）**：覆写只能使用该角色 `allowed_sprite_sets`（
-`resources.yaml` 角色配置的 `allowed_sprite_sets`，缺省仅自身 `sprite_set`）
-内的素材组。Compiler 对超出列表的 `[spriteSet:variant]` 丢弃整条 character
-cue 并记录 `FORBIDDEN_SPRITE_SET` 诊断（降级为保持现状）。换装/伪装需作者在
-角色绑定中显式列出 `allowed_sprite_sets`；Loader 启动校验保证列表引用存在且
-包含角色自身的 sprite_set。
-
-也可以：
-
-```text
-苏遥[placeholder_char:anxious|right]: ...
-```
+**限制**：覆写只能使用该角色 `allowed_sprite_sets`（缺省仅自身 `sprite_set`）内的素材组。
+Compiler 对越界的 `[spriteSet:variant]` 丢弃整条 character cue 并记录
+`FORBIDDEN_SPRITE_SET` 诊断（降级为保持现状）。换装/伪装需作者在角色绑定中显式列出；
+Loader 启动校验保证列表引用存在且包含角色自身 sprite_set。
 
 ---
 
 # 9. 角色位置
 
-第一版只允许离散槽位：
-
-```text
-far_left
-left
-center
-right
-far_right
-```
-
-例如：
-
-```text
-苏遥[|right]: 站远一点。
-```
-
-只设置：
-
-```text
-position = right
-```
-
-不要允许模型输出：
-
-```text
-x=324
-y=92
-scale=0.87
-z-index=7
-```
-
-这些由 Renderer 负责。
+第一版只允许离散槽位：`far_left` `left` `center` `right` `far_right`。
+`苏遥[|right]: 站远一点。` 只设置 position。
+不允许模型输出坐标/缩放/z-index，这些由 Renderer 负责。
 
 ---
 
-# 10. 显示名称
+# 10. 显示名称与 characterId
 
-```text
-苏遥(神秘女子): 不要靠近。
-```
+`苏遥(神秘女子): 不要靠近。` → 玩家 UI 显示「神秘女子」，但角色真实身份始终是 `suyao`：
+StoryState、TTS、资源绑定全部使用 `suyao`。
 
-其中：
-
-```text
-character_id = suyao
-display_name = 神秘女子
-```
-
-角色真实身份始终是：
-
-```text
-suyao
-```
-
-因此：
-
-* StoryState 使用 `suyao`。
-* TTS 使用 `suyao`。
-* 资源绑定使用 `suyao`。
-* 玩家 UI 显示“神秘女子”。
-
-这点需要特别修改当前仓库。
-
-当前 RuntimeDialogue 主要依赖 `speaker`，TTS 配置也以角色显示名称为 key。
-
-引入 display-name override 后：
-
-```text
-speaker
-```
-
-不能继续承担角色身份。
-
-必须新增稳定：
+因此 RuntimeDialogue 必须携带稳定身份 `characterId`（`speaker` 仅为该句玩家可见名称）：
 
 ```ts
-characterId: CharacterId;
+{ type: "dialogue", characterId: "suyao", speaker: "神秘女子", text: "...", line_id: "..." }
 ```
 
-例如：
-
-```ts
-{
-  type: "dialogue",
-  characterId: "suyao",
-  speaker: "神秘女子",
-  text: "别碰它。",
-  line_id: "..."
-}
-```
-
-TTS 查：
-
-```text
-characterId
-```
-
-而不是：
-
-```text
-speaker
-```
-
-否则身份隐藏时会找不到苏遥音色。
+TTS 按 `characterId` 查音色，不按 `speaker`——否则身份隐藏时找不到苏遥音色。
+旧事件只有 speaker 时回退旧显示名映射。
 
 ---
 
 # 11. PresentationState 的 KEEP / SET / RESET
 
-必须明确区分：
-
-```text
-省略
-填写
-显式空括号
-```
-
-内部推荐：
+总规则：**省略 = KEEP，填写 = SET，空容器 = RESET**。
 
 ```ts
-type PatchValue<T> =
-  | { op: "keep" }
-  | { op: "set"; value: T }
-  | { op: "reset" };
-```
-
-总规则：
-
-```text
-省略      = KEEP
-填写      = SET
-空容器    = RESET
+type PatchValue<T> = { op: "keep" } | { op: "set"; value: T } | { op: "reset" };
 ```
 
 ---
 
 # 12. `[]` 视觉复位
 
-```text
-苏遥[]: 算了。
-```
-
-表示视觉状态恢复角色 YAML 默认值：
-
-```text
-sprite_set → default sprite_set
-variant    → default variant
-position   → default position
-visible    → true
-```
-
-但显示名称继续继承。
+`苏遥[]: 算了。` → sprite_set / variant / position 恢复角色 YAML 默认值，visible → true；
+显示名称继续继承。
 
 ---
 
 # 13. `()` 名称复位
 
-```text
-苏遥(): ……我的名字是苏遥。
-```
-
-只执行：
-
-```text
-display_name → default display_name
-```
-
-sprite / position 不变。
+`苏遥(): ……我的名字是苏遥。` → 只把 display_name 恢复默认；sprite / position 不变。
 
 ---
 
 # 14. `[]()` 完整复位
 
-```text
-苏遥[](): 抱歉。
-```
-
-表示恢复全部 Presentation 默认值：
-
-```text
-sprite_set
-variant
-position
-display_name
-visible
-```
+恢复全部 Presentation 默认值（sprite_set / variant / position / display_name / visible）。
 
 ---
 
 # 15. 禁止模糊空格式
 
-只定义：
-
-```text
-[]
-```
-
-作为 Visual Reset。
-
-以下形式无意义：
-
-```text
-[|]
-[:]
-[:|]
-```
-
-Parser 应直接拒绝。
+只定义 `[]` 为 Visual Reset；`[|]` `[:]` `[:|]` 无意义，Parser 直接拒绝。
 
 ---
 
 # 16. 状态继承示例
 
 ```text
-苏遥[anxious|right](神秘女子): 你不该来这里。
-
-苏遥: 现在离开还来得及。
-
-苏遥[angry]: 我说，出去。
-
-苏遥(): ……我的名字是苏遥。
-
-苏遥[]: 抱歉，刚才有些失态。
-```
-
-状态：
-
-```text
-anxious / right / 神秘女子
-          ↓
-anxious / right / 神秘女子
-          ↓
-angry   / right / 神秘女子
-          ↓
-angry   / right / 苏遥
-          ↓
-normal  / left  / 苏遥
+苏遥[anxious|right](神秘女子): 你不该来这里。   → anxious / right / 神秘女子
+苏遥: 现在离开还来得及。                       → anxious / right / 神秘女子
+苏遥[angry]: 我说，出去。                      → angry   / right / 神秘女子
+苏遥(): ……我的名字是苏遥。                     → angry   / right / 苏遥
+苏遥[]: 抱歉，刚才有些失态。                    → normal  / left  / 苏遥
 ```
 
 ---
 
 # 17. Standalone `ch`
 
-没有角色台词，但需要提前操作立绘时：
-
-```text
-ch suyao:anxious left
-```
-
-格式：
+没有台词但需要操作立绘时，使用稳定内部 character ID（台词头才能做 script_name →
+characterId 映射，`ch` 没有台词头）：
 
 ```text
 ch <character_id>:<variant> [position]
 ch <character_id> hide|show|exit
 ```
 
-这里使用稳定内部 character ID，而不是 script name。
-
 `hide` 仅隐藏（保留状态）；`exit` 彻底离开舞台（状态移除，下次台词重新按默认登台）。
-
-原因：
-
-`ch` 本身没有角色台词头可供 Runtime 做 script_name → characterId 映射。
-
-例如：
-
-```text
-ch suyao:anxious left
-```
 
 ---
 
 # 18. 隐藏与重新显示
 
-```text
-ch suyao hide
-```
-
-只执行：
-
-```text
-visible = false
-```
-
-保留：
-
-```text
-sprite_set
-variant
-position
-display_name
-```
-
-重新显示：
-
-```text
-ch suyao show
-```
-
-继续使用隐藏前状态。
+`ch suyao hide` 只置 visible=false，保留 sprite_set / variant / position / display_name；
+`ch suyao show` 以隐藏前状态恢复。
 
 ---
 
-# 19. Hidden 角色说话
+# 19. Hidden 角色说话 / 站位互斥 / 退场
 
-```text
-ch suyao hide
-苏遥: 别回头。
-```
+**Hidden 角色说话不自动显示**：`ch suyao hide` 后 `苏遥: 别回头。` 保持隐藏，
+天然支持画外音、电话、隔墙说话、幕后角色。需要显示时用 `ch suyao show` 或带立绘的台词。
 
-不会自动显示苏遥。
-
-这自然支持：
-
-```text
-画外音
-电话
-隔墙说话
-幕后角色
-```
-
-若希望再次显示：
-
-```text
-苏遥[normal|left]: 别回头。
-```
-
-或者：
-
-```text
-ch suyao show
-苏遥: 别回头。
-```
-
-**§19b 站位互斥（本轮新增）**：一个槽位同时只能有一个可见角色。
-角色以可见状态占到一个已被占用的位置时，原占位者自动 `visible = false`
-（保留 sprite_set/variant/position/display_name，可被 `show` 或显式换位恢复）。
+**站位互斥（§19b）**：一个槽位同时只能有一个可见角色。角色以可见状态占到一个已被
+占用的位置时，原占位者自动 `visible = false`（保留状态，可被 `show` 或显式换位恢复）。
 这是引擎强制的确定性规则——不依赖模型记得 `hide`。
 
-**§19c 退场 `ch <id> exit`（本轮新增）**：从 VisualState 中彻底移除该角色
-（渲染器删除其 DOM 节点），下次台词按角色默认重新登台。`hide` 保留状态，
-`exit` 撤离舞台。
+**退场（§19c）**：`ch <id> exit` 从 VisualState 彻底移除该角色（渲染器删除其 DOM 节点）。
+`hide` 保留状态，`exit` 撤离舞台。
 
 ---
 
 # 20. 背景
 
-```text
-bg basement
-```
-
-使用逻辑资源 ID。
-
-背景持续存在，直到新的：
-
-```text
-bg ...
-```
-
-模型不得重复当前背景。
+`bg basement` 使用逻辑资源 ID。背景持续存在直到新的 `bg`；模型不得重复输出当前背景。
 
 ---
 
 # 21. BGM
 
-```text
-bgm mystery
-```
-
-持续到：
-
-```text
-bgm calm
-```
-
-或者：
-
-```text
-bgm stop
-```
+`bgm mystery` 持续到下一个 `bgm` 或 `bgm stop`。
 
 ---
 
 # 22. 音效
 
-```text
-se terminal_beep
-```
-
-属于一次性 StageCue。
+`se terminal_beep` 属于一次性 StageCue。
 
 ---
 
 # 23. `beat`
 
-用于没有正文的独立视觉节点：
+没有正文的独立视觉节点：
 
 ```text
 bg black
@@ -753,47 +243,18 @@ bgm stop
 beat
 ```
 
-例如：
-
-```text
-苏遥: 再见。
-
-bg black
-bgm stop
-beat
-
-bg hospital_room
-三天后。
-```
-
-`beat` 不要求模型提供：
-
-```text
-duration_ms
-```
-
-具体转场时间由 Renderer 决定。
+`beat` 不要求模型提供 duration_ms，转场时间由 Renderer 决定。
 
 ---
 
 # 24. 表单 DSL
 
-新的表单统一使用：
-
-```text
-?
-+
-=
-/?
-```
-
-Runtime 根据内容自动推断 interaction mode。
-
-模型不再输出 `mode`。
+统一使用 `?`（开始）/ `+`（选项）/ `=`（输入框）/ `/?`（结束）。
+Runtime 根据内容自动推导 interaction mode，模型不输出 `mode`。
 
 ---
 
-# 25. 纯选项
+# 25. 纯选项（choice）
 
 ```text
 ? 怎么回应？
@@ -803,27 +264,11 @@ Runtime 根据内容自动推断 interaction mode。
 /?
 ```
 
-存在：
-
-```text
-+
-```
-
-不存在：
-
-```text
-=
-```
-
-因此：
-
-```text
-mode = choice
-```
+有 `+` 无 `=` → `mode = choice`。
 
 ---
 
-# 26. 纯输入
+# 26. 纯输入（input）
 
 ```text
 ? 你准备对她说什么？
@@ -831,375 +276,103 @@ mode = choice
 /?
 ```
 
-不存在 `+`，存在 `=`：
-
-```text
-mode = input
-```
+无 `+` 有 `=` → `mode = input`。
 
 ---
 
-# 27. 混合模式
+# 27. 混合模式（hybrid）
 
 ```text
 ? 怎么回应？
 + 追问她所谓“启动之后”究竟发生过什么
 + 暂时停手，要求她先解释自己知道多少
-+ 无视警告，继续操作终端
 = 或输入自己的回答……
 /?
 ```
 
-同时存在：
-
-```text
-+
-=
-```
-
-因此：
-
-```text
-mode = hybrid
-```
+`+` 与 `=` 同时存在 → `mode = hybrid`。
 
 ---
 
 # 28. 表单推导规则
 
-Parser 只允许：
-
 ```text
-+ 数量 >= 1
-= 数量 = 0
-
-→ choice
++ >= 1 且 = 0  → choice
++ = 0  且 = 1  → input
++ >= 1 且 = 1  → hybrid
 ```
 
-```text
-+ 数量 = 0
-= 数量 = 1
-
-→ input
-```
-
-```text
-+ 数量 >= 1
-= 数量 = 1
-
-→ hybrid
-```
-
-以下无效：
-
-```text
-?
-/?
-```
-
-因为既没有选项，也没有输入。
-
-以下同样无效：
-
-```text
-= 输入 A
-= 输入 B
-```
-
-第一版一个 Interaction 只允许一个输入框。
+无效：空表单（`?` 直接 `/?`）；多个输入框（第一版一个 Interaction 只允许一个输入框）。
 
 ---
 
-# 29. InteractionPolicy 仍然保留
+# 29. InteractionPolicy 保留
 
-当前仓库已有 InteractionPolicy，检查：
-
-* allowed_modes
-* options min/max
-* option ID unique
-* input max length
-* 连续 pure input 数量
-* choice/input/hybrid 字段一致性
-* input bridge
-
-重构后不要删除这个 policy。
-
-改变的是：
-
-> Schema/Parser 负责从 DSL 推导结构，InteractionPolicy 继续负责业务规则。
-
-例如：
-
-```text
-? 怎么回应？
-+ A
-/?
-```
-
-语法上能解析成 `choice`。
-
-但如果配置：
-
-```yaml
-min_count: 2
-```
-
-InteractionPolicy 应拒绝。
+Schema/Parser 负责从 DSL 推导结构，InteractionPolicy 继续负责业务规则：
+allowed_modes、options min/max、option ID unique（invariant）、input max length、
+连续 pure input 数量、字段一致性。语法上能解析成 choice 的表单，若配置
+`min_count: 2` 仍应被 policy 拒绝。
 
 ---
 
 # 30. Runtime 自动生成 interaction ID
 
-DSL：
-
-```text
-? 怎么回应？
-+ A
-+ B
-/?
-```
-
-不包含：
-
-```text
-interaction_id
-option_id
-```
-
-Runtime 编译：
-
-```ts
-{
-  type: "interaction",
-  interaction_id: "interaction_0042",
-  mode: "choice",
-  prompt: "怎么回应？",
-  options: [
-    {
-      id: "interaction_0042_opt_0",
-      text: "A"
-    },
-    {
-      id: "interaction_0042_opt_1",
-      text: "B"
-    }
-  ]
-}
-```
-
-模型没有理由参与机器 ID 管理。
+DSL 表单不含 interaction_id / option_id。Runtime 编译时生成
+`interaction_<turn>` / `<id>_opt_<i>`。模型没有理由参与机器 ID 管理。
 
 ---
 
 # 31. InputSpec 简化
 
-当前模型需要输出：
-
-```json
-{
-  "kind": "free_text",
-  "placeholder": "...",
-  "max_length": 200
-}
-```
-
-DSL 后：
-
-```text
-= 输入自己的回答……
-```
-
-只让模型控制：
-
-```text
-placeholder
-```
-
-Runtime 根据配置补：
-
-```ts
-{
-  kind: "free_text",
-  placeholder: "...",
-  max_length: config.interaction.input.max_length
-}
-```
-
-第一版不再让剧情模型控制：
-
-```text
-kind
-max_length
-```
-
-原因：
-
-这些字段主要属于 UI / Runtime policy，而不是剧情创作。
+模型只控制 placeholder（`= 输入自己的回答……`）；`kind` / `max_length` 由配置补全。
+这些字段属于 UI / Runtime policy，不属于剧情创作。
 
 ---
 
 # 32. Input Bridge 与新 DSL 的冲突
 
-这是当前仓库迁移中最重要的兼容问题。
-
-当前：
-
-```text
-input / hybrid
-```
-
-必须由同一 InteractionEvent 内嵌：
-
-```text
-input_bridge
-```
-
-并且 InteractionPolicy 要求 bridge 含 1–2 条 narration。
-
-新的：
-
-```text
-? / + / = /?
-```
-
-没有携带 input_bridge。
-
-不建议为了兼容旧 JSON 结构给新 DSL 增加大量 bridge 字段。
-
-建议：
-
-> Input Bridge 从 Interaction 的模型字段中拆出，改成 Interaction 解析完成后自动启动的 speculative generation task。
+当前 input/hybrid 的过渡旁白不再是 Interaction 的内嵌字段，而是：
+**Interaction 解析完成后自动启动的 speculative generation task**（独立预取）。
 
 ---
 
 # 33. 新 Input Bridge 流程
 
-当 Parser 完成：
-
-```text
-? 怎么回应？
-+ ...
-= 输入自己的回答……
-/?
-```
-
-Runtime 得知：
-
-```text
-mode = hybrid
-```
-
-立即并发启动：
-
-```text
-固定 option branch prefetch
-+
-input bridge prefetch
-```
-
-例如：
+Interaction 解析完成（读到 `/?`）即并发启动：
 
 ```text
 Interaction discovered
-       │
        ├── option A prefetch
        ├── option B prefetch
-       ├── option C prefetch
        └── input bridge prefetch
 ```
 
-玩家正在：
-
-```text
-阅读
-思考
-输入
-```
-
-因此 bridge 请求延迟通常隐藏在玩家操作时间中。
+玩家阅读/思考/输入的时间通常足以隐藏 bridge 请求延迟。
 
 ---
 
-# 34. Bridge 规则保持现有约束
+# 34. Bridge 规则
 
-Bridge 继续限制为：
-
-```text
-1–2 条 narration
-```
-
-不得：
-
-```text
-回答玩家尚未提交的内容
-引入新事实
-产生 Interaction
-修改 StoryState
-改变背景
-改变 BGM
-改变角色立绘
-产生音效
-```
-
-Bridge 的目的仍然只是：
-
-> 玩家确认输入后，在 NPC 正式回应到达前提供一个安全、场景相关的短过渡。
+Bridge 限制为 1–2 条 narration，不得：回答玩家尚未提交的内容、引入新事实、
+产生 Interaction、修改 StoryState、改变背景/BGM/立绘、产生音效。
+Bridge 的目的只是：玩家确认输入后、NPC 正式回应到达前，提供一个安全、
+场景相关的短过渡。
 
 ---
 
 # 35. Hybrid 分支处理
 
-对于：
+- 玩家选择 preset option → 提交对应 BranchCandidate，取消/丢弃 input bridge。
+- 玩家提交自由输入 → 丢弃 preset option candidates，提交玩家台词，播放已完成 bridge，消费正在流式生成的 NPC response。
+- 玩家 Preview Cancel → 保留当前 interaction，重新开放选项 + 输入，重新建立被取消的 candidate。
 
-```text
-hybrid
-```
-
-如果玩家选择 preset option：
-
-```text
-提交对应 BranchCandidate
-取消 / 丢弃 input bridge
-```
-
-如果玩家提交自由输入：
-
-```text
-丢弃 preset option candidates
-提交玩家台词
-播放已完成 bridge
-消费正在流式生成的 NPC response
-```
-
-如果玩家 Preview Cancel：
-
-```text
-保留当前 interaction
-重新开放选项 + 输入
-重新建立被取消的 candidate
-```
-
-必须保留当前仓库已经修好的这一行为。
-
-不得在 DSL 重构中重新引入“取消输入后 option 失效”的旧 bug。
+不得重新引入「取消输入后 option 失效」的旧 bug（§106 硬回归）。
 
 ---
 
 # 36. EventGroup
 
-这是新协议最重要的中间结构。
-
-DSL：
-
-```text
-bg abandoned_station
-bgm mystery
-苏遥[anxious|left]: 等等，这里不对劲。
-```
-
-不是三个玩家 Advance。
-
-它是：
+`bg` / `bgm` / 台词头不是三个玩家 Advance，而是一个原子演出组：
 
 ```ts
 interface EventGroup {
@@ -1208,452 +381,119 @@ interface EventGroup {
 }
 ```
 
-例如：
-
-```ts
-{
-  prelude: [
-    {
-      type: "background",
-      assetId: "abandoned_station"
-    },
-    {
-      type: "bgm",
-      assetId: "mystery"
-    },
-    {
-      type: "character_patch",
-      characterId: "suyao",
-      variant: {
-        op: "set",
-        value: "anxious"
-      },
-      position: {
-        op: "set",
-        value: "left"
-      }
-    }
-  ],
-
-  main: {
-    type: "dialogue",
-    characterId: "suyao",
-    text: "等等，这里不对劲。"
-  }
-}
-```
-
 ---
 
 # 37. Pending Cue
 
-Parser 持有：
-
-```ts
-pendingCues: StageCue[];
-```
-
-解析：
-
-```text
-bg ...
-bgm ...
-ch ...
-se ...
-```
-
-时只写入 pending。
-
-不立即发布。
-
-直到遇到：
-
-```text
-dialogue
-narration
-interaction complete
-beat
-```
-
-才形成 EventGroup。
+Parser 持有 `pendingCues: StageCue[]`。解析 `bg`/`bgm`/`ch`/`se` 时只写入 pending，
+直到遇到 dialogue / narration / interaction 完成 / beat 才形成 EventGroup。
 
 ---
 
 # 38. 为什么必须 Pending
 
-如果流中断：
-
-```text
-A: 我们走吧。
-bg abandoned_station
-bgm mystery
-```
-
-实际画面不能立即切到车站。
-
-因为模型可能本来准备输出：
-
-```text
-苏遥: 等等。
-```
-
-但请求遭到截断。
-
-正确状态：
-
-```text
-A 台词
-→ 已提交
-
-bg + bgm
-→ pending
-→ 未展示
-```
-
-恢复后：
-
-```text
-苏遥: 等等。
-```
-
-才提交完整 EventGroup。
+若流在 `bg X` / `bgm Y` 之后被截断，画面不能立即切换——模型可能本来准备输出
+下一句台词。正确状态：已提交的台词保留；bg/bgm 留在 pending 不展示；
+恢复后续写提交完整 EventGroup。
 
 ---
 
 # 39. 表单同样是 EventGroup main
 
-例如：
-
-```text
-bg rooftop_night
-bgm confrontation
-
-? 怎么回答？
-+ 相信她
-+ 拒绝她
-= 说出自己的想法……
-/?
-```
-
-只有读到：
-
-```text
-/?
-```
-
-后才能提交：
-
-```text
-prelude:
-  bg rooftop_night
-  bgm confrontation
-
-main:
-  HybridInteraction
-```
+只有读到 `/?` 后才能提交 `prelude + interaction` 组。
 
 ---
 
 # 40. Parser 分层
 
-不要写一个数百行正则 Parser。
-
-建议拆成四层：
+不写数百行正则大 Parser，拆四层：
 
 ```text
-StreamLineDecoder
-        ↓
-DslLineParser
-        ↓
-EventGroupBuilder
-        ↓
-SegmentValidator
+StreamLineDecoder → DslLineParser → EventGroupBuilder → SegmentValidator
 ```
 
 ---
 
 # 41. StreamLineDecoder
 
-职责：
-
-```text
-网络 chunk
-→ 拼接字符
-→ 遇到 newline
-→ 输出完整 line
-```
-
-类似当前 StoryGenerator 中 `streamLines()`。
-
-这一层当前代码可直接改造复用。
+网络 chunk → 拼接字符 → 遇 newline 输出完整行。
 
 ---
 
 # 42. DslLineParser
 
-只解析单行。
-
-输出：
-
-```ts
-type DslLine =
-  | DialogueLine
-  | NarrationLine
-  | BackgroundCueLine
-  | BgmCueLine
-  | CharacterCueLine
-  | SoundCueLine
-  | InteractionStartLine
-  | InteractionOptionLine
-  | InteractionInputLine
-  | InteractionEndLine
-  | BeatLine
-  | SegmentEndLine;
-```
-
-不要在此层处理 Runtime ID。
+只解析单行，输出 `DslLine` 判别联合（dialogue / narration / bg / bgm / ch / se /
+表单四行 / beat / 段结束）。不在此层处理 Runtime ID。
 
 ---
 
 # 43. EventGroupBuilder
 
-维护：
-
-```ts
-interface GroupBuilderState {
-  pendingCues: StageCue[];
-  openInteraction?: InteractionBuilder;
-}
-```
-
-职责：
-
-```text
-StageCue
-→ pending
-
-Dialogue
-→ pending + dialogue → group
-
-Narration
-→ pending + narration → group
-
-?
-→ open form
-
-+
-→ append option
-
-=
-→ set input field
-
-/?
-→ finish form
-→ pending + interaction → group
-
-beat
-→ pending + beat → group
-```
+维护 `pendingCues` 与 `openInteraction`。StageCue 入 pending；dialogue / narration /
+beat 到来时 pending + main 成组发布；`?` 开表单、`+` 追加选项、`=` 设输入、
+`/?` 完成表单并随 pending 成组发布。
 
 ---
 
 # 44. SegmentValidator
 
-维护：
-
-```text
-generation nonce
-是否已经看到 @end
-last main event
-openInteraction
-pending tail
-```
-
-只有合法：
-
-```text
-@end <nonce> <reason>
-```
-
-才认定一次请求完整结束。
+维护 generation nonce、是否已见 `@end`、last main event、openInteraction、pending tail。
+只有合法的 `@end <nonce> <reason>` 才认定一次请求完整结束。
 
 ---
 
 # 45. Generation Sentinel
 
-每次请求由 Runtime 创建 nonce：
+每次请求由 Runtime 创建 nonce，模型最后必须输出：
 
 ```text
-a81f
-```
-
-模型最后必须输出：
-
-```text
-@end a81f buffer
-```
-
-或者：
-
-```text
-@end a81f interaction
-```
-
-或者：
-
-```text
-@end a81f ending
+@end a81f buffer        或  @end a81f interaction  或  @end a81f ending
 ```
 
 ---
 
 # 46. `buffer`
 
-```text
-@end a81f buffer
-```
-
-表示：
-
-```text
-当前只完成一段正常未来剧情
-故事没结束
-当前也没有等待玩家 interaction
-```
-
-这是后续低水位续写的基础。
+当前只完成一段正常未来剧情，故事没结束，也没有等待玩家的 interaction。
+这是低水位续写的基础。
 
 ---
 
 # 47. `interaction`
 
-要求最后完整 main 是 Interaction：
-
-```text
-?
-...
-/?
-@end a81f interaction
-```
+要求最后完整 main 是 Interaction。
 
 ---
 
 # 48. `ending`
 
-```text
-@end a81f ending
-```
-
-同时承担：
-
-```text
-generation complete
-+
-story end
-```
-
-Runtime 自动创建内部 EndEvent 和 ending ID。
-
-不再让模型生成：
-
-```json
-{
-  "type": "end",
-  "ending_id": "..."
-}
-```
+同时承担 generation complete + story end。Runtime 自动创建内部 EndEvent 和 ending ID，
+不再让模型生成 end 事件。
 
 ---
 
 # 49. 截断判断
 
-当前仓库只能通过：
-
-```text
-JSON 尾部非法
-terminal event contract
-```
-
-间接判断截断。
-
-新协议显式规定：
-
-```text
-没有看到正确 @end nonce
-=
-INCOMPLETE_SEGMENT
-```
-
-即使最后一行本身语法完整：
-
-```text
-苏遥: 等等。
-```
-
-只要：
-
-```text
-@end nonce ...
-```
-
-不存在，就不能认为请求自然完成。
+没有看到正确的 `@end <nonce>` = `INCOMPLETE_SEGMENT`，即使最后一行语法完整。
+（旧 JSONL 只能靠尾部非法 + terminal contract 间接判断，新协议显式规定。）
 
 ---
 
 # 50. 截断时已完成 Group 不回滚
 
-例如：
-
-```text
-苏遥: 你来了。
-地下室没有开灯。
-苏遥: 其实我一直想告
-```
-
-流结束。
-
-结果：
-
-```text
-前两组
-→ 保留
-
-最后残片
-→ 丢弃
-
-segment
-→ incomplete
-```
-
-这继续保留当前 JSONL 实现已经具备的：
-
-> 流已经发布的前缀不能因尾部损坏而整体重试。
+已发布的 EventGroup 前缀保留，最后残片丢弃，segment 标记 incomplete。
+流已发布的前缀不因尾部损坏而整体重试。
 
 ---
 
 # 51. Recovery
 
-如果已经发布 EventGroup 后出错：
-
-禁止从当前请求开头重新生成。
-
-否则会：
+已发布 EventGroup 后出错时，禁止从当前请求开头重新生成（会重复台词 / line_id /
+TTS / 视觉变化）。应创建 recovery generation，携带：
 
 ```text
-重复台词
-重复 line_id
-重复 TTS
-重复视觉变化
-```
-
-应创建 recovery generation：
-
-```text
-LAST_COMMITTED_GROUP
-PENDING_CUES
-CURRENT / TAIL VISUAL STATE
-DISCARDED_PARTIAL_TAIL
-NEW NONCE
+LAST_COMMITTED_GROUP / PENDING_CUES / CURRENT-TAIL VISUAL STATE /
+DISCARDED_PARTIAL_TAIL / NEW NONCE
 ```
 
 让模型从已确认边界继续。
@@ -1662,20 +502,13 @@ NEW NONCE
 
 # 52. VisualState
 
-新增核心类型：
-
 ```ts
 interface VisualState {
   background?: AssetId;
   bgm?: AssetId;
-
   characters: Record<CharacterId, CharacterPresentationState>;
 }
-```
 
-角色：
-
-```ts
 interface CharacterPresentationState {
   spriteSet: SpriteSetId;
   variant: VariantId;
@@ -1689,177 +522,45 @@ interface CharacterPresentationState {
 
 # 53. VisualState Reducer
 
-必须是纯函数：
-
-```ts
-reduceVisualState(
-  state: VisualState,
-  cues: StageCue[],
-): VisualState
-```
-
-它不访问 DOM。
-
-不访问文件。
-
-不播放声音。
-
-只计算状态。
-
-这样才能用于：
-
-```text
-正式路径
-候选分支
-测试
-恢复
-UI projection
-提示词构建
-```
+纯函数 `reduceVisualState(state, cues): VisualState`：不访问 DOM / 文件 / 声音，
+只计算状态。因此可用于正式路径、候选分支、测试、恢复、UI projection、提示词构建。
 
 ---
 
 # 54. 实际视觉状态与未来视觉状态必须分开
 
-这是引入流式预生成后很容易出错的地方。
+Runtime 至少维护：
 
-例如：
+- `renderedVisualState`：玩家目前实际看到的状态。
+- `tailVisualState`：当前正式缓冲尾部执行完成后的预测状态。
+- `branchTailVisualState`：候选分支尾部状态。
 
-```text
-玩家现在正在看第 5 句
-
-第 8 句已经预生成：
-bg rooftop
-苏遥[angry]: ...
-```
-
-此时真正 UI 仍是：
-
-```text
-basement
-anxious
-```
-
-但生成第 9 句时，模型应该知道第 8 句之后将是：
-
-```text
-rooftop
-angry
-```
-
-因此 Runtime 至少维护：
-
-```text
-renderedVisualState
-```
-
-玩家目前实际看到的状态。
-
-以及：
-
-```text
-tailVisualState
-```
-
-当前正式缓冲尾部执行完成后的预测状态。
-
-候选分支还需要：
-
-```text
-branchTailVisualState
-```
+玩家在看第 5 句时，第 8 句可能已预生成 `bg rooftop`；真正 UI 仍是 basement，
+但生成第 9 句时模型应知道 tail 是 rooftop。
 
 ---
 
 # 55. 为什么不能只有一个 VisualState
 
-如果生成时直接修改实际 VisualState：
-
-```text
-背景会提前切换
-```
-
-如果直到玩家播放时才修改：
-
-```text
-下一轮 LLM 不知道已预生成内容最终留下什么视觉状态
-```
-
-所以：
-
-```text
-生成
-→ reducer 计算 tail
-
-播放
-→ reducer 更新 rendered
-```
-
+生成时直接改实际状态 → 背景提前切换；直到播放才改 → 下一轮 LLM 不知道预生成
+内容最终留下什么状态。所以：生成 → reducer 计算 tail；播放 → reducer 更新 rendered。
 二者生命周期不同。
 
 ---
 
 # 56. Branch Visual Isolation
 
-候选分支：
-
-```text
-A:
-  苏遥[happy]
-
-B:
-  苏遥[angry]
-```
-
-两者不能互相污染，更不能污染正式画面。
-
-BranchCandidate 新增：
-
-```ts
-interface BranchCandidate {
-  ...
-  groups: EventGroup[];
-
-  baseVisualState: VisualState;
-  tailVisualState: VisualState;
-}
-```
-
-玩家选 A 后才提交 A 的 groups。
-
-B 直接丢弃。
+候选分支 A `[happy]` 与 B `[angry]` 不能互相污染，更不能污染正式画面。
+BranchCandidate 携带 `groups` + `baseVisualState` + `tailVisualState`；
+玩家选 A 后才提交 A 的 groups，B 直接丢弃。
 
 ---
 
 # 57. 资源 YAML
 
-新增独立资源文件，建议：
-
-```text
-assets/resources.yaml
-```
-
-不要继续往 `config.yaml` 塞所有美术资源。
-
-`config.yaml` 负责：
-
-```text
-程序行为
-阈值
-provider
-并发
-policy
-```
-
-`resources.yaml` 负责：
-
-```text
-有哪些资源
-资源文件在哪里
-资源在剧情中代表什么
-模型什么时候应该用
-角色与素材如何绑定
-```
+独立资源文件 `assets/resources.yaml`。`config.yaml` 负责程序行为/阈值/provider/并发/policy；
+`resources.yaml` 负责有哪些资源、资源文件在哪里、资源在剧情中代表什么、
+模型什么时候应该用、角色与素材如何绑定。
 
 ---
 
@@ -1867,90 +568,29 @@ policy
 
 ```yaml
 guidance: |
-  当前素材主要覆盖校园、住宅、地下设施和夜间城市场景。
-
-  整体采用偏冷色调的写实二次元风格。
-
-  背景应尽量复用已有资源，不要因为轻微视角变化频繁切换。
-
-  角色表情资源有限。
-  anxious 仅用于明显紧张、不安、担忧或试图掩饰信息。
-  普通疑问不应使用 anxious。
-
-  placeholder_char 只用于没有正式角色素材的临时人物。
-
+  素材覆盖范围、风格基调、使用纪律（如“表情资源有限，anxious 仅用于……”）。
 backgrounds:
-  classroom_day:
-    src: backgrounds/classroom_day.webp
-    description: |
-      白天普通教室。
-      适合正常课堂、放学前和普通校园交流。
-
-  classroom_evening:
-    src: backgrounds/classroom_evening.webp
-    description: |
-      黄昏教室。
-      适合私下交流、安静场景和剧情转折。
-
   basement:
     src: backgrounds/basement.webp
-    description: |
-      昏暗地下设备间。
-      主要用于旧终端相关剧情。
-
+    description: 昏暗地下设备间。主要用于旧终端相关剧情。
 bgm:
-  quiet_evening:
-    src: audio/bgm/quiet_evening.ogg
-    description: |
-      安静、略带距离感。
-      不适合高强度冲突。
-
   mystery:
     src: audio/bgm/mystery.ogg
-    description: |
-      轻度悬疑和未知感。
-      适合调查、异常信息和隐藏秘密。
-
+    description: 轻度悬疑和未知感。
 sound_effects:
   terminal_beep:
     src: audio/se/terminal_beep.ogg
-    description: |
-      旧终端发出的短促电子提示音。
-
+    description: 旧终端的短促电子提示音。
 sprite_sets:
   suyao:
-    description: |
-      苏遥正式立绘。
-
+    description: 苏遥正式立绘。
     variants:
-      normal:
-        src: characters/suyao/normal.webp
-        description: 默认冷静状态。
-
-      anxious:
-        src: characters/suyao/anxious.webp
-        description: |
-          明显紧张、不安、担忧或试图隐瞒事实时使用。
-
-      angry:
-        src: characters/suyao/angry.webp
-        description: |
-          真正生气、受到明显冒犯或严重冲突时使用。
-
-  placeholder_char:
-    description: |
-      通用临时角色。
-      只在没有正式角色素材时使用。
-
-    variants:
-      normal:
-        src: characters/placeholder/normal.webp
-
+      normal:  { src: characters/suyao/normal.webp,  description: 默认冷静状态 }
+      anxious: { src: characters/suyao/anxious.webp, description: 明显紧张/不安/隐瞒时使用 }
 characters:
   suyao:
     script_name: 苏遥
     display_name: 苏遥
-
     sprite_set: suyao
     default_variant: normal
     default_position: left
@@ -1960,62 +600,13 @@ characters:
 
 # 59. Runtime Catalog 与 Model Catalog 分离
 
-不要把完整：
-
-```text
-src: characters/suyao/normal.webp
-```
-
-每轮发给模型。
-
-加载 YAML 后建立两个投影。
-
-Runtime：
-
-```ts
-RuntimeAssetCatalog
-```
-
-包含：
-
-```text
-src
-URL
-Blob key
-cache key
-```
-
-模型：
-
-```ts
-ModelAssetCatalog
-```
-
-只包含：
-
-```text
-logical ID
-description
-guidance
-角色绑定
-variant
-```
-
-例如模型实际看到：
-
-```yaml
-backgrounds:
-  basement:
-    description: 昏暗地下设备间，主要用于旧终端剧情。
-```
-
-而不是具体路径。
+不把 `src: ...` 路径每轮发给模型。加载 YAML 后建两个投影：
+`RuntimeAssetCatalog`（src/URL/Blob key/cache key）与 `ModelAssetCatalog`
+（logical ID + description + guidance + 角色绑定 + variant）。
 
 ---
 
-# 60. AssetManager
-
-新增：
+# 60. AssetResolver
 
 ```ts
 interface AssetResolver {
@@ -2026,367 +617,89 @@ interface AssetResolver {
 }
 ```
 
-第一版资源来源可以仍是：
-
-```text
-静态文件
-```
-
-未来再接：
-
-```text
-IndexedDB
-生成资源
-远端 URL
-Blob
-```
-
+第一版资源来源为静态文件；未来可接 IndexedDB / 生成资源 / 远端 URL / Blob，
 DSL 不需要改变。
 
 ---
 
-# 61. 当前 `portrait` 模型需要淘汰
+# 61. portrait 淘汰
 
-当前 schema：
-
-```ts
-portrait: {
-  character,
-  expression,
-  position
-}
-```
-
-有两个主要问题：
-
-1. 每句话重复完整 portrait。
-2. portrait 只能挂在当前 dialogue，无法描述持续立绘状态。
-
-目标：
-
-```text
-portrait
-→ presentation patch + VisualState
-```
-
-兼容迁移期可以继续读取旧 Session portrait。
-
-但新模型 DSL 不再产生 portrait JSON。
+旧 `portrait` schema（每句重复、只能挂当前 dialogue）已淘汰为 presentation patch +
+VisualState。迁移期新协议不再产生 portrait JSON；旧 Session 的 portrait 字段仅作
+legacy 容忍读取。
 
 ---
 
 # 62. Runtime Dialogue 新结构
 
-建议：
-
 ```ts
 interface RuntimeDialogueEvent {
   type: "dialogue";
-
-  characterId: CharacterId;
-  speaker: string;
-
+  characterId: CharacterId;   // 角色身份：TTS / StoryState / 资源
+  speaker: string;            // 该句玩家实际看到的名称
   text: string;
   line_id: string;
-
   stage?: StageCue[];
 }
-```
-
-其中：
-
-```text
-characterId
-```
-
-用于：
-
-```text
-角色身份
-TTS
-StoryState
-资源
-```
-
-`speaker`：
-
-```text
-该句玩家实际看到的名称
 ```
 
 ---
 
 # 63. EventGroup 是否需要永久存在
 
-推荐：
-
-> Parser 和 PlaybackBuffer 使用 EventGroup；持久化可选择把 group 展平到事件的 `stage` 字段。
-
-这样不要求整个仓库所有接口都认识 EventGroup。
-
-例如：
-
-```ts
-{
-  type: "dialogue",
-  characterId: "suyao",
-  speaker: "神秘女子",
-  text: "...",
-  stage: [
-    { type: "background", ... },
-    { type: "character_patch", ... }
-  ]
-}
-```
-
-PlaybackBuffer 可以先真正迁移到：
-
-```ts
-PlaybackBuffer<RuntimeEventGroup>
-```
-
-后续再决定是否展平存储。
+采用展平方案：Parser 和 Playback 使用 EventGroup，持久化把 group 展平到事件的
+`stage` 字段——不要求所有接口都认识 EventGroup。当前实现即按此落地
+（PlaybackBuffer 仍保存展平事件，见 status.md）。
 
 ---
 
-# 64. Web UI 目前缺失的部分
+# 64. Web UI 权威视觉状态
 
-当前 Web `GameViewModel` 主要保存：
-
-```text
-currentLine
-currentInteraction
-currentPreview
-recentLines
-status
-ending
-```
-
-尚没有权威：
-
-```text
-background
-bgm
-characters
-```
-
-因此新增：
-
-```ts
-visualState: VisualStateWire;
-```
-
-到：
-
-```text
-UiProjection
-```
-
-重连时服务器必须恢复完整视觉状态。
-
-不能只依赖“最近几条 stage cue”重放，因为玩家可能已经经过很长剧情。
+GameViewModel 保存 `visualState: VisualStateWire`（加入 UiProjection）。
+重连时服务器必须恢复完整视觉状态，不能只靠「最近几条 stage cue」重放。
 
 ---
 
 # 65. RuntimeOutput
 
-现有：
-
-```text
-playback_ready
-interaction_opened
-...
-```
-
-可以尽量保留。
-
-推荐扩展：
-
-```ts
-{
-  type: "playback_ready";
-  event: RuntimePlayableEvent;
-  presentation?: StagePresentationDelta;
-}
-```
-
-以及：
-
-```ts
-{
-  type: "interaction_opened";
-  interactionId: string;
-  interaction: RuntimeInteractionEvent;
-  presentation?: StagePresentationDelta;
-}
-```
-
-纯 `beat` 增加：
-
-```ts
-{
-  type: "stage_beat_ready";
-  presentation: StagePresentationDelta;
-}
-```
-
-这样不用重写已经稳定的 InteractionPanel 生命周期。
+保留现有 interaction 生命周期输出；`playback_ready` / `interaction_opened` 携带
+`presentation` delta，纯 `beat` 增加 `stage_beat_ready`。
+不重做 input_preview_opened / canceled / input_committed / interaction_resolved。
 
 ---
 
 # 66. Web Renderer
 
-新增：
-
-```text
-web/src/stage/
-├─ stage-renderer.ts
-├─ background-layer.ts
-├─ character-layer.ts
-├─ bgm-controller.ts
-└─ stage-types.ts
-```
-
-职责：
-
-```text
-VisualState
-→ DOM / Canvas
-```
-
-第一版建议：
-
-```text
-背景变化
-→ crossfade
-
-人物显示
-→ fade
-
-variant 变化
-→ crossfade
-
-位置变化
-→ translate
-
-hide
-→ fade out
-```
-
-具体动画不让 LLM 决定。
+`web/src/stage/`（stage-renderer / background-layer / character-layer / bgm-controller /
+stage-types）：VisualState → DOM。背景 crossfade、人物 fade、variant crossfade、
+位置 translate、hide fade out——具体动画不让 LLM 决定。
 
 ---
 
 # 67. TTS 兼容
 
-当前音频流水线应尽量保持不动。
-
-但角色身份必须改成：
-
-```text
-characterId
-```
-
-否则：
-
-```text
-苏遥(神秘女子):
-```
-
-可能被当成新 speaker。
-
-兼容阶段：
-
-```text
-characterId
-→ character registry
-→ voice profile
-```
-
-如果旧事件只有：
-
-```text
-speaker
-```
-
-则 fallback 到当前旧映射。
+音频流水线按 `characterId` → character registry → voice profile 查音色；
+旧事件只有 speaker 时 fallback 旧映射。`苏遥(神秘女子)` 不得被当成新 speaker 导致静音。
 
 ---
 
-# 68. 主模型 Prompt 重构
+# 68. 主模型 Prompt 结构
 
-当前 `instructions.yaml` 中 `output_protocol` 很长，大量 Token 用来解释 JSON。
-
-重构后建议拆：
-
-```text
-prompts/
-├─ dsl-protocol.txt
-├─ instructions.yaml
-├─ characters.txt
-├─ story_line.txt
-├─ guideline.txt
-└─ author.yaml
-```
-
-其中：
-
-```text
-dsl-protocol.txt
-```
-
-为稳定 System Prompt。
-
-`instructions.yaml` 只保存：
-
-```text
-opening
-active_refill
-branch_prefetch
-input_bridge
-input_response
-recovery
-ending
-```
+`prompts/dsl-protocol.txt` 为稳定 System Prompt（完整 DSL 规范）；
+`prompts/instructions.yaml` 只保存任务模板（opening / active_refill / branch_prefetch /
+input_bridge / input_response / recovery / ending）。
 
 ---
 
-# 69. Context Builder 重构
+# 69. Context Builder
 
-当前 history 使用：
-
-```ts
-JSON.stringify(event)
-```
-
-逐行发给模型。
-
-DSL 重构后应避免再次用 JSON 消耗大量输入 Token。
-
-新增：
-
-```ts
-serializeStoryContext()
-serializeVisualContext()
-serializeResourceContext()
-```
-
-例如历史可变成：
+历史不再 `JSON.stringify` 逐行发送。新增 `serializeStoryContext` /
+`serializeVisualContext` / `serializeResourceContext`，历史变成紧凑文本：
 
 ```text
 [玩家] 选择：继续追问
 苏遥: 你最好别再问。
 终端重新亮起。
-```
-
-不需要：
-
-```json
-{
-  "seq": ...,
-  "turn": ...,
-  ...
-}
 ```
 
 ---
@@ -2396,1517 +709,241 @@ serializeResourceContext()
 每次生成至少提供：
 
 ```text
-TASK_TYPE
-GENERATION_NONCE
-TARGET_PLAYABLE_EVENTS
-
-STORY_CONTEXT
-CHARACTER_CONTEXT
-RECENT_EVENTS
-
+TASK_TYPE / GENERATION_NONCE / TARGET_PLAYABLE_EVENTS
+STORY_CONTEXT / CHARACTER_CONTEXT / RECENT_EVENTS
 TAIL_VISUAL_STATE
-
 MODEL_ASSET_CATALOG
-
-PLAYER_ACTION
-AUTHOR_RULES
+PLAYER_ACTION / AUTHOR_RULES
 ```
 
-注意生成后续内容时更应该提供：
-
-```text
-TAIL_VISUAL_STATE
-```
-
-而不是仅：
-
-```text
-renderedVisualState
-```
-
-因为模型是在续写缓冲尾部。
+续写时提供 `TAIL_VISUAL_STATE`（而非仅 renderedVisualState），因为模型在续写缓冲尾部。
 
 ---
 
 # 71. 模型资源选择原则
 
-Prompt 必须强调：
-
 ```text
-已有状态不变化
-→ 不重复输出
-
-存在理想素材
-→ 使用 logical asset ID
-
-没有理想素材
-→ 优先保持当前状态或使用最接近现有资源
-
-绝不猜测不存在 asset ID
+已有状态不变化 → 不重复输出
+存在理想素材   → 使用 logical asset ID
+没有理想素材   → 保持当前状态或使用最接近的现有资源
+绝不猜测不存在的 asset ID
 ```
 
 ---
 
 # 72. 模型输出终止
 
-当前 opening / continuation 强制：
-
-```text
-最后必须 interaction/end
-```
-
-新协议不再需要。
-
-允许：
-
-```text
-几句正常剧情
-@end nonce buffer
-```
-
-这是低水位动态续写的必要条件。
+允许「几句正常剧情 + `@end nonce buffer`」结束一段生成——这是低水位动态续写的
+必要条件，不再强制每次生成跑到 interaction/end。
 
 ---
 
 # 73. 低水位调度（已实现 2026-08-11）
 
-低水位续写已在 run loop 落地（`reconcileTextBuffer` 在任务收束/玩家推进/缓冲分支评估 §75 不变量；`start_threshold_lines` 用于首句门槛；段间 TTFT 空窗消除）。
-
-当前 `PlaybackBuffer` 已经有：
-
-```text
-countTextLinesAhead()
-hasUnconsumedInteraction()
-```
-
-但仓库目前主生成仍然以：
-
-```text
-一次生成到 interaction/end
-```
-
-为主要 segment contract。
-
-因此之前设计的：
-
-```text
-target = 6
-refill = 3
-```
-
-尚未真正成为主剧情调度规则。
-
-DSL 迁移后应该补上这一层。
+`reconcileTextBuffer` 在任务收束 / 玩家推进 / 缓冲分支处评估 §75 不变量；
+`start_threshold_lines` 作首句门槛，消除段间 TTFT 空窗。
 
 ---
 
 # 74. 文本缓冲配置
 
-建议新增：
-
 ```yaml
 text_buffer:
-  start_threshold_lines: 2
-  target_lines: 6
-  refill_threshold_lines: 3
+  start_threshold_lines: 2   # 播放达到两句即可开始
+  target_lines: 6            # 正常保持六句未来内容
+  refill_threshold_lines: 3  # 只剩三句时启动续写
 ```
-
-播放达到两句即可开始。
-
-正常保持六句未来内容。
-
-只剩三句时启动 active refill。
 
 ---
 
-# 75. 低水位规则
-
-必须保持不变量：
+# 75. 低水位规则（不变量）
 
 ```text
-如果：
-
 未来可播放文本 <= refill threshold
-
-并且：
-
-没有未消费 interaction
-
-并且：
-
-没有 active generation
-
-那么：
-
-必须启动 active_refill
+且 没有未消费 interaction
+且 没有 active generation
+→ 必须启动 active_refill
 ```
 
 ---
 
-# 76. 为什么 DSL 的 `buffer` end 很重要
+# 76. `buffer` 段边界的意义
 
-过去：
-
-```text
-一次 generation
-→ 必须到 interaction
-```
-
-新设计：
-
-```text
-generation A
-→ 4 句
-→ @end buffer
-
-玩家继续阅读
-
-buffer 降低
-
-generation B
-→ 5 句
-→ @end buffer
-
-最终：
-
-generation C
-→ interaction
-→ @end interaction
-```
-
-模型请求不再绑定“完整场景”。
+生成请求不再绑定「完整场景」：generation A 出 4 句 `@end buffer`，玩家阅读使
+buffer 降低后 generation B 续 5 句，最终某代以 interaction 收尾。多代片段拼接
+成连续剧情。
 
 ---
 
 # 77. 分支预取继续保留
 
-固定选项解析完成后：
-
-```text
-+
-+
-+
-```
-
-Runtime 自动分配 option IDs 并启动：
-
-```text
-Branch A
-Branch B
-Branch C
-```
-
-Branch prefetch 同样使用 DSL。
-
-但限制：
-
-```text
-只允许 dialogue
-narration
-bg
-bgm
-ch
-se
-beat
-```
-
-不得产生：
-
-```text
-?
-+
-=
-/?
-@end interaction
-```
-
-最终：
-
-```text
-@end nonce buffer
-```
+固定选项解析完成后 Runtime 分配 option IDs 并启动 Branch A/B/C 预取。
+分支预取同样使用 DSL，但限制只允许 dialogue / narration / bg / bgm / ch / se / beat，
+不得产生表单，最终以 `@end nonce buffer` 结束。
 
 ---
 
 # 78. 分支预取允许视觉演出
 
-当前 branch prefetch 只返回 narration/dialogue。
-
-新版本应该允许分支短片段拥有：
-
-```text
-表情变化
-角色移动
-必要背景变化
-音效
-BGM
-```
-
-因为这些都可能是玩家选择的直接结果。
-
-但它们全部进入：
-
-```text
-BranchCandidate EventGroups
-```
-
-未选分支绝不能实际执行。
+分支短片段可拥有表情变化、角色移动、必要背景变化、音效、BGM——它们可能是玩家
+选择的直接结果。但全部进入 BranchCandidate EventGroups，未选分支绝不实际执行。
 
 ---
 
 # 79. Input Response
 
-玩家确认后：
-
-```text
-玩家自己的 dialogue
-→ bridge
-→ live input response
-```
-
-InputResponse DSL 可以允许：
-
-```text
-dialogue
-narration
-ch
-se
-```
-
-必要时允许 bg/bgm。
-
-但第一阶段仍限制：
-
-```text
-不得生成 interaction
-```
-
-直到正式 active refill 接管。
-
-这样保持当前仓库已经实现的：
-
-```text
-input response
-→ continuation
-```
-
-逻辑。
+玩家确认后：玩家 dialogue → bridge → live input response。
+InputResponse DSL 允许 dialogue / narration / ch / se，必要时 bg/bgm；
+第一阶段不得生成 interaction，直到正式 active refill 接管。
 
 ---
 
 # 80. StoryStateReconciler（已实现 2026-08-11）
 
-reconciler 为确定性纯函数（`src/story/reconcile.ts`），消费已提交事件投影 location/characters/recent_summary；主 DSL 的 `state_patch` 应用路径已删除（协议字段保留为 legacy）。
-
-当前模型可以在 JSONL 中输出：
-
-```json
-{"type":"state_patch","patch":{...}}
-```
-
-这与新目标冲突。
-
-主剧情 DSL 不再携带 StoryState。
-
-推荐新增：
-
-```text
-StoryStateReconciler
-```
-
-输入：
-
-```text
-旧 StoryState
-+
-刚刚正式提交的事件
-+
-玩家操作
-```
-
-输出：
-
-```text
-StoryStatePatch
-```
-
-这个调用可以继续使用结构化 JSON。
-
-因为它不在：
-
-```text
-玩家等待下一句
-```
-
-关键路径。
+确定性纯函数（`src/story/reconcile.ts`），消费已提交事件投影
+location / characters / recent_summary。主 DSL 的 `state_patch` 应用路径已删除
+（协议字段保留为 legacy）。状态整理不在玩家等待下一句的关键路径上。
 
 ---
 
 # 81. 状态整理时机
 
-正式路径：
-
-```text
-EventGroups 进入正式历史
-→ 异步 reconcile
-→ StoryState patch
-```
-
-候选分支：
-
-第一版不要为所有 candidate 都调用状态模型。
-
-否则浪费严重。
-
-推荐：
-
-```text
-BranchCandidate
-→ 只保存 events
-
-玩家选中
-→ 事件成为正式历史
-→ 再 reconcile
-```
-
-这比现有每个候选携带 provisional state patch 更轻。
+正式路径：EventGroups 进入正式历史 → 异步 reconcile → StoryState patch。
+候选分支：第一版只保存 events，玩家选中、事件成为正式历史后再 reconcile
+（比每个候选携带 provisional patch 更轻）。
 
 ---
 
 # 82. Runtime 内部 ID
 
-以下全部 Runtime 生成：
-
-```text
-event_id
-group_id
-line_id
-interaction_id
-option_id
-branch_id
-generation_id
-ending_id
-```
-
-模型一个都不生成。
+event_id / group_id / line_id / interaction_id / option_id / branch_id /
+generation_id / ending_id 全部由 Runtime 生成，模型一个都不生成。
 
 ---
 
 # 83. Model Protocol 与 Session Protocol 分离
 
-必须继续强调：
-
-```text
-Gal DSL
-=
-模型传输协议
-```
-
-而：
-
-```text
-events.jsonl
-=
-程序持久化协议
-```
-
-不要因为模型不用 JSONL，就删除 JSONL session storage。
-
-实际上 SessionStore 继续 JSONL 很合理：
-
-```text
-可追加
-可恢复
-可调试
-结构稳定
-```
-
-需要改变的只是存储 schema 支持：
-
-```text
-characterId
-stage/presentation
-interaction 新 Runtime ID
-```
+Gal DSL 是模型传输协议；`sessions/<sessionId>/events.jsonl` 是程序持久化协议。
+Session JSONL 继续使用（可追加 / 可恢复 / 可调试 / 结构稳定），需要变的只是
+存储 schema 支持 characterId、stage/presentation、interaction 新 Runtime ID。
 
 ---
 
-# 84. 旧 Session 兼容
-
-当前已有：
-
-```text
-portrait
-legacy choice
-interaction JSON
-```
-
-新读取逻辑至少在迁移期支持：
-
-```text
-旧 portrait
-→ 转 CharacterPresentationPatch
-
-旧 choice
-→ normalize choice interaction
-
-旧 interaction
-→ 当前 InteractionEvent
-```
-
-不要要求旧 session 全部失效。
-
----
-
-# 85. 建议新增目录
+# 86. 模块地图（当前实际）
 
 ```text
 src/
 ├─ core/
-│  ├─ protocol/
-│  │  └─ gal-dsl/
-│  │     ├─ types.ts
-│  │     ├─ stream-decoder.ts
-│  │     ├─ line-parser.ts
-│  │     ├─ interaction-builder.ts
-│  │     ├─ group-builder.ts
-│  │     ├─ segment-validator.ts
-│  │     └─ compiler.ts
-│  │
-│  ├─ presentation/
-│  │  ├─ types.ts
-│  │  ├─ reducer.ts
-│  │  └─ defaults.ts
-│  │
-│  └─ assets/
-│     ├─ types.ts
-│     └─ catalog.ts
-│
+│  ├─ protocol/gal-dsl/     # stream-decoder / line-parser / interaction-builder /
+│  │                        # group-builder / segment-validator / compiler / text-pipeline
+│  ├─ presentation/         # types / defaults / reducer（VisualState 纯计算）
+│  ├─ assets/               # catalog（Runtime/Model 双投影类型）
+│  ├─ narrative/            # memory-types / memory-operation / narrative-brief / director-plan
+│  ├─ interaction/          # input-bridge 缓冲 / input-session
+│  ├─ runtime/              # RuntimeCommand / RuntimeOutput / async-event-queue
+│  └─ ports/                # StoryGenerator / NarrativeDirector / NarrativeMemoryStore /
+│                           # SessionStore / TtsProvider / MediaPlanner / Clock / IdGenerator …
+├─ story/                   # context-builder / interaction-policy / reconcile / state / types
 ├─ application/
-│  └─ assets/
-│     └─ asset-catalog-loader.ts
-│
-└─ adapters/
-   └─ llm/
-      └─ openai-compatible-generator.ts
-```
+│  ├─ assets/               # asset-catalog-loader / asset-manifest
+│  ├─ audio/                # audio-intent-planner / performance-compiler / tts-task-service /
+│  │                        # audio-catalog-service / audio-descriptor-factory / cache-key
+│  ├─ narrative/            # narrative-director-service / memory-consolidator / memory-validator /
+│  │                        # plot-planner / setup-scheduler / episode-retriever / context-builder
+│  └─ ui/                   # ui-projection-store
+├─ adapters/
+│  ├─ llm/                  # openai-compatible-generator（DSL 流式）/
+│  │                        # narrative-consolidator-adapter / plot-planner-adapter
+│  ├─ tts/                  # dashscope-cosyvoice-provider / mock
+│  ├─ storage/              # node-jsonl-session-store / json-narrative-memory-store
+│  └─ static/               # story-plan-loader
+├─ runtime/                 # playback-buffer（展平事件）
+└─ apps/cli/                # terminal-ui / cli-controller
 
-Web：
-
-```text
 web/src/
-├─ stage/
-│  ├─ stage-renderer.ts
-│  ├─ background-layer.ts
-│  ├─ character-layer.ts
-│  └─ bgm-controller.ts
-│
-└─ runtime/
-   └─ game-view-model.ts
+├─ stage/                   # stage-renderer / browser-asset-resolver / asset-manifest-client /
+│                           # bgm-controller / sound-effect-controller / stage-types
+├─ audio/                   # audio-coordinator / audio-timeline / pcm-decoder / pcm-worklet
+├─ storage/                 # audio-db（IndexedDB）/ audio-cache-reader|writer|cleaner
+├─ runtime/                 # runtime-client / game-view-model（纯 ServerMessage projection）
+└─ ui/                      # interaction-panel / dialogue-box / stage 布局等
 ```
+
+依赖方向：`apps → adapters → application → core`；core 不导入 Node / OpenAI / CLI
+（`core/architecture.test.ts` 静态扫描保证）。
 
 ---
 
-# 86. 当前文件的具体改造
-
-## `src/core/protocol/model-jsonl.ts`
-
-当前职责：
-
-```text
-JSON parse
-state_patch
-terminal validation
-prefetch validation
-```
-
-重构：
-
-```text
-保留为 LegacyModelJsonlParser
-```
-
-新增：
-
-```text
-gal-dsl/*
-```
-
-迁移期不要直接删除。
-
----
-
-## `src/adapters/llm/openai-compatible-generator.ts`
-
-保留：
-
-```text
-OpenAI-compatible client
-streamLines
-abort
-repair
-metrics
-GenerationHandle
-```
-
-替换：
-
-```text
-JSON.parse(line)
-ModelEventSchema.parse()
-```
-
-为：
-
-```text
-dslDecoder.pushLine()
-```
-
-`onEvent` 改为更准确：
-
-```text
-onGroup
-```
-
-或短期继续通过 compiler 将 EventGroup 转成现有模型事件。
-
----
-
-## `src/schema.ts`
-
-当前把：
-
-```text
-ModelEvent
-RuntimeEvent
-StoredEvent
-```
-
-混在一个文件。
-
-这次不必一次完全拆完。
-
-但至少新增：
-
-```text
-CharacterId
-StageCue
-PresentationPatch
-```
-
-并让 RuntimeDialogue 拥有：
-
-```text
-characterId
-```
-
-旧 `portrait` 保留为 legacy 字段。
-
----
-
-## `src/story/types.ts`
-
-当前 InteractionEvent 包含：
-
-```text
-interaction_id
-mode
-options.id
-InputSpec
-input_bridge
-```
-
-Runtime 内部仍可以继续使用相似类型。
-
-但应建立：
-
-```text
-DslInteractionDraft
-```
-
-与 Runtime Interaction 分离。
-
-例如：
-
-```ts
-interface DslInteractionDraft {
-  prompt: string;
-  optionTexts: string[];
-  inputPlaceholder?: string;
-}
-```
-
-Compiler 再生成正式 InteractionEvent。
-
----
-
-## `src/story/interaction-policy.ts`
-
-保留。
-
-调整：
-
-1. `mode` 由 parser 推导。
-2. option ID 由 Runtime 生成，因此 duplicate ID 检查理论上永远不会失败，但可继续作为 invariant。
-3. input.max_length 由配置生成。
-4. `input_bridge` 不再作为 Interaction Schema 强制字段。
-5. Bridge validity 转移到 `InputBridgePrefetcher`。
-
----
-
-## `src/story/context-builder.ts`
-
-当前：
-
-```text
-StoryState
-recent events JSON.stringify
-output protocol
-```
-
-新增：
-
-```text
-TailVisualState
-ModelAssetCatalog
-Task Type
-Generation Nonce
-Buffer Target
-```
-
-同时改掉 JSON history serialization。
-
----
-
-## `prompts/instructions.yaml`
-
-删除当前大段 JSONL 示例。
-
-改成短任务模板。
-
-完整 DSL 规范移到：
-
-```text
-prompts/dsl-protocol.txt
-```
-
----
-
-## `src/runtime/playback-buffer.ts`
-
-当前：
-
-```ts
-RuntimeBufferEvent[]
-```
-
-目标：
-
-```ts
-RuntimeEventGroup[]
-```
-
-至少需要：
-
-```text
-countPlayableLinesAhead
-hasUnconsumedInteraction
-peek
-advance
-```
-
-继续保留。
-
----
-
-## `src/runtime/branch-manager.ts`
-
-BranchCandidate 改存：
-
-```text
-EventGroup[]
-tailVisualState
-```
-
-选中时批量提交 group。
-
-未选时完全丢弃。
-
----
-
-## `src/core/runtime/runtime-output.ts`
-
-保留当前 interaction 生命周期输出。
-
-增加：
-
-```text
-presentation delta
-stage beat
-```
-
-不要重做：
-
-```text
-input_preview_opened
-input_preview_canceled
-input_committed
-interaction_resolved
-```
-
----
-
-## `src/shared/wire/ui-projection.ts`
-
-新增：
-
-```ts
-visualState?: VisualStateWire;
-```
-
-这样 WebSocket 重连后可恢复：
-
-```text
-背景
-立绘
-位置
-角色可见性
-当前 BGM
-```
-
----
-
-## `web/src/runtime/game-view-model.ts`
-
-继续保持“纯 ServerMessage projection”。
-
-不要让浏览器重建 Game 状态机。
-
-只增加：
-
-```text
-VisualState projection
-```
-
----
-
-## `web/src/ui/interaction-panel.ts`
-
-基本无需重构。
-
-它已经支持：
-
-```text
-choice
-hybrid
-input
-```
-
-`+ / =` 只是模型协议变化。
-
-Parser 最终仍编译成现有 RuntimeInteractionEvent。
-
-因此这里应该只做必要类型适配和回归测试。
-
----
-
-# 87. 配置修改
-
-建议：
+# 87. 配置（当前生效值见 config.yaml）
 
 ```yaml
 generation:
-  protocol: dsl
   temperature: 0.9
-  # 1400 常在长段结尾截断（无 @end）导致整段判失败；2200 给模型足够预算
-  max_tokens: 2200
+  max_tokens: 2200        # 1400 常在长段结尾截断（无 @end）；2200 给足预算
   repair_attempts: 2
 
-text_buffer:
-  start_threshold_lines: 2
-  target_lines: 6
-  refill_threshold_lines: 3
-
+text_buffer:               # 见 §74
 assets:
   catalog: assets/resources.yaml
 
 interaction:
-  allowed_modes:
-    - choice
-    - hybrid
-    - input
+  allowed_modes: [choice, hybrid, input]
+  options: { min_count: 2, max_count: 5 }
+  input: { max_length: 500, max_consecutive_pure_input: 1 }
 
-  options:
-    min_count: 2
-    max_count: 5
-
-  input:
-    max_length: 500
-    max_consecutive_pure_input: 1
-```
-
-迁移阶段可以：
-
-```yaml
-generation:
-  protocol: jsonl
-```
-
-方便 A/B 测试和快速回滚。
-
----
-
-# 88. 推荐迁移顺序
-
-不要一次将 JSONL、视觉、buffer、state patch 全部同时改掉。
-
-## Phase 0：冻结当前行为
-
-先增加/保留回归测试：
-
-```text
-choice
-input
-hybrid
-preview confirm
-preview cancel
-hybrid cancel 后 option 仍有效
-candidate promotion
-input bridge
-reconnect projection
-audio
-legacy choice
-```
-
-这一阶段不改功能。
-
----
-
-# 89. Phase 1：DSL Parser 独立实现
-
-新增：
-
-```text
-gal-dsl/
-```
-
-只写纯 Parser 测试。
-
-不接 LLM。
-
-测试：
-
-```text
-旁白
-台词
-[]
-()
-[]()
-variant
-position
-sprite override
-bg
-bgm
-se
-ch
-beat
-?
-+
-=
-/?
-@end
-```
-
-完成后 Parser 应能从纯文本得到 EventGroup Draft。
-
----
-
-# 90. Phase 2：资源目录与 VisualState
-
-新增：
-
-```text
-resources.yaml
-AssetCatalog
-CharacterRegistry
-VisualState
-VisualStateReducer
-```
-
-先不用真正渲染。
-
-重点验证：
-
-```text
-KEEP
-SET
-RESET
-hidden
-show
-display-name override
-branch state isolation
+narrative:                 # 长线剧情系统（见 narrative-director spec）
+  mode: longform | event   # event 时 director 完全旁路
+  threads / setups / consolidation / brief / plan / story_plan_path
 ```
 
 ---
 
-# 91. Phase 3：Generator 双协议
+# 98. 边界用例规范
 
-`StoryGenerator` 支持：
+以下用例为协议边界行为的规范定义，均已固化为 `src/core/protocol/gal-dsl/` 与
+`src/game-dsl.test.ts` 的测试套件。
 
-```text
-jsonl
-dsl
-```
+**Chunk 边界**：台词头被网络 chunk 切断（`苏遥[anx` + `ious|left]: 等等。`）
+必须只产生一条完整 dialogue，半行不得进入 parser。
 
-通过 config 切换。
+**§99 表单推导**：choice / input / hybrid 按 §28 推导，编译到现有
+RuntimeInteractionEvent，Web InteractionPanel 无感。
 
-DSL 模式：
+**§100 非法表单**：空表单、双输入框、表单外 `+`、无 open form 的 `/?` 一律拒绝
+（`FORM_END_WITHOUT_OPEN` 等协议错误）。
 
-```text
-streamLines
-→ parser
-→ EventGroup
-→ compiler
-```
+**§101 Pending Cue 截断**：`台词 → bg → bgm → EOF` 时，台词已提交，bg/bgm 留在
+pending 不展示，实际 VisualState 不变。
 
-这一步仍可以先把视觉 cue 保存在内部而不渲染。
+**§102 Interaction 截断**：未读到 `/?` 就 EOF，整个 Interaction 不得提交。
 
-验证：
+**§103 Sentinel**：nonce 不匹配必须拒绝；无 sentinel = INCOMPLETE；sentinel 之后
+再出现内容 = protocol error。
 
-```text
-真实模型是否稳定输出 DSL
-token 使用
-错误率
-首组延迟
-截断恢复
-```
+**§104 Visual Branch Isolation**：选择前 rendered 保持 base 状态；选择 A 后 A 的
+tail 生效、B 丢弃，不得出现 B 的视觉污染。
+
+**§105 TTS Identity**：`苏遥(神秘女子): 别动。` → UI speaker = 神秘女子，
+TTS character = suyao（音色按 characterId 绑定），不得因 displayName override 静音。
 
 ---
 
-# 92. Phase 4：Interaction DSL
+# 106. Hybrid 硬回归不变量
 
-把：
-
-```text
-?
-+
-=
-/?
-```
-
-编译到当前 RuntimeInteractionEvent。
-
-确保 Web InteractionPanel 无感运行。
-
-随后将：
-
-```text
-input_bridge
-```
-
-从 inline interaction 移到独立 prefetch task。
-
-这是交互层唯一较大行为迁移。
+打开 hybrid → 输入 → preview → cancel → hybrid 重新打开 → option 仍可点击 →
+branch 重新 prefetch。这是协议重构的硬回归测试，任何迁移不得破坏。
 
 ---
 
-# 93. Phase 5：视觉播放
+# 107. Reconnect 不变量
 
-扩展：
-
-```text
-RuntimeOutput
-UiProjection
-GameViewModel
-StageRenderer
-```
-
-使：
-
-```text
-bg
-ch
-bgm
-se
-beat
-```
-
-真正生效。
-
-第一阶段只要求：
-
-```text
-背景
-单/多角色立绘
-位置
-variant
-显示/隐藏
-```
-
-复杂动画继续 Runtime 默认处理。
-
----
-
-# 94. Phase 6：EventGroup PlaybackBuffer
-
-PlaybackBuffer 正式迁移：
-
-```text
-RuntimeBufferEvent
-→ RuntimeEventGroup
-```
-
-保证：
-
-```text
-prelude + main
-```
-
-同一 Advance 执行。
-
-同时补 branch VisualState。
-
----
-
-# 95. Phase 7：低水位生成
-
-引入：
-
-```text
-start threshold
-target
-refill threshold
-```
-
-让：
-
-```text
-@end buffer
-```
-
-真正发挥作用。
-
-这一步完成后，主生成不再必须一次跑到 Interaction。
-
----
-
-# 96. Phase 8：StoryState 脱离主 DSL
-
-新增：
-
-```text
-StateReconciler
-```
-
-停止解析主模型 `state_patch`。
-
-当前 JSONL state patch 路径转为 legacy。
-
----
-
-# 97. Phase 9：删除模型 JSONL
-
-DSL 稳定一段时间后再删除：
-
-```text
-parseTerminalModelJsonl
-parsePrefetchModelJsonl
-JSONL output_protocol
-legacy model choice output
-```
-
-但不要删除：
-
-```text
-Session JSONL
-```
-
-两者不是一回事。
-
----
-
-# 98. 必须新增的 Parser 测试
-
-### Chunk 边界
-
-输入：
-
-```text
-苏遥[anx
-```
-
-下一 chunk：
-
-```text
-ious|left]: 等等。\n
-```
-
-必须只产生一条完整 dialogue。
-
----
-
-### KEEP
-
-```text
-苏遥[anxious|right]: A
-苏遥: B
-```
-
-B 保持 anxious / right。
-
----
-
-### RESET Visual
-
-```text
-苏遥[anxious|right]: A
-苏遥[]: B
-```
-
-B 恢复 default visual。
-
----
-
-### RESET Name
-
-```text
-苏遥(神秘女子): A
-苏遥(): B
-```
-
-B 显示默认名称。
-
----
-
-### Full Reset
-
-```text
-苏遥[placeholder_char:anxious|right](神秘女子): A
-苏遥[](): B
-```
-
-B 完全恢复默认。
-
----
-
-# 99. 表单测试
-
-Choice：
-
-```text
-? Q
-+ A
-+ B
-/?
-```
-
-→ choice。
-
-Input：
-
-```text
-? Q
-= placeholder
-/?
-```
-
-→ input。
-
-Hybrid：
-
-```text
-? Q
-+ A
-+ B
-= placeholder
-/?
-```
-
-→ hybrid。
-
----
-
-# 100. 非法表单
-
-```text
-? Q
-/?
-```
-
-拒绝。
-
-```text
-? Q
-= A
-= B
-/?
-```
-
-拒绝。
-
-```text
-+
-```
-
-出现在 form 外：
-
-拒绝。
-
-```text
-/?
-```
-
-没有 open form：
-
-拒绝。
-
----
-
-# 101. Pending Cue 截断测试
-
-输入：
-
-```text
-A: 第一行
-bg station
-bgm mystery
-```
-
-随后 EOF。
-
-要求：
-
-```text
-A
-→ committed
-
-bg + bgm
-→ pending
-
-实际 VisualState
-→ 不改变
-```
-
----
-
-# 102. Interaction 截断测试
-
-```text
-? 怎么回应？
-+ A
-= 输入……
-```
-
-EOF。
-
-整个 Interaction：
-
-```text
-不得提交
-```
-
----
-
-# 103. Sentinel 测试
-
-正确：
-
-```text
-@end a81f buffer
-```
-
-错误 nonce：
-
-```text
-@end bbbb buffer
-```
-
-必须拒绝。
-
-没有 sentinel：
-
-```text
-INCOMPLETE
-```
-
-sentinel 后有内容：
-
-```text
-protocol error
-```
-
----
-
-# 104. Visual Branch Isolation 测试
-
-Root：
-
-```text
-suyao = normal
-```
-
-Branch A：
-
-```text
-苏遥[happy]: ...
-```
-
-Branch B：
-
-```text
-苏遥[angry]: ...
-```
-
-在选择前：
-
-```text
-rendered = normal
-```
-
-选择 A：
-
-```text
-A tail = happy
-B discarded
-```
-
-不得出现 angry 污染。
-
----
-
-# 105. TTS Identity 测试
-
-```text
-苏遥(神秘女子): 别动。
-```
-
-必须：
-
-```text
-UI speaker = 神秘女子
-TTS character = suyao
-voice = suyao_main
-```
-
-不得因 displayName override 静音。
-
----
-
-# 106. Hybrid 回归测试
-
-必须保留当前仓库已修复行为：
-
-```text
-打开 hybrid
-→ 输入
-→ preview
-→ cancel
-→ hybrid 重新打开
-→ option 仍可点击
-→ branch 重新 prefetch
-```
-
-这是 DSL 重构的硬回归测试。
-
----
-
-# 107. Reconnect 测试
-
-玩家当前：
-
-```text
-background = basement
-bgm = mystery
-
-suyao:
-  visible = true
-  variant = anxious
-  position = left
-  displayName = 神秘女子
-```
-
-WebSocket 断开重连。
-
-收到 UiProjection 后：
-
-必须直接恢复完整画面。
-
+WebSocket 断开重连后，客户端收到 UiProjection 必须直接恢复完整画面
+（背景 / BGM / 每个角色的可见性 / variant / position / displayName），
 不能要求从第一条剧情重新播放视觉 cue。
 
 ---
 
-# 108. 迁移期间禁止做的事情
-
-不要同时：
-
-```text
-重写 Game
-重写 InteractionPanel
-重写 TTS
-重写 BranchManager
-重写 WebSocket
-重写 SessionStore
-```
-
-这些部分当前已经拥有大量测试与真实修复。
-
-本次核心改动应聚焦：
-
-```text
-Model protocol
-DSL parser
-EventGroup
-VisualState
-AssetCatalog
-Stage Renderer
-```
-
----
-
-# 109. 第一阶段必须交付的最小闭环
-
-如果需要控制工程范围，第一阶段只要求完成：
-
-```text
-DSL:
-  narration
-  dialogue
-  bg
-  ch
-  ?
-  +
-  =
-  /?
-  @end
-
-Visual:
-  background
-  sprite variant
-  position
-  display name
-  hide/show
-
-Resources:
-  YAML
-  guidance
-  description
-```
-
-暂时甚至可以不实现：
-
-```text
-BGM
-SE
-beat
-StateReconciler
-复杂资源生成
-```
-
-不过 Parser 类型应预留这些命令。
-
----
-
-# 110. 第一阶段验收场景
+# 110. 端到端验收场景
 
 模型输出：
 
@@ -3928,52 +965,11 @@ bg basement
 @end a81f interaction
 ```
 
-Runtime 应完成：
-
-```text
-1. 解析 basement。
-2. 解析旁白。
-3. suyao 初始化并显示 normal/left。
-4. UI 名称显示“神秘女子”。
-5. 下一句只切 anxious。
-6. 构建 hybrid Interaction。
-7. Runtime 自动分配 interaction/option ID。
-8. Option branches 开始预取。
-9. Input bridge 开始预取。
-10. Web InteractionPanel 同时显示 options + textarea。
-```
-
-如果玩家选第一个 option：
-
-```text
-选中 BranchCandidate
-→ bridge 丢弃
-→ branch group 提交
-→ 后台继续生成
-```
-
-如果玩家输入：
-
-```text
-“你明明知道它还在运行。”
-```
-
-则：
-
-```text
-preview
-→ confirm
-→ player dialogue
-→ bridge
-→ streaming NPC response
-```
-
-如果 preview cancel：
-
-```text
-重新显示原 hybrid
-options + input 都恢复
-```
+Runtime 应完成：解析背景 → 旁白 → suyao 初始化 normal/left → UI 名称显示
+「神秘女子」→ 下一句只切 anxious → 构建 hybrid → Runtime 分配 ID → option
+branches 预取 → bridge 预取 → Web 表单同时显示选项 + 输入框。选 option：提交
+candidate、丢 bridge、提交 branch groups。自由输入：preview → confirm → 玩家台词
+→ bridge → 流式 NPC 回应。cancel：重新显示原 hybrid，options + input 都恢复。
 
 ---
 
@@ -3994,623 +990,54 @@ options + input 都恢复
                         ┌──────────────────┐
                         │    Writer LLM    │
                         └────────┬─────────┘
-                                 │
-                               DSL
-                                 │
+                                 │  Gal DSL
                                  ▼
                       ┌──────────────────────┐
                       │ Streaming DSL Parser │
                       └──────────┬───────────┘
-                                 │
                            EventGroups
-                                 │
-              ┌──────────────────┼───────────────────┐
-              │                  │                   │
-              ▼                  ▼                   ▼
-       Visual Reducer      PlaybackBuffer      BranchManager
-              │                  │                   │
-              │                  ├─────────────┐     │
-              │                  │             │     │
-              ▼                  ▼             ▼     ▼
-         UiProjection       Text UI         TTS   Candidates
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+       Visual Reducer      PlaybackBuffer     BranchManager
+              │                  │             (candidates)
+              ▼                  ├── Text UI ── TTS
+         UiProjection
               │
               ▼
         Stage Renderer
-```
 
-StoryState 独立：
-
-```text
-Committed Runtime Events
-          │
-          ▼
- StoryState Reconciler
-          │
-          ▼
-     StoryState
+Committed Runtime Events → StoryState Reconciler → StoryState
+Committed Runtime Events → NarrativeDirector（记忆过去 + 规划未来）→ 导演便签/计划
 ```
 
 ---
 
 # 112. 最核心的协议边界
 
-重构完成后必须保持以下边界：
-
 ```text
-LLM
-负责：
-故事里发生什么
-哪个已有背景适合
-角色此刻该用哪个已有 variant
-什么时候打开什么形式的玩家表单
-```
+LLM 负责：
+  故事里发生什么 / 哪个已有背景适合 / 角色此刻该用哪个已有 variant /
+  什么时候打开什么形式的玩家表单
 
-```text
-DSL Parser
-负责：
-这段文本究竟表示什么
-结构是否完整
-EventGroup 在哪里结束
-生成是否遭到截断
-```
+DSL Parser 负责：
+  这段文本究竟表示什么 / 结构是否完整 / EventGroup 在哪里结束 / 生成是否截断
 
-```text
-Runtime
-负责：
-ID
-状态继承
-Reset
-分支
-缓冲
-交互生命周期
-StoryState
-```
+Runtime 负责：
+  ID / 状态继承 / Reset / 分支 / 缓冲 / 交互生命周期 / StoryState / 长线记忆
 
-```text
-AssetManager
-负责：
-logical asset ID 最终对应什么资源
-```
+AssetManager 负责：
+  logical asset ID 最终对应什么资源
 
-```text
-Renderer
-负责：
-背景具体怎么淡入
-立绘具体坐标
-动画速度
-层级
-屏幕适配
+Renderer 负责：
+  背景具体怎么淡入 / 立绘具体坐标 / 动画速度 / 层级 / 屏幕适配
 ```
 
 模型不应该变成一个低级 UI 控制器。
 
 ---
 
-# 113. 最终推荐
-
-当前仓库不需要重新设计 interaction runtime。
-
-现有：
-
-```text
-InteractionPolicy
-Input Preview
-Hybrid
-BranchManager
-RuntimeCommand
-InteractionPanel
-Web Projection
-TTS
-```
-
-都应该尽可能原样保留。
-
-真正应该替换的是：
-
-```text
-            现在
-LLM → JSONL → ModelEvent
-
-              ↓
-
-            目标
-LLM → Gal DSL → EventGroup Draft
-                 ↓
-               Compiler
-                 ↓
-           Runtime EventGroup
-```
-
-并新增：
-
-```text
-ResourceCatalog
-VisualState
-VisualStateReducer
-StageRenderer
-```
-
-表单则从：
-
-```json
-mode + options IDs + InputSpec + interaction ID
-```
-
-收敛为：
-
-```text
-?
-+
-=
-/?
-```
-
-其中：
-
-```text
-只有 +        → choice
-只有 =        → input
-+ 与 = 同时   → hybrid
-```
-
-这既保留当前已经验证的三模式交互能力，又显著降低模型协议复杂度。
-
-整个重构的首要目标不是“造一门完整 GalGame 编程语言”，而是建立一层极小的：
-
-> **LLM → Gal 演出意图协议。**
-
-只要这层稳定，之后增加 CG、BGM、SE、动态生成素材、Live2D 或 IndexedDB AssetStore，都不需要再次修改剧情模型的基本输出方式。
-
-
-
----
-
-# 114. 会话问题修复：旁白误作台词、虚拟第三人、新角色约束（2026-08-09）
-
-08-27-59-001Z 会话实测暴露三个内容层问题，均在 `prompts/dsl-protocol.txt` 修复：
-
-## 114.1 旁白被写成角色台词
-
-现象：环境/动作/观察类句子（"下课铃响过十分钟了……""我放轻脚步，贴着墙沿摸到门口""里面的人好像停下来了"）被写成林澈的 dialogue 行，导致 TTS 念旁白。
-
-根因：主角林澈是主视角，模型把第一人称叙述误判为她的台词；协议里"旁白直接写正文一行"的判别标准过弱。
-
-修复（协议 §1 旁白小节）：
-- 明确旁白 = 叙述者的声音：环境、动作、他人行为观察、时间流逝、移动、氛围；
-- 主角的第一人称动作/观察描写也是旁白，不挂角色名；
-- 给出可操作判定：能否想象角色开口发声？能 → 台词；不能 → 旁白；
-- 补充旁白正例（"门缝里透出一线微光。里面确实有人。"）。
-
-## 114.2 模型误以为场景有第三个人
-
-现象：档案室外的桥段凭空出现"两个人""三个人"的明确人数描述（seq 27/40/46-47），与登台角色（林澈、苏遥）不符。
-
-根因：模型把神秘声音/未知来源实体化成具体人物并数人数；协议无场景人数一致性约束。
-
-修复（协议硬性规则）：
-- 在场人物只有已登台角色和玩家自己；
-- 提及在场人数必须与实际登台角色一致；
-- 神秘声音、影子、门后之人保持未知，不描述成明确数量的人物。
-
-## 114.3 新角色引入约束
-
-需求：不凭空引入新的重要角色，但不禁止提及未出场人物；角色可以"只存活于对话中"。
-
-修复（协议 §2 角色台词小节追加两条）：
-- **登台角色才能说话**：被提及而未登场的人物只在台词/旁白文字里存在，不配立绘、不写台词行、不登台；
-- **新角色必须有铺垫**（先前被提及，或由玩家行动/追问推动）才可登场；未知来源保持神秘，不主动实体化。
-
-compiler 对未注册角色本就放行（speaker 回退原文显示），因此约束完全落在 prompt 层；引擎行为不变。
-
-
-
----
-
-# 115. 移除 JSONL 旧协议，全量采用 Gal DSL（2026-08-09）
-
-作者要求：彻底移除 jsonl 格式输出，全量接受 dsl 剧本；删除所有可能混淆
-开发与维护的旧版提示词和代码。本次清理删除：
-
-## 删除的模块与文件
-- `src/core/protocol/model-jsonl.ts`（132 行 JSONL 解析）+ `src/jsonl.test.ts`（335 行）。
-- `generator`（openai-compatible-generator）的 jsonl 路径：`requestEnvelope`、
-  `parseGenerationEnvelope`、`stripRuntimeMeta`、五个任务方法的 jsonl 分支、
-  `GenerationStreamOptions.onEvent/validateEvent`。现在唯一入口是
-  `requestDslEnvelope`（DSL 流式解析）。
-- schema 层：`ModelEventSchema`/`StatePatchLineSchema`/`ChoiceEventSchema`/
-  `EndEventSchema`/`isStatePatchLine`/`ModelEvent`/`ModelPlayableEvent`；
-  `input_bridge` 内联字段（InteractionEvent 及 schema）与 `materializeInputBridge`；
-  `InteractionPolicy` 的 bridge 校验与 legacy choice 归一化。
-- 配置：`generation.protocol`（jsonl|dsl 枚举）、`interaction.legacy_choice`
-  （allow_model_output / allow_runtime_compatibility）。
-- 提示词：`instructions.yaml` 的 `output_protocol` 段；`InstructionSet.output_protocol`
-  字段；`buildUserPrompt`（jsonl 版）；`ContextInput.outputProtocol`。
-- game.ts：`onEvent`/`validateEvent` 回调、`materializeEvents`/
-  `filterPlayableEvents`/`materializePlayableEvents`、legacy choice 分支。
-
-## 行为变化
-- **ChoiceEvent 变为纯运行时内部类型**（syntheticChoice + BranchManager），
-  模型不再可能输出 choice/end 事件；`@end ... ending` 哨兵仍由
-  `handleSegmentEnd` 合成 EndEvent。
-- **interaction_id 与选项 id 由运行时生成**：`interaction_<turn>` /
-  `<id>_opt_<i>`；所有以模型输入 id 为契约的旧断言失效（测试已全部改为
-  运行时 id）。
-- DSL 交互表单在 `compileGroup → buildRuntimeInteraction` 中生成 id；
-  修复了 input 模式错误访问 `optionTexts` 的潜在崩溃（现在 input 分支
-  提前返回）。
-
-## 保留
-- `NodeJsonlSessionStore` / `sessions/*.jsonl`：会话**存储格式**，与模型
-  输出协议无关，继续使用。
-- `ChoiceEvent`/`ChoiceOption`/`EndEvent` 类型（运行时内部/存档类型）。
-
-测试：node 1084（-3 个 jsonl 测试文件，+DSL 等价覆盖），web 263，双
-typecheck 与 build 全绿。
-
----
-
-# 116. NarrativeDirector 长线剧情记忆（2026-08-09）
-
-在 Runtime 与 StoryGenerator 之间新增长线剧情层：把"记忆过去"与"规划未来"
-拆开。本阶段（第 1+2 步）只做"记忆过去"——从正式 committed events 形成叙事
-记忆，供 Writer 生成下一段前读取一张足够小的"编剧便签"（导演便签）。
-第 3 步（PlotPlanner / DirectorPlan）与第 4 步（belief / embedding /
-SQLite）明确不做，只预留位置。设计见
-`docs/superpowers/specs/2026-08-09-narrative-director-design.md`。
-
-## 116.1 模块边界
-
-- **core/narrative**（纯类型与纯函数，无 IO）：
-  - `memory-types.ts`：PlotThread / SetupPayoff / StoryAnchorState /
-    EpisodeMemory / NarrativeMemoryState，全部带 zod schema；
-  - `memory-operation.ts`：ThreadOp / SetupOp / EpisodeSummaryOp /
-    RejectedOp 及 schema（也是 consolidator 的 LLM 输出契约）；
-  - `narrative-brief.ts`：NarrativeBrief / NarrativeBriefRequest。
-- **core/ports**：
-  - `narrative-director-port.ts`：`getBrief`（同步、只读内存缓存，零 await）
-    / `observeCommitted(events)`（只入队不阻塞）/ `checkpoint(reason)`
-    （调度 consolidation；reason 为 interaction_completed | segment_ended
-    | scene_change）；
-  - `narrative-memory-store-port.ts`：load / saveState / appendEpisodes /
-    appendOps——层内只依赖该接口，不接触具体文件布局。
-- **application/narrative**（组合根与编排）：
-  - `narrative-director-service.ts`：组合根，持有内存状态、pending 队列、
-    调度逻辑与 ops 应用；
-  - `memory-consolidator.ts`：consolidation 流水线（截断 → port 调用 →
-    validator 过滤 → episode id 生成），单飞并发保护；
-  - `memory-validator.ts`：纯函数拒绝规则；
-  - `episode-retriever.ts`：brief 的相关长线记忆检索（直接扫 episodes
-    数组，几十条规模不建索引，spec §12 的 YAGNI 简化）；
-  - `narrative-context-builder.ts`：brief → "导演便签"提示词段渲染。
-- **adapters**：
-  - `llm/narrative-consolidator-adapter.ts`：独立 OpenAI client（api
-    配置同 generator），非流式单轮 `response_format: json_object`，输出
-    经 zod 校验；
-  - `storage/json-narrative-memory-store.ts`：三个记忆文件的读写
-    （§116.4），原子写、损坏降级；
-  - `static/story-plan-loader.ts`：story-plan.yaml → StoryPlan，坏条目
-    跳过 + warning，语法错误启动时报错。
-
-## 116.2 三条硬约束
-
-1. **只从正式 committed events 形成记忆**：`observeCommitted` 只在
-   `game.ts` 的 `record()`（事件正式落库 `store.append` 处）旁同步调用；
-   候选分支、预取/预览候选永远不进入 NarrativeMemory。
-2. **未来计划永远不写入事实记忆**：consolidator system prompt 明确
-   "只整理事实，不要推测未来，不要写未来计划"；consolidator 输入只含已
-   发生事件文本与当前 threads/setups 摘要，不含任何未来计划。
-3. **planner 不写未来台词**：第 1+2 步没有 planner，结构上保证未来台词
-   不可能进入记忆；`checkpoint` 只作为 consolidation 触发点，不规划未来。
-   PlotPlanner / DirectorPlan 属第 3 步事项，本阶段不实现。
-
-## 116.3 配置（config.yaml / config.ts）
-
-```yaml
-narrative:
-  mode: longform        # longform | event（event 时 director 完全旁路）
-  threads:
-    max_major_active: 2     # 活跃 major 剧情线上限
-    max_minor_active: 3     # 活跃 minor 剧情线上限
-  setups:
-    max_active: 6           # 活跃伏笔上限
-  consolidation:
-    batch_min_events: 4      # 积压 ≥4 条才值得一次 LLM 调用
-    max_events_per_call: 80  # 单次 consolidator 输入上限（保留最近 N 条）
-    min_checkpoint_gap_ms: 5000
-  brief:
-    max_relevant_episodes: 6   # 导演便签相关长线记忆条数上限
-    max_recent_raw_events: 40  # 便签标注"最近 N 条原始事件"用
-  story_plan_path: story-plan.yaml
-```
-
-`NarrativeDirectorService` 构造时把五段配置逐段与默认值深合并归一化，浅
-合并的调用方（测试等）不会看到 undefined 子段。
-
-## 116.4 文件布局
-
-与 `sessions/<sessionId>.jsonl` 同前缀的会话目录
-`sessions/<sessionId>/`（narrative 记忆**绑定 session**：新 session 从
-空记忆开始，恢复同一 session 时延续其记忆；事件 seq 与持久化 watermark
-不会跨 session 冲突）：
-
-- `narrative-state.json` — 全量 consolidated 状态快照（revision /
-  consolidatedThroughEventSeq / checkpointCount / threads / setups /
-  anchors / recentEpisodeIds），原子写（tmp + rename）；
-- `episodes.jsonl` — 每行一个 EpisodeMemory；
-- `narrative-ops.jsonl` — 每行一个 RejectedOp（拒绝诊断日志）。
-
-`load()` 对缺失/损坏文件一律降级：损坏 state（语法或**结构**损坏，用
-zod schema 校验）→ 空状态，损坏单行 episode → 跳过该行，episode 按 id
-去重（持久化重试幂等），绝不因存储问题抛错。
-
-## 116.5 mode: event 旁路
-
-`mode: event` 时 `createRuntimeApplication` 完全不组装 director：不加载
-story-plan、不建 store / consolidator；`Game` 的 `narrativeDirector` 可选
-依赖缺省 → `getBrief` 返回 undefined（提示词零变化）、无 observeCommitted
-/ checkpoint 调用，行为与引入前完全一致。
-
-`mode: event` 现在支持 `narrative.event.max_interactions`（0 = 不限；到达上限后强制
-收束结局，模型连续不结束时运行时合成结局兜底）与 `restart_session` 命令（应用级
-重建，新 session id）。
-
-## 116.6 整合与 consolidation 流程
-
-- **提交**：`record()` 落库后旁同步 `observeCommitted([stored])` → pending
-  队列追加 + `maybeSchedule()`（积压 ≥ batch_min_events 且距上次 ≥
-  min_checkpoint_gap_ms 才触发；`consolidateRunning` 单飞防重入）。
-- **checkpoint**：交互完成后 `checkpoint("interaction_completed")` 递增
-  checkpointCount（供 classifySetup 的 age 计算）并同样走 maybeSchedule。
-- **consolidatePending**（公开方法，测试与手动触发可用）：
-  1. 原子排空 pending（异步 consolidation 期间新 observeCommitted 的事件
-     不丢失）；
-  2. **FIFO 批次**：取最老 max_events_per_call 条（`pending.slice(0, max)`），
-     较新的 overflow 事件留在队尾，成功后在下次调用处理——叙事时间顺序
-     不被倒置；
-  3. `MemoryConsolidator` 经 `NarrativeConsolidatorAdapter` 调 LLM（输入
-     = 事件文本 + 当前 threads/setups 摘要）→ 结构化输出（episode +
-     threadOps + setupOps）；
-  4. `memory-validator` **shadow-state 事务校验**：ops 按输出顺序逐个
-     在克隆状态上 validate → apply → 下一个，同批次内的预算与状态迁移
-     互相可见（同批两个 create、重复 seed 等不再穿透 budget）；拒绝规则
-     另有：evidence event ids 必须落在已提交事件范围内、setup payoff
-     仅接受 seeded|reinforced|ready；被拒 ops 记入 narrative-ops.jsonl；
-  5. **copy-on-write 应用**：ops 应用到克隆状态 → saveState（提交点）→
-     appendEpisodes → 全部成功后替换内存；任一持久化失败则内存不动、
-     整批重新入队（重试生成同 id episode，load 按 id 去重，幂等收敛）；
-     appendOps 失败仅记日志；
-  6. 推进 revision、`consolidatedThroughEventSeq = 批次最后事件 seq`
-     （连续前沿，FIFO 下天然单调）、更新 recentEpisodeIds（上限 20）。
-- **失败与容错**：port 抛错或输出解析失败 → 空 outcome（result: null），
-  已排空批次**重新入队队首**（事件不丢），不推进 watermark，下次调度
-  重试；调度路径 fire-and-forget，异常只记诊断 warning，绝不 reject 到
-  game 主循环；consolidation 完成释放单飞标志后重新检查调度（飞行期间
-  新事件可继续 drain），失败重试受 min_checkpoint_gap_ms 节流防风暴。
-
-## 116.7 时间单位与 anchor 归属（审计修正）
-
-- 时间字段统一为 **checkpoint 单位**（叙事节拍）：`*Checkpoint` 后缀
-  （introducedAtCheckpoint / lastTouchedAtCheckpoint /
-  seededAtCheckpoint / payoffAtCheckpoint），写入值为应用时的
-  checkpointCount；classifySetup 的 age 计算（checkpoint − lastTouched
-  ≥ 2）单位一致。
-- **anchor 推进归第 3 步（PlotPlanner）**：第 1+2 步无 anchor 推进机制，
-  `computeCurrentAnchorId` 要求存在已 reached/passed 的 anchor，否则返回
-  undefined——`payoffBeforeAnchor` 指令在第 1+2 步保持惰性，便签不承诺
-  无法兑现的 payoff 期限；classifySetup 也只在 seeded|reinforced|ready
-  状态发 payoff/now（与 validator 的 payoff 前置一致）。
-- **restart merge**：`initialize()` 以持久化状态优先（loaded wins），
-  story-plan.yaml 只负责第一次创建缺失条目；同 id 的运行时生命周期
-  （status / 时间戳 / reinforcementCount）重启后不被 plan 覆盖。
-- `ThreadOp.create` 可用：consolidator prompt 允许用 create 创建全新
-  runtime thread（id 自拟、不得与列表重复、默认 minor），validator 的
-  budget/重复检查兜底。
-
-## 116.8 运行时接入与提示词
-
-- `Game` 构造新增可选依赖 `narrativeDirector?: NarrativeDirectorPort`；
-  各类生成请求（opening / continuation / branch_prefetch / input_response
-  / repair / on-demand）前调用一次 `getBrief`，放入请求 `brief` 字段。
-- `context-builder.ts` 在"剧情历史"段之后渲染 `renderDirectorNote`
-  （"===== 导演便签 ====="）：revision 标注（"记忆已整理至事件 X（当前
-  事件 Y），最近 N 条原始事件见剧情历史"）、活跃剧情线（含 nextPressure）、
-  伏笔任务（SEED / REINFORCE / PAYOFF / HOLD + urgency）、相关长线记忆、
-  锚点进度、禁止透露（revealLocks，本阶段恒空）。
-- brief 同时携带 consolidatedThroughEventSeq 与 currentEventSeq，滞后
-  可见；重启后 watermark 缺口不补（raw events 仍完整保留在剧情历史中，
-  不丢信息，只不进长线记忆）。
-
-测试：node 1247（80 个文件）、web 263，双 typecheck 与 build 全绿。
-
----
-
-# 117. NarrativeDirector 第 3 步：PlotPlanner / DirectorPlan（2026-08-11）
-
-在 §116（第 1+2 步，"记忆过去"）之上实现"规划未来"：新增 PlotPlanner /
-DirectorPlan，模型在每个 checkpoint 周期生成一份未来 horizon 内的导演
-计划（阶段/目标/节拍/聚焦线程/伏笔指令快照/揭示锁/锚点操作），经
-`getBrief` 随"导演便签"注入 Writer 上下文。三条硬约束（spec §1、
-§116.2）在本步全部落实：计划只进 director-plan.json + 锚点状态、
-consolidator 输入仍不含计划、锚点推进与 consolidation 共用内存写互斥。
-设计见 `docs/superpowers/specs/2026-08-09-narrative-director-design.md`
-§13；提交序列 14e3d8a..3618dd6（Task 1–9）。
-
-## 117.1 模块边界
-
-- **core/narrative/director-plan.ts**（纯类型与 schema，无 IO）：
-  DirectorPlan / PlannedBeat / AnchorOp / SetupDirective（Task 1 从
-  narrative-brief.ts 迁移至此，打断 brief↔plan 的 schema 循环依赖）+
-  zod schema + 上限常量（MAX_PLAN_BEATS=6 / MAX_FOCUS_THREADS=6 /
-  MAX_REVEAL_LOCKS=8 / MAX_ANCHOR_OPS=8 / 长度上限 200，schema 与
-  adapter prompt 共用同一来源）。
-- **application/narrative/setup-scheduler.ts**（纯函数，Task 3）：
-  `computeCurrentAnchorId`（自 service 私有方法原样搬移）与
-  `scheduleSetups`（替换 getBrief 内联指令流水线——同过滤集、同
-  classifySetup 语义、同输出形状），Service 与 PlotPlanner 共用。
-- **application/narrative/plot-planner.ts**（纯编排，Task 6）：定义
-  PlotPlannerPort / PlotPlannerRequest / PlannerProposal schema 与
-  PlotPlanner 类（proposal → 校验后的 DirectorPlan），无 IO——port 只
-  调用不实现；never-throw：缺 port 或 schema 失败 → null plan + 拒绝
-  记录；focusThreads 过滤到现存非终结线程（去重、首见序），anchorOps
-  在 shadow 上顺序校验（同批前置链可解析）。
-- **adapters/llm/plot-planner-adapter.ts**（Task 7）：独立 OpenAI
-  client（api 配置同 generator），非流式单轮
-  `response_format: json_object`，输出经 zod 校验；system prompt 明确
-  "只规划剧情走向与目的，不要写任何具体台词或对话"（spec 第三条约束在
-  提示词层的落实）。
-
-## 117.2 配置（narrative.plan）
-
-```yaml
-narrative:
-  plan:
-    horizon_checkpoints: 3        # 一份计划的生效 horizon（checkpoint 数）
-    replan_ahead_checkpoints: 1   # 到期前提前多少个 checkpoint 后台重规划
-```
-
-`normalizeNarrativeConfig` 对 plan 段同样深合并（`plan: { ...d.plan,
-...raw.plan }`，与 brief/consolidation 等段一致）。[实现注记] 该 spread
-随 Task 2（2b1253d，config.plan 落地）一并实现，而非计划草案排期的
-Task 8——T2 即 tsc 全绿，行为无差异。
-
-## 117.3 计划生命周期
-
-- **首计划**：`checkpoint()` 递增 checkpointCount 后调用 `maybeReplan`；
-  无计划且装配了 planner 时立即 `startReplan`——**首计划在 checkpoint 1
-  创建**（第一次交互正式落库后）。集成测试验证 checkpoint 后
-  director-plan.json 已写入且过 schema。
-- **低水位重规划**：`checkpointCount > expiresAfterCheckpoint`（硬过期）
-  或 `memory.revision > plan.basedOnMemoryRevision && checkpointCount >=
-  expiresAfterCheckpoint - replan_ahead`（memory 有推进且进入 ahead 窗口）
-  → 后台 fire-and-forget 重规划；`planRunning` 单飞防重入。
-- **硬过期 barrier（非阻塞）**：计划过期后 brief 直接省略计划段
-  （phase/goal/beats/revealLocks 不渲染），模型照常继续生成，重规划在
-  后台完成——**绝不阻塞回合等待 LLM**。
-- **replan()**：planner.plan({events=最近 committed ≤10, memory, 当前
-  计划, location, characters}) → proposal schema 校验 → 生成
-  DirectorPlan（revision 服务自增、basedOnMemoryRevision=生成时
-  memory.revision 快照、expiresAfterCheckpoint=生成时 checkpointCount +
-  horizon、setupDirectives=SetupScheduler 快照）→ savePlan（失败仅记
-  日志，内存计划照常生效）→ anchorOps 走内存写互斥应用 → 拒绝记录
-  appendOps。
-
-## 117.4 文件布局
-
-在 §116.4 的会话目录基础上追加：
-
-- `sessions/<sessionId>/director-plan.json` — 当前生效的导演计划
-  （单份覆盖写，原子写 tmp + rename）；`loadPlan()` 对缺失/损坏降级
-  返回 null，Service 以 `?? undefined` 归一化为"无计划"（首次启动/损坏
-  都从空计划开始，绝不抛错）。
-
-## 117.5 三条约束在本步的落实
-
-1. **planner 输出只进 director-plan.json + 锚点状态**：PlannerProposal
-   只含 phase/goal/beats/focusThreads/revealLocks/anchorOps——没有任何
-   可写事实 ops；计划经 savePlan 单独落盘，不经过 consolidatePending
-   的 apply 路径，也不进 episodes。
-2. **consolidator 输入不含计划**：consolidator 的输入/输出契约（§116）
-   未动——只含已发生事件文本与 threads/setups 摘要；DirectorPlan 只在
-   brief 里（面向 Writer），consolidator 永远看不到未来计划。
-3. **锚点推进走内存写互斥**：replan 的 anchorOps 与 consolidation 的
-   ops 都经 `mutateMemory`（memoryWriteChain 串行链）应用——链内重新
-   读取最新 memory → shadow clone → apply → saveState，两个写者互不
-   覆盖（revision 竞态测试在链被移除时真实失败，见 §117.6）。
-
-## 117.6 与设计稿的偏差（实现为准）
-
-- **同步 getBrief**：brief 携带计划段，但 `getBrief` 保持同步只读内存
-  缓存（计划在内存字段里），零 await、不现场调 LLM。
-- **StoryState 以最近事件代理**：planner 输入不含完整 StoryState——
-  `PlotPlannerRequest.events` = 最近 committed 事件（≤10，
-  PLANNER_RECENT_EVENTS_MAX），未来规划只看玩家走向与记忆快照。
-- **startReplan 不预置 planRunning**（Task 8）：`replan()` 自己同步
-  翻转单飞标志（第一个 await 前），startReplan 若先置位会让 replan
-  内的守卫提前返回、planRunning 永远卡 true（与 maybeSchedule/
-  consolidatePending 同一模式：公开方法持有自己的 running 标志）。
-- **ctor `planner?: PlotPlannerPort` 可选**：不传则 hasPlanner=false，
-  checkpoint 永不创建/刷新计划——测试与 event mode 友好。
-- **loadPlan null → `?? undefined`**：文件缺失/损坏与"从未规划"同义，
-  从空计划开始。
-- **savePlan 失败 warn-only**：持久化失败只记诊断，内存计划照常生效
-  （与 consolidatePending 的原子性不同——计划是覆盖写，无重入队列）。
-- **互斥竞态测试**：FakeStore 的 `saveStateGate`（可延迟的 saveState
-  门）把第一个写者挡在"克隆+apply 完成、commit 之前"，让 consolidation
-  与 replan 两个写者**真正重叠**；移除 memoryWriteChain 时该测试在
-  revision 覆写上真实失败（revision 停在 1、两个改动之一丢失）。
-- **T9 bootstrap 集成测试**：interaction 组用 DSL draft 形态
-  （`main.interaction = {prompt, mode, optionTexts}`）；`vi.mock`
-  plot-planner-adapter（mock 直接返回最小合法 proposal，不碰网络）；
-  被 mock 的 StoryGenerator 增加 `generatorState.continuation` 槽位
-  （T9 起 mock 化续写信封）。
-
-## 117.7 提交序列（14e3d8a..3618dd6）
-
-- 14e3d8a — Task 1：core 类型 + SetupDirective 迁移至 director-plan.ts
-- 2b1253d — Task 2：config.plan（含 normalizeNarrativeConfig spread）
-- 24ac2d8 — Task 3：setup-scheduler
-- 998b786 — Task 4：store loadPlan/savePlan + FakeStore 桩
-- 59e1067 — Task 5：brief 字段 + [导演目标] 渲染
-- f6cce40 — Task 6：plot-planner
-- 190caa7 — Task 7：plot-planner-adapter
-- 2e0bcfd — Task 8：service 生命周期 + memoryWriteChain 互斥
-- 72d20fd — Task 8 修复：FakeStore saveStateGate 重叠竞态测试 +
-  revealLocks 文档修正
-- 3618dd6 — Task 9：bootstrap 组合 + 集成测试
-
-测试：node 1298（84 个文件）、web 263（23 个文件），双 typecheck 与
-build 全绿；全量验证记录见 `.superpowers/sdd/task-10-report.md`。
-
----
-
-# 118. 基础设施审计修复（2026-08-11）
-
-本波（Step 4，plan：`docs/superpowers/plans/2026-08-11-step4-audit-fixes.md`）
-修复 2026-08-11 静态审计确认的 11 项偏差，每项一句话 + 关联文件：
-
-- **P0 低水位续写**（§73–§76）：`reconcileTextBuffer` 在任务收束/玩家推进/缓冲分支评估 §75 不变量，`start_threshold_lines` 作首句门槛，消除段间 TTFT 空窗（`src/game.ts`，Task 1）。
-- **P0 StoryStateReconciler**（§80–§81）：确定性纯函数消费已提交事件投影 location/characters/recent_summary；主 DSL `state_patch` 应用路径删除、协议字段保留为 legacy（`src/story/reconcile.ts`，Task 2）。
-- **叙事精度 setup prerequisites**：仅当 prerequisites 满足才调度 setup，satisfied 谓词传入 planner 与上下文（`src/application/narrative/setup-scheduler.ts`、`memory-validator.ts`，Task 3）。
-- **叙事精度 SetupDirective 投影**：plan 的 setupDirectives 以带 action/urgency 语义的 SetupDirective 快照投影（`src/core/narrative/director-plan.ts`，Task 3）。
-- **叙事精度 Anchor 声明序**：`computeCurrentAnchorId` 按声明顺序（DAG）而非字典序取当前锚点（`src/application/narrative/setup-scheduler.ts`，Task 4）。
-- **叙事精度 规范 episode 标签**：consolidation 仅接受规范 episode id 的标签（`src/application/narrative/memory-consolidator.ts`，Task 5）。
-- **叙事精度 ThreadOp.create**：create 必须携带 kind/importance，按重要性预算校验（`src/core/narrative/memory-operation.ts`，Task 6）。
-- **端口依赖倒置**：Game 改为消费 `StoryGeneratorPort`（InputBridge / tailVisualState / repairReason），bootstrap 以 `GeneratorPortFacade` 适配（`src/game.ts`、`src/core/ports/story-generator-port.ts`，Task 7–8）。
-- **会话目录统一 + flush**：narrative 文件与 JSONL 同入 `sessions/<sessionId>/`，director shutdown 时 flush 落盘（`src/adapters/storage/node-jsonl-session-store.ts`，Task 9）。
-- **EventMode 最小集**：`narrative.event.max_interactions`（0 = 不限；到达上限强制收束结局，模型连续不结束时运行时合成结局兜底）+ `restart_session` 命令（`src/config.ts`、`src/game.ts`、`src/core/runtime/runtime-command.ts`，Task 10）。
-- **文档清理**：README 修正 mode/bridge 描述，dsl-protocol 明确独立 `ch` 指令须携带 variant，DESIGN.md 归档，本文件 §73/§80/§116.5/known-gaps 更新（`README.md`、`prompts/dsl-protocol.txt`、`DESIGN.md`，Task 11）。
-
-配套清理：`narrative.brief.max_recent_raw_events` 删除，原始事件窗口唯一来源为
-`game.history_events`（Task 3；§116.3 的配置样例保留该字段仅作历史记录）。
-
----
-
-# 附录 A：实施状态（2025-08 迁移快照）
-
-本文档其余部分为设计。以下是本仓库 `main` 分支当前已完成 / 未完成的对照，供后续开发定位。
-
-## 已完成
-
-- **Gal DSL 解析栈** `src/core/protocol/gal-dsl/`：`types` / `stream-decoder` / `line-parser` / `interaction-builder` / `group-builder` / `segment-validator` / `compiler` / `text-pipeline`，含完整测试。
-- **演出状态** `src/core/presentation/`：`types` / `defaults` / `reducer`（KEEP/SET/RESET、first-touch 初始化、hide/show、`bgm stop`、未知角色 no-op）。
-- **资源目录** `src/core/assets/` + `src/application/assets/asset-catalog-loader.ts` + `assets/resources.yaml`（Runtime 目录 ↔ Model 目录投影）。
-- **配置**：`generation.protocol`（jsonl|dsl）、`text_buffer`、`assets.catalog`。
-- **生成器双协议** `src/adapters/llm/openai-compatible-generator.ts`：DSL 流式管道（onGroup / onSegmentEnd / tailVisualState），`generateInputBridge` 新增；JSONL 路径原样保留。
-- **提示词重构**：`prompts/dsl-protocol.txt`（稳定 System Prompt）+ `prompts/instructions.yaml`（8 个任务模板）+ context-builder 新增 `buildDslUserPrompt` / `serializeStoryContext` / `serializeVisualContext` / `serializeModelAssetCatalog`。
-- **Game DSL 集成** `src/game.ts`：组编译与展平（dialogue/narration 携带 `characterId` + `stage`）、交互编译（运行时生成 interaction_id / option_id / InputSpec）、`@end buffer` 作为正常段边界（BufferOutcome + 低水位续写）、`@end ending` 合成 EndEvent、DSL input/hybrid 的 bridge 独立预取任务、分支/输入回应的分支局部视觉状态与 tail 采纳、`playback_ready` / `interaction_opened` / `stage_beat_ready` 携带 presentation delta。
-- **TTS 身份**：`AudioDescriptorFactory` 按 `characterId` 查音色，speaker 回退；config.yaml 双 key。
-- **Web**：`UiProjection.visualState` + GameViewModel 投影 + `web/src/stage/` 舞台渲染器（占位渲染：背景/立绘/位置/可见性/BGM 指示）。
-- 测试：全仓 1090+ 测试通过，其中新增 gal-dsl（107+）、presentation/assets/config、generator DSL、game-dsl（7）、web stage 渲染器。
-
-## 未完成 / 简化（后续阶段）
-
-- ~~低水位精细调度（§73–§76）~~：已实现（2026-08-11，`reconcileTextBuffer` + start threshold）。
-- ~~StoryStateReconciler（§80–§81）~~：已实现（2026-08-11，`src/story/reconcile.ts`，确定性投影）。
-- PlaybackBuffer<EventGroup>（§94）：采用 §63 的展平方案（事件携带 `stage`），缓冲类型未迁移。
-- beat 播放时机：beat 组在提交时立即应用（stage_beat_ready），不做缓冲时序。
-- BGM/SE 实际音频：仅进入 VisualState 与 presentation，无播放器；`web/src/stage/bgm-controller.ts` 为占位。
-- 完整会话恢复闭环：SessionStorePort 无 load/resume，重启后从新开场开始（延迟到后续波）。
-
-## 验收对照（§110）
-
-`prompts/dsl-protocol.txt` + `config.yaml`（protocol: dsl）下，模型输出 DSL 段即可走通：解析 → 编译 → 角色初始化/立绘/位置/显示名 → 表单（`? + = /?`）→ 运行时 ID → 分支预取 → bridge 预取 → Web 表单 → 输入 preview/confirm/cancel（hybrid 重挂载保持，§106 有回归测试）。
+# 113. 结语
+
+重构的首要目标不是「造一门完整 GalGame 编程语言」，而是建立一层极小的
+**LLM → Gal 演出意图协议**。只要这层稳定，之后增加 CG、动态生成素材、Live2D
+或 IndexedDB AssetStore，都不需要再次修改剧情模型的基本输出方式。

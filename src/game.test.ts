@@ -1676,8 +1676,8 @@ describe("Input response streaming", () => {
       onInputPreviewOpened: (output) => {
         controller.confirm(output.previewId);
         // The envelope arrives AFTER the confirm, but its state_patch is
-        // legacy protocol (§96): never applied. Only committed events
-        // project StoryState.
+        // legacy protocol (removed 2026-08-09, docs/changelog.md §115):
+        // never applied. Only committed events project StoryState.
         resolveResponse(
           envelope([narrationEvent("回应。")], { recent_summary: "玩家说了你好" }),
         );

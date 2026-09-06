@@ -11,7 +11,8 @@ TypeScript + Node.js 实现的 LLM GalGame 预研项目，支持：
 - 可配置媒体提前量、低水位阈值、批量大小和分支媒体预取量。
 - 可选 `mock` 音频提供器，用于验证异步媒体调度，不生成真实音频。
 
-详细设计见 [DESIGN.md](./DESIGN.md)。
+设计规范与架构见 [docs/llm-outputs-refactor.md](./docs/llm-outputs-refactor.md)，
+当前进度见 [docs/status.md](./docs/status.md)，路线图见 [TODO.md](./TODO.md)。
 TTS 音色创建与绑定见 [docs/agents/TTS-音色配置指南.md](./docs/agents/TTS-音色配置指南.md)。
 
 ## 运行

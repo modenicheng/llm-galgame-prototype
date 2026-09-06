@@ -4,7 +4,8 @@
 > `input_bridge`、模型输出 mode、JSONL 逐行协议），与当前代码不再一致，仅作历史参考。
 > 权威文档：
 > - 运行方式与配置：`README.md`
-> - DSL 协议 / 低水位 / 状态整理：`docs/llm-outputs-refactor.md`
+> - DSL 协议 / 架构：`docs/llm-outputs-refactor.md`
+> - 进度对照：`docs/status.md`；实施日志：`docs/changelog.md`
 > - 长线记忆设计：`docs/superpowers/specs/2026-08-09-narrative-director-design.md`
 
 ## 1. 目标
