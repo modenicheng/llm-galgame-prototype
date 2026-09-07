@@ -48,6 +48,56 @@ describe("NodeJsonlSessionStore", () => {
     }
   });
 
+  it("loads the persisted event log and state snapshot for the same session", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-store-"));
+    try {
+      const first = new NodeJsonlSessionStore(dir);
+      await first.initialize({ sessionId: "sess-resume" });
+      await first.append(makeStoredEvent(1));
+      await first.append(makeStoredEvent(2));
+      const state = createInitialState({
+        recent_summary: "已保存的进度",
+      });
+      await first.saveSnapshot({
+        state,
+        phase: "active",
+        nextTurn: 3,
+        lastEventSeq: 2,
+      });
+
+      const second = new NodeJsonlSessionStore(dir);
+      await second.initialize({ sessionId: "sess-resume" });
+      const restored = await second.load();
+
+      expect(restored.events.map((event) => event.seq)).toEqual([1, 2]);
+      expect(restored.snapshot).toMatchObject({
+        state,
+        phase: "active",
+        nextTurn: 3,
+        lastEventSeq: 2,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores structurally invalid event records while retaining valid records", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-store-"));
+    try {
+      const store = new NodeJsonlSessionStore(dir);
+      await store.initialize({ sessionId: "sess-validation" });
+      await store.append(makeStoredEvent(1));
+      const eventPath = path.join(dir, "sess-validation", "events.jsonl");
+      const { appendFile } = await import("node:fs/promises");
+      await appendFile(eventPath, `${JSON.stringify({ seq: 2, turn: 1, source: "model", type: "dialogue" })}\n`, "utf8");
+      await appendFile(eventPath, "not-json\n", "utf8");
+      const restored = await store.load();
+      expect(restored.events.map((event) => event.seq)).toEqual([1]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not write state.json to the cwd when saveSnapshot runs before initialize", async () => {
     // flush()/shutdown/restart can run on a game that never started; the
     // store must no-op instead of writing state.json into the working dir.

@@ -105,7 +105,8 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
 export class MemorySessionStore implements SessionStorePort {
   readonly location = "memory";
   readonly events: StoredEvent[] = [];
-  readonly snapshots: StoryState[] = [];
+  readonly snapshots: RuntimeSnapshot[] = [];
+  private restoredSnapshot: RuntimeSnapshot | undefined;
 
   async initialize(_metadata: SessionMetadata): Promise<void> {}
 
@@ -113,8 +114,17 @@ export class MemorySessionStore implements SessionStorePort {
     this.events.push(event);
   }
 
+  async load(): Promise<{ events: StoredEvent[]; snapshot?: RuntimeSnapshot }> {
+    const latest = this.restoredSnapshot ?? this.snapshots.at(-1);
+    return latest === undefined
+      ? { events: [...this.events] }
+      : { events: [...this.events], snapshot: structuredClone(latest) };
+  }
+
   async saveSnapshot(snapshot: RuntimeSnapshot): Promise<void> {
-    this.snapshots.push(snapshot.state);
+    const copy = structuredClone(snapshot);
+    this.snapshots.push(copy);
+    this.restoredSnapshot = copy;
   }
 }
 

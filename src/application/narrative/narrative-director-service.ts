@@ -356,9 +356,12 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   // -----------------------------------------------------------------------
 
   observeCommitted(events: readonly StoredEvent[]): void {
-    this.pendingEvents.push(...events);
+    const watermark = this.memory.consolidatedThroughEventSeq;
+    const freshEvents = events.filter((event) => event.seq > watermark);
+    if (freshEvents.length === 0) return;
+    this.pendingEvents.push(...freshEvents);
     // Rolling window of recently committed events for the planner.
-    this.recentCommittedEvents.push(...events);
+    this.recentCommittedEvents.push(...freshEvents);
     if (this.recentCommittedEvents.length > PLANNER_RECENT_EVENTS_MAX) {
       this.recentCommittedEvents = this.recentCommittedEvents.slice(
         -PLANNER_RECENT_EVENTS_MAX,

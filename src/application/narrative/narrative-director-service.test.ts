@@ -367,6 +367,23 @@ describe("NarrativeDirectorService", () => {
   // observeCommitted — queuing
   // -----------------------------------------------------------------------
   describe("observeCommitted", () => {
+    it("does not requeue events already covered by the restored memory watermark", async () => {
+      const store = new FakeStore({
+        ...emptyState(),
+        consolidatedThroughEventSeq: 10,
+      });
+      const svc = new NarrativeDirectorService({
+        config: makeConfig({ consolidation: { batch_min_events: 80, max_events_per_call: 80, min_checkpoint_gap_ms: 0 } }),
+        store,
+        consolidator: undefined,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+      svc.observeCommitted([makeEvent(5), makeEvent(11)]);
+      const pending = (svc as unknown as { pendingEvents: StoredEvent[] }).pendingEvents;
+      expect(pending.map((event) => event.seq)).toEqual([11]);
+    });
+
     it("queues events without calling consolidator when consolidator is undefined", async () => {
       const store = new FakeStore();
       const diag = new RecordingDiagnostics();

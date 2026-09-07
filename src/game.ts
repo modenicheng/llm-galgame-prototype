@@ -17,7 +17,9 @@ import {
 } from "./core/ports/diagnostic-sink.js";
 import type { IdGeneratorPort } from "./core/ports/id-generator-port.js";
 import type {
+  SessionRestore,
   SessionStorePort,
+  RuntimeSnapshot,
 } from "./core/ports/session-store-port.js";
 import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
@@ -304,6 +306,12 @@ export class Game {
    */
   private activePreviewId: string | null = null;
   private readonly listeners = new Set<(output: RuntimeOutput) => void>();
+  /** Restored interaction waiting for the player's decision, if any. */
+  private resumeInteraction: RuntimeSnapshot["resumeInteraction"] | undefined;
+  /** Next continuation turn persisted for process restart recovery. */
+  private nextResumeTurn = 1;
+  /** Terminal ending restored from a previously completed session. */
+  private restoredEnding: EndEvent | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -370,15 +378,46 @@ export class Game {
 
   async run(): Promise<void> {
     await this.store.initialize({ sessionId: this.sessionId });
+    const restored = await this.store.load();
+    this.restoreSession(restored);
+    this.narrativeDirector?.observeCommitted(restored.events);
     this.emit({
       type: "session_started",
       sessionId: this.sessionId,
       location: this.store.location,
     });
 
-    this.status.setPhase("开场生成", "首条完整事件到达后立即进入播放缓冲");
-    let segment = this.startActiveSegment("opening", 1, [], []);
-    let outcome = await this.consumeActiveSegment(segment, 1, []);
+    if (this.restoredEnding !== undefined) {
+      this.status.setPhase("结束", "剧情已经结束");
+      this.emit({ type: "session_ended", ending: this.restoredEnding });
+      return;
+    }
+
+    let segment: ActiveSegment;
+    let outcome: SegmentOutcome;
+    if (this.resumeInteraction !== undefined) {
+      const pending = this.resumeInteraction;
+      this.resumeInteraction = undefined;
+      segment = this.createRestoredSegment(pending.turn, pending.interaction, pending.stage);
+      outcome = await this.resumePendingInteraction(segment, pending.interaction, pending.turn);
+    } else if (this.events.length > 0) {
+      this.status.setPhase("恢复生成", "从已保存的剧情历史继续");
+      segment = this.startActiveSegment(
+        "continuation",
+        this.nextResumeTurn,
+        [...this.events],
+        [],
+      );
+      outcome = await this.consumeActiveSegment(
+        segment,
+        this.nextResumeTurn,
+        [...this.events],
+      );
+    } else {
+      this.status.setPhase("开场生成", "首条完整事件到达后立即进入播放缓冲");
+      segment = this.startActiveSegment("opening", 1, [], []);
+      outcome = await this.consumeActiveSegment(segment, 1, []);
+    }
 
     while (outcome.type !== "end") {
       // 强制收束（event mode）：强制段不得再打开交互表单。交互结果与
@@ -396,14 +435,21 @@ export class Game {
             "Game",
             "强制收束失败：模型多次未以 @end ending 结束，运行时合成结局。",
           );
-          this.emit({
-            type: "session_ended",
-            ending: {
-              type: "end",
-              ending_id: this.ids.nextGenerationId("ending"),
-              text: "（故事在此落幕。）",
-            },
+          const ending: EndEvent = {
+            type: "end",
+            ending_id: this.ids.nextGenerationId("ending"),
+            text: "（故事在此落幕。）",
+          };
+          this.restoredEnding = ending;
+          await this.store.saveSnapshot({
+            state: this.storyState,
+            visualState: this.renderedVisualState,
+            phase: "ended",
+            nextTurn: outcome.nextTurn,
+            lastEventSeq: this.seq - 1,
+            ending,
           });
+          this.emit({ type: "session_ended", ending });
           return;
         }
       }
@@ -443,14 +489,21 @@ export class Game {
                 "Game",
                 "强制收束失败：模型未以 @end ending 结束，运行时合成结局。",
               );
-              this.emit({
-                type: "session_ended",
-                ending: {
-                  type: "end",
-                  ending_id: this.ids.nextGenerationId("ending"),
-                  text: "（故事在此落幕。）",
-                },
+              const ending: EndEvent = {
+                type: "end",
+                ending_id: this.ids.nextGenerationId("ending"),
+                text: "（故事在此落幕。）",
+              };
+              this.restoredEnding = ending;
+              await this.store.saveSnapshot({
+                state: this.storyState,
+                visualState: this.renderedVisualState,
+                phase: "ended",
+                nextTurn: outcome.nextTurn,
+                lastEventSeq: this.seq - 1,
+                ending,
               });
+              this.emit({ type: "session_ended", ending });
               return;
             }
             await this.saveCurrentStateSnapshot();
@@ -927,12 +980,25 @@ export class Game {
         segment.branchManager?.discardAll();
         this.status.removeJob(`continuation:${turn}`);
         this.status.setPhase("结束", "剧情已经结束");
+        await this.store.saveSnapshot({
+          state: this.storyState,
+          visualState: this.renderedVisualState,
+          phase: "ended",
+          nextTurn: turn + 1,
+          lastEventSeq: this.seq - 1,
+          ending: event,
+        });
         this.emit({ type: "session_ended", ending: event });
         return { type: "end" };
       }
 
       this.advanceBufferedEvent(event);
       await this.recordModelEvent(event, turn);
+      this.resumeInteraction = {
+        turn,
+        interaction: event,
+        stage: this.pendingInteractionStage.get(event.interaction_id) ?? [],
+      };
       // Event mode（audit P2-10）：交互提交时计数；达到上限后强制后续
       // 生成收束结局。
       this.interactionCount += 1;
@@ -979,6 +1045,138 @@ export class Game {
     }
   }
 
+  private restoreSession(restored: SessionRestore): void {
+    this.events.length = 0;
+    this.pendingReconcile = [];
+    this.resumeInteraction = undefined;
+    this.restoredEnding = undefined;
+    this.events.push(...restored.events);
+    const lastSeq = restored.events.reduce((max, event) => Math.max(max, event.seq), 0);
+    this.seq = lastSeq + 1;
+
+    if (restored.snapshot !== undefined) {
+      this.storyState = restored.snapshot.state;
+      this.tailVisualState = restored.snapshot.visualState ?? this.replayVisualState(restored.events);
+      this.renderedVisualState = this.tailVisualState;
+      this.nextResumeTurn = restored.snapshot.nextTurn ?? this.nextTurnAfter(restored.events);
+      this.resumeInteraction = restored.snapshot.resumeInteraction;
+      if (restored.snapshot.phase === "ended" && restored.snapshot.ending !== undefined) {
+        this.restoredEnding = restored.snapshot.ending;
+      }
+      const snapshotSeq = restored.snapshot.lastEventSeq ?? 0;
+      if (snapshotSeq < lastSeq) {
+        const suffix = restored.events.filter((event) => event.seq > snapshotSeq);
+        this.storyState = reconcileStoryState(this.storyState, suffix);
+      }
+    } else {
+      this.storyState = reconcileStoryState(createInitialState(), restored.events);
+      this.tailVisualState = this.replayVisualState(restored.events);
+      this.renderedVisualState = this.tailVisualState;
+      this.nextResumeTurn = this.nextTurnAfter(restored.events);
+    }
+
+    const lastEvent = restored.events.at(-1);
+    if (this.restoredEnding === undefined && lastEvent?.type === "end") {
+      this.restoredEnding = lastEvent;
+    }
+    const lastInteraction = [...restored.events]
+      .reverse()
+      .find((event) => event.type === "interaction");
+    const interactionResolved =
+      lastInteraction !== undefined &&
+      restored.events.some(
+        (event) =>
+          event.seq > lastInteraction.seq &&
+          ((event.type === "player_choice" && lastInteraction.mode !== "input") ||
+            (event.type === "player_input" && event.interaction_id === lastInteraction.interaction_id)),
+      );
+    if (
+      this.resumeInteraction === undefined &&
+      lastInteraction !== undefined &&
+      !interactionResolved
+    ) {
+      this.resumeInteraction = {
+        turn: lastInteraction.turn,
+        interaction: lastInteraction,
+      };
+    }
+    if (this.resumeInteraction !== undefined) {
+      this.pendingInteractionStage.set(
+        this.resumeInteraction.interaction.interaction_id,
+        this.resumeInteraction.stage ?? [],
+      );
+    }
+  }
+
+  private nextTurnAfter(events: readonly StoredEvent[]): number {
+    return events.reduce((max, event) => Math.max(max, event.turn), 0) + 1;
+  }
+
+  private replayVisualState(events: readonly StoredEvent[]): VisualState {
+    let state = createInitialVisualState();
+    for (const event of events) {
+      const cues = (event as { stage?: StageCue[] }).stage;
+      if (cues !== undefined) state = this.reduce(state, cues);
+    }
+    return state;
+  }
+
+  private createRestoredSegment(
+    turn: number,
+    interaction: InteractionEvent,
+    stage?: StageCue[],
+  ): ActiveSegment {
+    const segment: ActiveSegment = {
+      turn,
+      taskId: this.ids.nextGenerationId(`resume:${turn}`),
+      events: [interaction],
+      queue: new AsyncEventQueue<RuntimeModelEvent>(),
+      done: Promise.resolve(),
+      branchManager: this.createBranchManagerForTerminal(interaction, turn, [...this.events]),
+      terminal: interaction,
+      schedulerReleased: true,
+      endStatus: null,
+      failed: false,
+      endingRequired: false,
+    };
+    this.pendingInteractionStage.set(interaction.interaction_id, stage ?? []);
+    return segment;
+  }
+
+  private async resumePendingInteraction(
+    segment: ActiveSegment,
+    interaction: InteractionEvent,
+    turn: number,
+  ): Promise<SegmentOutcome> {
+    const context = [...this.events];
+    if (interaction.mode === "choice") {
+      const choice: ChoiceEvent = {
+        type: "choice",
+        prompt: interaction.prompt,
+        options: interaction.options.map((option) => ({ id: option.id, text: option.text })),
+      };
+      const result = await this.handleChoice(
+        choice,
+        turn,
+        segment.branchManager,
+        context,
+        interaction.interaction_id,
+      );
+      return { type: "choice", nextTurn: turn + 1, ...result };
+    }
+    if (interaction.mode === "hybrid") {
+      return this.handleHybridInteraction(interaction, turn, segment.branchManager, context);
+    }
+    const result = await this.handleInteractionInput(interaction, turn, segment.branchManager);
+    if (result.type !== "committed") throw new RuntimeShutdownError();
+    return {
+      type: "choice",
+      nextTurn: turn + 1,
+      preview: result.preview,
+      ...(result.liveResponse ? { liveResponse: result.liveResponse } : {}),
+    };
+  }
+
   private emit(output: RuntimeOutput): void {
     for (const listener of this.listeners) listener(output);
   }
@@ -992,6 +1190,9 @@ export class Game {
     interactionId: string,
     resolution: "choice" | "input",
   ): void {
+    if (this.resumeInteraction?.interaction.interaction_id === interactionId) {
+      this.resumeInteraction = undefined;
+    }
     this.emit({ type: "interaction_resolved", interactionId, resolution });
   }
 
@@ -2524,7 +2725,16 @@ export class Game {
   }
 
   private async saveCurrentStateSnapshot(): Promise<void> {
-    await this.store.saveSnapshot({ state: this.storyState });
+    await this.store.saveSnapshot({
+      state: this.storyState,
+      visualState: this.renderedVisualState,
+      phase: "active",
+      nextTurn: this.activeSegmentTurn + 1,
+      lastEventSeq: this.seq - 1,
+      ...(this.resumeInteraction !== undefined
+        ? { resumeInteraction: this.resumeInteraction }
+        : {}),
+    });
   }
 
   /**
@@ -2534,7 +2744,7 @@ export class Game {
     if (this.narrativeDirector !== undefined) {
       await this.narrativeDirector.flush();
     }
-    await this.store.saveSnapshot({ state: this.storyState });
+    await this.saveCurrentStateSnapshot();
   }
 
   /**
