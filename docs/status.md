@@ -14,6 +14,7 @@
 | `docs/changelog.md` | 实施日志摘编（按日期） |
 | `docs/superpowers/specs/*` | NarrativeDirector、浏览器资源管线的专项设计 |
 | `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md` | 长期记忆强化与复核体系（facts/beliefs/lessons/audit）下一阶段设计，待实施 |
+| `docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md` | **v2 剧情图架构（已批准，待实施）**：回溯/存档/多周目三合一、编剧-导演-演员三角色、破坏性重构授权 |
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
 | `docs/agents/TTS-音色配置指南.md` | 音色创建与绑定操作指南 |
 | `DESIGN.md` | 已归档（model-jsonl 时代旧架构，仅历史参考） |
@@ -75,8 +76,12 @@
 
 ## 简化 / 未完成
 
+- **v2 剧情图架构**（2026-09-09 批准，尚未实施）：回溯/存档/多周目三合一、
+  编剧-导演-演员三角色、破坏性重构授权——见
+  `docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md`。
+  实施前本文档描述的现行为继续有效。
 - **会话恢复闭环（重要缺口）**：`SessionStorePort` 只有 append / saveSnapshot，
-  无 load / resume——重启后从新开场开始。这是存档系统与多周目的前置（见 TODO.md）。
+  无 load / resume——重启后从新开场开始。v2 中由节点快照承接；落地前仍是缺口。
 - **PlaybackBuffer 未迁 EventGroup**：采用 §63 展平方案（事件携带 `stage` 字段），
   缓冲仍是展平 `RuntimeBufferEvent[]`；prelude+main 同组提交已由组编译保证。
 - **beat 播放时机**：提交时立即应用（stage_beat_ready），不做缓冲时序。
