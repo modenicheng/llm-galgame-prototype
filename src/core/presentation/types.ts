@@ -7,6 +7,8 @@
  * filesystem, audio playback, or the LLM.
  */
 
+import { z } from "zod";
+
 // ---------------------------------------------------------------------------
 // Stage cues
 // ---------------------------------------------------------------------------
@@ -92,6 +94,35 @@ export interface VisualState {
 
 /** Pure state transition: (state, cues) → next state (docs §53). */
 export type VisualStateReducer = (state: VisualState, cues: StageCue[]) => VisualState;
+
+// ---------------------------------------------------------------------------
+// Persistence schemas — the single schema source for VisualState. The v2
+// graph contract (core/graph) embeds these in StateSnapshot; do not define
+// parallel copies elsewhere.
+// ---------------------------------------------------------------------------
+
+const CharacterPositionSchema: z.ZodType<CharacterPosition> = z.enum([
+  "far_left",
+  "left",
+  "center",
+  "right",
+  "far_right",
+]);
+
+export const CharacterPresentationStateSchema: z.ZodType<CharacterPresentationState> =
+  z.object({
+    spriteSet: z.string().min(1),
+    variant: z.string().min(1),
+    position: CharacterPositionSchema,
+    displayName: z.string().min(1),
+    visible: z.boolean(),
+  });
+
+export const VisualStateSchema: z.ZodType<VisualState> = z.object({
+  background: z.exactOptional(z.string().min(1)),
+  bgm: z.exactOptional(z.string().min(1)),
+  characters: z.record(z.string(), CharacterPresentationStateSchema),
+});
 
 // ---------------------------------------------------------------------------
 // Character registry — script name → internal identity + presentation defaults

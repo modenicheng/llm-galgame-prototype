@@ -19,8 +19,10 @@
 ## 优先级顺序
 
 ```text
-核心工程：v2 剧情图架构（2026-09-09 已批准，破坏性重构）
-        —— 见 docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md
+核心工程：v2 剧情图架构（2026-09-09 已批准，破坏性重构——**执行中**）
+        —— 设计：docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md
+        —— 执行清单（逐条推进 + 卫生门）：
+           docs/superpowers/plans/2026-09-09-v2-rewrite-todo.md
         —— 吸收原 3 存档系统 与 4 多周目体验（回溯 = 存档 = 多周目）
 近期：  1 长期记忆/上下文管理（memory-audit spec；canon 晋升并入 v2 世界层）
         2 语音合成优化
