@@ -176,7 +176,9 @@ export class FakeIdGenerator implements IdGeneratorPort {
  * real adapter (e.g. `{ store: new NodeJsonlSessionStore(dir) }`).
  */
 export function makeTestPorts(
-  overrides?: Partial<Pick<GamePorts, "store" | "clock" | "ids" | "diagnostics">>,
+  overrides?: Partial<
+    Pick<GamePorts, "store" | "clock" | "ids" | "diagnostics" | "initialStoryState">
+  >,
 ): GamePorts {
   return {
     store: new MemorySessionStore(),

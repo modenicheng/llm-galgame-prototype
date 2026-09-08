@@ -26,8 +26,10 @@ import {
   makeTestConfig,
   makeTestPorts,
   MemoryController,
+  MemorySessionStore,
   type InteractionOpenedOutput,
 } from "./test-helpers.js";
+import { createInitialState } from "./story/state.js";
 import type {
   EventGroupDraft,
   DslInteractionDraft,
@@ -965,5 +967,112 @@ describe("DSL mode — event mode max interactions (forced ending)", () => {
     // 全程只打开过一个交互表单；修复段直接收束结局。
     expect(interactionOpenedOf(controller.outputs)).toHaveLength(1);
     expect(outputs.some((o) => o.type === "session_ended")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// initialStoryState — 组合根预置的初始故事状态（如每局叙事种子）
+// ---------------------------------------------------------------------------
+
+describe("Game initialStoryState", () => {
+  const seededState = createInitialState({
+    scene: {
+      id: "old-device-before-opening",
+      location: "校园技术社团值班室",
+      purpose: "技术分享会开始前，一台没人记得启动过的旧设备仍在运行。",
+    },
+    canon: { scenario_seed: "old-device-before-opening" },
+    open_threads: [
+      { id: "seed-situation", summary: "开场前仍在运行的旧设备", status: "new", last_touched_turn: 0 },
+    ],
+  });
+
+  it("fresh session: opening generation receives the pre-seeded story state", async () => {
+    const config = makeDslConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          expect(request.state.scene.id).toBe("old-device-before-opening");
+          expect(request.state.canon.scenario_seed).toBe("old-device-before-opening");
+          expect(request.state.open_threads).toHaveLength(1);
+          onGroup(dslNarration("值班室里，旧设备的指示灯还亮着。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
+    );
+
+    const game = new Game(
+      config,
+      generator,
+      status,
+      media,
+      undefined,
+      makeTestPorts({ initialStoryState: structuredClone(seededState) }),
+      CATALOG,
+    );
+    const controller = new MemoryController();
+    controller.attach(game);
+    await game.run();
+
+    expect(controller.ended()).toBe(true);
+  });
+
+  it("restored session: snapshot state wins over the pre-seeded initial state", async () => {
+    const config = makeDslConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+
+    const store = new MemorySessionStore();
+    await store.append({
+      type: "narration",
+      text: "已保存的历史事件。",
+      line_id: "line_saved_000001",
+      seq: 1,
+      turn: 1,
+      timestamp: new Date(0).toISOString(),
+      source: "model",
+    });
+    await store.saveSnapshot({
+      state: createInitialState({
+        scene: { id: "restored-scene", location: "恢复的场景", purpose: "从快照恢复。" },
+      }),
+      phase: "active",
+      nextTurn: 2,
+      lastEventSeq: 1,
+    });
+
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          // 快照状态优先：种子初始状态不得覆盖已恢复会话的事实。
+          expect(request.state.scene.id).toBe("restored-scene");
+          onGroup(dslNarration("故事结束。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
+    );
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      () => {
+        throw new Error("恢复的会话不应重新生成开场");
+      },
+    );
+
+    const game = new Game(
+      config,
+      generator,
+      status,
+      media,
+      undefined,
+      makeTestPorts({ store, initialStoryState: structuredClone(seededState) }),
+      CATALOG,
+    );
+    const controller = new MemoryController();
+    controller.attach(game);
+    await game.run();
+
+    expect(controller.ended()).toBe(true);
   });
 });

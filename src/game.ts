@@ -175,6 +175,13 @@ export interface GamePorts {
   sessionId?: string;
   diagnostics?: DiagnosticSink;
   narrativeDirector?: NarrativeDirectorPort;
+  /**
+   * Pre-seeded story state for a FRESH session (e.g. a scenario seed the
+   * composition root selected per session id). Ignored when the session is
+   * restored — the persisted snapshot/history is authoritative. Omitted →
+   * a blank initial state.
+   */
+  initialStoryState?: StoryState;
 }
 
 /** Raised when the driver sends `shutdown`. */
@@ -330,7 +337,7 @@ export class Game {
     this.narrativeDirector = ports.narrativeDirector;
     this.sessionId = ports.sessionId ?? this.ids.nextSessionId();
     this.interactionPolicy = new InteractionPolicy(config.interaction);
-    this.storyState = createInitialState();
+    this.storyState = ports.initialStoryState ?? createInitialState();
     this.catalog = catalog;
     this.registry = catalog ? toCharacterRegistry(catalog) : emptyRegistry;
     this.defaults = createDefaultsFromRegistry(this.registry);
@@ -1069,7 +1076,9 @@ export class Game {
         this.storyState = reconcileStoryState(this.storyState, suffix);
       }
     } else {
-      this.storyState = reconcileStoryState(createInitialState(), restored.events);
+      // 无快照：以构造时的初始状态（可能由组合根预置，如叙事种子）为基底，
+      // 重放已提交事件的状态补丁。
+      this.storyState = reconcileStoryState(this.storyState, restored.events);
       this.tailVisualState = this.replayVisualState(restored.events);
       this.renderedVisualState = this.tailVisualState;
       this.nextResumeTurn = this.nextTurnAfter(restored.events);
