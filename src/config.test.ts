@@ -620,7 +620,7 @@ describe("loadAuthorConfig validation errors", () => {
     expect(config.rules.seeds).toEqual([]);
   });
 
-  it("should load the real project author.yaml", async () => {
+  it("should load the real project author.yaml (campus branch rules)", async () => {
     const config = await loadAuthorConfig("prompts/author.yaml");
 
     expect(config.control.world.mode).toBe("preferred");
@@ -630,9 +630,12 @@ describe("loadAuthorConfig validation errors", () => {
     expect(config.control.style.mode).toBe("locked");
     expect(config.rules.locked).toContain("故事中不存在超自然力量");
     expect(config.rules.locked).toContain("不要直接描述玩家未选择的心理活动");
-    expect(config.rules.preferred).toContain("整体气质克制");
-    expect(config.rules.preferred).toContain("避免长篇世界观解释");
-    expect(config.rules.seeds).toContain("故事从一台被遗忘的旧终端开始");
+    // Campus branch: 事实边界是锁定规则；每局种子来自 scenario 目录而非 author.yaml。
+    expect(config.rules.locked).toContain(
+      "结局只能依据本局已经确认的事实，不得凭空补全未验证的结果",
+    );
+    expect(config.rules.preferred).toContain("整体气质亲切日常，像真实的社团值班");
+    expect(config.rules.seeds).toEqual([]);
   });
 });
 

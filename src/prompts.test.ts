@@ -161,4 +161,33 @@ describe("loadPrompts", () => {
     expect(instructions.recovery).toContain("{repair_reason}");
     expect(instructions.ending).toContain("{nonce}");
   });
+
+  it("campus branch prompts carry the raspberry persona with layered facts", async () => {
+    const repoPrompts = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "prompts",
+    );
+    const { bundle, instructions } = await loadPrompts(repoPrompts);
+
+    // 角色人设：树莓娘 + 网协语境，且区分"已核对事实"与"本项目演绎"。
+    expect(bundle.characters).toContain("树莓娘");
+    expect(bundle.characters).toContain("网络开拓者协会");
+    expect(bundle.characters).toContain("已核对事实");
+    expect(bundle.characters).toContain("本项目演绎");
+
+    // 世界规则：校园技术社团 + 叙事种子起点 + 事实边界。
+    expect(bundle.storyLine).toContain("校园技术社团");
+    expect(bundle.storyLine).toContain("叙事种子");
+    expect(bundle.guideline).toContain("已经确认的事实");
+
+    // 开场指令要求尽快点明本局事务；结局指令要求依据已确认事实收束。
+    expect(instructions.opening).toContain("场景目标（Purpose）");
+    expect(instructions.ending).toContain("已经确认的事实");
+
+    // 旧长线主线（苏遥/林澈/旧终端）不再出现在校园分支提示词中。
+    expect(bundle.characters).not.toContain("苏遥");
+    expect(bundle.characters).not.toContain("林澈");
+    expect(bundle.storyLine).not.toContain("旧终端");
+  });
 });

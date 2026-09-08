@@ -200,16 +200,15 @@ describe("loadAssetCatalog", () => {
     expect(catalog.backgrounds.a!.description).toBe("描述内容");
   });
 
-  it("loads the real assets/resources.yaml", async () => {
+  it("loads the real assets/resources.yaml (campus branch catalog)", async () => {
     const resourcesPath = fileURLToPath(
       new URL("../../../assets/resources.yaml", import.meta.url),
     );
     const catalog = await loadAssetCatalog(resourcesPath);
 
-    expect(catalog.guidance).toContain("整体采用偏冷色调");
+    // Campus branch: no hideout backgrounds, reused clubroom/hallway set.
+    expect(catalog.guidance).toContain("校园社团部室与走廊");
     expect(Object.keys(catalog.backgrounds)).toEqual([
-      "hideout_on",
-      "hideout_off",
       "hallway_day",
       "hallway_evening",
       "hallway_night_on",
@@ -223,29 +222,23 @@ describe("loadAssetCatalog", () => {
     expect(catalog.bgm.calm!.src).toBe("audio/bgm/calm.mp3");
     expect(catalog.bgm.mountain!.src).toBe("audio/bgm/mountain.mp3");
     expect(catalog.soundEffects.terminal_beep!.src).toBe("audio/se/terminal_beep.ogg");
-    expect(Object.keys(catalog.spriteSets)).toEqual(["suyao", "linche"]);
-    expect(catalog.characters.suyao).toEqual({
-      characterId: "suyao",
-      scriptName: "苏遥",
-      displayName: "苏遥",
-      spriteSet: "suyao",
-      defaultVariant: "neutral",
-      defaultPosition: "left",
-      allowedSpriteSets: ["suyao"],
+    // Raspberry Girl placeholder-only sprite set (project-original art).
+    expect(Object.keys(catalog.spriteSets)).toEqual(["raspberry"]);
+    expect(catalog.characters.raspberry).toEqual({
+      characterId: "raspberry",
+      scriptName: "树莓娘",
+      displayName: "树莓娘",
+      spriteSet: "raspberry",
+      defaultVariant: "default",
+      defaultPosition: "center",
+      allowedSpriteSets: ["raspberry"],
     });
-    expect(catalog.characters.linche).toEqual({
-      characterId: "linche",
-      scriptName: "林澈",
-      displayName: "林澈",
-      spriteSet: "linche",
-      defaultVariant: "calm",
-      defaultPosition: "right",
-      allowedSpriteSets: ["linche"],
-    });
-    // Lin Che's set is the real josei_12 art — distinct files per variant.
-    expect(catalog.spriteSets.linche!.variants.calm!.src).toBe(
-      "characters/linche/calm.png",
+    expect(catalog.spriteSets.raspberry!.variants.default!.src).toBe(
+      "characters/raspberry/placeholder.png",
     );
+    // 未授权的旧故事素材不得出现在校园分支目录中。
+    expect(catalog.characters.suyao).toBeUndefined();
+    expect(catalog.characters.linche).toBeUndefined();
   });
 });
 

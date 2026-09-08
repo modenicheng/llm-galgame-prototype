@@ -42,6 +42,17 @@ import { NarrativeConsolidatorAdapter } from "../adapters/llm/narrative-consolid
 import { PlotPlannerAdapter } from "../adapters/llm/plot-planner-adapter.js";
 import { loadStoryPlan } from "../adapters/static/story-plan-loader.js";
 import type { NarrativeDirectorPort } from "../core/ports/narrative-director-port.js";
+import {
+  loadScenarioSeedCatalog,
+  scenarioSeedToInitialState,
+  selectScenarioSeed,
+} from "../campus/scenario-seeds.js";
+import type { StoryState } from "../story/types.js";
+
+/** 校园分支：event 模式每局叙事种子目录（scenario seed catalog）。 */
+const CAMPUS_SCENARIO_CATALOG = "prompts/campus-ops.yaml";
+/** 展位演示可显式指定本局种子 id（对应目录中的 seed.id）。 */
+const CAMPUS_SCENARIO_SEED_ENV = "CAMPUS_SCENARIO_SEED_ID";
 
 /**
  * FNV-1a 32-bit hash — a deterministic, session-independent seed per
@@ -191,12 +202,28 @@ export async function createRuntimeApplication(
       narrativeDirector = service;
     }
 
+    // Campus branch: event-mode sessions start from one narrative seed,
+    // chosen deterministically from the fresh session id (restart → new
+    // session id → seed rotation). The generic runtime only ever sees a
+    // pre-seeded initial story state (GamePorts.initialStoryState).
+    let initialStoryState: StoryState | undefined;
+    if (config.narrative.mode === "event") {
+      const catalog = await loadScenarioSeedCatalog(CAMPUS_SCENARIO_CATALOG);
+      const seed = selectScenarioSeed(
+        catalog,
+        sessionId,
+        process.env[CAMPUS_SCENARIO_SEED_ENV],
+      );
+      initialStoryState = scenarioSeedToInitialState(seed);
+    }
+
     return new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {
       store,
       clock: new SystemClock(),
       ids: new SessionIdGenerator(),
       sessionId,
       diagnostics,
+      ...(initialStoryState !== undefined ? { initialStoryState } : {}),
       ...(narrativeDirector ? { narrativeDirector } : {}),
     }, assetCatalog);
   };

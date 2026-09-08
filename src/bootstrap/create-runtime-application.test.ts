@@ -14,7 +14,9 @@ import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRuntimeApplication } from "./create-runtime-application.js";
+import { loadScenarioSeedCatalog, selectScenarioSeed } from "../campus/scenario-seeds.js";
 import type { RuntimeApplication } from "../application/runtime-application.js";
 import { makeTestConfig, MemoryController } from "../test-helpers.js";
 import { NarrativeDirectorService } from "../application/narrative/narrative-director-service.js";
@@ -108,6 +110,8 @@ const generatorState = vi.hoisted(() => ({
     groups: undefined as unknown,
     segmentEnd: undefined as unknown,
   },
+  /** Opening requests captured from the mocked generator (per test). */
+  openingRequests: [] as unknown[],
 }));
 /** Constructor opts captured from the mocked DashScope provider. */
 const dashscopeProviderState = vi.hoisted(() => ({
@@ -149,7 +153,10 @@ vi.mock("../adapters/llm/openai-compatible-generator.js", () => {
   };
   return {
     StoryGenerator: class {
-      generateOpening = vi.fn(() => handleFrom(generatorState.opening));
+      generateOpening = vi.fn((request: unknown) => {
+        generatorState.openingRequests.push(request);
+        return handleFrom(generatorState.opening);
+      });
       generateBranchPrefetch = vi.fn(() => handleFrom(undefined));
       generateInputResponse = vi.fn(() => handleFrom(undefined));
       generateContinuation = vi.fn(() => handleFrom(generatorState.continuation));
@@ -435,6 +442,46 @@ function dashscopeConfig(): AppConfig {
     expect(controller.count("session_ended")).toBe(1);
 
     await rm(sessionDir, { recursive: true, force: true });
+  });
+
+  it("event mode: wires the session-selected scenario seed into the opening context", async () => {
+    const config = makeTestConfig({
+      narrative: { ...DEFAULT_NARRATIVE_CONFIG, mode: "event" },
+    });
+    const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-campus-"));
+    generatorState.openingRequests.length = 0;
+    generatorState.opening = {
+      events: [],
+      groups: [{ prelude: [], main: { type: "narration", text: "值班开始" } }],
+      state_patch: undefined,
+      segmentEnd: { kind: "complete", nonce: "0000", reason: "ending" },
+    };
+
+    try {
+      const app = await createRuntimeApplication({
+        config,
+        sessionDir,
+        sessionId: "sess-campus-seed",
+      });
+      const controller = new MemoryController();
+      controller.attach(app.game);
+      await app.game.run();
+
+      expect(generatorState.openingRequests).toHaveLength(1);
+      const request = generatorState.openingRequests[0] as { state: { scene: { id: string; purpose: string } } };
+
+      // 组合根按 sessionId 从校园种子目录确定性选种，并经
+      // initialStoryState 送达开场生成（种子 scene.id / Purpose）。
+      const catalog = await loadScenarioSeedCatalog(
+        fileURLToPath(new URL("../../prompts/campus-ops.yaml", import.meta.url)),
+      );
+      const expected = selectScenarioSeed(catalog, "sess-campus-seed");
+      expect(request.state.scene.id).toBe(expected.id);
+      expect(request.state.scene.purpose).toBe(expected.seed.trim());
+      expect(app.game).toBeDefined();
+    } finally {
+      await rm(sessionDir, { recursive: true, force: true });
+    }
   });
 
   it("shutdown dispatches the shutdown command and stops a pending run loop", async () => {

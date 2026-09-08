@@ -1,48 +1,35 @@
-guidance: |
-  当前素材覆盖校园走廊、社团部室和地下据点三类场景。
+# 校园技术社团分支资源目录（campus branch asset catalog）
+#
+# 素材策略（docs/superpowers/specs/2026-09-06-campus-ops-event-design.md §7）：
+# - 背景复用现有校园（clubroom/hallway）素材；地下据点不入目录。
+# - 树莓娘立绘为项目自制纯色占位图，不含任何官方角色绘制；
+#   BITNP 素材未获授权前不接入、不复制、不再分发。
+# - 语音未配置：audio provider 为 disabled，缺失音色时降级为纯文本，
+#   不阻塞启动。
 
-  整体采用偏冷色调的写实二次元风格。
+guidance: |
+  当前素材覆盖校园社团部室与走廊场景，围绕技术社团值班日常展开。
 
   背景应尽量复用已有资源，不要因为轻微视角变化频繁切换。
 
-  角色表情资源有限，按情绪强弱谨慎使用。
+  树莓娘目前只有一张占位立绘（placeholder）：
+  所有表情变体共用同一张图，不要期待表情有视觉区别；
+  可以用 `ch raspberry:default` 改变站位，但立绘画面不会变化。
 
-  每个角色都提供 mysterious_silhouette 黑色剪影立绘：
-  用于身份尚未揭示、或远处无法确认身份的场景；
-  身份揭示后应切换到该角色的彩色表情立绘。
-
-  角色只能使用其"可用立绘组"内的素材组（`[spriteSet:立绘]` 换装）；
-  默认每个角色只有自己的立绘组，换装/伪装需作者在角色配置中显式允许。
+  角色只能使用其"可用立绘组"内的素材组；
+  默认每个角色只有自己的立绘组。
 
   舞台站位互斥：一个位置只能站一个可见角色，新角色占位会让原占位者自动隐藏；
-  多角色同场时用 [|位置] 或 ch <id> <位置> 分开（如 苏遥 left、林澈 right）。
+  多角色同场时用 [|位置] 或 ch <id> <位置> 分开。
   角色离场用 ch <id> exit，不要只依赖 hide。
 
-  林澈是主角，目前只有占位剪影立绘（全部表情共用同一张图）：
-  可用 ch linche:<表情> 改变站位，但不要期待表情有区别；
-  除非剧情需要主角出场，否则通常让他待在 left 侧即可。
-
 backgrounds:
-  hideout_on:
-    src: backgrounds/hideout_on.jpg
-    description: |
-      地下隐秘据点的混凝土房间，有沙发、木桌、地图、旧式电子设备和储物柜。
-      顶部吊灯亮起，照明充足。
-      适合据点内的正式讨论和与旧终端相关的核心剧情。
-
-  hideout_off:
-    src: backgrounds/hideout_off.jpg
-    description: |
-      与 hideout_on 为同一地下据点，但顶部吊灯关闭。
-      整体呈暗蓝绿色，仅保留低亮度环境光。
-      适合安静、警惕或需要隐蔽行动的场面。
-
   hallway_day:
     src: backgrounds/hallway_day.jpg
     description: |
-      校园室内长走廊，左侧有窗户和水槽，右侧是教室、公告栏与楼梯。
+      校园室内长走廊，左侧有窗户和水槽，右侧有教室、公告栏与楼梯。
       明亮白天光线。
-      适合普通校园日常场景。
+      适合白天值班、招新与日常交流场景。
 
   hallway_evening:
     src: backgrounds/hallway_evening.jpg
@@ -54,46 +41,45 @@ backgrounds:
     src: backgrounds/hallway_night_on.jpg
     description: |
       同一走廊，窗外已是夜色，走廊内部仍有照明。
-      画面偏蓝但可见度较高。
       适合夜间活动仍在继续的场景。
 
   hallway_night_off:
     src: backgrounds/hallway_night_off.jpg
     description: |
       同一走廊，窗外夜色，室内灯光明显关闭或大幅减弱，整体很暗。
-      适合寂静、紧张或需要隐匿的行动。
+      适合闭馆前后、需要安静的场面。
 
   clubroom_day:
     src: backgrounds/clubroom_day.jpg
     description: |
       校园社团活动室/教室，有黑板、书架、长桌、电脑、打印设备和大量椅子。
       白天窗光明亮。
-      适合社团活动与日常对话。
+      适合技术分享、值班接待与设备排查的主场景。
 
   clubroom_evening:
     src: backgrounds/clubroom_evening.jpg
     description: |
       同一社团活动室，窗光和室内色调变为暖黄色傍晚光。
-      适合傍晚时分的私下交流。
+      适合傍晚时分的收尾与交接交流。
 
   clubroom_night_on:
     src: backgrounds/clubroom_night_on.jpg
     description: |
       同一社团活动室，窗外是夜色，室内灯光保持开启，桌椅和书架仍清晰可见。
-      适合夜间仍在继续的社团活动。
+      适合夜间仍在继续的活动或排查。
 
   clubroom_night_off:
     src: backgrounds/clubroom_night_off.jpg
     description: |
       同一社团活动室，窗外是夜色，室内照明关闭或显著减弱，整体呈暗蓝色。
-      适合闭门后的寂静场景或紧张剧情。
+      适合锁门前最后的确认或安静场景。
 
 bgm:
   relax:
     src: audio/bgm/relax.mp3
     description: |
       大调；氛围温暖静谧，适合室内；慢节奏，悠然
-      原声吉他做引子；第二把吉他随后进入演奏主题 
+      原声吉他做引子；第二把吉他随后进入演奏主题
 
   calm:
     src: audio/bgm/calm.mp3
@@ -110,105 +96,23 @@ sound_effects:
   terminal_beep:
     src: audio/se/terminal_beep.ogg
     description: |
-      旧终端发出的短促电子提示音（合成占位）。
+      电子设备发出的短促提示音（合成占位），可用于设备反应或提示。
 
 sprite_sets:
-  suyao:
+  raspberry:
     description: |
-      苏遥正式立绘：深蓝紫色齐肩短发、酒红/粉紫色瞳孔，白色荷叶边短袖上衣与长裙，白色凉鞋。
-      整体气质文静、端庄，带有明显的神秘感；表情克制，适合冷静观察型角色。
+      树莓娘占位立绘（项目自制纯色占位，非官方素材）。
+      只有一个变体，所有表情共用。
 
     variants:
-      mysterious_silhouette:
-        src: characters/suyao/mysterious_silhouette.png
-        description: 黑色剪影，面部细节和身份完全隐藏。
-
-      neutral:
-        src: characters/suyao/neutral.png
-        description: 双眼睁开，嘴角轻微放松，接近平静常态。
-
-      speaking_smile:
-        src: characters/suyao/speaking_smile.png
-        description: 睁眼张口微笑，带有温和的说话感。
-
-      displeased:
-        src: characters/suyao/displeased.png
-        description: 眉眼收紧、嘴唇压低，明显不悦。
-
-      surprised:
-        src: characters/suyao/surprised.png
-        description: 睁眼张口，表现为短暂惊讶或突然反应。
-
-      guarded:
-        src: characters/suyao/guarded.png
-        description: 嘴部略微张开，眼神收敛，像是在谨慎回应。
-
-      uneasy:
-        src: characters/suyao/uneasy.png
-        description: 嘴角轻张、神情不安，像是担心或犹豫。
-
-      content:
-        src: characters/suyao/content.png
-        description: 闭眼微笑，放松而温和。
-
-      joyful:
-        src: characters/suyao/joyful.png
-        description: 闭眼张口笑，情绪明显高于 content。
-
-  linche:
-    description: |
-      林澈（主角）立绘：银灰偏淡紫色齐肩长发、明亮浅蓝色眼睛，深海军蓝中式立领短袖上衣，
-      金色滚边和盘扣，白色短裤与过膝袜。双手常藏在身后、身体微微前倾，
-      气质精致、主动、俏皮，兼具社交伪装能力。
-
-    variants:
-      mysterious_silhouette:
-        src: characters/linche/mysterious_silhouette.png
-        description: 黑色剪影，仅能辨认修长身形和前倾姿态。
-
-      gentle_smile:
-        src: characters/linche/gentle_smile.png
-        description: 睁眼轻微微笑，显得友好而从容。
-
-      speaking_smile:
-        src: characters/linche/speaking_smile.png
-        description: 睁眼张口笑，明显正在愉快说话。
-
-      sly_smile:
-        src: characters/linche/sly_smile.png
-        description: 半眯眼张口笑，带有玩味或试探意味。
-
-      annoyed:
-        src: characters/linche/annoyed.png
-        description: 眉头下压、张口责问，明显不耐烦。
-
-      serious:
-        src: characters/linche/serious.png
-        description: 双眼收紧、嘴角压平，进入严肃状态。
-
-      delighted:
-        src: characters/linche/delighted.png
-        description: 闭眼大幅微笑，情绪明亮愉悦。
-
-      surprised:
-        src: characters/linche/surprised.png
-        description: 睁眼张口，表现为突然惊讶。
-
-      calm:
-        src: characters/linche/calm.png
-        description: 睁眼闭口，神情平稳，略带审视。
+      default:
+        src: characters/raspberry/placeholder.png
+        description: 唯一占位立绘，无表情区分。
 
 characters:
-  suyao:
-    script_name: 苏遥
-    display_name: 苏遥
-    sprite_set: suyao
-    default_variant: neutral
-    default_position: left
-
-  linche:
-    script_name: 林澈
-    display_name: 林澈
-    sprite_set: linche
-    default_variant: calm
-    default_position: right
+  raspberry:
+    script_name: 树莓娘
+    display_name: 树莓娘
+    sprite_set: raspberry
+    default_variant: default
+    default_position: center

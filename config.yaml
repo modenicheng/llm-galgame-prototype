@@ -82,7 +82,8 @@ media:
 
     synthesis:
       # V2 权威开关：web 模式从这里读取 provider（dashscope / mock / disabled）。
-      provider: dashscope
+      # 校园分支：文本优先，展位不依赖 DASHSCOPE_API_KEY；接入树莓娘音色后再启用。
+      provider: disabled
       max_concurrency: 2
       model_profile: cosyvoice_v3_flash
       api_key_env: DASHSCOPE_API_KEY
@@ -98,31 +99,21 @@ media:
       candidate_ttl_hours: 1
 
 # 角色 → 逻辑音色配置映射（V2）
-# key 用稳定内部 characterId（resources.yaml characters 的键），也保留
-# 显示名 key 兼容旧会话/旧事件（speaker 回退）。value.name 用于展示。
-# 缺任一角色 → 该角色台词静音（build-skip no-character）。
-characters:
-  suyao:
-    name: 苏遥
-    voice_profile: suyao_main
-  苏遥:
-    name: 苏遥
-    voice_profile: suyao_main
-  linche:
-    name: 林澈
-    voice_profile: linche_main
-  林澈:
-    name: 林澈
-    voice_profile: linche_main
+# 校园分支（campus-ops-raspberry）：树莓娘音色尚未确认，
+# 展位采用文本优先模式（synthesis.provider: disabled），
+# 音频关闭时此映射不参与合成；确认音色后再新增独立 profile。
+characters: {}
 
 game:
   history_events: 80
   sessions_dir: sessions
   show_line_ids: true
 
-# 叙事导演配置（narrative director）：长线剧情线程、场景搭建、记忆整合与简报。
+# 叙事模式：校园分支使用 event 模式（每局一个叙事种子，不限制互动次数）。
 narrative:
-  mode: longform
+  # event = 不组装长线 narrative director；每局从 campus-ops.yaml 的
+  # 叙事种子开始（按 sessionId 确定性选种，CAMPUS_SCENARIO_SEED_ID 可显式指定）。
+  mode: event
   # 活动模式策略：max_interactions=0 表示不限制；>0 时到达上限后强制收束结局。
   event:
     max_interactions: 0
