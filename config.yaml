@@ -8,11 +8,14 @@ local_web:
   controller_limit: 1
 
 api:
-  model: deepseek-v4-flash
-  base_url: https://api.deepseek.com
-  api_key_env: OPENAI_API_KEY
+  # OpenAI 兼容中转（new-api 网关）；key 在 .env 的 OPENAI_API_KEY
+  model: deepseek-v4-flash-0731
+  base_url: https://new-api.honahec.cc/v1
+  # 注意：不要用 OPENAI_API_KEY——系统环境变量里可能残留旧值且 dotenv 不覆盖已存在的变量
+  api_key_env: VIBEGAL_LLM_KEY
   timeout_ms: 60000
-  token_limit_field: max_completion_tokens
+  # 中转网关统一用 max_tokens（若长段结尾频繁截断可尝试换回 max_completion_tokens）
+  token_limit_field: max_tokens
 
 generation:
   temperature: 0.9
@@ -82,7 +85,9 @@ media:
 
     synthesis:
       # V2 权威开关：web 模式从这里读取 provider（dashscope / mock / disabled）。
-      provider: dashscope
+      # 当前 disabled = 纯文本运行（.env 未配 DASHSCOPE_API_KEY / voice-id；
+      # 配好后改回 dashscope 即可启用语音）
+      provider: disabled
       max_concurrency: 2
       model_profile: cosyvoice_v3_flash
       api_key_env: DASHSCOPE_API_KEY

@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 sessions/*.jsonl
+sessions/*/
 !sessions/.gitkeep
 assets/.tts-cache/*
 npm-debug.log*
