@@ -176,10 +176,15 @@ describe("loadPrompts", () => {
     expect(bundle.characters).toContain("已核对事实");
     expect(bundle.characters).toContain("本项目演绎");
 
-    // 世界规则：校园技术社团 + 叙事种子起点 + 事实边界。
+    // 内容方向：故事看点是人，不是技术排查流程。
+    expect(bundle.characters).toContain("轻微傲娇");
+    expect(bundle.characters).toContain("不是客服，也不是说明书");
     expect(bundle.storyLine).toContain("校园技术社团");
     expect(bundle.storyLine).toContain("叙事种子");
+    expect(bundle.storyLine).toContain("看点是人");
     expect(bundle.guideline).toContain("已经确认的事实");
+    expect(bundle.guideline).toContain("人味");
+    expect(bundle.guideline).toContain("点到为止");
 
     // 开场指令要求尽快点明本局事务；结局指令要求依据已确认事实收束。
     expect(instructions.opening).toContain("场景目标（Purpose）");

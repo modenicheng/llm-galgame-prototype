@@ -44,7 +44,8 @@ describe("loadScenarioSeedCatalog", () => {
     expect(new Set(ids).size).toBe(ids.length);
     for (const seed of catalog.seeds) {
       expect(seed.title.length).toBeGreaterThan(0);
-      expect(seed.seed.trim().length).toBeGreaterThan(0);
+      // 种子是带人物与处境的叙事素材，不是一行工单标题。
+      expect(seed.seed.trim().length).toBeGreaterThan(30);
     }
   });
 
