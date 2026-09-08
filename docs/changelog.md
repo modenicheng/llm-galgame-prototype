@@ -95,3 +95,26 @@ getBrief 随导演便签注入 Writer 上下文。
   `synthesis.provider: disabled`；资源目录裁剪为校园场景 + 自制占位立绘。
 - 测试：种子目录/选择/状态构造、bootstrap 种子接线、校园会话集成
   （短局/多轮/自由输入/同种子不同路径）、真实提示词与资源目录断言。
+
+## 2026-09-08 修复：低水位 refill 与修复路径竞争导致 run loop 失序死亡
+
+现场实测（选择分支→预览播放期间后继续写段截断失败）暴露 §75 低水位
+refill 与 §8.5 修复路径的竞争，命中"播放缓冲顺序与生成事件流不一致"
+直接杀死 run loop（现场表现即无法推进/卡死）：
+
+- 失序机制：后继续写段提前失败使调度槽空闲 → 预览播放中的 advance
+  触发低水位 refill 入缓冲 → run loop 进入失败路径 `playbackBuffer.clear()`
+  抹掉 refill 未播事件后，buffer 分支仍无条件采纳 `pendingRefillSegment`
+  → 消费死队列与重置后的缓冲失序 → `advanceBufferedEvent` 抛错。
+- `game.ts` 新增 `reclaimPendingRefill()`：回收未被接管的 refill（取消
+  生成→等槽释放→`PlaybackBuffer.removeLineIds` 摘除其未播事件→清空
+  `pendingRefillSegment`），修复路径与选择后/回应后续写路径启动新段前
+  必须调用；期间 `reclaimingRefill` 抑制 done 钩子再孵化 refill。
+- 直播流（已选分支/输入回应）消费期间 `suppressRefill` 抑制低水位
+  refill（回应 lane 不占用调度槽，原本无守卫）。
+- `advanceBufferedEvent` 降级为最后防线：失序/缺行告警并重同步继续
+  播放，不再抛错杀 run（现场演示优先连续性）。
+- `audio-descriptor-factory`：`characters: {}` 的文本优先部署下，
+  no-character 不再逐行刷 build-skip 告警（角色表非空时仍告警）。
+- 测试：`game-dsl.test.ts` 新增 mid-preview refill 回收回归（无修复时
+  过期 refill 孤儿行泄漏进播放，修复后播放序列精确）。

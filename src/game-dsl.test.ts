@@ -802,6 +802,112 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     ]);
     expect(controller.ended()).toBe(true);
   });
+
+  it("reclaims a mid-preview low-water refill when the post-choice segment fails (no order-mismatch crash)", async () => {
+    // 现场崩溃时序（runbook 桌面演示实测，Scratch 复现证实）：选择预取
+    // ready 的分支后，后继续写段提前截断失败 → 调度槽空闲 → 预览播放中
+    // 的 advance 触发低水位 refill → run loop 随后进入失败路径：旧实现
+    // clear() 抹掉 refill 已入缓冲的事件却仍把 pendingRefillSegment 留给
+    // buffer 分支采纳 → 消费死队列时缓冲头已是其他段的事件 →
+    // "播放缓冲顺序与生成事件流不一致" 杀死 run loop。修复语义：失败路径
+    // 先回收过期 refill（取消生成、摘除其未播事件、清空 pendingRefillSegment）。
+    const config = makeDslConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    game.subscribe((o) => outputs.push(o));
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (_request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("开场。"));
+          onGroup(dslInteraction({
+            prompt: "怎么选？",
+            mode: "choice",
+            optionTexts: ["选项A", "选项B"],
+          }));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
+        }),
+    );
+    // 分支预取立即就绪（预取状态=ready）：选择走固定预览路径（无直播流）。
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
+      (_request: BranchPrefetchRequest) =>
+        dslHandle("branch", async (_signal, onGroup) => {
+          for (let i = 1; i <= 10; i++) onGroup(dslNarration(`分支句${i}。`));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }),
+    );
+    let continuationCalls = 0;
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) => {
+        continuationCalls += 1;
+        const call = continuationCalls;
+        if (call === 1) {
+          // 选择后的续写段（第一次调用）：1 句后截断失败（无 @end 哨兵）。
+          return dslHandle("continuation", async (_signal, onGroup) => {
+            onGroup(dslNarration("续写半句。"));
+            throw new Error("DSL 流在第 6 行校验失败：段结束时没有 @end 哨兵（截断）");
+          });
+        }
+        if (request.repairReason !== undefined) {
+          // 修复续写：2 句后 @end buffer（把 run loop 送回 buffer 分支）。
+          return dslHandle("continuation", async (_signal, onGroup) => {
+            onGroup(dslNarration("修复句1。"));
+            onGroup(dslNarration("修复句2。"));
+            return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+          });
+        }
+        if (call === 2) {
+          // 低水位 refill（advance 在预览尾部触发）：2 句后 @end buffer。
+          // 若未被回收，其队列会在 buffer 分支被过期采纳（旧实现的崩溃点）。
+          return dslHandle("continuation", async (_signal, onGroup) => {
+            onGroup(dslNarration("低水句1。"));
+            onGroup(dslNarration("低水句2。"));
+            return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+          });
+        }
+        // 收尾段：结局终止 run loop。只有 buffer 分支以干净状态现场启动
+        // 它（pendingRefillSegment 已被回收清空），收尾句才会入播放。
+        return dslHandle("continuation", async (_signal, onGroup) => {
+          onGroup(dslNarration("收尾句。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        });
+      },
+    );
+
+    const runPromise = game.run();
+    const controller = new MemoryController({
+      onInteractionOpened: (output, ctrl) => {
+        ctrl.select(output.interactionId, output.interaction.options[0]!.id);
+      },
+    });
+    controller.attach(game);
+    // 无条件间隔推进（模拟真实玩家节奏）：失败段早已落定，预览尾部的
+    // 推进必然在 run loop 进入失败路径之前触发低水位 refill。
+    const advanceTimer = setInterval(() => {
+      controller.advance();
+    }, 4);
+    try {
+      await runPromise;
+    } finally {
+      clearInterval(advanceTimer);
+    }
+
+    // 无论 refill 是否曾在回收前启动过：它的行绝不入播放；故事按
+    // 失败段前缀 → 修复段 → 收尾段完整播放并正常结局。
+    const played = playbackOf(outputs).map((o) => o.event.text);
+    expect(played).toEqual([
+      "开场。",
+      ...Array.from({ length: 10 }, (_, i) => `分支句${i + 1}。`),
+      "续写半句。",
+      "修复句1。",
+      "修复句2。",
+      "收尾句。",
+    ]);
+    expect(controller.ended()).toBe(true);
+  });
 });
 
 describe("DSL mode — event mode max interactions (forced ending)", () => {

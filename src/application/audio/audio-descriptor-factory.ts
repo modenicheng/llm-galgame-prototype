@@ -68,15 +68,19 @@ export class AudioDescriptorFactory {
     performance?: LinePerformance,
   ): BuildAudioResult | null {
     // Narration has no voice by design (no log — expected); a speaker
-    // without a character/profile is an anomaly worth surfacing.
+    // without a character/profile is an anomaly worth surfacing — except in
+    // text-first deployments that deliberately ship `characters: {}` (e.g.
+    // the campus booth): there every dialogue line would log, so stay quiet.
     if (event.type === "narration") return null;
     const character = this.resolveCharacter(event);
     if (!character) {
-      ttsLog(
-        "build-skip",
-        event.line_id,
-        `reason=no-character speaker=${event.speaker}`,
-      );
+      if (Object.keys(this.options.characters).length > 0) {
+        ttsLog(
+          "build-skip",
+          event.line_id,
+          `reason=no-character speaker=${event.speaker}`,
+        );
+      }
       return null;
     }
     const profile = this.options.voices.profiles[character.voiceProfile];

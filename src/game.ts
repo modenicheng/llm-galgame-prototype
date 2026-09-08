@@ -268,6 +268,17 @@ export class Game {
    * §75：低水位触发时已启动、待 run loop 接管的续写段。
    */
   private pendingRefillSegment: ActiveSegment | null = null;
+  /**
+   * 回收过期 refill 期间为真：reconcileTextBuffer 直接返回，防止被回收段
+   * 的 done 钩子在回收窗口内再孵化新的 refill（与回收循环竞速）。
+   */
+  private reclaimingRefill = false;
+  /**
+   * 直播流（已选分支 / 输入回应）消费期间为真：这些流自己是持续的生成
+   * 源，迟到事件直接进入播放缓冲，低水位 refill 只会与之竞争并把孤儿
+   * 事件遗留在缓冲里（后续路径失序的根源之一）。
+   */
+  private suppressRefill = false;
   /** 当前正在播放的段 turn（reconcileTextBuffer 计算续写 turn 用）。 */
   private activeSegmentTurn = 1;
   /** 已提交的 interaction 数量（event mode 上限计数）。 */
@@ -633,7 +644,11 @@ export class Game {
       // new LLM request is created until the response task completes.
       return waitForPrevious
         .then(() => liveResponse.done.catch(() => undefined))
-        .then(() => {
+        .then(async () => {
+          // A low-water refill may have started while the response was being
+          // consumed (the response lane holds no scheduler slot); reclaim it
+          // so the new segment owns the slot and the buffer stays consistent.
+          await this.reclaimPendingRefill();
           const committed = [...outcome.preview];
           for (const event of liveResponse.responseEvents) {
             if (!committed.some((existing) => existing.line_id === event.line_id)) {
@@ -652,16 +667,17 @@ export class Game {
     }
 
     if (!live) {
-      return waitForPrevious.then(() =>
-        this.startActiveSegment(
+      return waitForPrevious.then(async () => {
+        await this.reclaimPendingRefill();
+        return this.startActiveSegment(
           "continuation",
           outcome.nextTurn,
           history,
           outcome.preview,
           undefined,
           this.forceEnding,
-        ),
-      );
+        );
+      });
     }
 
     // The old active request may still be closing after emitting its terminal
@@ -680,7 +696,10 @@ export class Game {
         );
       })
       .then(() => live.done.catch(() => undefined))
-      .then(() => {
+      .then(async () => {
+        // Reclaim before taking the slot: the branch lane released it when
+        // the branch task settled, so a refill may have slipped in.
+        await this.reclaimPendingRefill();
         const selectedEvents = [...live.events];
         return this.startActiveSegment(
           "continuation",
@@ -920,8 +939,13 @@ export class Game {
         // does not regenerate the same interaction point. Reset the playback
         // buffer as well: any stale tail from the broken stream would
         // otherwise mismatch the repaired segment's events and crash the
-        // ordering check in advanceBufferedEvent.
+        // ordering check in advanceBufferedEvent. A pending low-water refill
+        // must be reclaimed first: its unplayed events are wiped by the clear
+        // below, and adopting it afterwards would consume a dead queue
+        // against the reset buffer (run-loop-killing order mismatch), while
+        // leaving it running would hold the single scheduler slot.
         segment.branchManager?.discardAll();
+        await this.reclaimPendingRefill();
         this.playbackBuffer.clear();
         const terminal = segment.terminal;
         if (terminal?.type === "interaction" && terminal.mode !== "input") {
@@ -1741,17 +1765,26 @@ export class Game {
       }
     };
 
-    const failure = await this.consumeLiveStream(
-      initialEvents,
-      {
-        events: selection.events,
-        done: selection.done,
-        subscribe: selection.subscribe,
-      },
-      turn,
-      handoffIfReady,
-      handoffIfReady,
-    );
+    // 直播流自己是持续的生成源：期间不再孵化低水位 refill（它的迟到事件
+    // 与 refill 事件会在缓冲里交错，遗留孤儿事件），续写由 handoff 后的
+    // 正式续写段负责。
+    this.suppressRefill = true;
+    let failure: unknown;
+    try {
+      failure = await this.consumeLiveStream(
+        initialEvents,
+        {
+          events: selection.events,
+          done: selection.done,
+          subscribe: selection.subscribe,
+        },
+        turn,
+        handoffIfReady,
+        handoffIfReady,
+      );
+    } finally {
+      this.suppressRefill = false;
+    }
 
     // The branch request has ended. Its already generated lines remain valid;
     // the caller starts a normal continuation using that committed prefix.
@@ -1772,14 +1805,22 @@ export class Game {
     live: InputResponseSession,
     turn: number,
   ): Promise<void> {
-    const failure = await this.consumeLiveStream(
-      initialEvents,
-      live,
-      turn,
-      undefined,
-      undefined,
-      () => this.metrics.recordInputResponseUnderrun(),
-    );
+    // 回应流不占用调度槽（独立 lane），refill 必须显式抑制：否则它会与
+    // 回应的迟到事件交错入缓冲，并在回应后的续写段启动时留下失序。
+    this.suppressRefill = true;
+    let failure: unknown;
+    try {
+      failure = await this.consumeLiveStream(
+        initialEvents,
+        live,
+        turn,
+        undefined,
+        undefined,
+        () => this.metrics.recordInputResponseUnderrun(),
+      );
+    } finally {
+      this.suppressRefill = false;
+    }
 
     if (failure) {
       const message = failure instanceof Error ? failure.message : String(failure);
@@ -1860,11 +1901,27 @@ export class Game {
     return failure;
   }
 
+  /**
+   * 播放缓冲与消费流的对账。失序不再致命（现场演示优先连续性）：缓冲
+   * 缺行或头行不一致时告警并重同步（丢弃缓冲中的过期尾部，继续播放当前
+   * 事件）。真正的系统性失序根源由 reclaimPendingRefill / suppressRefill
+   * 消除；这里是最后防线，保证任何未知路径的失序只降级不卡死。
+   */
   private advanceBufferedEvent(event: RuntimeBufferEvent): void {
     const bufferedEvent = this.playbackBuffer.advance();
-    if (bufferedEvent && bufferedEvent !== event) {
-      throw new Error("播放缓冲顺序与生成事件流不一致。");
+    if (bufferedEvent === event) return;
+    if (bufferedEvent === undefined) {
+      this.diagnostics.warn(
+        "Game",
+        `播放缓冲缺少事件 ${event.line_id}（缓冲被重置或生产者被回收）；跳过对账继续播放`,
+      );
+      return;
     }
+    this.diagnostics.warn(
+      "Game",
+      `播放缓冲顺序与生成事件流不一致（缓冲头 ${bufferedEvent.line_id} ≠ 播放 ${event.line_id}）；重置缓冲继续播放`,
+    );
+    this.playbackBuffer.clear();
   }
 
   private async consumePlayableEvent(
@@ -1941,6 +1998,7 @@ export class Game {
     // 强制收束（event mode）：强制语义下不再有后台续写——后续生成必须
     // 直接收束结局，低水位续写会与之竞争单槽调度器并拖延收束。
     if (this.forceEnding) return;
+    if (this.reclaimingRefill || this.suppressRefill) return;
     if (this.pendingRefillSegment !== null) return;
     if (this.generationScheduler.hasActivePathTask()) return;
     if (this.playbackBuffer.hasUnconsumedInteraction()) return;
@@ -1957,6 +2015,50 @@ export class Game {
       [],
     );
     void this.pendingRefillSegment.done.catch(() => undefined);
+  }
+
+  /**
+   * 回收尚未被 run loop 接管的低水位续写段（§75）。修复路径与选择后/
+   * 回应后的续写路径在 startActiveSegment 之前必须调用：
+   *
+   * refill 可能在旧段已失败/收束、调度槽空闲的窗口内被 advance 触发
+   * （典型：选择后的预览播放期间后继续写段提前截断失败）。若不回收，
+   * 修复路径的 playbackBuffer.clear() 会把 refill 已入缓冲的未播事件
+   * 抹掉，而 run loop 的 buffer 分支仍会采纳这个过期段——消费与缓冲
+   * 失序，"播放缓冲顺序与生成事件流不一致" 直接杀死 run loop；即便
+   * 未清缓冲，refill 持槽也会让 startActivePath 抛出同样致命的错误。
+   *
+   * 回收语义：取消生成 → 等其释放单槽 → 从播放缓冲摘除其未播事件。
+   * 被回收段的行从未进入正式日志，丢弃不影响故事一致性。
+   */
+  private async reclaimPendingRefill(): Promise<void> {
+    if (this.pendingRefillSegment === null) return;
+    this.reclaimingRefill = true;
+    try {
+      while (this.pendingRefillSegment !== null) {
+        const stale = this.pendingRefillSegment;
+        this.pendingRefillSegment = null;
+        // 段非空 ⇒ 槽必为其持有（reconcile 启动后无人能抢占单槽）。
+        // 已自然收束时 cancel 是空操作。
+        this.generationScheduler.cancelActivePath();
+        await stale.done.catch(() => undefined);
+        const lineIds = new Set(
+          stale.events
+            .filter(isPlayableEvent)
+            .map((event) => event.line_id),
+        );
+        this.playbackBuffer.removeLineIds(lineIds);
+        for (const lineId of lineIds) this.buffered.delete(lineId);
+        this.updateBufferStatus();
+        this.status.removeJob(`continuation:${stale.turn}`);
+        this.diagnostics.info(
+          "Game",
+          `已回收过期的低水位续写段（turn ${stale.turn}，丢弃 ${lineIds.size} 条未播事件）`,
+        );
+      }
+    } finally {
+      this.reclaimingRefill = false;
+    }
   }
 
   /**

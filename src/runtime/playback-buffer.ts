@@ -92,4 +92,20 @@ export class PlaybackBuffer {
     this.events = [];
     this.cursor = 0;
   }
+
+  /**
+   * Retract specific unplayed events (by line id) while preserving order
+   * and the cursor. Only events at/after the cursor are removed — already
+   * presented lines are history and stay untouched. Used when a producer
+   * (e.g. a discarded low-water refill segment) is torn down after its
+   * events entered the buffer.
+   */
+  removeLineIds(lineIds: ReadonlySet<string>): void {
+    if (lineIds.size === 0) return;
+    const head = this.events.slice(0, this.cursor);
+    const tail = this.events
+      .slice(this.cursor)
+      .filter((event) => !lineIds.has(event.line_id));
+    this.events = [...head, ...tail];
+  }
 }
