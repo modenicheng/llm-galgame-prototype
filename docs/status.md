@@ -75,10 +75,10 @@
 
 ## 简化 / 未完成
 
-- **会话恢复闭环（重要缺口）**：`SessionStorePort` 只有 append / saveSnapshot，
-  无 load / resume——重启后从新开场开始。这是存档系统与多周目的前置（见 TODO.md）。
 - **PlaybackBuffer 未迁 EventGroup**：采用 §63 展平方案（事件携带 `stage` 字段），
   缓冲仍是展平 `RuntimeBufferEvent[]`；prelude+main 同组提交已由组编译保证。
+  （原"会话恢复闭环"缺口已由 `3743ba8` 会话持久化恢复关闭：load/resume、
+  事件日志恢复、快照元数据、视觉状态与交互游标恢复均已落地。）
 - **beat 播放时机**：提交时立即应用（stage_beat_ready），不做缓冲时序。
 - **舞台动画**：背景 crossfade / 角色 fade 为 CSS transition 基础版；无更复杂的
   转场/动画系统。
@@ -92,3 +92,25 @@
 - `fcdb58c` 会话目录统一 + director flush on shutdown
 - `3f3bb69` 文档修正 + DESIGN.md 归档
 - `14e3d8a..3618dd6` NarrativeDirector 第 3 步（Task 1–9）
+
+## 校园技术社团值班分支（campus-ops-raspberry，2026-09-08）
+
+本分支在通用框架上叠加独立展位体验，不改动 `main` 的长线剧情/记忆能力：
+
+- **开放叙事**：每局从 `prompts/campus-ops.yaml` 的一条叙事种子开始；
+  种子为严格 schema（禁止 `required_rounds`/`success_path` 等流程字段），
+  只提供起点情境。选择策略为 sessionId 确定性轮换，
+  `CAMPUS_SCENARIO_SEED_ID` 可显式指定（`src/campus/scenario-seeds.ts`）。
+- **通用最小接口**：`GamePorts.initialStoryState`（组合根可预置初始故事
+  状态；恢复路径不受影响，longform 缺省行为不变）。
+- **角色适配**：`prompts/characters.txt` 分层（BITNP 已核对事实 / 本分支
+  演绎）；世界规则、事实边界写入 `story_line.txt`/`guideline.txt`/
+  `author.yaml`；结局只依据本局 committed facts。
+- **资源策略**：背景复用 clubroom/hallway；树莓娘为项目自制占位立绘
+  （单 variant）；BITNP 素材未授权不接入（来源审计见
+  `docs/superpowers/notes/campus-ops-source-audit.md`）。
+- **文本优先**：`synthesis.provider: disabled`，音频缺省不阻塞启动。
+- **现场文档**：`docs/campus-ops-event-runbook.md`（一人操作/重开/指定种子）。
+
+待办：树莓娘正式立绘与音色授权；展位实测后的种子扩充；
+回 `main` 审查（`core:` 提交可回流，campus 内容保留本分支）。

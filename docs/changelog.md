@@ -81,3 +81,17 @@ getBrief 随导演便签注入 Writer 上下文。
   已固化为测试套件）、第一阶段闭环（原 §108–§109）。
 - 新增 `TODO.md`：下一阶段大方向路线图（长期记忆/多周目/存档/成就/语音合成优化/
   动态资源生成）。
+
+## 2026-09-08 校园值班开放叙事分支（feat/campus-ops-raspberry）
+
+- `core:` `GamePorts.initialStoryState`：组合根可为全新会话预置初始故事
+  状态（场景/事实/线程）；恢复会话以持久化快照为准，无快照恢复路径改为
+  在预置状态上重放事件补丁。
+- `campus:` 叙事种子目录 `prompts/campus-ops.yaml`（12 条种子，strict
+  schema 禁止流程化字段）+ `src/campus/scenario-seeds.ts`（加载、sessionId
+  确定性选种、种子→初始状态）；event 模式下由组合根接线注入。
+- `campus:` 树莓娘人设分层（已核对事实/本项目演绎）、校园世界规则与
+  事实边界提示词；`config.yaml` 切换 `narrative.mode: event`、
+  `synthesis.provider: disabled`；资源目录裁剪为校园场景 + 自制占位立绘。
+- 测试：种子目录/选择/状态构造、bootstrap 种子接线、校园会话集成
+  （短局/多轮/自由输入/同种子不同路径）、真实提示词与资源目录断言。

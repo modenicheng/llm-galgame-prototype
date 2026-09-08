@@ -15,6 +15,24 @@ TypeScript + Node.js 实现的 LLM GalGame 预研项目，支持：
 当前进度见 [docs/status.md](./docs/status.md)，路线图见 [TODO.md](./TODO.md)。
 TTS 音色创建与绑定见 [docs/agents/TTS-音色配置指南.md](./docs/agents/TTS-音色配置指南.md)。
 
+## 校园技术社团值班分支（campus-ops-raspberry）
+
+本分支是一个独立的展位体验：以网络开拓者协会看板娘**树莓娘**为核心，
+围绕校园技术社团的值班日常展开**开放叙事**——
+
+- 每局从一条**叙事种子**开始（`prompts/campus-ops.yaml`），种子只提供起点
+  情境，不规定路线、轮数或结局；运行时按会话 ID 确定性轮换种子，
+  `CAMPUS_SCENARIO_SEED_ID` 可显式指定。
+- 不限制互动次数（`narrative.mode: event` + `max_interactions: 0`），
+  简单事件可以很快结束，复杂事件可以多轮展开；结局由模型依据本局
+  已确认的事实自然生成（`@end` 仅为引擎终止标记）。
+- 文本优先：`synthesis.provider: disabled`，不依赖 TTS key；树莓娘立绘为
+  项目自制占位图，BITNP 官方素材未经授权不接入。
+- 现场运行（一人操作、重开、指定种子）见
+  [docs/campus-ops-event-runbook.md](./docs/campus-ops-event-runbook.md)；
+  设计与素材授权边界见
+  [docs/superpowers/specs/2026-09-06-campus-ops-event-design.md](./docs/superpowers/specs/2026-09-06-campus-ops-event-design.md)。
+
 ## 运行
 
 ```bash
