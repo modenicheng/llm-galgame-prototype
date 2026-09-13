@@ -10,7 +10,7 @@
 
 import { z } from "zod";
 import type { SceneId } from "../graph/ids.js";
-import { OutlineNodeIdSchema } from "../graph/ids.js";
+import { OutlineNodeIdSchema, SceneIdSchema } from "../graph/ids.js";
 
 export type OutlineNodeStatus = "planned" | "active" | "realized" | "pruned";
 
@@ -31,7 +31,7 @@ export const OutlineNodeSchema: z.ZodType<OutlineNode> = z.object({
   purpose: z.string().min(1).max(OUTLINE_PURPOSE_MAX_LENGTH),
   kind: z.enum(["act", "ending"]),
   status: z.enum(["planned", "active", "realized", "pruned"]),
-  instantiatedBy: z.exactOptional(z.string()),
+  instantiatedBy: z.exactOptional(SceneIdSchema),
 });
 
 export const OUTLINE_TERMINAL_STATUSES: ReadonlySet<OutlineNodeStatus> = new Set([

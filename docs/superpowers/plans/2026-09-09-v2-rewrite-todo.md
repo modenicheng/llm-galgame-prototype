@@ -57,7 +57,9 @@
 
 **快照复用不变量**：下一个决策点的入口快照 = 前一条边的 endState（同一次快照写两处）；ending 收束时 endState 单独捕获。汇流比较因此天然对齐同一种货币（§3.3 不变量成立的结构保证）。
 
-**场景节点判定（M1 无编剧过渡）**：`StoryState.scene.id` 首次出现 → 建 SceneNode（status=active）；M1 bootstrap 单个 seed 大纲节点（`ol_` 前缀、active）写入 outline.json，全部场景 outlineRef 指向它。realized 迁移不做（M5 结算细化）；M3.2 真实大纲落地后 dev 期不迁移旧 game。
+**恢复时的记忆追赶（2026-09-13 补充）**：快照 digest 的 `consolidatedThroughEventSeq` 之前的已整理、之后的未整理。恢复路径在 digest 重建后，把**游标节点的入边 payload** 重新喂给 `director.observeCommitted()`——其内部按 `seq > watermark` 过滤，恰好只把未整理窗口重新入队（边负载本就携带全部已提交事件），零契约变更。
+
+**场景节点判定（M1 无编剧过渡）**：`StoryState.scene.id` 首次出现 → 建 SceneNode（status=active）；M1 bootstrap 单个 seed 大纲节点（`ol_` 前缀、active）作为全部场景的 outlineRef（修订 2026-09-13：种子大纲**文件** outline.json 随 M3.1 OutlineStore 落地，M1 只有引用目标 id）。realized 迁移不做（M5 结算细化）；M3.2 真实大纲落地后 dev 期不迁移旧 game。
 
 **seq / turn 连续性（恢复后计数器播种）**：契约不加字段。恢复时 floor = max(该节点全部入边的 payload.lastSeq, digest.consolidatedThroughEventSeq)，seq 计数器从 floor 起步；turn floor 取入边 payload 末事件的 turn。周目内 seq 严格单调递增，consolidator 的 `consolidatedThroughEventSeq` 语义保持成立。
 
@@ -137,3 +139,21 @@
   `z.exactOptional(...)` 而非 `.optional()`（memory-types 既有惯用法）。M1 起所有
   含可选字段的持久化 schema 一律遵循。另：`StateSnapshot.snapshotVersion` 为
   `z.literal(1)`，测试构造非法版本需绕开类型层（`as Record<string, unknown>`）。
+- 2026-09-13（M1.3）：契约修订（M0 契约尚无任何落盘数据，SNAPSHOT_VERSION 仍为 1）——
+  `InteractionFormSnapshot` 增加 `prompt` 必填字段：恢复重放表单需要原样还原提示语，
+  仅 mode/options/placeholder 不足以重建表单。M1 收尾门时回写设计 spec §3。
+- 2026-09-13（M1.3）：`SceneNode` 延迟到首个决策点才落盘（场景与决策 1:1 惰性创建）——
+  模型场景 id → SceneNode 的映射通过扫描决策节点入口快照的
+  `storyState.scene.id` 重建，契约无需增加字段；无任何决策的场景不留图记录（M1 接受）。
+- 2026-09-13（M0 契约审查，落地前复审）：发现并修复 3 处——
+  ① `PlotEdge` 补 refine：confluence 存在 ⟹ `to.kind==="decision"` 且
+  `to.id === confluence.matchedNode`（§3.3 的构造性保证升格为写入校验）；
+  ② `RunRecord` 补两个 refine：`ending ⟹ endedAt`、
+  `abandonedAt ⟹ 无 endedAt/ending`（字段组合语义编码进契约）；
+  ③ `OutlineNodeSchema.instantiatedBy` 由 `z.string()` 收紧为 `SceneIdSchema`
+  （schema/接口/spec §4 三方对齐）。审查同时确认的**保留项**（有意不改）：
+  `StoryState.open_threads` 与 `MemoryDigest.threads` 双台账（v1 双层遗产，
+  M4 上下文合并时统一归属）；payload 统计不设连续性不变量（回放完整性由
+  回放侧校验）；表单 options ≥1 宽于运行时 ≥2（契约宽松、运行时严格）；
+  `matchedNode` 与 `to.id` 冗余（凭据自含 + refine 交叉校验，冗余即哨兵）。
+

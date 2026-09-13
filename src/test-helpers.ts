@@ -5,10 +5,9 @@ import type { ClockPort } from "./core/ports/clock-port.js";
 import { silentDiagnosticSink } from "./core/ports/diagnostic-sink.js";
 import type { IdGeneratorPort } from "./core/ports/id-generator-port.js";
 import type {
-  RuntimeSnapshot,
-  SessionMetadata,
-  SessionStorePort,
-} from "./core/ports/session-store-port.js";
+  EdgeChoice,
+  RunGraphPort,
+} from "./core/ports/run-graph-port.js";
 import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
 import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
 import type { StoredEvent } from "./schema.js";
@@ -101,30 +100,51 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
 // In-memory ports for core tests
 // ---------------------------------------------------------------------------
 
-/** Session store that keeps everything in memory; no filesystem access. */
-export class MemorySessionStore implements SessionStorePort {
-  readonly location = "memory";
-  readonly events: StoredEvent[] = [];
-  readonly snapshots: RuntimeSnapshot[] = [];
-  private restoredSnapshot: RuntimeSnapshot | undefined;
+/**
+ * 剧情图运行时的调用记录型 test double：只记录 Game 发出的图操作序列，
+ * 不复现 RunGraphCoordinator 的状态机（后者配真实 GameGraphStore 另测）。
+ */
+export class MemoryRunGraph implements RunGraphPort {
+  readonly location = "memory-graph";
+  rootRunsStarted = 0;
+  readonly begunEdges: EdgeChoice[] = [];
+  readonly appendedBatches: StoredEvent[][] = [];
+  readonly decisions: Array<{
+    modelSceneId: string;
+    form: unknown;
+    moment: unknown;
+  }> = [];
+  readonly endings: Array<{ endingId: string; moment: unknown }> = [];
+  private idCounter = 0;
 
-  async initialize(_metadata: SessionMetadata): Promise<void> {}
-
-  async append(event: StoredEvent): Promise<void> {
-    this.events.push(event);
+  async startRootRun(): Promise<string> {
+    this.rootRunsStarted += 1;
+    this.idCounter += 1;
+    return `run_test${this.idCounter}`;
   }
 
-  async load(): Promise<{ events: StoredEvent[]; snapshot?: RuntimeSnapshot }> {
-    const latest = this.restoredSnapshot ?? this.snapshots.at(-1);
-    return latest === undefined
-      ? { events: [...this.events] }
-      : { events: [...this.events], snapshot: structuredClone(latest) };
+  async beginEdge(choice: EdgeChoice): Promise<void> {
+    this.begunEdges.push(structuredClone(choice));
   }
 
-  async saveSnapshot(snapshot: RuntimeSnapshot): Promise<void> {
-    const copy = structuredClone(snapshot);
-    this.snapshots.push(copy);
-    this.restoredSnapshot = copy;
+  async appendEdgeEvents(events: readonly StoredEvent[]): Promise<void> {
+    this.appendedBatches.push([...events]);
+  }
+
+  async openDecision(input: {
+    modelSceneId: string;
+    form: unknown;
+    moment: unknown;
+  }): Promise<string> {
+    this.decisions.push(structuredClone(input));
+    this.idCounter += 1;
+    return `dc_test${this.idCounter}`;
+  }
+
+  async reachEnding(input: { endingId: string; moment: unknown }): Promise<string> {
+    this.endings.push(structuredClone(input));
+    this.idCounter += 1;
+    return `end_test${this.idCounter}`;
   }
 }
 
@@ -171,15 +191,15 @@ export class FakeIdGenerator implements IdGeneratorPort {
 }
 
 /**
- * Default port set for tests: memory store, fake clock, fake IDs, and a
- * silent diagnostic sink. Override individual ports when a test needs a
- * real adapter (e.g. `{ store: new NodeJsonlSessionStore(dir) }`).
+ * Default port set for tests: in-memory graph runtime, fake clock, fake
+ * IDs, and a silent diagnostic sink. Override individual ports when a test
+ * needs a real adapter (e.g. `{ graph: new RunGraphCoordinator(...) }`).
  */
 export function makeTestPorts(
-  overrides?: Partial<Pick<GamePorts, "store" | "clock" | "ids" | "diagnostics">>,
+  overrides?: Partial<Pick<GamePorts, "graph" | "clock" | "ids" | "diagnostics">>,
 ): GamePorts {
   return {
-    store: new MemorySessionStore(),
+    graph: new MemoryRunGraph(),
     clock: new FakeClock(),
     ids: new FakeIdGenerator(),
     diagnostics: silentDiagnosticSink,

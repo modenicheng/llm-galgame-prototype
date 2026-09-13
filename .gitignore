@@ -18,3 +18,6 @@ assets/raw/
 
 # pi-subagents tooling state
 .pi-subagents/
+
+# v2 per-game graph storage (runtime data)
+games/

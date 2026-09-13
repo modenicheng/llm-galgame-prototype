@@ -7,15 +7,17 @@
  * consume the returned `RuntimeApplication` and differ only in their
  * presentation layer.
  */
+import { randomUUID } from "node:crypto";
 import { loadApiKey, loadAuthorConfig, loadConfig } from "../config.js";
 import type { AppConfig } from "../config.js";
 import { loadVoices, validateDashscopeEnv } from "../config/voices.js";
 import { Game } from "../game.js";
 import { GeneratorPortFacade, StoryGenerator } from "../adapters/llm/openai-compatible-generator.js";
-import { NodeJsonlSessionStore } from "../adapters/storage/node-jsonl-session-store.js";
+import { GameGraphStore } from "../adapters/storage/game-graph-store.js";
 import { ConsoleDiagnosticSink } from "../adapters/platform/console-diagnostic-sink.js";
 import { SessionIdGenerator } from "../adapters/platform/session-id-generator.js";
 import { SystemClock } from "../adapters/platform/system-clock.js";
+import { RunGraphCoordinator } from "../application/graph/run-graph-coordinator.js";
 import { loadPrompts } from "../prompts.js";
 import { Metrics } from "../runtime/metrics.js";
 import { RuntimeStatus } from "../status.js";
@@ -144,6 +146,19 @@ export async function createRuntimeApplication(
 
   const projection = new UiProjectionStoreImpl();
 
+  // v2 剧情图（§9）：gameId 是世界的身份，在运行时生命周期内固定；周目
+  // （run）才是重开/回溯的单位。图存储与协调器跨 restart 共享。
+  const gameId = `game_${new Date()
+    .toISOString()
+    .replace(/[:.]/g, "-")}`;
+  const gamesRoot = options.gamesRoot ?? "games";
+  const graphStore = new GameGraphStore(gamesRoot, gameId);
+  const graphCoordinator = new RunGraphCoordinator(
+    graphStore,
+    new SystemClock(),
+    (prefix) => `${prefix}${crypto.randomUUID()}`,
+  );
+
   /**
    * Assemble the per-session game: fresh session store + (longform)
    * narrative director + the Game itself. `restart()` reuses this to
@@ -154,7 +169,6 @@ export async function createRuntimeApplication(
     sessionId: string,
     options: RuntimeApplicationOptions,
   ): Promise<Game> => {
-    const store = new NodeJsonlSessionStore(options.sessionDir ?? config.game.sessions_dir);
     // --- Narrative director assembly (§7.1) ---
     const diagnostics = new ConsoleDiagnosticSink();
     let narrativeDirector: NarrativeDirectorPort | undefined;
@@ -192,7 +206,7 @@ export async function createRuntimeApplication(
     }
 
     return new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {
-      store,
+      graph: graphCoordinator,
       clock: new SystemClock(),
       ids: new SessionIdGenerator(),
       sessionId,

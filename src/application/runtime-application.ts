@@ -41,6 +41,8 @@ export interface RuntimeApplicationOptions {
   configPath?: string;
   /** Override host default from config (entrypoint decides). */
   sessionDir?: string;
+  /** v2 剧情图根目录（games/<gameId>/ 的父目录，§9）。默认 "games"。 */
+  gamesRoot?: string;
   /** Already-loaded config; skips the disk reload when provided. */
   config?: AppConfig;
   /** voices.yaml path (default "voices.yaml" in the cwd). */

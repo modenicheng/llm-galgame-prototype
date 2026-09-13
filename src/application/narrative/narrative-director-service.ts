@@ -40,6 +40,8 @@ import type {
   NarrativeBriefRequest,
 } from "../../core/narrative/narrative-brief.js";
 import type { DirectorPlan } from "../../core/narrative/director-plan.js";
+import { memoryDigestFromState, memoryStateFromDigest } from "../../core/graph/memory-digest.js";
+import type { MemoryDigest } from "../../core/graph/types.js";
 import {
   applyThreadOpToState,
   applySetupOpToState,
@@ -349,6 +351,24 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       brief.beats = planInEffect.beats;
     }
     return brief;
+  }
+
+  // -----------------------------------------------------------------------
+  // memory digest — 快照真源（M1.1 决议）
+  // -----------------------------------------------------------------------
+
+  getMemoryDigest(): MemoryDigest {
+    return memoryDigestFromState(this.memory);
+  }
+
+  restoreFromDigest(digest: MemoryDigest): void {
+    // digest 是决策时点的完整记忆快照，原样重建即可——initialize 的 plan
+    // 种子合并只服务于全新开局；恢复时已演化过的 lifecycle（status/计数）
+    // 不允许被种子回滚。episodes 缓存从空重新积累（M1.1 决议）。
+    this.memory = memoryStateFromDigest(digest);
+    this.episodes = [];
+    this.pendingEvents = [];
+    this.plan = undefined;
   }
 
   // -----------------------------------------------------------------------

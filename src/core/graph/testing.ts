@@ -37,7 +37,7 @@ export function makeSnapshot(overrides?: Partial<StateSnapshot>): StateSnapshot 
 export function makeForm(
   overrides?: Partial<InteractionFormSnapshot>,
 ): InteractionFormSnapshot {
-  return { mode: "choice", options: ["追问", "离开"], ...overrides };
+  return { mode: "choice", prompt: "你要怎么做？", options: ["追问", "离开"], ...overrides };
 }
 
 export function makeDecision(

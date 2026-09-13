@@ -34,6 +34,8 @@ export const SNAPSHOT_VERSION = 1;
 export const InteractionFormSnapshotSchema = z
   .object({
     mode: z.enum(["choice", "input", "hybrid"]),
+    /** 当时呈现给玩家的表单提示语（恢复重放表单时原样还原）。 */
+    prompt: z.string().min(1),
     /** choice/hybrid 的选项文本（运行时生成的 id 不入契约，文本即语义）。 */
     options: z.array(z.string().min(1)).optional(),
     /** input/hybrid 的输入框提示语。 */
@@ -128,19 +130,27 @@ export const ConfluenceEvidenceSchema = z.object({
 });
 export type ConfluenceEvidence = z.infer<typeof ConfluenceEvidenceSchema>;
 
-export const PlotEdgeSchema = z.object({
-  id: EdgeIdSchema,
-  from: DecisionIdSchema,
-  choice: z.object({
-    kind: z.enum(["option", "free_input"]),
-    text: z.string().min(1),
-  }),
-  payload: EdgePayloadStatsSchema,
-  endState: StateSnapshotSchema,
-  to: EdgeEndpointSchema,
-  /** 汇流成立时的判定凭据（指向既有后继节点即为汇流，见设计 §3.3）。 */
-  confluence: ConfluenceEvidenceSchema.optional(),
-});
+/** 汇流凭据与终点的一致性：命中哪个节点，边就指向哪个节点（§3.3）。 */
+export const PlotEdgeSchema = z
+  .object({
+    id: EdgeIdSchema,
+    from: DecisionIdSchema,
+    choice: z.object({
+      kind: z.enum(["option", "free_input"]),
+      text: z.string().min(1),
+    }),
+    payload: EdgePayloadStatsSchema,
+    endState: StateSnapshotSchema,
+    to: EdgeEndpointSchema,
+    /** 汇流成立时的判定凭据（指向既有后继节点即为汇流，见设计 §3.3）。 */
+    confluence: ConfluenceEvidenceSchema.optional(),
+  })
+  .refine(
+    (edge) =>
+      edge.confluence === undefined ||
+      (edge.to.kind === "decision" && edge.to.id === edge.confluence.matchedNode),
+    { message: "confluence evidence must target the edge's own successor node" },
+  );
 export type PlotEdge = z.infer<typeof PlotEdgeSchema>;
 
 export const EndingNodeSchema = z.object({
@@ -153,18 +163,26 @@ export type EndingNode = z.infer<typeof EndingNodeSchema>;
 // 周目（设计 §6）：游标 + 统计 + 流水，非记忆容器
 // ---------------------------------------------------------------------------
 
-export const RunRecordSchema = z.object({
-  id: RunIdSchema,
-  origin: z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("root") }),
-    z.object({ kind: z.literal("retrace"), from: DecisionIdSchema }),
-  ]),
-  startedAt: z.string().min(1),
-  endedAt: z.string().optional(),
-  ending: EndingIdSchema.optional(),
-  /** 中止游玩的所在节点；图上节点如实存在，不另设弃局标记。 */
-  abandonedAt: DecisionIdSchema.optional(),
-});
+export const RunRecordSchema = z
+  .object({
+    id: RunIdSchema,
+    origin: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("root") }),
+      z.object({ kind: z.literal("retrace"), from: DecisionIdSchema }),
+    ]),
+    startedAt: z.string().min(1),
+    endedAt: z.string().optional(),
+    ending: EndingIdSchema.optional(),
+    /** 中止游玩的所在节点；图上节点如实存在，不另设弃局标记。 */
+    abandonedAt: DecisionIdSchema.optional(),
+  })
+  .refine((run) => run.ending === undefined || run.endedAt !== undefined, {
+    message: "a run that reached an ending must record endedAt",
+  })
+  .refine(
+    (run) => run.abandonedAt === undefined || (run.endedAt === undefined && run.ending === undefined),
+    { message: "an abandoned run must not also be recorded as ended" },
+  );
 export type RunRecord = z.infer<typeof RunRecordSchema>;
 
 export const ActiveCursorSchema = z.object({

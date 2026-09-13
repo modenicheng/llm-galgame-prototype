@@ -2,6 +2,7 @@
  * v2 剧情图契约测试（设计 §3）——schema 解析/拒绝与不变量。
  */
 import { describe, expect, it } from "vitest";
+import type { InteractionEvent } from "../../schema.js";
 import {
   ActiveCursorSchema,
   DecisionNodeSchema,
@@ -9,10 +10,17 @@ import {
   PlotEdgeSchema,
   RunRecordSchema,
   StateSnapshotSchema,
+  type InteractionFormSnapshot,
 } from "./types.js";
+import { formSnapshotFromInteraction } from "./form.js";
 import { makeSnapshot } from "./testing.js";
 
-const hybridForm = { mode: "hybrid", options: ["追问", "离开"], placeholder: "或输入……" };
+const hybridForm = {
+  mode: "hybrid",
+  prompt: "你要怎么做？",
+  options: ["追问", "离开"],
+  placeholder: "或输入……",
+};
 
 describe("StateSnapshot", () => {
   it("accepts a minimal valid snapshot", () => {
@@ -34,23 +42,70 @@ describe("StateSnapshot", () => {
 
 describe("InteractionFormSnapshot", () => {
   it.each([
-    [{ mode: "choice", options: ["A", "B"] }],
-    [{ mode: "input", placeholder: "说点什么……" }],
-    [{ mode: "hybrid", options: ["A"], placeholder: "或输入……" }],
+    [{ mode: "choice", prompt: "？", options: ["A", "B"] }],
+    [{ mode: "input", prompt: "？", placeholder: "说点什么……" }],
+    [{ mode: "hybrid", prompt: "？", options: ["A"], placeholder: "或输入……" }],
   ])("accepts %j", (form) => {
     expect(InteractionFormSnapshotSchema.safeParse(form).success).toBe(true);
   });
 
   it.each([
-    [{ mode: "choice" }], // choice 无选项
-    [{ mode: "choice", options: ["A"], placeholder: "x" }], // choice 不应有输入框
-    [{ mode: "input" }], // input 无 placeholder
-    [{ mode: "input", options: ["A"], placeholder: "x" }], // input 不应有选项
-    [{ mode: "hybrid", options: ["A"] }], // hybrid 缺 placeholder
-    [{ mode: "hybrid", placeholder: "x" }], // hybrid 缺选项
-    [{ mode: "hybrid" }], // 空表单（设计 §28：既无选项也无输入非法）
+    [{ mode: "choice", options: ["A", "B"] }], // 缺 prompt
+    [{ mode: "choice", prompt: "？" }], // choice 无选项
+    [{ mode: "choice", prompt: "？", options: ["A"], placeholder: "x" }], // choice 不应有输入框
+    [{ mode: "input", prompt: "？" }], // input 无 placeholder
+    [{ mode: "input", prompt: "？", options: ["A"], placeholder: "x" }], // input 不应有选项
+    [{ mode: "hybrid", prompt: "？", options: ["A"] }], // hybrid 缺 placeholder
+    [{ mode: "hybrid", prompt: "？", placeholder: "x" }], // hybrid 缺选项
+    [{ mode: "hybrid", prompt: "？" }], // 空表单（设计 §28：既无选项也无输入非法）
   ])("rejects %j", (form) => {
     expect(InteractionFormSnapshotSchema.safeParse(form).success).toBe(false);
+  });
+});
+
+describe("formSnapshotFromInteraction", () => {
+  const cases: Array<[InteractionEvent, InteractionFormSnapshot]> = [
+    [
+      {
+        type: "interaction",
+        interaction_id: "i1",
+        mode: "choice",
+        prompt: "做什么？",
+        options: [
+          { id: "o1", text: "追问" },
+          { id: "o2", text: "离开" },
+        ],
+      },
+      { mode: "choice", prompt: "做什么？", options: ["追问", "离开"] },
+    ],
+    [
+      {
+        type: "interaction",
+        interaction_id: "i2",
+        mode: "input",
+        prompt: "说什么？",
+        input: { placeholder: "……", max_length: 100, kind: "free_text" },
+      },
+      { mode: "input", prompt: "说什么？", placeholder: "……" },
+    ],
+    [
+      {
+        type: "interaction",
+        interaction_id: "i3",
+        mode: "hybrid",
+        prompt: "做什么？",
+        options: [{ id: "o1", text: "沉默" }],
+        input: { placeholder: "或输入……", max_length: 100, kind: "free_text" },
+      },
+      { mode: "hybrid", prompt: "做什么？", options: ["沉默"], placeholder: "或输入……" },
+    ],
+  ];
+
+  it.each(cases)("maps %j → %j", (event, expected) => {
+    expect(formSnapshotFromInteraction(event)).toEqual(expected);
+    expect(InteractionFormSnapshotSchema.safeParse(formSnapshotFromInteraction(event)).success).toBe(
+      true,
+    );
   });
 });
 
@@ -129,6 +184,23 @@ describe("PlotEdge payload stats invariant", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("rejects confluence evidence that does not target the edge's own successor", () => {
+    expect(
+      PlotEdgeSchema.safeParse({
+        ...baseEdge,
+        to: { kind: "decision", id: "dc_002" },
+        confluence: { matchedNode: "dc_999", judgedBy: "director", confidence: 0.9, rationale: "x" },
+      }).success,
+    ).toBe(false);
+    expect(
+      PlotEdgeSchema.safeParse({
+        ...baseEdge,
+        to: { kind: "ending", id: "end_001" },
+        confluence: { matchedNode: "end_001", judgedBy: "director", confidence: 0.9, rationale: "x" },
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("RunRecord / ActiveCursor", () => {
@@ -151,6 +223,39 @@ describe("RunRecord / ActiveCursor", () => {
     expect(
       RunRecordSchema.safeParse({ id: "run_002", origin: { kind: "retrace" }, startedAt: "t" })
         .success,
+    ).toBe(false);
+  });
+
+  it("rejects an ending without endedAt", () => {
+    expect(
+      RunRecordSchema.safeParse({
+        id: "run_001",
+        origin: { kind: "root" },
+        startedAt: "t",
+        ending: "end_001",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an abandoned run that is also recorded as ended", () => {
+    expect(
+      RunRecordSchema.safeParse({
+        id: "run_001",
+        origin: { kind: "root" },
+        startedAt: "t",
+        endedAt: "t2",
+        abandonedAt: "dc_001",
+      }).success,
+    ).toBe(false);
+    expect(
+      RunRecordSchema.safeParse({
+        id: "run_001",
+        origin: { kind: "root" },
+        startedAt: "t",
+        endedAt: "t2",
+        ending: "end_001",
+        abandonedAt: "dc_001",
+      }).success,
     ).toBe(false);
   });
 

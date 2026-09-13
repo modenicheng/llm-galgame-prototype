@@ -88,6 +88,16 @@ describe("transitionOutlineNode", () => {
     expect(transitionOutlineNode(node, "realized")).toBeUndefined();
   });
 
+  it("rejects an instantiatedBy that is not a scene id (schema guard)", () => {
+    expect(
+      OutlineNodeSchema.safeParse({ ...node, status: "active", instantiatedBy: "not-a-scene" })
+        .success,
+    ).toBe(false);
+    expect(
+      OutlineNodeSchema.safeParse({ ...node, status: "active", instantiatedBy: "dc_001" }).success,
+    ).toBe(false);
+  });
+
   it("refuses transitions out of terminal statuses", () => {
     const pruned = transitionOutlineNode(node, "pruned");
     expect(pruned).toBeDefined();

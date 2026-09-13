@@ -68,6 +68,9 @@ export interface GraphStorePort {
 
   saveCursor(cursor: ActiveCursor): Promise<void>;
 
+  /** Remove the cursor file (run reached its ending — no active run). */
+  clearCursor(): Promise<void>;
+
   /** Null when no cursor file exists (fresh game); a corrupt file warns and reads as null. */
   loadCursor(): Promise<ActiveCursor | null>;
 }

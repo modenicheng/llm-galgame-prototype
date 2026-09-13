@@ -41,6 +41,10 @@ import {
   StateSnapshotSchema,
 } from "../../core/graph/types.js";
 import {
+  DecisionIdSchema,
+  EdgeIdSchema,
+} from "../../core/graph/ids.js";
+import {
   GAME_STORAGE_LAYOUT,
   GameIdSchema,
   decisionSnapshotPath,
@@ -63,9 +67,12 @@ const DecisionRecordSchema = z.object({
 
 const EdgeRecordSchema = z
   .object({
-    id: PlotEdgeSchema.shape.id,
-    from: PlotEdgeSchema.shape.from,
-    choice: PlotEdgeSchema.shape.choice,
+    id: EdgeIdSchema,
+    from: DecisionIdSchema,
+    choice: z.object({
+      kind: z.enum(["option", "free_input"]),
+      text: z.string().min(1),
+    }),
     payload: EdgePayloadStatsSchema,
     to: EdgeEndpointSchema,
     /** 仅 `to.kind === "ending"` 时内联（结局没有快照归宿）。 */
@@ -320,6 +327,10 @@ export class GameGraphStore implements GraphStorePort {
     const tmpPath = `${cursorPath}.tmp-${process.pid}-${Date.now()}`;
     await writeFile(tmpPath, JSON.stringify(cursor), "utf8");
     await rename(tmpPath, cursorPath);
+  }
+
+  async clearCursor(): Promise<void> {
+    await rm(this.filePath(GAME_STORAGE_LAYOUT.cursor), { force: true });
   }
 
   async loadCursor(): Promise<ActiveCursor | null> {

@@ -8,6 +8,7 @@
  */
 
 import type { NarrativeBriefRequest, NarrativeBrief } from "../narrative/narrative-brief.js";
+import type { MemoryDigest } from "../graph/types.js";
 import type { StoredEvent } from "../../schema.js";
 
 export type NarrativeCheckpointReason =
@@ -18,6 +19,18 @@ export type NarrativeCheckpointReason =
 export interface NarrativeDirectorPort {
   /** Synchronous per-turn digest for the model. */
   getBrief(request: NarrativeBriefRequest): NarrativeBrief;
+
+  /**
+   * 当前记忆子层摘要——决策节点入口/末态快照的唯一记忆真源
+   * （执行清单 M1.1 决议）。必须是纯读取：不触发整理、不改状态。
+   */
+  getMemoryDigest(): MemoryDigest;
+
+  /**
+   * 从决策节点快照的 digest 重建记忆态（恢复路径；替代 initialize 的
+   * store.load 分支）。episodes 缓存从空重新积累。
+   */
+  restoreFromDigest(digest: MemoryDigest): void;
 
   /** Enqueue committed events and optionally schedule consolidation. */
   observeCommitted(events: readonly StoredEvent[]): void;

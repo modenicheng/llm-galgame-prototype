@@ -15,8 +15,8 @@ import {
   makeTestConfig,
   makeTestPorts,
   MemoryController,
+  MemoryRunGraph,
 } from "./test-helpers.js";
-import { NodeJsonlSessionStore } from "./adapters/storage/node-jsonl-session-store.js";
 import { SessionIdGenerator } from "./adapters/platform/session-id-generator.js";
 import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
 import { createGenerationHandle } from "./core/ports/story-generator-port.js";
@@ -44,6 +44,8 @@ import type { EventGroupDraft } from "./core/protocol/gal-dsl/types.js";
 import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
 import type { InteractionOpenedOutput } from "./test-helpers.js";
 import type { NarrativeDirectorPort } from "./core/ports/narrative-director-port.js";
+import { EMPTY_MEMORY_DIGEST } from "./core/graph/memory-digest.js";
+import type { MemoryDigest } from "./core/graph/types.js";
 import type {
   NarrativeBrief,
   NarrativeBriefRequest,
@@ -643,93 +645,33 @@ describe("registerBuffered", () => {
 // JSONL store initialization
 // ---------------------------------------------------------------------------
 
-describe("JSONL store initialization", () => {
-  let tempDir: string;
+describe("Graph runtime lifecycle (M1.3)", () => {
+  function makeGraphPorts() {
+    const graph = new MemoryRunGraph();
+    const ports = makeTestPorts({ graph });
+    return { graph, ports };
+  }
 
-  beforeEach(async () => {
-    tempDir = await mkdtemp(path.join(tmpdir(), "galgame-test-"));
-  });
-
-  afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true });
-  });
-
-  it("persists the full active resume cursor when flushing", async () => {
-    const store = makeTestPorts().store as import("./test-helpers.js").MemorySessionStore;
+  it("opening-only run: root run and ending, no decisions (opening events stay out of the graph)", async () => {
+    const { graph, ports } = makeGraphPorts();
     const generator = makeMockGenerator();
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
-      handleFromDrafts("opening", [narrationEvent("可以保存的开场。"), endEvent("cursor-end", "结束")]),
+      handleFromDrafts("opening", [narrationEvent("开场。"), endEvent("end_solo", "落幕")]),
     );
     const game = new Game(
-      makeGameConfig(),
-      generator,
-      makeMockStatus(),
-      makeMockMedia(),
-      undefined,
-      { ...makeTestPorts({ store }), sessionId: "cursor-session" },
-    );
-    new MemoryController({ onPlaybackReady: () => undefined }).attach(game);
-    const run = game.run();
-    await vi.waitFor(() => expect(generator.generateOpening).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() => expect((game as any).events).toHaveLength(1));
-    await game.flush();
-    const activeSnapshot = store.snapshots.at(-1);
-    game.dispatch({ type: "advance" });
-    await expect(run).resolves.toBeUndefined();
-
-    expect(activeSnapshot).toMatchObject({
-      phase: "active",
-      nextTurn: 2,
-      lastEventSeq: 1,
-      visualState: { characters: {} },
-    });
-  });
-
-  it("replays restored committed events to the narrative director before continuing", async () => {
-    const store = makeTestPorts().store as import("./test-helpers.js").MemorySessionStore;
-    const restoredEvent: StoredEvent = {
-      seq: 1,
-      turn: 1,
-      timestamp: new Date().toISOString(),
-      source: "model",
-      type: "narration",
-      text: "历史事件。",
-      line_id: "history-line",
-    } as StoredEvent;
-    store.events.push(restoredEvent);
-    const director: NarrativeDirectorPort = {
-      getBrief: vi.fn(() => ({
-        revision: 0,
-        consolidatedThroughEventSeq: 0,
-        currentEventSeq: 1,
-        checkpointCount: 0,
-        location: "unknown",
-        characters: [],
-        activeThreads: [],
-        setupDirectives: [],
-        relevantEpisodes: [],
-        anchors: [],
-        revealLocks: [],
-      })),
-      observeCommitted: vi.fn(),
-      checkpoint: vi.fn(),
-      flush: vi.fn().mockResolvedValue(undefined),
-    };
-    const generator = makeMockGenerator();
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
-      handleFromDrafts("continuation", [narrationEvent("恢复后。"), endEvent("director-end")]),
-    );
-    const game = new Game(
-      makeGameConfig(), generator, makeMockStatus(), makeMockMedia(), undefined,
-      { ...makeTestPorts({ store }), sessionId: "director-session", narrativeDirector: director },
+      makeGameConfig(), generator, makeMockStatus(), makeMockMedia(), undefined, ports,
     );
     new MemoryController().attach(game);
-    await expect(game.run()).resolves.toBeUndefined();
-    expect(director.observeCommitted).toHaveBeenCalledWith([restoredEvent]);
+    await game.run();
+
+    expect(graph.rootRunsStarted).toBe(1);
+    expect(graph.decisions).toHaveLength(0);
+    expect(graph.endings).toHaveLength(1);
+    expect(graph.endings[0]?.endingId).toMatch(/^ending:/); // 运行时重写为生成式结局 id
   });
 
-  it("preserves an active interaction cursor in the in-memory snapshot", async () => {
-    const store = makeTestPorts().store as import("./test-helpers.js").MemorySessionStore;
+  it("interaction opens a decision node, resolution opens an edge, end concludes the run", async () => {
+    const { graph, ports } = makeGraphPorts();
     const generator = makeMockGenerator();
     const interaction: InteractionEvent = {
       type: "interaction",
@@ -739,56 +681,50 @@ describe("JSONL store initialization", () => {
       options: [{ id: "yes", text: "继续" }, { id: "no", text: "停止" }],
     };
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
-      handleFromDrafts("opening", [interaction]),
+      handleFromDrafts("opening", [narrationEvent("开场。"), interaction]),
     );
-    const game = new Game(
-      makeGameConfig(), generator, makeMockStatus(), makeMockMedia(), undefined,
-      { ...makeTestPorts({ store }), sessionId: "interaction-cursor-session" },
-    );
-    new MemoryController({ onInteractionOpened: () => undefined }).attach(game);
-    const run = game.run();
-    await vi.waitFor(() => expect((game as any).resumeInteraction).toMatchObject({
-      turn: 1,
-      interaction: { interaction_id: "interaction_1" }
-    }));
-    await game.flush();
-    expect(store.snapshots.at(-1)).toMatchObject({
-      phase: "active",
-      resumeInteraction: { turn: 1, interaction: { interaction_id: "interaction_1" } }
-    });
-    game.dispatch({ type: "shutdown" });
-    await expect(run).rejects.toThrow("运行时已收到关闭指令");
-  });
-
-  it("does not reopen a cursor when a later player event resolved it", async () => {
-    const store = makeTestPorts().store as import("./test-helpers.js").MemorySessionStore;
-    const interaction: StoredEvent = {
-      type: "interaction",
-      interaction_id: "resolved-interaction",
-      prompt: "选择",
-      mode: "choice",
-      options: [{ id: "a", text: "甲" }, { id: "b", text: "乙" }],
-      seq: 1, turn: 1, timestamp: new Date().toISOString(), source: "model",
-    } as StoredEvent;
-    store.events.push(interaction, {
-      type: "player_choice", choice_id: "a", text: "甲",
-      seq: 2, turn: 1, timestamp: new Date().toISOString(), source: "player",
-    });
-    await store.saveSnapshot({ state: createInitialState(), phase: "active", nextTurn: 2 });
-    const generator = makeMockGenerator();
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
-      handleFromDrafts("continuation", [narrationEvent("继续。"), endEvent("resolved-end")]),
+      handleFromDrafts("continuation", [narrationEvent("继续。"), endEvent("end_final")]),
     );
     const game = new Game(
-      makeGameConfig(), generator, makeMockStatus(), makeMockMedia(), undefined,
-      { ...makeTestPorts({ store }), sessionId: "resolved-session" },
+      makeGameConfig(), generator, makeMockStatus(), makeMockMedia(), undefined, ports,
     );
-    new MemoryController().attach(game);
-    await expect(game.run()).resolves.toBeUndefined();
-    expect(generator.generateContinuation).toHaveBeenCalledTimes(1);
+    const controller = new MemoryController({
+      onInteractionOpened: (output, current) => {
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        current.select(output.interactionId, first.id);
+      },
+    });
+    controller.attach(game);
+    await game.run();
+
+    // 决策节点：表单快照（含 prompt 与选项文本）+ 运行时状态
+    expect(graph.decisions).toHaveLength(1);
+    const form = graph.decisions[0]?.form as {
+      mode: string;
+      prompt: string;
+      options?: string[];
+    };
+    expect(form).toMatchObject({
+      mode: "choice",
+      prompt: "继续吗？",
+      options: ["继续", "停止"],
+    });
+    const moment = graph.decisions[0]?.moment as { storyState: { scene: { id: string } } };
+    expect(moment.storyState.scene.id).toBeTruthy();
+
+    // 边：choice 语义来自玩家选择
+    expect(graph.begunEdges).toEqual([{ kind: "option", text: "继续" }]);
+    const flat = graph.appendedBatches.flat();
+    expect(flat.some((event) => event.type === "player_choice")).toBe(true);
+    expect(flat.some((event) => event.type === "narration")).toBe(true);
+
+    // 结局收束
+    expect(graph.endings).toHaveLength(1);
+    expect(graph.endings[0]?.endingId).toMatch(/^ending:/);
   });
 
-  it("clears a restored interaction cursor when that interaction resolves", () => {
+  it("clears a live interaction cursor when that interaction resolves", () => {
     const game = new Game(
       makeGameConfig(), makeMockGenerator(), makeMockStatus(), makeMockMedia(), undefined,
       makeTestPorts(),
@@ -805,172 +741,8 @@ describe("JSONL store initialization", () => {
     expect((game as any).resumeInteraction).toBeUndefined();
   });
 
-  it("reopens a trailing committed interaction when the snapshot is missing", async () => {
-    const store = makeTestPorts().store as import("./test-helpers.js").MemorySessionStore;
-    const interaction: StoredEvent = {
-      type: "interaction",
-      interaction_id: "trailing-interaction",
-      prompt: "继续？",
-      mode: "choice",
-      options: [{ id: "yes", text: "继续" }, { id: "no", text: "停止" }],
-      seq: 1,
-      turn: 1,
-      timestamp: new Date().toISOString(),
-      source: "model",
-    } as StoredEvent;
-    store.events.push(interaction);
-    const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      throw new Error("恢复会话不应重新生成 opening");
-    });
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
-      handleFromDrafts("continuation", [narrationEvent("选择后继续。"), endEvent("trailing-end")]),
-    );
-    const game = new Game(
-      makeGameConfig(), generator, makeMockStatus(), makeMockMedia(), undefined,
-      { ...makeTestPorts({ store }), sessionId: "trailing-session" },
-    );
-    const controller = new MemoryController({
-      onInteractionOpened: (output, current) => current.select(output.interactionId, "yes"),
-    });
-    controller.attach(game);
-    await expect(game.run()).resolves.toBeUndefined();
-    expect(controller.count("interaction_opened")).toBe(1);
-    expect(generator.generateOpening).not.toHaveBeenCalled();
-    expect(generator.generateContinuation).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not generate again when restoring an ended session", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const store = new NodeJsonlSessionStore(sessionsDir);
-    await store.initialize({ sessionId: "ended-session" });
-    const ending = endEvent("saved-ending", "已经结束");
-    await store.append({
-      ...ending,
-      seq: 1,
-      turn: 1,
-      timestamp: new Date().toISOString(),
-      source: "model",
-    });
-    await store.saveSnapshot({
-      state: createInitialState(),
-      phase: "ended",
-      nextTurn: 2,
-      lastEventSeq: 1,
-      ending,
-    });
-    const generator = makeMockGenerator();
-    const game = new Game(
-      makeGameConfig({ game: { sessions_dir: sessionsDir } }),
-      generator,
-      makeMockStatus(),
-      makeMockMedia(),
-      undefined,
-      { ...makeTestPorts({ store }), sessionId: "ended-session" },
-    );
-    new MemoryController().attach(game);
-    await expect(game.run()).resolves.toBeUndefined();
-    expect(generator.generateOpening).not.toHaveBeenCalled();
-    expect(generator.generateContinuation).not.toHaveBeenCalled();
-  });
-
-  it("resumes an active session from its persisted events instead of generating a new opening", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
-    const store = new NodeJsonlSessionStore(sessionsDir);
-    await store.initialize({ sessionId: "resume-session" });
-    const saved: StoredEvent = {
-      seq: 1,
-      turn: 1,
-      timestamp: new Date().toISOString(),
-      source: "model",
-      type: "narration",
-      text: "已保存的开场。",
-      line_id: "saved-line",
-    } as StoredEvent;
-    await store.append(saved);
-    await store.saveSnapshot({ state: createInitialState(), phase: "active", nextTurn: 2, lastEventSeq: 1 });
-
-    const generator = makeMockGenerator();
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      throw new Error("恢复会话不应重新生成 opening");
-    });
-    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
-      handleFromDrafts("continuation", [narrationEvent("恢复后的续写。"), endEvent("end-resume", "恢复完成。")]),
-    );
-
-    const game = new Game(
-      config,
-      generator,
-      makeMockStatus(),
-      makeMockMedia(),
-      undefined,
-      { ...makeTestPorts({ store }), sessionId: "resume-session" },
-    );
-    new MemoryController().attach(game);
-
-    await expect(game.run()).resolves.toBeUndefined();
-    expect(generator.generateOpening).not.toHaveBeenCalled();
-    expect(generator.generateContinuation).toHaveBeenCalledTimes(1);
-  });
-
-  it("should create the sessions directory during run()", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
-    const generator = makeMockGenerator();
-    const status = makeMockStatus();
-    const media = makeMockMedia();
-
-    // Mock the generator to throw after init so run() doesn't loop forever
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
-      () =>
-        createGenerationHandle("opening", async () => {
-          throw new Error("stop");
-        }),
-    );
-
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
-    new MemoryController().attach(game);
-
-    try {
-      await game.run();
-    } catch {
-      // Expected — generator throws after initialization
-    }
-
-    // store.initialize() calls mkdir, so sessions dir should exist
-    const { stat } = await import("node:fs/promises");
-    const dirStat = await stat(sessionsDir);
-    expect(dirStat.isDirectory()).toBe(true);
-  });
-
-  it("should create a .jsonl file and write events to it during a successful run", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
-    const status = makeMockStatus();
-    const media = makeMockMedia();
-
-    const generator = makeMockGenerator();
-    // Return a minimal [narration, end] segment so run() completes
-    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
-      handleFromDrafts("opening", [narrationEvent("It begins."), endEvent("end_1", "Fin.")]),
-    );
-
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
-    new MemoryController().attach(game);
-    await game.run();
-
-    // Verify the jsonl file exists and has content
-    const { readFile } = await import("node:fs/promises");
-    const store = (game as any).store;
-    const content = await readFile(store.location, "utf8");
-    expect(content).toContain('"type":"narration"');
-    expect(content).toContain('"type":"end"');
-  });
-
   it("preserves generated events and repairs the segment when the opening stream fails", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1002,7 +774,7 @@ describe("JSONL store initialization", () => {
       },
     );
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const controller = new MemoryController();
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
@@ -1015,8 +787,7 @@ describe("JSONL store initialization", () => {
   });
 
   it("keeps repairing after the budget is exhausted (no fatal on truncated tail)", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1051,7 +822,7 @@ describe("JSONL store initialization", () => {
       },
     );
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const controller = new MemoryController();
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
@@ -1063,8 +834,7 @@ describe("JSONL store initialization", () => {
   });
 
   it("routes a repaired segment's choice into the normal branch flow", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1104,7 +874,7 @@ describe("JSONL store initialization", () => {
       handleFromDrafts("branch", [narrationEvent("分支内容。")]),
     );
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const controller = new MemoryController({
       onInteractionOpened: (output) => {
         const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
@@ -1121,8 +891,7 @@ describe("JSONL store initialization", () => {
   });
 
   it("does not crash when the continuation segment fails while the preview is still playing", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1178,7 +947,7 @@ describe("JSONL store initialization", () => {
         handleFromDrafts("continuation", [narrationEvent("修复续写。"), endEvent("end_1", "Fin.")]),
       );
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     controller.attach(game);
     const runPromise = game.run();
 
@@ -1218,8 +987,7 @@ describe("Input preview cancellation", () => {
   });
 
   it("aborts the stale NPC response when the preview is cancelled; its events never render", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1272,7 +1040,7 @@ describe("Input preview cancellation", () => {
       },
     });
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
@@ -1293,8 +1061,7 @@ describe("Input preview cancellation", () => {
   });
 
   it("leaves no buffered/media residue when a completed response is cancelled", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -1340,7 +1107,7 @@ describe("Input preview cancellation", () => {
       },
     });
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
@@ -2453,8 +2220,7 @@ describe("Hybrid interaction commands", () => {
   });
 
   it("selects a preset option from a hybrid interaction via commands", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2491,7 +2257,7 @@ describe("Hybrid interaction commands", () => {
       },
     });
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
@@ -2502,8 +2268,7 @@ describe("Hybrid interaction commands", () => {
   });
 
   it("after a preview cancel the hybrid re-arms BOTH paths and re-prefetches: a later select_choice is accepted and its branch plays", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2547,7 +2312,7 @@ describe("Hybrid interaction commands", () => {
         controller.cancel(output.previewId);
       },
     });
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
@@ -2585,8 +2350,7 @@ describe("Narration-only branch handoff", () => {
   });
 
   it("hands a narration-only branch over to the continuation once playable lines reach the threshold", async () => {
-    const sessionsDir = path.join(tempDir, "sessions");
-    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
 
@@ -2637,7 +2401,7 @@ describe("Narration-only branch handoff", () => {
       },
     });
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
@@ -3725,6 +3489,12 @@ function makeDirectorFake(
     },
     observeCommitted(events: readonly StoredEvent[]): void {
       calls.push({ type: "observeCommitted", events: [...events] });
+    },
+    getMemoryDigest() {
+      return EMPTY_MEMORY_DIGEST;
+    },
+    restoreFromDigest(_digest: MemoryDigest): void {
+      // 恢复路径（M1.4）接入后在此记录调用。
     },
     checkpoint(reason: string): void {
       calls.push({ type: "checkpoint", reason });

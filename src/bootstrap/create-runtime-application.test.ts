@@ -10,7 +10,7 @@
  * envelopes come from `generatorState`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -417,7 +417,7 @@ function dashscopeConfig(): AppConfig {
       segmentEnd: { kind: "complete", nonce: "0000", reason: "ending" },
     };
 
-    const app = await createRuntimeApplication({ config, sessionDir });
+    const app = await createRuntimeApplication({ config, sessionDir, gamesRoot: path.join(sessionDir, "games") });
     const controller = new MemoryController();
     controller.attach(app.game);
 
@@ -465,7 +465,7 @@ function dashscopeConfig(): AppConfig {
       segmentEnd: undefined,
     };
 
-    const app = await createRuntimeApplication({ config, sessionDir });
+    const app = await createRuntimeApplication({ config, sessionDir, gamesRoot: path.join(sessionDir, "games") });
 
     // Signal when run() reaches the interaction park point, instead of
     // sleeping a fixed duration: interaction_opened is emitted synchronously
@@ -523,6 +523,7 @@ function dashscopeConfig(): AppConfig {
     const app = await createRuntimeApplication({
       config,
       sessionDir,
+      gamesRoot: path.join(sessionDir, "games"),
       sessionId: "sess-flush",
     });
 
@@ -538,13 +539,17 @@ function dashscopeConfig(): AppConfig {
     await app.shutdown();
     await runPromise;
 
-    // 会话目录统一（audit P1-7）：事件日志与状态快照都落在
-    // sessions/<sessionId>/ 下，而不是基目录的平铺文件（跨会话互相覆盖）。
-    expect(existsSync(path.join(sessionDir, "sess-flush", "events.jsonl"))).toBe(true);
-    expect(existsSync(path.join(sessionDir, "sess-flush", "state.json"))).toBe(true);
-    // The old flat paths must not exist.
-    expect(existsSync(path.join(sessionDir, "sess-flush.jsonl"))).toBe(false);
-    expect(existsSync(path.join(sessionDir, "state.json"))).toBe(false);
+    // v2 图记录（§9）：交互已打开 → 决策节点 + 游标落盘；开局段事件不入图。
+    const gamesRoot = path.join(sessionDir, "games");
+    const gameDirs = (await readdir(gamesRoot)).filter((d) => d.startsWith("game_"));
+    expect(gameDirs).toHaveLength(1);
+    const gameDir = path.join(gamesRoot, gameDirs[0]!);
+    expect(existsSync(path.join(gameDir, "graph", "decisions.jsonl"))).toBe(true);
+    expect(existsSync(path.join(gameDir, "cursor.json"))).toBe(true);
+    // 导演 flush：pending 事件整理并写入记忆缓存（工作缓存，可丢弃）。
+    expect(existsSync(path.join(sessionDir, "sess-flush", "narrative-state.json"))).toBe(true);
+    // v1 会话日志已由图存储取代。
+    expect(existsSync(path.join(sessionDir, "sess-flush", "events.jsonl"))).toBe(false);
 
     await rm(sessionDir, { recursive: true, force: true });
   });
@@ -627,7 +632,7 @@ function dashscopeConfig(): AppConfig {
       segmentEnd: { kind: "complete", nonce: "aaaa", reason: "ending" },
     };
 
-    const app = await createRuntimeApplication({ config, sessionDir, storyPlanPath, sessionId: "test-session" });
+    const app = await createRuntimeApplication({ config, sessionDir, storyPlanPath, sessionId: "test-session", gamesRoot: path.join(sessionDir, "games") });
 
     // NarrativeDirectorService is wired into the Game as a private field.
     expect((app.game as any).narrativeDirector).toBeInstanceOf(
@@ -710,6 +715,7 @@ function dashscopeConfig(): AppConfig {
     const app = await createRuntimeApplication({
       config,
       sessionDir,
+      gamesRoot: path.join(sessionDir, "games"),
       storyPlanPath,
       sessionId: "test-session",
     });
@@ -756,7 +762,7 @@ function dashscopeConfig(): AppConfig {
       segmentEnd: { kind: "complete", nonce: "bbbb", reason: "ending" },
     };
     try {
-      const app = await createRuntimeApplication({ config, sessionDir });
+      const app = await createRuntimeApplication({ config, sessionDir, gamesRoot: path.join(sessionDir, "games") });
       expect((app.game as any).narrativeDirector).toBeUndefined();
       // Event mode never assembles a director, so no plan file can exist.
       await expect(
@@ -773,7 +779,7 @@ function dashscopeConfig(): AppConfig {
     });
     const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-rs-"));
     try {
-      const first = await createRuntimeApplication({ config, sessionId: "sess-restart-1", sessionDir });
+      const first = await createRuntimeApplication({ config, sessionId: "sess-restart-1", sessionDir, gamesRoot: path.join(sessionDir, "games") });
       const oldGame = first.game;
       const oldSessionId = (oldGame as any).sessionId;
       const second = await first.restart();
@@ -826,6 +832,7 @@ function dashscopeConfig(): AppConfig {
     const app = await createRuntimeApplication({
       config,
       sessionDir,
+      gamesRoot: path.join(sessionDir, "games"),
       storyPlanPath: nonexistentPlan,
       sessionId: "test-session",
     });

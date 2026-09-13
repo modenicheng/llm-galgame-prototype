@@ -10,6 +10,16 @@
 import type { NarrativeMemoryState } from "../narrative/memory-types.js";
 import type { MemoryDigest } from "./types.js";
 
+/** 无记忆子层（event mode / director 未接入）时的空摘要。 */
+export const EMPTY_MEMORY_DIGEST: MemoryDigest = {
+  revision: 0,
+  consolidatedThroughEventSeq: 0,
+  checkpointCount: 0,
+  threads: [],
+  setups: [],
+  anchors: [],
+};
+
 /** 嵌入决策节点入口/末态快照前的摘要化（丢弃缓存态字段）。 */
 export function memoryDigestFromState(state: NarrativeMemoryState): MemoryDigest {
   return {
