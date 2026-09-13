@@ -62,7 +62,9 @@ interface DecisionNode {
   id: DecisionId;
   sceneId: SceneId;
   entryState: StateSnapshot;          // 可恢复快照 = 回溯锚点（§3.2）
-  form: InteractionFormSnapshot;      // 当时的表单：mode + 选项文本集 / placeholder
+  form: InteractionFormSnapshot;      // 当时的表单：mode + prompt + 选项文本集 / placeholder
+  // （2026-09-14 契约修订：prompt 必填。仅 mode/选项文本/placeholder 不足以
+  //   在恢复时原样重放表单；M0 契约尚无落盘数据，SNAPSHOT_VERSION 仍为 1。）
 }
 
 interface PlotEdge {
