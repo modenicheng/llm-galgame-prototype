@@ -22,7 +22,7 @@
 
 ## M1 图存储内核 + 演员接图（存档读档闭环）
 
-- [ ] M1.1 ⚠ 设计细化：记忆子层 v2 持久化——MemoryDigest 嵌入决策节点快照为**唯一真源**；NarrativeMemoryStore 的会话文件降级为工作缓存（可重建）；digest 与 canon 引用的关系（引用制，不抄写）
+- [x] M1.1 ⚠ 设计细化：记忆子层 v2 持久化（细化决议见下方「M1.1 设计细化」节）
 - [ ] M1.2 GraphStore port + JSON/JSONL adapter（§9 布局：scenes/decisions/edges/endings/runs/payloads/snapshots/cursor/stats）
 - [ ] M1.3 演员接图：Game 提交路径改造——段事件 → 边负载；交互开启 → 决策节点 + 入口快照；交互解决 → 出边 + 末态快照
 - [ ] M1.4 ⚠ 游标与恢复：cursor.json；「继续游戏」= 载入节点入口快照重建运行时（Game 必须可从 StateSnapshot 完整重建——本阶段最高风险，先写恢复路径的集成测试再实现）
@@ -30,7 +30,38 @@
 - [ ] M1.6 删除：sessions JSONL store、SessionStorePort 及全部引用；`sessions/` 运行时写路径。event mode / forced ending **暂留**（M3.5 由大纲结局驱动替代时删）
 - [ ] **GH-1 + GH-2**
 
-## M2 汇流
+### M1.1 设计细化（2026-09-13 决议）
+
+**真源层级**（恢复路径按此读取，不越级）：
+
+1. `graph/snapshots/<decisionId>.json` = 运行时状态**唯一真源**（story + visual + memoryDigest）。「继续游戏」只读这里。
+2. `graph/payloads/<edgeId>.jsonl` = 回放数据（UI/结算/审计），不是记忆真源。记录形状 = `StoredEvent` 直接逐行落盘（自带 seq/turn/source，零转换）。
+3. `world/canon.json`（M3.6 落地）= 跨周目世界真理。
+4. NarrativeMemoryStore 会话文件 = **工作缓存**（可丢弃可重建）：
+   - `narrative-state.json`：恢复路径**不读**；consolidator 照常低频写穿，恢复后被 digest 重建态自然覆盖；
+   - `episodes.jsonl`：恢复后从空重新积累（episodes 本就是 consolidator 的派生产物）；
+   - `director-plan.json`：维持现状，直到 M4.4 随 DirectorPlan 一起处理。
+
+**digest ↔ NarrativeMemoryState 纯映射**（新模块 `src/core/graph/memory-digest.ts`，core→core 依赖）：
+
+- `memoryDigestFromState(state)`：丢 `recentEpisodeIds`（recent 指针属于 episodes 缓存，不入契约）；
+- `memoryStateFromDigest(digest)`：`recentEpisodeIds` 重建为 `[]`。
+- 引用制一句话：**周目内记忆随快照走，跨周目事实走引用**——Phase B facts/beliefs 进 digest 时只存 canon 事实 id 引用 + 摘要，内容唯一存放于 canon.json。
+
+**NarrativeDirectorPort 扩展**（M1.3/M1.4 消费）：
+
+- `getMemoryDigest(): MemoryDigest`——交互打开瞬间取记忆态嵌入入口快照；
+- `restoreFromDigest(digest)`——恢复路径用它替代 `initialize()` 的 store.load() 分支。
+
+**恢复点语义**：恢复 = 回到游标所在决策节点入口（交互打开那一刻）。有 payload 文件但无 edges 记录的孤儿文件在恢复时删除，重新生成走新边 id。首个决策点之前的开局段崩溃 → 无恢复点，重开新周目（dev 接受）。
+
+**快照复用不变量**：下一个决策点的入口快照 = 前一条边的 endState（同一次快照写两处）；ending 收束时 endState 单独捕获。汇流比较因此天然对齐同一种货币（§3.3 不变量成立的结构保证）。
+
+**场景节点判定（M1 无编剧过渡）**：`StoryState.scene.id` 首次出现 → 建 SceneNode（status=active）；M1 bootstrap 单个 seed 大纲节点（`ol_` 前缀、active）写入 outline.json，全部场景 outlineRef 指向它。realized 迁移不做（M5 结算细化）；M3.2 真实大纲落地后 dev 期不迁移旧 game。
+
+**seq / turn 连续性（恢复后计数器播种）**：契约不加字段。恢复时 floor = max(该节点全部入边的 payload.lastSeq, digest.consolidatedThroughEventSeq)，seq 计数器从 floor 起步；turn floor 取入边 payload 末事件的 turn。周目内 seq 严格单调递增，consolidator 的 `consolidatedThroughEventSeq` 语义保持成立。
+
+
 
 - [ ] M2.1 ConfluenceJudge port（接口签名按契约冻结）+ 首个 adapter（LLM 主观判定，复用现有 LLM client；确定性比较器为可插拔可选件，默认不实现）
 - [ ] M2.2 场景内汇流：新边 endState vs 同场景既有决策节点入口态 → 命中即指向既有节点（判定凭据落盘到边）；异步后台，不阻塞播放

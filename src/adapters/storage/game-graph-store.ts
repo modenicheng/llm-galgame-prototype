@@ -1,0 +1,347 @@
+/**
+ * Node.js 剧情图存储（设计 §9 布局，执行清单 M1.2）。
+ *
+ * 文件布局由 `GAME_STORAGE_LAYOUT` 冻结；本类只做三件事：JSONL 追加与
+ * latest-wins 读取、快照/游标的原子单文件读写、边 endState 的派生与一致
+ * 性校验。损坏的 JSONL 行跳过（不掩盖后续行）；结构级损坏（索引行存在
+ * 而快照缺失）大声抛错——那是恢复路径的真源，静默降级等于丢档。
+ */
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import path from "node:path";
+import { z } from "zod";
+import { isStoredEvent } from "./stored-event.js";
+import type { StoredEvent } from "../../schema.js";
+import type {
+  ActiveCursor,
+  DecisionNode,
+  EndingNode,
+  PlotEdge,
+  RunRecord,
+  SceneNode,
+  StateSnapshot,
+} from "../../core/graph/types.js";
+import {
+  ActiveCursorSchema,
+  ConfluenceEvidenceSchema,
+  DecisionNodeSchema,
+  EdgeEndpointSchema,
+  EdgePayloadStatsSchema,
+  EndingNodeSchema,
+  InteractionFormSnapshotSchema,
+  PlotEdgeSchema,
+  RunRecordSchema,
+  SceneNodeSchema,
+  StateSnapshotSchema,
+} from "../../core/graph/types.js";
+import {
+  GAME_STORAGE_LAYOUT,
+  GameIdSchema,
+  decisionSnapshotPath,
+  edgePayloadPath,
+  type DecisionId,
+  type EdgeId,
+  type RunId,
+} from "../../core/graph/ids.js";
+import type { GraphStorePort } from "../../core/ports/graph-store-port.js";
+
+// ---------------------------------------------------------------------------
+// 磁盘记录 schema（索引行 ≠ 契约记录：entryState/endState 的真源拆分见端口头注）
+// ---------------------------------------------------------------------------
+
+const DecisionRecordSchema = z.object({
+  id: DecisionNodeSchema.shape.id,
+  sceneId: DecisionNodeSchema.shape.sceneId,
+  form: InteractionFormSnapshotSchema,
+});
+
+const EdgeRecordSchema = z
+  .object({
+    id: PlotEdgeSchema.shape.id,
+    from: PlotEdgeSchema.shape.from,
+    choice: PlotEdgeSchema.shape.choice,
+    payload: EdgePayloadStatsSchema,
+    to: EdgeEndpointSchema,
+    /** 仅 `to.kind === "ending"` 时内联（结局没有快照归宿）。 */
+    endState: StateSnapshotSchema.optional(),
+    confluence: ConfluenceEvidenceSchema.optional(),
+  })
+  .refine((record) => (record.to.kind === "ending") === (record.endState !== undefined), {
+    message: "inline endState is required exactly for ending endpoints",
+  });
+
+type EdgeRecord = z.infer<typeof EdgeRecordSchema>;
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+/** 键序无关的 JSON 比较（zod exactOptional 字段 absent/undefined 等价）。 */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : 1));
+  return `{${entries
+    .map(([key, v]) => `${JSON.stringify(key)}:${stableStringify(v)}`)
+    .join(",")}}`;
+}
+
+async function readJsonlLines(filePath: string): Promise<string[]> {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf8");
+  } catch {
+    return [];
+  }
+  return raw.split("\n").filter((line) => line.trim().length > 0);
+}
+
+/** 解析 JSONL 行，损坏行跳过；返回按文件序的合法记录。 */
+async function parseJsonl<T>(filePath: string, schema: z.ZodType<T>): Promise<T[]> {
+  const records: T[] = [];
+  for (const line of await readJsonlLines(filePath)) {
+    try {
+      const parsed: unknown = JSON.parse(line);
+      const result = schema.safeParse(parsed);
+      if (result.success) records.push(result.data);
+    } catch {
+      // 一行损坏不得掩盖 append-only 日志的其余部分。
+    }
+  }
+  return records;
+}
+
+/** latest-wins：同 id 多行时取最后一次出现。 */
+function latestById<T extends { id: string }>(records: readonly T[]): Map<string, T> {
+  return new Map(records.map((record) => [record.id, record]));
+}
+
+// ---------------------------------------------------------------------------
+// store
+// ---------------------------------------------------------------------------
+
+export class GameGraphStore implements GraphStorePort {
+  readonly location: string;
+
+  constructor(gamesRoot: string, gameId: string) {
+    if (!GameIdSchema.safeParse(gameId).success) {
+      throw new Error(`非法 gameId：${gameId}`);
+    }
+    this.location = path.resolve(gamesRoot, gameId);
+  }
+
+  private filePath(relPath: string): string {
+    return path.join(this.location, ...relPath.split("/"));
+  }
+
+  private async appendRecord(relPath: string, record: unknown): Promise<void> {
+    await appendFile(this.filePath(relPath), `${JSON.stringify(record)}\n`, "utf8");
+  }
+
+  async initialize(): Promise<void> {
+    await mkdir(this.filePath(GAME_STORAGE_LAYOUT.payloadsDir), { recursive: true });
+    await mkdir(this.filePath(GAME_STORAGE_LAYOUT.snapshotsDir), { recursive: true });
+  }
+
+  // -- scenes / endings / runs ------------------------------------------------
+
+  async putScene(scene: SceneNode): Promise<void> {
+    SceneNodeSchema.parse(scene);
+    await this.appendRecord(GAME_STORAGE_LAYOUT.scenes, scene);
+  }
+
+  async putEnding(ending: EndingNode): Promise<void> {
+    EndingNodeSchema.parse(ending);
+    await this.appendRecord(GAME_STORAGE_LAYOUT.endings, ending);
+  }
+
+  async putRun(run: RunRecord): Promise<void> {
+    RunRecordSchema.parse(run);
+    await this.appendRecord(GAME_STORAGE_LAYOUT.runs, run);
+  }
+
+  async getRun(id: RunId): Promise<RunRecord | null> {
+    const run = latestById(
+      await parseJsonl(this.filePath(GAME_STORAGE_LAYOUT.runs), RunRecordSchema),
+    ).get(id);
+    return run ?? null;
+  }
+
+  // -- decisions ----------------------------------------------------------------
+
+  async putDecision(node: DecisionNode): Promise<void> {
+    const parsed = DecisionNodeSchema.parse(node);
+    // 先写快照再写索引行：索引行存在而快照缺失是结构损坏（读取时抛错），
+    // 反向的孤儿快照无害。
+    await this.writeSnapshot(parsed.id, parsed.entryState);
+    await this.appendRecord(GAME_STORAGE_LAYOUT.decisions, {
+      id: parsed.id,
+      sceneId: parsed.sceneId,
+      form: parsed.form,
+    });
+  }
+
+  private async writeSnapshot(decisionId: DecisionId, snapshot: StateSnapshot): Promise<void> {
+    const snapshotPath = this.filePath(decisionSnapshotPath(decisionId));
+    const tmpPath = `${snapshotPath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tmpPath, JSON.stringify(snapshot), "utf8");
+    await rename(tmpPath, snapshotPath);
+  }
+
+  private async readSnapshot(decisionId: DecisionId): Promise<StateSnapshot> {
+    const snapshotPath = this.filePath(decisionSnapshotPath(decisionId));
+    let raw: string;
+    try {
+      raw = await readFile(snapshotPath, "utf8");
+    } catch {
+      throw new Error(`决策节点快照缺失（结构损坏）：${snapshotPath}`);
+    }
+    return StateSnapshotSchema.parse(JSON.parse(raw));
+  }
+
+  private async composeDecision(
+    record: z.infer<typeof DecisionRecordSchema>,
+  ): Promise<DecisionNode> {
+    return {
+      id: record.id,
+      sceneId: record.sceneId,
+      entryState: await this.readSnapshot(record.id),
+      form: record.form,
+    };
+  }
+
+  async getDecision(id: DecisionId): Promise<DecisionNode | null> {
+    const record = latestById(
+      await parseJsonl(this.filePath(GAME_STORAGE_LAYOUT.decisions), DecisionRecordSchema),
+    ).get(id);
+    return record === undefined ? null : await this.composeDecision(record);
+  }
+
+  async listDecisions(): Promise<DecisionNode[]> {
+    const records = latestById(
+      await parseJsonl(this.filePath(GAME_STORAGE_LAYOUT.decisions), DecisionRecordSchema),
+    );
+    const nodes: DecisionNode[] = [];
+    for (const record of records.values()) {
+      nodes.push(await this.composeDecision(record));
+    }
+    return nodes;
+  }
+
+  // -- edges ----------------------------------------------------------------
+
+  async putEdge(edge: PlotEdge): Promise<void> {
+    const parsed = PlotEdgeSchema.parse(edge);
+    let record: EdgeRecord;
+    if (parsed.to.kind === "ending") {
+      record = parsed;
+    } else {
+      // 决策端点：endState 由后继入口快照派生，落盘前校验一致（§3.3 不变量
+      // 的写入门禁——不一致即 Game 侧 bug，大声拒绝）。
+      const successorEntry = await this.readSnapshot(parsed.to.id);
+      if (stableStringify(successorEntry) !== stableStringify(parsed.endState)) {
+        throw new Error(
+          `边 ${parsed.id} 的 endState 与后继节点 ${parsed.to.id} 的入口快照不一致`,
+        );
+      }
+      const { endState: _derived, ...index } = parsed;
+      record = index;
+    }
+    await this.appendRecord(GAME_STORAGE_LAYOUT.edges, record);
+  }
+
+  private async composeEdge(record: EdgeRecord): Promise<PlotEdge> {
+    const endState =
+      record.to.kind === "ending" ? record.endState : await this.readSnapshot(record.to.id);
+    if (endState === undefined) {
+      throw new Error(`结局边 ${record.id} 缺少内联 endState`);
+    }
+    return {
+      id: record.id,
+      from: record.from,
+      choice: record.choice,
+      payload: record.payload,
+      endState,
+      to: record.to,
+      ...(record.confluence === undefined ? {} : { confluence: record.confluence }),
+    };
+  }
+
+  async listEdges(): Promise<PlotEdge[]> {
+    const records = latestById(
+      await parseJsonl(this.filePath(GAME_STORAGE_LAYOUT.edges), EdgeRecordSchema),
+    );
+    const edges: PlotEdge[] = [];
+    for (const record of records.values()) {
+      edges.push(await this.composeEdge(record));
+    }
+    return edges;
+  }
+
+  // -- payloads（回放数据） -----------------------------------------------------
+
+  async appendPayload(edgeId: EdgeId, event: StoredEvent): Promise<void> {
+    await appendFile(
+      this.filePath(edgePayloadPath(edgeId)),
+      `${JSON.stringify(event)}\n`,
+      "utf8",
+    );
+  }
+
+  async readPayload(edgeId: EdgeId): Promise<StoredEvent[]> {
+    const events: StoredEvent[] = [];
+    for (const line of await readJsonlLines(this.filePath(edgePayloadPath(edgeId)))) {
+      try {
+        const parsed: unknown = JSON.parse(line);
+        if (isStoredEvent(parsed)) events.push(parsed);
+      } catch {
+        // 跳过损坏行。
+      }
+    }
+    return events;
+  }
+
+  async deletePayload(edgeId: EdgeId): Promise<void> {
+    await rm(this.filePath(edgePayloadPath(edgeId)), { force: true });
+  }
+
+  // -- cursor ----------------------------------------------------------------
+
+  async saveCursor(cursor: ActiveCursor): Promise<void> {
+    const cursorPath = this.filePath(GAME_STORAGE_LAYOUT.cursor);
+    const tmpPath = `${cursorPath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tmpPath, JSON.stringify(cursor), "utf8");
+    await rename(tmpPath, cursorPath);
+  }
+
+  async loadCursor(): Promise<ActiveCursor | null> {
+    const cursorPath = this.filePath(GAME_STORAGE_LAYOUT.cursor);
+    let raw: string;
+    try {
+      raw = await readFile(cursorPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = undefined; // 无法解析 → 走下方统一的损坏处理
+    }
+    const result = ActiveCursorSchema.safeParse(parsed);
+    if (!result.success) {
+      console.warn(`[graph-store] 游标文件损坏，按无活动周目处理：${cursorPath}`);
+      return null;
+    }
+    return result.data;
+  }
+}

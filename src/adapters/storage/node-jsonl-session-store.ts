@@ -16,32 +16,9 @@ import type {
   SessionStorePort,
 } from "../../core/ports/session-store-port.js";
 import { InteractionEventSchema, type EndEvent, type InteractionEvent, type StoredEvent } from "../../schema.js";
-import { DialogueDraftEventSchema, NarrationDraftEventSchema } from "../../story/types.js";
+import { isStoredEvent } from "./stored-event.js";
 import { deserializeState } from "../../story/state.js";
 import type { StageCue, VisualState } from "../../core/presentation/types.js";
-
-function isStoredEvent(value: unknown): value is StoredEvent {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  if (
-    typeof record.seq !== "number" || !Number.isInteger(record.seq) || record.seq <= 0 ||
-    typeof record.turn !== "number" || !Number.isInteger(record.turn) || record.turn <= 0 ||
-    typeof record.timestamp !== "string" || record.timestamp.length === 0 ||
-    (record.source !== "model" && record.source !== "player") ||
-    typeof record.type !== "string"
-  ) return false;
-
-  if (record.source === "model") {
-    if (record.type === "dialogue") return DialogueDraftEventSchema.safeParse(record).success && typeof record.line_id === "string";
-    if (record.type === "narration") return NarrationDraftEventSchema.safeParse(record).success && typeof record.line_id === "string";
-    if (record.type === "interaction") return InteractionEventSchema.safeParse(record).success;
-    return record.type === "end" && typeof record.ending_id === "string" && typeof record.text === "string";
-  }
-  if (record.type === "player_choice") return typeof record.choice_id === "string" && typeof record.text === "string";
-  if (record.type === "player_input") return typeof record.interaction_id === "string" && typeof record.text === "string";
-  return record.type === "player_dialogue" && typeof record.interaction_id === "string" &&
-    typeof record.speaker === "string" && typeof record.text === "string" && typeof record.line_id === "string";
-}
 
 function isEndEvent(value: unknown): value is EndEvent {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;

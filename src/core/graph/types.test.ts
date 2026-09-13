@@ -9,37 +9,8 @@ import {
   PlotEdgeSchema,
   RunRecordSchema,
   StateSnapshotSchema,
-  type StateSnapshot,
 } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-export function makeSnapshot(overrides?: Partial<StateSnapshot>): StateSnapshot {
-  return {
-    snapshotVersion: 1,
-    storyState: {
-      scene: { id: "scene_1", location: "地下室", purpose: "发现旧终端" },
-      canon: {},
-      characters: {},
-      open_threads: [],
-      recent_summary: "林澈在废弃校舍发现了仍在运行的旧终端。",
-      player_profile: { recent_tendencies: [] },
-    },
-    visualState: { characters: {} },
-    memoryDigest: {
-      revision: 0,
-      consolidatedThroughEventSeq: 0,
-      checkpointCount: 0,
-      threads: [],
-      setups: [],
-      anchors: [],
-    },
-    outlineRevision: 0,
-    ...overrides,
-  };
-}
+import { makeSnapshot } from "./testing.js";
 
 const hybridForm = { mode: "hybrid", options: ["追问", "离开"], placeholder: "或输入……" };
 
