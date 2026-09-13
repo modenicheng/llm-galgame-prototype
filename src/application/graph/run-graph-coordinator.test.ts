@@ -173,30 +173,30 @@ describe("RunGraphCoordinator", () => {
   });
 });
 
+/** 建到「游标停在 D2」的图：D1 --E1(seq4,5)--> D2。 */
+async function buildToCursorAtD2(root: string, gameId: string) {
+  const { coordinator, store } = reopenAt(root, gameId);
+  await coordinator.startRootRun();
+  const d1 = await coordinator.openDecision({
+    modelSceneId: createInitialState().scene.id,
+    form: makeForm(),
+    moment: makeMoment(),
+  });
+  await coordinator.beginEdge({ kind: "option", text: "追问" });
+  const e1Events = [makeStoredEvent(4), makeStoredEvent(5, 2)];
+  await coordinator.appendEdgeEvents(e1Events);
+  const entry2 = makeMoment();
+  const d2 = await coordinator.openDecision({
+    modelSceneId: createInitialState().scene.id,
+    form: makeForm({ prompt: "第二个决策" }),
+    moment: entry2,
+  });
+  return { coordinator, store, d1, d2, e1Events, entry2 };
+}
+
 describe("RunGraphCoordinator restore (M1.4)", () => {
   /** makeMoment 的 scene id——生产中 openDecision 的 modelSceneId 恒等于 moment.storyState.scene.id。 */
   const SCENE_ID = createInitialState().scene.id;
-
-  /** 建到「游标停在 D2」的图：D1 --E1(seq4,5)--> D2。 */
-  async function buildToCursorAtD2(root: string, gameId: string) {
-    const { coordinator, store } = reopenAt(root, gameId);
-    await coordinator.startRootRun();
-    const d1 = await coordinator.openDecision({
-      modelSceneId: SCENE_ID,
-      form: makeForm(),
-      moment: makeMoment(),
-    });
-    await coordinator.beginEdge({ kind: "option", text: "追问" });
-    const e1Events = [makeStoredEvent(4), makeStoredEvent(5, 2)];
-    await coordinator.appendEdgeEvents(e1Events);
-    const entry2 = makeMoment();
-    const d2 = await coordinator.openDecision({
-      modelSceneId: SCENE_ID,
-      form: makeForm({ prompt: "第二个决策" }),
-      moment: entry2,
-    });
-    return { coordinator, store, d1, d2, e1Events, entry2 };
-  }
 
   it("empty storage reads as fresh and registers a root run", async () => {
     const { coordinator, store, root } = await makeCoordinator();
@@ -314,6 +314,74 @@ describe("RunGraphCoordinator restore (M1.4)", () => {
       const { coordinator: reopened } = reopenAt(made.root, made.gameId);
       const resume = await reopened.restoreOrCreateRun();
       expect(resume).toEqual({ kind: "ended", endingId, endingText: null });
+    } finally {
+      await rm(made.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("RunGraphCoordinator retrace (M1.5)", () => {
+  it("restart abandons the active run at the cursor and opens a retrace run bound to the cursor", async () => {
+    const made = await makeCoordinator();
+    try {
+      const built = await buildToCursorAtD2(made.root, made.gameId);
+      const oldRunId = (await built.store.listRuns()).at(-1)!.id;
+
+      const { coordinator: reopened, store: store2 } = reopenAt(made.root, made.gameId);
+      const resume = await reopened.restoreOrCreateRun({ restart: true });
+      if (resume.kind !== "active") throw new Error(`expected active, got ${resume.kind}`);
+      expect(resume.restore.decision.id).toBe(built.d2);
+
+      // 旧周目弃局留痕（latest-wins），新周目 origin=retrace 且游标改绑
+      const runs = await store2.listRuns();
+      const oldRun = runs.find((run) => run.id === oldRunId);
+      expect(oldRun?.abandonedAt).toBe(built.d2);
+      const newRun = runs.at(-1)!;
+      expect(newRun.id).not.toBe(oldRunId);
+      expect(newRun.origin).toEqual({ kind: "retrace", from: built.d2 });
+      expect((await store2.loadCursor())?.runId).toBe(newRun.id);
+
+      // retrace 周目的新选择产生新边（D2 出边此前不存在）
+      await reopened.beginEdge({ kind: "option", text: "新的选择" });
+      await reopened.appendEdgeEvents([makeStoredEvent(6)]);
+      const ending = await reopened.reachEnding({ endingId: "done", moment: makeMoment() });
+      const edges = await store2.listEdges();
+      expect(edges).toHaveLength(2);
+      expect(edges[1]?.from).toBe(built.d2);
+      expect(edges[1]?.to).toEqual({ kind: "ending", id: ending });
+      const finished = (await store2.listRuns()).find((run) => run.id === newRun.id);
+      expect(finished?.ending).toBe(ending);
+    } finally {
+      await rm(made.root, { recursive: true, force: true });
+    }
+  });
+
+  it("restart on an ended world (no cursor) starts a fresh root run instead of reporting the ending", async () => {
+    const made = await makeCoordinator();
+    try {
+      const { coordinator } = reopenAt(made.root, made.gameId);
+      await coordinator.startRootRun();
+      await coordinator.reachEnding({ endingId: "solo", moment: makeMoment() });
+
+      const { coordinator: reopened, store: store2 } = reopenAt(made.root, made.gameId);
+      const resume = await reopened.restoreOrCreateRun({ restart: true });
+      expect(resume).toEqual({ kind: "fresh" });
+      const runs = await store2.listRuns();
+      expect(runs).toHaveLength(2);
+      expect(runs.at(-1)?.origin).toEqual({ kind: "root" });
+      expect(runs.at(-1)?.endedAt).toBeUndefined();
+    } finally {
+      await rm(made.root, { recursive: true, force: true });
+    }
+  });
+
+  it("restart on an empty world simply starts the first root run", async () => {
+    const made = await makeCoordinator();
+    try {
+      const { coordinator: reopened, store: store2 } = reopenAt(made.root, made.gameId);
+      const resume = await reopened.restoreOrCreateRun({ restart: true });
+      expect(resume).toEqual({ kind: "fresh" });
+      expect(await store2.listRuns()).toHaveLength(1);
     } finally {
       await rm(made.root, { recursive: true, force: true });
     }

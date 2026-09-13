@@ -184,7 +184,14 @@ export class GameGraphStore implements GraphStorePort {
   }
 
   async listRuns(): Promise<RunRecord[]> {
-    return parseJsonl(this.filePath(GAME_STORAGE_LAYOUT.runs), RunRecordSchema);
+    // latest-wins 折叠，按各周目最后一次写入排序：末位 = 最近活动的周目
+    // （弃局/结局更新会再追加一行，折叠后每个周目恰一条记录）。
+    const records = await parseJsonl(this.filePath(GAME_STORAGE_LAYOUT.runs), RunRecordSchema);
+    const lastIdx = new Map<string, number>();
+    records.forEach((record, index) => lastIdx.set(record.id, index));
+    return [...latestById(records).values()].sort(
+      (a, b) => (lastIdx.get(a.id) ?? 0) - (lastIdx.get(b.id) ?? 0),
+    );
   }
 
   // -- decisions ----------------------------------------------------------------

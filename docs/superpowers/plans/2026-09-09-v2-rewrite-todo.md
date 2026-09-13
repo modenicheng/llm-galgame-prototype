@@ -26,7 +26,7 @@
 - [ ] M1.2 GraphStore port + JSON/JSONL adapter（§9 布局：scenes/decisions/edges/endings/runs/payloads/snapshots/cursor/stats）
 - [ ] M1.3 演员接图：Game 提交路径改造——段事件 → 边负载；交互开启 → 决策节点 + 入口快照；交互解决 → 出边 + 末态快照
 - [x] M1.4 ✅ 游标与恢复：cursor.json；「继续游戏」= 载入节点入口快照重建运行时（Game 必须可从 StateSnapshot 完整重建——本阶段最高风险，先写恢复路径的集成测试再实现）。落地形态见下方「游标恢复的三态入口」；恢复集成测试：协调器 6 例 + Game 真存储跨重启 2 例 + 守卫回归 1 例。
-- [ ] M1.5 新周目入口：root 开局 / retrace（载入快照 → 重放表单 → 新选择产生新边）
+- [x] M1.5 ✅ 新周目入口：root 开局 / retrace（载入快照 → 重放表单 → 新选择产生新边）。落地：`restoreOrCreateRun({restart:true})`——弃局活跃周目（abandonedAt=游标位）→ 游标节点开 retrace 新周目（CurrentRun 携带 origin，结局回写不再覆盖来源）→ 表单重放；bootstrap `restart()`（restart_session 指令路径）以 runMode="restart" 重建。同选项快进**推迟到 M5.3**（见下方 M5.3 注记）。
 - [ ] M1.6 删除：sessions JSONL store、SessionStorePort 及全部引用；`sessions/` 运行时写路径。event mode / forced ending **暂留**（M3.5 由大纲结局驱动替代时删）
 - [ ] **GH-1 + GH-2**
 
@@ -98,7 +98,7 @@
 
 - [ ] M5.1 总览场景图（realized / active 渲染；大纲前沿对玩家不可见）
 - [ ] M5.2 决策子图展开（场景内决策节点）
-- [ ] M5.3 回溯入口（选节点 → 入口快照 → 新周目重放表单）
+- [ ] M5.3 回溯入口（选节点 → 入口快照 → 新周目重放表单）。**含同选项快进**（2026-09-14 自 M1.5 推迟至此）：快进 = 玩家在回溯节点重选与某条既有出边完全一致的选项时沿旧边直接跳到后继表单。M1.5 不实现的原因：restart 只回溯到游标节点，而游标恒为最前沿（无出边），快进在该入口下不可达——只有 M5.3 的任意祖先节点回溯才会命中既有出边。beginEdge 届时返回 `{opened} | {fast_forward: RestorePoint}`，结局端点出边不参与快进（重选结局选项走新生成，如实留第二条边）。
 - [ ] M5.4 结算与图鉴：stats 计数器、结局页、伏笔回收率 / 大纲完成度
 - [ ] M5.5 通关打分 + 大纲回顾解锁（评价喂回编剧）
 - [ ] M5.6 节点删除 UI（DeleteBranch + 级联 GC；若 M1 已实现存储层 GC 则此处仅接 UI）
@@ -158,6 +158,15 @@
   `interactionCount` 清零（event mode 的 max_interactions 不跨恢复累计，
   event mode 本身将随 M3.5 删除）。bootstrap 增加 `options.gameId`（世界
   身份跨启动固定，宿主「继续游戏」传同一 id；缺省仍是每启动新世界）。
+- 2026-09-14（M1.5）：`GamePorts.runMode`（resume/restart）+ `restoreOrCreateRun({restart})`；
+  协调器 `restartFromCursor` 弃局 + retrace；`CurrentRun` 携带 origin（修复：
+  reachEnding 回写 run 记录时硬编码 root 会覆盖 retrace 来源——真 bug，测试捕获）。
+  `listRuns` 语义定为 latest-wins 折叠、按最后写入排序（弃局/结局更新行折叠，
+  末位 = 最近活动周目）。已知留痕缺口（dev 接受）：首个决策点之前 restart，
+  旧 root run 无 abandonedAt 可记（契约 abandonedAt 是 DecisionId），记录保持
+  无终态标记。
+- 2026-09-14（M1.5）：同选项快进自 M1.5 推迟到 M5.3——restart 只回溯游标节点，
+  游标恒无出边，快进不可达；实现它即死代码（详见 M5.3 注记）。
 - 2026-09-13（M1.3）：`SceneNode` 延迟到首个决策点才落盘（场景与决策 1:1 惰性创建）——
   模型场景 id → SceneNode 的映射通过扫描决策节点入口快照的
   `storyState.scene.id` 重建，契约无需增加字段；无任何决策的场景不留图记录（M1 接受）。

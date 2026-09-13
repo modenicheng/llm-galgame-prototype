@@ -168,6 +168,7 @@ export async function createRuntimeApplication(
     config: AppConfig,
     sessionId: string,
     options: RuntimeApplicationOptions,
+    runMode: "resume" | "restart" = "resume",
   ): Promise<Game> => {
     // --- Narrative director assembly (§7.1) ---
     const diagnostics = new ConsoleDiagnosticSink();
@@ -211,6 +212,7 @@ export async function createRuntimeApplication(
       ids: new SessionIdGenerator(),
       sessionId,
       diagnostics,
+      runMode,
       ...(narrativeDirector ? { narrativeDirector } : {}),
     }, assetCatalog);
   };
@@ -249,12 +251,13 @@ export async function createRuntimeApplication(
       await game.flush();
     },
     restart: async () => {
-      // 关停旧会话（unwind + 落盘），再用新 session id 重建 game。
+      // 关停旧会话（unwind + 落盘），再以 restart 模式重建 game：弃局活跃
+      // 周目、在游标节点开 retrace 新周目（M1.5）；无档则开新 root 周目。
       game.dispatch({ type: "shutdown" });
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       await game.flush();
       const freshSessionId = new SessionIdGenerator().nextSessionId();
-      game = await buildGameFor(config, freshSessionId, options);
+      game = await buildGameFor(config, freshSessionId, options, "restart");
       game.subscribe((output) => projection.applyOutput(output));
       // 原地替换 game 字段并返回同一 app 对象：宿主持有的 app 引用保持有效，
       // 只需重新调用 app.game.run()。

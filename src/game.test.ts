@@ -1143,6 +1143,100 @@ describe("M1.4 游标恢复（真存储跨重启）", () => {
     );
     expect(endedOutput?.ending.text).toBe(firstEnded?.ending.text);
   });
+
+  it("M1.5 restart: rebuilds at the cursor form, abandons the old run, and the new choice makes a new edge", async () => {
+    const make = makeGraphs();
+    const { graph, store } = make();
+
+    // —— 第一次运行：推进到第二个决策点后中断 ——
+    const gen1 = makeMockGenerator();
+    (gen1.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
+        narrationEvent("开场叙事。"),
+        {
+          type: "choice",
+          prompt: "第一次选择：",
+          options: [{ id: "a", text: "救她" }, { id: "b", text: "离开" }],
+        },
+      ]),
+    );
+    (gen1.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [
+        narrationEvent("第一次选择后的叙事。"),
+        {
+          type: "choice",
+          prompt: "第二次选择：",
+          options: [{ id: "c", text: "追上去" }, { id: "d", text: "留下" }],
+        },
+      ]),
+    );
+    let opens1 = 0;
+    const controller1 = new MemoryController({
+      onInteractionOpened: (output) => {
+        opens1 += 1;
+        if (opens1 === 1) {
+          const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+          controller1.select(output.interactionId, first.id);
+        }
+      },
+    });
+    const game1 = new Game(
+      makeGameConfig(), gen1, makeMockStatus(), makeMockMedia(), undefined,
+      { ...makeTestPorts({ graph }), sessionId: "run1" },
+    );
+    controller1.attach(game1);
+    const run1 = game1.run();
+    await vi.waitFor(() => expect(opens1).toBe(2));
+    game1.dispatch({ type: "shutdown" });
+    await expect(run1).rejects.toThrow("运行时已收到关闭指令");
+
+    // —— restart 重建：弃局旧周目，在游标表单上重开新周目 ——
+    const { graph: graph2, store: store2 } = make();
+    const gen2 = makeMockGenerator();
+    (gen2.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation2", [
+        narrationEvent("重来之后的叙事。"),
+        endEvent("end_retry", "这次走到了结局。"),
+      ]),
+    );
+    const controller2 = new MemoryController({
+      onInteractionOpened: (output) => {
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[1]!;
+        controller2.select(output.interactionId, first.id); // 这次选另一个选项
+      },
+    });
+    const game2 = new Game(
+      makeGameConfig(), gen2, makeMockStatus(), makeMockMedia(), undefined,
+      { ...makeTestPorts({ graph: graph2 }), sessionId: "run2", runMode: "restart" },
+    );
+    controller2.attach(game2);
+    await expect(game2.run()).resolves.toBeUndefined();
+
+    // 不重新生成 opening；游标表单重放（第二次选择）
+    expect(gen2.generateOpening).not.toHaveBeenCalled();
+    expect(controller2.count("interaction_opened")).toBe(1);
+    const reopened = controller2.outputs.find(
+      (output): output is RuntimeOutput & { type: "interaction_opened" } =>
+        output.type === "interaction_opened",
+    );
+    expect(reopened?.interaction.prompt).toBe("第二次选择：");
+
+    // 周目记账：run1 弃局于游标；run2 origin=retrace 且已结局
+    const runs = await store2.listRuns();
+    expect(runs).toHaveLength(2);
+    const cursorPos = runs[0]?.abandonedAt;
+    expect(cursorPos).toMatch(/^dc_/);
+    expect(runs[1]?.origin).toEqual({ kind: "retrace", from: cursorPos });
+    expect(runs[1]?.ending).toMatch(/^end_/);
+    expect(await store2.loadCursor()).toBeNull();
+
+    // 图：旧边 D1→D2 + 新边 D2→结局；无重复场景节点
+    const edges = await store2.listEdges();
+    expect(edges).toHaveLength(2);
+    expect(edges[1]?.choice).toEqual({ kind: "option", text: "留下" });
+    const scenesText = await readFile(path.join(store2.location, "graph/scenes.jsonl"), "utf8");
+    expect(scenesText.trim().split("\n")).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

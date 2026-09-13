@@ -69,7 +69,11 @@ export interface GraphStorePort {
 
   getRun(id: RunId): Promise<RunRecord | null>;
 
-  /** All run records in append order (last element = most recently written). */
+  /**
+   * All runs, latest-wins collapsed (one record per run), ordered by each
+   * run's most recent write — the last element is the most recently active
+   * run. Abandon/ending updates supersede earlier lines.
+   */
   listRuns(): Promise<RunRecord[]>;
 
   saveCursor(cursor: ActiveCursor): Promise<void>;

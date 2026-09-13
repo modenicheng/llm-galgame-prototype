@@ -120,7 +120,7 @@ export class MemoryRunGraph implements RunGraphPort {
   resume: RunResume = { kind: "fresh" };
   private idCounter = 0;
 
-  async restoreOrCreateRun(): Promise<RunResume> {
+  async restoreOrCreateRun(_options?: { restart?: boolean }): Promise<RunResume> {
     if (this.resume.kind === "fresh") await this.startRootRun();
     return this.resume;
   }

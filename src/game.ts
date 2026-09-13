@@ -179,6 +179,12 @@ export interface GamePorts {
   sessionId?: string;
   diagnostics?: DiagnosticSink;
   narrativeDirector?: NarrativeDirectorPort;
+  /**
+   * run() 的图入口模式（M1.5）：resume = 有档续档/无档新局（默认）；
+   * restart = 宿主 restart_session 重建后——弃局活跃周目并在游标节点
+   * 开 retrace 新周目（无档则开新 root 周目）。
+   */
+  runMode?: "resume" | "restart";
 }
 
 /** Raised when the driver sends `shutdown`. */
@@ -259,6 +265,7 @@ export class Game {
   private readonly metrics: Metrics;
   private choiceTimestamp: number | null = null;
   private readonly narrativeDirector: NarrativeDirectorPort | undefined;
+  private readonly runMode: "resume" | "restart";
   private readonly playbackBuffer = new PlaybackBuffer();
   private readonly generationScheduler = new GenerationScheduler();
   /**
@@ -326,6 +333,7 @@ export class Game {
     this.ids = ports.ids;
     this.diagnostics = ports.diagnostics ?? silentDiagnosticSink;
     this.narrativeDirector = ports.narrativeDirector;
+    this.runMode = ports.runMode ?? "resume";
     this.sessionId = ports.sessionId ?? this.ids.nextSessionId();
     this.interactionPolicy = new InteractionPolicy(config.interaction);
     this.storyState = createInitialState();
@@ -381,10 +389,10 @@ export class Game {
       location: this.graph.location,
     });
 
-    // 「继续游戏」统一入口（M1.4）：有游标 → 入口快照重建运行时并重放
-    // 表单；周目已完结 → 只补发结局；否则全新开局。开局段崩溃无恢复点
-    // （M1.1 决议）。
-    const resume = await this.graph.restoreOrCreateRun();
+    // 「继续游戏」统一入口（M1.4/M1.5）：有游标 → 入口快照重建运行时并
+    // 重放表单（restart 模式则先弃局旧周目、开 retrace 新周目）；周目已
+    // 完结 → 只补发结局（restart 模式改开新 root 周目）；否则全新开局。
+    const resume = await this.graph.restoreOrCreateRun({ restart: this.runMode === "restart" });
     if (resume.kind === "ended") {
       this.status.setPhase("结束", "剧情已经结束");
       this.emit({

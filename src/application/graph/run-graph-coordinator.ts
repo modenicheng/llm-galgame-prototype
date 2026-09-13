@@ -26,6 +26,7 @@ import type {
   DecisionNode,
   InteractionFormSnapshot,
   PlotEdge,
+  RunRecord,
   SceneNode,
   StateSnapshot,
 } from "../../core/graph/types.js";
@@ -60,6 +61,8 @@ interface OpenEdge {
 interface CurrentRun {
   id: RunId;
   startedAt: string;
+  /** 周目来源（root/retrace）——结局收束回写 run 记录时必须原样保留。 */
+  origin: RunRecord["origin"];
 }
 
 export class RunGraphCoordinator implements RunGraphPort {
@@ -84,11 +87,12 @@ export class RunGraphCoordinator implements RunGraphPort {
     const run: CurrentRun = {
       id: this.newId(RUN_ID_PREFIX) as RunId,
       startedAt: this.clock.nowIso(),
+      origin: { kind: "root" },
     };
     this.currentRun = run;
     this.lastDecisionId = null;
     this.openEdge = null;
-    await this.store.putRun({ id: run.id, origin: { kind: "root" }, startedAt: run.startedAt });
+    await this.store.putRun({ id: run.id, origin: run.origin, startedAt: run.startedAt });
     return run.id;
   }
 
@@ -97,12 +101,16 @@ export class RunGraphCoordinator implements RunGraphPort {
    * 无游标 → 最新周目已完结则补报结局，否则开新局。孤儿 payload（崩溃时
    * 已追加事件但边记录未落盘）在恢复时删除——重生成走新边 id（M1.1 决议）。
    */
-  async restoreOrCreateRun(): Promise<RunResume> {
+  async restoreOrCreateRun(options?: { restart?: boolean }): Promise<RunResume> {
     await this.store.initialize();
     const cursor = await this.store.loadCursor();
     if (cursor === null) {
       const lastRun = (await this.store.listRuns()).at(-1);
-      if (lastRun?.endedAt !== undefined && lastRun.ending !== undefined) {
+      if (
+        !options?.restart &&
+        lastRun?.endedAt !== undefined &&
+        lastRun.ending !== undefined
+      ) {
         return {
           kind: "ended",
           endingId: lastRun.ending,
@@ -112,7 +120,37 @@ export class RunGraphCoordinator implements RunGraphPort {
       await this.startRootRun();
       return { kind: "fresh" };
     }
+    if (options?.restart) {
+      return { kind: "active", restore: await this.restartFromCursor(cursor) };
+    }
     return { kind: "active", restore: await this.hydrateFromCursor(cursor) };
+  }
+
+  /**
+   * M1.5（重来）：活跃周目弃局留痕（abandonedAt = 游标位），在游标节点
+   * 开启 retrace 新周目并改绑游标。图如实记录两次周目；快进/回溯到祖先
+   * 节点随 M5.3 回溯入口接入（游标节点恒为前沿、无出边，同选项快进在此
+   * 入口语义下不可达——见执行清单 M1.5 注记）。
+   */
+  private async restartFromCursor(cursor: ActiveCursor): Promise<RestorePoint> {
+    const restore = await this.hydrateFromCursor(cursor);
+    const previous = await this.store.getRun(cursor.runId);
+    if (previous !== null && previous.endedAt === undefined) {
+      await this.store.putRun({ ...previous, abandonedAt: cursor.position });
+    }
+    const run: CurrentRun = {
+      id: this.newId(RUN_ID_PREFIX) as RunId,
+      startedAt: this.clock.nowIso(),
+      origin: { kind: "retrace", from: cursor.position },
+    };
+    this.currentRun = run;
+    await this.store.putRun({
+      id: run.id,
+      origin: { kind: "retrace", from: cursor.position },
+      startedAt: run.startedAt,
+    });
+    await this.store.saveCursor({ runId: run.id, position: cursor.position });
+    return restore;
   }
 
   /** 从游标重建协调器状态机与恢复点材料（快照缺失时 store 会大声抛错）。 */
@@ -150,7 +188,7 @@ export class RunGraphCoordinator implements RunGraphPort {
 
     const watermark = decision.entryState.memoryDigest.consolidatedThroughEventSeq;
     const pathLastSeq = pathEvents.at(-1)?.seq ?? 0;
-    this.currentRun = { id: cursor.runId, startedAt: run.startedAt };
+    this.currentRun = { id: cursor.runId, startedAt: run.startedAt, origin: run.origin };
     this.lastDecisionId = cursor.position;
     this.openEdge = null;
     return {
@@ -278,7 +316,7 @@ export class RunGraphCoordinator implements RunGraphPort {
 
     await this.store.putRun({
       id: this.currentRun.id,
-      origin: { kind: "root" },
+      origin: this.currentRun.origin,
       startedAt: this.currentRun.startedAt,
       endedAt: this.clock.nowIso(),
       ending: endingId,

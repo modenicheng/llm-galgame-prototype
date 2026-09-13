@@ -70,10 +70,14 @@ export interface RunGraphPort {
   /**
    * 「继续游戏」统一入口：无游标且最新周目未完结 → 开启全新 root run
    * （返回 fresh）；游标存在 → 水合状态机并返回恢复点（active）；最新
-   * 周目已完结 → 返回其结局（ended，不改变状态机）。实现内部负责孤儿
-   * payload 清理与场景节点缓存重建。
+   * 周目已完结 → 返回其结局（ended，不改变状态机）。
+   *
+   * `restart: true`（宿主 restart_session / 「重来」）：活跃周目弃局
+   * （abandonedAt = 游标位）并在游标节点开启 retrace 新周目——表单重放、
+   * 新选择产生新边（M1.5）；已完结世界则直接开新 root 周目（再玩一轮），
+   * 永不返回 ended。实现内部负责孤儿 payload 清理与场景节点缓存重建。
    */
-  restoreOrCreateRun(): Promise<RunResume>;
+  restoreOrCreateRun(options?: { restart?: boolean }): Promise<RunResume>;
 
   /** 全新开局：登记 root 周目（游标在首个决策点出现前不落盘）。 */
   startRootRun(): Promise<RunId>;
