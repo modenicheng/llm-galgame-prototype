@@ -1,6 +1,5 @@
 /**
- * StoredEvent 的磁盘行守卫 —— v1 session 事件日志与 v2 边负载（回放数据）
- * 共用同一份校验，避免两处各写一套判定（单一真源）。
+ * StoredEvent 的磁盘行守卫 —— v2 边负载（回放数据）的唯一校验入口。
  */
 import { InteractionEventSchema, type StoredEvent } from "../../schema.js";
 import { DialogueDraftEventSchema, NarrationDraftEventSchema } from "../../story/types.js";

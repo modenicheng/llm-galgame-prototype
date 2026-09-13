@@ -27,7 +27,7 @@
 - [ ] M1.3 演员接图：Game 提交路径改造——段事件 → 边负载；交互开启 → 决策节点 + 入口快照；交互解决 → 出边 + 末态快照
 - [x] M1.4 ✅ 游标与恢复：cursor.json；「继续游戏」= 载入节点入口快照重建运行时（Game 必须可从 StateSnapshot 完整重建——本阶段最高风险，先写恢复路径的集成测试再实现）。落地形态见下方「游标恢复的三态入口」；恢复集成测试：协调器 6 例 + Game 真存储跨重启 2 例 + 守卫回归 1 例。
 - [x] M1.5 ✅ 新周目入口：root 开局 / retrace（载入快照 → 重放表单 → 新选择产生新边）。落地：`restoreOrCreateRun({restart:true})`——弃局活跃周目（abandonedAt=游标位）→ 游标节点开 retrace 新周目（CurrentRun 携带 origin，结局回写不再覆盖来源）→ 表单重放；bootstrap `restart()`（restart_session 指令路径）以 runMode="restart" 重建。同选项快进**推迟到 M5.3**（见下方 M5.3 注记）。
-- [ ] M1.6 删除：sessions JSONL store、SessionStorePort 及全部引用；`sessions/` 运行时写路径。event mode / forced ending **暂留**（M3.5 由大纲结局驱动替代时删）
+- [x] M1.6 ✅ 删除：sessions JSONL store（node-jsonl-session-store + 测试 + SessionStorePort 整文件）；`sessions_dir` 配置保留（narrative memory 会话文件仍用，非事件日志）。event mode / forced ending **暂留**（M3.5 由大纲结局驱动替代时删）
 - [ ] **GH-1 + GH-2**
 
 ### M1.1 设计细化（2026-09-13 决议）
