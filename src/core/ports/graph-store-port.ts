@@ -58,6 +58,9 @@ export interface GraphStorePort {
   /** Missing log reads as empty. */
   readPayload(edgeId: EdgeId): Promise<StoredEvent[]>;
 
+  /** Edge ids that have a payload log on disk (recorded or orphaned). */
+  listPayloadIds(): Promise<EdgeId[]>;
+
   /** Remove an orphaned payload log (no edge record) — restore cleanup. */
   deletePayload(edgeId: EdgeId): Promise<void>;
 
@@ -65,6 +68,9 @@ export interface GraphStorePort {
   putRun(run: RunRecord): Promise<void>;
 
   getRun(id: RunId): Promise<RunRecord | null>;
+
+  /** All run records in append order (last element = most recently written). */
+  listRuns(): Promise<RunRecord[]>;
 
   saveCursor(cursor: ActiveCursor): Promise<void>;
 

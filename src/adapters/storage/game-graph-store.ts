@@ -9,6 +9,7 @@
 import {
   appendFile,
   mkdir,
+  readdir,
   readFile,
   rename,
   rm,
@@ -182,6 +183,10 @@ export class GameGraphStore implements GraphStorePort {
     return run ?? null;
   }
 
+  async listRuns(): Promise<RunRecord[]> {
+    return parseJsonl(this.filePath(GAME_STORAGE_LAYOUT.runs), RunRecordSchema);
+  }
+
   // -- decisions ----------------------------------------------------------------
 
   async putDecision(node: DecisionNode): Promise<void> {
@@ -314,6 +319,18 @@ export class GameGraphStore implements GraphStorePort {
       }
     }
     return events;
+  }
+
+  async listPayloadIds(): Promise<EdgeId[]> {
+    let entries: string[];
+    try {
+      entries = await readdir(this.filePath(GAME_STORAGE_LAYOUT.payloadsDir));
+    } catch {
+      return [];
+    }
+    return entries
+      .filter((name) => name.endsWith(".jsonl"))
+      .map((name) => name.slice(0, -".jsonl".length) as EdgeId);
   }
 
   async deletePayload(edgeId: EdgeId): Promise<void> {

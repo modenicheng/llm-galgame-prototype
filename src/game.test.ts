@@ -5,17 +5,20 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Game } from "./game.js";
 import { Metrics } from "./runtime/metrics.js";
+import { GameGraphStore } from "./adapters/storage/game-graph-store.js";
+import { RunGraphCoordinator } from "./application/graph/run-graph-coordinator.js";
 import { createInitialState } from "./story/state.js";
 import {
   makeTestConfig,
   makeTestPorts,
   MemoryController,
   MemoryRunGraph,
+  FakeClock,
 } from "./test-helpers.js";
 import { SessionIdGenerator } from "./adapters/platform/session-id-generator.js";
 import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
@@ -724,23 +727,6 @@ describe("Graph runtime lifecycle (M1.3)", () => {
     expect(graph.endings[0]?.endingId).toMatch(/^ending:/);
   });
 
-  it("clears a live interaction cursor when that interaction resolves", () => {
-    const game = new Game(
-      makeGameConfig(), makeMockGenerator(), makeMockStatus(), makeMockMedia(), undefined,
-      makeTestPorts(),
-    );
-    const interaction: InteractionEvent = {
-      type: "interaction",
-      interaction_id: "restored-choice",
-      prompt: "选择",
-      mode: "choice",
-      options: [{ id: "a", text: "甲" }, { id: "b", text: "乙" }],
-    };
-    (game as any).resumeInteraction = { turn: 1, interaction };
-    (game as any).resolveInteraction("restored-choice", "choice");
-    expect((game as any).resumeInteraction).toBeUndefined();
-  });
-
   it("preserves generated events and repairs the segment when the opening stream fails", async () => {
     const config = makeGameConfig();
     const status = makeMockStatus();
@@ -968,6 +954,194 @@ describe("Graph runtime lifecycle (M1.3)", () => {
     expect(controller.ended()).toBe(true);
     expect(controller.count("interaction_opened")).toBe(1);
     expect(generator.generateContinuation).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("M1.4 游标恢复（真存储跨重启）", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(path.join(tmpdir(), "galgame-restore-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  /** 同一游戏目录上开一套 store + 协调器；id 工厂跨重启共享（防 id 撞号）。 */
+  function makeGraphs() {
+    let n = 0;
+    const newId = (prefix: string) => `${prefix}r${++n}`;
+    const make = () => {
+      const store = new GameGraphStore(tempDir, "game_restore");
+      const graph = new RunGraphCoordinator(store, new FakeClock(), newId);
+      return { store, graph };
+    };
+    return make;
+  }
+
+  it("continues from the cursor decision after a restart: form re-presented, memory caught up, seq continuous", async () => {
+    const make = makeGraphs();
+    const { graph, store } = make();
+
+    // —— 第一次运行：推进到第二个决策点后中断 ——
+    const director1 = makeDirectorFake();
+    const gen1 = makeMockGenerator();
+    (gen1.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
+        narrationEvent("开场叙事。"),
+        {
+          type: "choice",
+          prompt: "第一次选择：",
+          options: [{ id: "a", text: "救她" }, { id: "b", text: "离开" }],
+        },
+      ]),
+    );
+    (gen1.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [
+        narrationEvent("第一次选择后的叙事。"),
+        {
+          type: "choice",
+          prompt: "第二次选择：",
+          options: [{ id: "c", text: "追上去" }, { id: "d", text: "留下" }],
+        },
+      ]),
+    );
+    let opens1 = 0;
+    const controller1 = new MemoryController({
+      onInteractionOpened: (output) => {
+        opens1 += 1;
+        // 第二个交互不回答——进程「崩溃」在游标上
+        if (opens1 === 1) {
+          const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+          controller1.select(output.interactionId, first.id);
+        }
+      },
+    });
+    const game1 = new Game(
+      makeGameConfig(), gen1, makeMockStatus(), makeMockMedia(), undefined,
+      { ...makeTestPorts({ graph }), sessionId: "run1", narrativeDirector: director1 },
+    );
+    controller1.attach(game1);
+    const run1 = game1.run();
+    await vi.waitFor(() => expect(opens1).toBe(2));
+    game1.dispatch({ type: "shutdown" });
+    await expect(run1).rejects.toThrow("运行时已收到关闭指令");
+    expect((await store.loadCursor())?.position).toMatch(/^dc_/);
+
+    // —— 重启：同一目录、全新运行时 ——
+    const { graph: graph2, store: store2 } = make();
+    const director2 = makeDirectorFake();
+    const gen2 = makeMockGenerator();
+    (gen2.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation2", [
+        narrationEvent("恢复后的叙事。"),
+        endEvent("end_restore", "恢复了。"),
+      ]),
+    );
+    const controller2 = new MemoryController({
+      onInteractionOpened: (output) => {
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        controller2.select(output.interactionId, first.id);
+      },
+    });
+    const game2 = new Game(
+      makeGameConfig(), gen2, makeMockStatus(), makeMockMedia(), undefined,
+      { ...makeTestPorts({ graph: graph2 }), sessionId: "run2", narrativeDirector: director2 },
+    );
+    controller2.attach(game2);
+    await expect(game2.run()).resolves.toBeUndefined();
+
+    // 不重新生成 opening；游标交互的表单原样重放（新运行时 id）
+    expect(gen2.generateOpening).not.toHaveBeenCalled();
+    expect(gen2.generateContinuation).toHaveBeenCalledTimes(1);
+    expect(controller2.count("interaction_opened")).toBe(1);
+    const reopened = controller2.outputs.find(
+      (output): output is RuntimeOutput & { type: "interaction_opened" } =>
+        output.type === "interaction_opened",
+    );
+    expect(reopened?.interaction.prompt).toBe("第二次选择：");
+    const reopenedOptions = (reopened?.interaction as { options?: Array<{ text: string }> }).options;
+    expect(reopenedOptions?.map((option) => option.text)).toEqual(["追上去", "留下"]);
+
+    // 导演追赶：先按快照摘要重建，再全路径重放（水位过滤交给 observeCommitted）
+    expect(director2.restoredWith).toEqual([EMPTY_MEMORY_DIGEST]);
+    const observed = director2.calls.find((call) => call.type === "observeCommitted");
+    if (observed?.type !== "observeCommitted") throw new Error("director 未收到重放");
+    expect(observed.events.map((event) => event.seq)).toEqual([3, 4, 5]);
+    expect(observed.events.at(-1)?.type).toBe("interaction");
+
+    // 图完整性：D1（首次）+ D2（游标重放）两个决策；旧边 D1→D2 + 恢复后的
+    // 新边 D2→结局；seq 跨重启连续（新边从 6 起）、游标清除
+    expect(await store2.listDecisions()).toHaveLength(2);
+    const edges = await store2.listEdges();
+    expect(edges).toHaveLength(2);
+    const freshEdge = edges.find((edge) => edge.payload.firstSeq === 6);
+    expect(freshEdge?.payload).toEqual({ eventCount: 3, firstSeq: 6, lastSeq: 8 });
+    expect(freshEdge?.to.kind).toBe("ending");
+    expect(await store2.loadCursor()).toBeNull();
+    expect(controller2.ended()).toBe(true);
+    const scenesText = await readFile(path.join(store2.location, "graph/scenes.jsonl"), "utf8");
+    expect(scenesText.trim().split("\n")).toHaveLength(1); // 场景节点缓存水合，无重复
+  });
+
+  it("a completed run restores as ended: session_ended re-emitted, no generation", async () => {
+    const make = makeGraphs();
+    const { graph, store } = make();
+
+    const gen1 = makeMockGenerator();
+    (gen1.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
+        narrationEvent("开场叙事。"),
+        {
+          type: "choice",
+          prompt: "去留：",
+          options: [{ id: "a", text: "留下" }, { id: "b", text: "离开" }],
+        },
+      ]),
+    );
+    (gen1.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结局前的叙事。"), endEvent("end_one", "完。")]),
+    );
+    const controller1 = new MemoryController({
+      onInteractionOpened: (output) => {
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        controller1.select(output.interactionId, first.id);
+      },
+    });
+    const game1 = new Game(
+      makeGameConfig(), gen1, makeMockStatus(), makeMockMedia(), undefined,
+      { ...makeTestPorts({ graph }), sessionId: "run1" },
+    );
+    controller1.attach(game1);
+    await expect(game1.run()).resolves.toBeUndefined();
+    const storedEnding = (await store.listRuns()).at(-1)?.ending;
+    expect(storedEnding).toMatch(/^end_/);
+
+    const { graph: graph2 } = make();
+    const gen2 = makeMockGenerator();
+    const controller2 = new MemoryController();
+    const game2 = new Game(
+      makeGameConfig(), gen2, makeMockStatus(), makeMockMedia(), undefined,
+      { ...makeTestPorts({ graph: graph2 }), sessionId: "run2" },
+    );
+    controller2.attach(game2);
+    await expect(game2.run()).resolves.toBeUndefined();
+
+    expect(gen2.generateOpening).not.toHaveBeenCalled();
+    expect(gen2.generateContinuation).not.toHaveBeenCalled();
+    expect(controller2.ended()).toBe(true);
+    const endedOutput = controller2.outputs.find(
+      (output): output is RuntimeOutput & { type: "session_ended" } =>
+        output.type === "session_ended",
+    );
+    expect(endedOutput?.ending.ending_id).toBe(storedEnding);
+    // 结局文本从末边负载原样回收（与第一次运行时发出的结局文本一致）
+    const firstEnded = controller1.outputs.find(
+      (output): output is RuntimeOutput & { type: "session_ended" } =>
+        output.type === "session_ended",
+    );
+    expect(endedOutput?.ending.text).toBe(firstEnded?.ending.text);
   });
 });
 
@@ -3460,8 +3634,9 @@ type DirectorCall =
 
 function makeDirectorFake(
   briefOverrides?: Partial<NarrativeBrief>,
-): NarrativeDirectorPort & { calls: DirectorCall[] } {
+): NarrativeDirectorPort & { calls: DirectorCall[]; restoredWith: MemoryDigest[] } {
   const calls: DirectorCall[] = [];
+  const restoredWith: MemoryDigest[] = [];
   const baseBrief: NarrativeBrief = {
     revision: 0,
     consolidatedThroughEventSeq: 0,
@@ -3478,6 +3653,7 @@ function makeDirectorFake(
   };
   return {
     calls,
+    restoredWith,
     getBrief(request: NarrativeBriefRequest): NarrativeBrief {
       calls.push({ type: "getBrief", request });
       return {
@@ -3493,8 +3669,9 @@ function makeDirectorFake(
     getMemoryDigest() {
       return EMPTY_MEMORY_DIGEST;
     },
-    restoreFromDigest(_digest: MemoryDigest): void {
-      // 恢复路径（M1.4）接入后在此记录调用。
+    restoreFromDigest(digest: MemoryDigest): void {
+      // 恢复路径（M1.4）：记录重建所用的记忆摘要。
+      restoredWith.push(digest);
     },
     checkpoint(reason: string): void {
       calls.push({ type: "checkpoint", reason });

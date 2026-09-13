@@ -224,6 +224,32 @@ describe("payload 与游标", () => {
     }
   });
 
+  it("roundtrips stored interaction events (envelope fields must not break the payload guard)", async () => {
+    const { store, gameDir } = await makeStore();
+    try {
+      // 回归（M1.4）：存储行 = 交互体 + seq/turn/timestamp/source 信封，
+      // strictObject 的 InteractionEventSchema 只验交互体。
+      const interaction = {
+        type: "interaction",
+        interaction_id: "interaction_2",
+        prompt: "去留：",
+        mode: "choice",
+        options: [{ id: "interaction_2_opt_0", text: "留下" }, { id: "interaction_2_opt_1", text: "离开" }],
+        seq: 5,
+        turn: 2,
+        timestamp: new Date().toISOString(),
+        source: "model",
+      } as StoredEvent;
+      await store.appendPayload("eg_i1", makeStoredEvent(4));
+      await store.appendPayload("eg_i1", interaction);
+      const events = await store.readPayload("eg_i1");
+      expect(events.map((event) => event.seq)).toEqual([4, 5]);
+      expect(events[1]?.type).toBe("interaction");
+    } finally {
+      await rm(path.dirname(gameDir), { recursive: true, force: true });
+    }
+  });
+
   it("roundtrips the cursor and reads a missing or corrupt cursor as null", async () => {
     const { store, gameDir } = await makeStore();
     try {

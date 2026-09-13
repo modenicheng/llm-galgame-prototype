@@ -25,7 +25,7 @@
 - [x] M1.1 ⚠ 设计细化：记忆子层 v2 持久化（细化决议见下方「M1.1 设计细化」节）
 - [ ] M1.2 GraphStore port + JSON/JSONL adapter（§9 布局：scenes/decisions/edges/endings/runs/payloads/snapshots/cursor/stats）
 - [ ] M1.3 演员接图：Game 提交路径改造——段事件 → 边负载；交互开启 → 决策节点 + 入口快照；交互解决 → 出边 + 末态快照
-- [ ] M1.4 ⚠ 游标与恢复：cursor.json；「继续游戏」= 载入节点入口快照重建运行时（Game 必须可从 StateSnapshot 完整重建——本阶段最高风险，先写恢复路径的集成测试再实现）
+- [x] M1.4 ✅ 游标与恢复：cursor.json；「继续游戏」= 载入节点入口快照重建运行时（Game 必须可从 StateSnapshot 完整重建——本阶段最高风险，先写恢复路径的集成测试再实现）。落地形态见下方「游标恢复的三态入口」；恢复集成测试：协调器 6 例 + Game 真存储跨重启 2 例 + 守卫回归 1 例。
 - [ ] M1.5 新周目入口：root 开局 / retrace（载入快照 → 重放表单 → 新选择产生新边）
 - [ ] M1.6 删除：sessions JSONL store、SessionStorePort 及全部引用；`sessions/` 运行时写路径。event mode / forced ending **暂留**（M3.5 由大纲结局驱动替代时删）
 - [ ] **GH-1 + GH-2**
@@ -57,11 +57,13 @@
 
 **快照复用不变量**：下一个决策点的入口快照 = 前一条边的 endState（同一次快照写两处）；ending 收束时 endState 单独捕获。汇流比较因此天然对齐同一种货币（§3.3 不变量成立的结构保证）。
 
-**恢复时的记忆追赶（2026-09-13 补充）**：快照 digest 的 `consolidatedThroughEventSeq` 之前的已整理、之后的未整理。恢复路径在 digest 重建后，把**游标节点的入边 payload** 重新喂给 `director.observeCommitted()`——其内部按 `seq > watermark` 过滤，恰好只把未整理窗口重新入队（边负载本就携带全部已提交事件），零契约变更。
+**恢复时的记忆追赶（2026-09-13 补充；2026-09-14 修正）**：快照 digest 的 `consolidatedThroughEventSeq` 之前的已整理、之后的未整理。恢复路径在 digest 重建后，把**根→游标全路径的边负载**重新喂给 `director.observeCommitted()`——其内部按 `seq > watermark` 过滤，恰好只把未整理窗口重新入队，零契约变更。~~只喂入边 payload~~（2026-09-14 修正：checkpoint 只在 interaction_completed 触发后台整理，水位可能滞后到开局面——只喂入边会丢祖先边的未整理窗口；全路径喂入在水位之下无害）。**已知洞（dev 接受）**：开局段事件不入图（M1.1 决议），其未整理残余在恢复时不可回收——与「首个决策点之前崩溃重开」同性质，M4 导演剪报接管上下文后影响趋零。
 
 **场景节点判定（M1 无编剧过渡）**：`StoryState.scene.id` 首次出现 → 建 SceneNode（status=active）；M1 bootstrap 单个 seed 大纲节点（`ol_` 前缀、active）作为全部场景的 outlineRef（修订 2026-09-13：种子大纲**文件** outline.json 随 M3.1 OutlineStore 落地，M1 只有引用目标 id）。realized 迁移不做（M5 结算细化）；M3.2 真实大纲落地后 dev 期不迁移旧 game。
 
-**seq / turn 连续性（恢复后计数器播种）**：契约不加字段。恢复时 floor = max(该节点全部入边的 payload.lastSeq, digest.consolidatedThroughEventSeq)，seq 计数器从 floor 起步；turn floor 取入边 payload 末事件的 turn。周目内 seq 严格单调递增，consolidator 的 `consolidatedThroughEventSeq` 语义保持成立。
+**seq / turn 连续性（恢复后计数器播种；2026-09-14 精确化）**：契约不加字段。恢复时 `nextSeq = max(路径末事件 seq, digest.consolidatedThroughEventSeq) + 1`（**下一个分配槽位**——语义必须是新事件不与重放事件撞号；watermark ≤ 路径末 seq 恒成立）；turn 取路径末事件（即游标交互事件自身）的 turn，首决策（无入边）为 1。周目内 seq 严格单调递增，consolidator 的 `consolidatedThroughEventSeq` 语义保持成立。
+
+**游标恢复的三态入口（2026-09-14，M1.4 落地形态）**：`RunGraphPort.restoreOrCreateRun(): RunResume`——`fresh`（无存档，内部已 startRootRun）/ `active`（游标恢复点：decision 节点 + pathEvents + nextSeq/turnFloor；协调器同时水合 currentRun/lastDecisionId/sceneNodes 缓存并清理孤儿 payload）/ `ended`（最新周目已完结：补发 session_ended，结局文本从末边负载回收，开局直落结局则用占位文本）。多入边节点取 `payload.lastSeq` 最大者（最近走过；M1.4 单入边下唯一）。Game 侧删除 v1 遗留 `resumeInteraction` 字段（v2 恢复真源是图游标+表单快照，不再有内存态恢复游标）；恢复时 `interactionCount` 清零（event mode 的 max_interactions 计数跨恢复不累计——event mode 本身 M3.5 删除）。
 
 
 
@@ -142,6 +144,20 @@
 - 2026-09-13（M1.3）：契约修订（M0 契约尚无任何落盘数据，SNAPSHOT_VERSION 仍为 1）——
   `InteractionFormSnapshot` 增加 `prompt` 必填字段：恢复重放表单需要原样还原提示语，
   仅 mode/options/placeholder 不足以重建表单。M1 收尾门时回写设计 spec §3。
+- 2026-09-14（M1.4）：修复 `isStoredEvent` 的 **v1 潜伏 bug**——存储行外层的
+  seq/turn/timestamp/source 信封使 `type:"interaction"` 事件永远无法通过
+  strictObject 的 `InteractionEventSchema`，v1 恢复走快照内 `resumeInteraction`
+  从不回读事件所以未暴露；v2 边负载回放使 interaction 事件成为承重数据
+  （游标节点的表单重放/turn 播种依赖它）。修复：校验前剥离信封字段。
+- 2026-09-14（M1.4）：`StoryStateSchema.scene.time` 与 `CharacterStateSchema`
+  的可选字段从 `.optional()` 迁移到 `z.exactOptional(...)`（即 M0 已记录的
+  zod 惯例的补齐）——否则快照解析产物无法赋回 `StoryState` 接口，恢复路径
+  编译不过。无运行时语义变化（JSON 落盘本就无显式 undefined 键）。
+- 2026-09-14（M1.4）：删除 v1 遗留的 `Game.resumeInteraction` 字段及其测试——
+  v2 恢复真源是图游标 + 契约表单快照，不再有内存态恢复游标；恢复时
+  `interactionCount` 清零（event mode 的 max_interactions 不跨恢复累计，
+  event mode 本身将随 M3.5 删除）。bootstrap 增加 `options.gameId`（世界
+  身份跨启动固定，宿主「继续游戏」传同一 id；缺省仍是每启动新世界）。
 - 2026-09-13（M1.3）：`SceneNode` 延迟到首个决策点才落盘（场景与决策 1:1 惰性创建）——
   模型场景 id → SceneNode 的映射通过扫描决策节点入口快照的
   `storyState.scene.id` 重建，契约无需增加字段；无任何决策的场景不留图记录（M1 接受）。

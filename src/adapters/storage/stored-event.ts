@@ -19,7 +19,13 @@ export function isStoredEvent(value: unknown): value is StoredEvent {
   if (record.source === "model") {
     if (record.type === "dialogue") return DialogueDraftEventSchema.safeParse(record).success && typeof record.line_id === "string";
     if (record.type === "narration") return NarrationDraftEventSchema.safeParse(record).success && typeof record.line_id === "string";
-    if (record.type === "interaction") return InteractionEventSchema.safeParse(record).success;
+    if (record.type === "interaction") {
+      // InteractionEventSchema 是 strictObject（对模型输出防多余字段），而存储行
+      // 外层还带着 seq/turn/timestamp/source 信封——校验前剥掉信封，只验交互体。
+      // （v1 潜伏 bug：恢复从不回读 interaction，边负载回放使其成为承重路径。）
+      const { seq: _seq, turn: _turn, timestamp: _timestamp, source: _source, ...interaction } = record;
+      return InteractionEventSchema.safeParse(interaction).success;
+    }
     return record.type === "end" && typeof record.ending_id === "string" && typeof record.text === "string";
   }
   if (record.type === "player_choice") return typeof record.choice_id === "string" && typeof record.text === "string";

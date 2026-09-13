@@ -7,6 +7,7 @@ import type { IdGeneratorPort } from "./core/ports/id-generator-port.js";
 import type {
   EdgeChoice,
   RunGraphPort,
+  RunResume,
 } from "./core/ports/run-graph-port.js";
 import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
 import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
@@ -115,7 +116,14 @@ export class MemoryRunGraph implements RunGraphPort {
     moment: unknown;
   }> = [];
   readonly endings: Array<{ endingId: string; moment: unknown }> = [];
+  /** 可编程的恢复结果；fresh（默认）会顺带登记一次 root run。 */
+  resume: RunResume = { kind: "fresh" };
   private idCounter = 0;
+
+  async restoreOrCreateRun(): Promise<RunResume> {
+    if (this.resume.kind === "fresh") await this.startRootRun();
+    return this.resume;
+  }
 
   async startRootRun(): Promise<string> {
     this.rootRunsStarted += 1;

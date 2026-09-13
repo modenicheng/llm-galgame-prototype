@@ -17,8 +17,12 @@ import {
 } from "./core/ports/diagnostic-sink.js";
 import type { IdGeneratorPort } from "./core/ports/id-generator-port.js";
 import type { RunGraphPort } from "./core/ports/run-graph-port.js";
+import type { RestorePoint } from "./core/ports/run-graph-port.js";
 import { EMPTY_MEMORY_DIGEST } from "./core/graph/memory-digest.js";
-import { formSnapshotFromInteraction } from "./core/graph/form.js";
+import {
+  formSnapshotFromInteraction,
+  interactionFromFormSnapshot,
+} from "./core/graph/form.js";
 import type { MemoryDigest } from "./core/graph/types.js";
 import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
@@ -306,10 +310,6 @@ export class Game {
    */
   private activePreviewId: string | null = null;
   private readonly listeners = new Set<(output: RuntimeOutput) => void>();
-  /** Restored interaction waiting for the player's decision, if any. */
-  private resumeInteraction:
-    | { turn: number; interaction: InteractionEvent; stage?: StageCue[] }
-    | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -375,18 +375,39 @@ export class Game {
   }
 
   async run(): Promise<void> {
-    await this.graph.startRootRun();
     this.emit({
       type: "session_started",
       sessionId: this.sessionId,
       location: this.graph.location,
     });
 
-    // M1.4（游标恢复）接入点：载入 cursor.json → 入口快照重建运行时 →
-    // 重放表单等待玩家决策。开局段崩溃无恢复点（M1.1 决议）。
-    this.status.setPhase("开场生成", "首条完整事件到达后立即进入播放缓冲");
-    let segment = this.startActiveSegment("opening", 1, [], []);
-    let outcome = await this.consumeActiveSegment(segment, 1, []);
+    // 「继续游戏」统一入口（M1.4）：有游标 → 入口快照重建运行时并重放
+    // 表单；周目已完结 → 只补发结局；否则全新开局。开局段崩溃无恢复点
+    // （M1.1 决议）。
+    const resume = await this.graph.restoreOrCreateRun();
+    if (resume.kind === "ended") {
+      this.status.setPhase("结束", "剧情已经结束");
+      this.emit({
+        type: "session_ended",
+        ending: {
+          type: "end",
+          ending_id: resume.endingId,
+          text: resume.endingText ?? "（故事已落幕。）",
+        },
+      });
+      return;
+    }
+
+    let segment: ActiveSegment;
+    let outcome: SegmentOutcome;
+    if (resume.kind === "active") {
+      segment = this.startRestoredSegment(resume.restore);
+      outcome = await this.resumeRestoredInteraction(segment);
+    } else {
+      this.status.setPhase("开场生成", "首条完整事件到达后立即进入播放缓冲");
+      segment = this.startActiveSegment("opening", 1, [], []);
+      outcome = await this.consumeActiveSegment(segment, 1, []);
+    }
 
     while (outcome.type !== "end") {
       // 强制收束（event mode）：强制段不得再打开交互表单。交互结果与
@@ -540,6 +561,84 @@ export class Game {
       );
       this.status.removeJob(`continuation:${currentOutcome.nextTurn}`);
     }
+  }
+
+  /**
+   * M1.4（游标恢复）：从决策节点入口快照完整重建运行时。快照是唯一真源
+   * （M1.1 决议）：story/visual 两态直接还原；导演记忆先 restoreFromDigest
+   * 再全路径重放（observeCommitted 内部按 seq 水位过滤，恰好只入队未整理
+   * 窗口）；seq/turn 计数器按恢复点播种（下一个分配槽位），周目内单调。
+   */
+  private startRestoredSegment(restore: RestorePoint): ActiveSegment {
+    const entry = restore.decision.entryState;
+    const interaction = interactionFromFormSnapshot(
+      restore.decision.form,
+      `interaction_${restore.turnFloor}`,
+    );
+    this.storyState = entry.storyState;
+    this.tailVisualState = entry.visualState;
+    this.renderedVisualState = entry.visualState;
+    this.narrativeDirector?.restoreFromDigest(entry.memoryDigest);
+    this.narrativeDirector?.observeCommitted(restore.pathEvents);
+    this.events.push(...restore.pathEvents);
+    this.seq = restore.nextSeq;
+    this.activeSegmentTurn = restore.turnFloor;
+    this.status.setPhase("恢复游戏", "已从上次决策点还原，等待你的决定");
+    const segment: ActiveSegment = {
+      turn: restore.turnFloor,
+      taskId: this.ids.nextGenerationId(`resume:${restore.turnFloor}`),
+      events: [interaction],
+      queue: new AsyncEventQueue<RuntimeModelEvent>(),
+      done: Promise.resolve(),
+      branchManager: this.createBranchManagerForTerminal(
+        interaction,
+        restore.turnFloor,
+        [...this.events],
+      ),
+      terminal: interaction,
+      schedulerReleased: true,
+      endStatus: null,
+      failed: false,
+      endingRequired: false,
+    };
+    this.pendingInteractionStage.set(interaction.interaction_id, []);
+    return segment;
+  }
+
+  /** 恢复表单的决策等待回路：与正常打开完全相同的处理函数，不重复生成。 */
+  private async resumeRestoredInteraction(segment: ActiveSegment): Promise<SegmentOutcome> {
+    const interaction = segment.terminal;
+    if (interaction === null || interaction.type !== "interaction") {
+      throw new Error("恢复段缺少交互事件（内部不变量被破坏）");
+    }
+    const turn = segment.turn;
+    const context = [...this.events];
+    if (interaction.mode === "choice") {
+      const choice: ChoiceEvent = {
+        type: "choice",
+        prompt: interaction.prompt,
+        options: interaction.options.map((option) => ({ id: option.id, text: option.text })),
+      };
+      const result = await this.handleChoice(
+        choice,
+        turn,
+        segment.branchManager,
+        context,
+        interaction.interaction_id,
+      );
+      return { type: "choice", nextTurn: turn + 1, ...result };
+    }
+    if (interaction.mode === "hybrid") {
+      return this.handleHybridInteraction(interaction, turn, segment.branchManager, context);
+    }
+    const result = await this.handleInteractionInput(interaction, turn, segment.branchManager);
+    if (result.type !== "committed") throw new RuntimeShutdownError();
+    return {
+      type: "choice",
+      nextTurn: turn + 1,
+      preview: result.preview,
+      ...(result.liveResponse ? { liveResponse: result.liveResponse } : {}),
+    };
   }
 
   private prepareContinuationAfterSelection(
@@ -923,11 +1022,6 @@ export class Game {
         form: formSnapshotFromInteraction(event),
         moment: this.currentMoment(),
       });
-      this.resumeInteraction = {
-        turn,
-        interaction: event,
-        stage: this.pendingInteractionStage.get(event.interaction_id) ?? [],
-      };
       // Event mode（audit P2-10）：交互提交时计数；达到上限后强制后续
       // 生成收束结局。
       this.interactionCount += 1;
@@ -987,9 +1081,6 @@ export class Game {
     interactionId: string,
     resolution: "choice" | "input",
   ): void {
-    if (this.resumeInteraction?.interaction.interaction_id === interactionId) {
-      this.resumeInteraction = undefined;
-    }
     this.emit({ type: "interaction_resolved", interactionId, resolution });
   }
 

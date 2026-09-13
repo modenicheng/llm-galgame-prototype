@@ -10,7 +10,11 @@
 import type { StoredEvent } from "../../schema.js";
 import type { StoryState } from "../../story/types.js";
 import type { VisualState } from "../presentation/types.js";
-import type { InteractionFormSnapshot, MemoryDigest } from "../graph/types.js";
+import type {
+  DecisionNode,
+  InteractionFormSnapshot,
+  MemoryDigest,
+} from "../graph/types.js";
 import type { DecisionId, EndingId, RunId } from "../graph/ids.js";
 
 /** 快照时刻的运行时状态（决策入口与结局末态共用）。 */
@@ -28,9 +32,48 @@ export interface EdgeChoice {
   text: string;
 }
 
+/** 恢复点：游标决策节点的完整重建材料（执行清单 M1.4）。 */
+export interface RestorePoint {
+  /** 游标决策节点（入口快照 + 表单快照）。 */
+  decision: DecisionNode;
+  /**
+   * 本周目根 → 游标的全部边负载事件（提交历史，按剧情序）。导演追赶把它
+   * 喂给 observeCommitted——内部按 seq 水位过滤，恰好只入队未整理窗口；
+   * Game 同时用它重建演员的生成上下文。
+   */
+  pathEvents: StoredEvent[];
+  /**
+   * seq 计数器播种（下一个分配槽位）：max(路径末事件 seq, digest 水位) + 1，
+   * 保证恢复后新事件不与重放事件撞号、周目内严格单调。
+   */
+  nextSeq: number;
+  /** turn 播种：路径末事件（游标交互事件自身）的 turn；首个决策点为 1。 */
+  turnFloor: number;
+}
+
+/** 「继续游戏」入口的三态结果：全新 / 周目已完结 / 游标恢复。 */
+export type RunResume =
+  | { kind: "fresh" }
+  | {
+      kind: "ended";
+      /** 已完结周目的契约结局 id。 */
+      endingId: EndingId;
+      /** 从末边负载回收的结局文本；开局直落结局（无负载）为 null。 */
+      endingText: string | null;
+    }
+  | { kind: "active"; restore: RestorePoint };
+
 export interface RunGraphPort {
   /** Human-readable root of this game's storage. */
   readonly location: string;
+
+  /**
+   * 「继续游戏」统一入口：无游标且最新周目未完结 → 开启全新 root run
+   * （返回 fresh）；游标存在 → 水合状态机并返回恢复点（active）；最新
+   * 周目已完结 → 返回其结局（ended，不改变状态机）。实现内部负责孤儿
+   * payload 清理与场景节点缓存重建。
+   */
+  restoreOrCreateRun(): Promise<RunResume>;
 
   /** 全新开局：登记 root 周目（游标在首个决策点出现前不落盘）。 */
   startRootRun(): Promise<RunId>;

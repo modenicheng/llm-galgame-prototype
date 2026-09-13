@@ -147,10 +147,10 @@ export async function createRuntimeApplication(
   const projection = new UiProjectionStoreImpl();
 
   // v2 剧情图（§9）：gameId 是世界的身份，在运行时生命周期内固定；周目
-  // （run）才是重开/回溯的单位。图存储与协调器跨 restart 共享。
-  const gameId = `game_${new Date()
-    .toISOString()
-    .replace(/[:.]/g, "-")}`;
+  // （run）才是重开/回溯的单位。图存储与协调器跨 restart 共享。宿主可传
+  // options.gameId 固定世界（「继续游戏」指向同一目录）；缺省每次启动
+  // 生成新世界。
+  const gameId = options.gameId ?? `game_${new Date().toISOString().replace(/[:.]/g, "-")}`;
   const gamesRoot = options.gamesRoot ?? "games";
   const graphStore = new GameGraphStore(gamesRoot, gameId);
   const graphCoordinator = new RunGraphCoordinator(

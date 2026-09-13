@@ -431,19 +431,23 @@ const StoryThreadSchema = z.object({
   last_touched_turn: z.number().int().nonnegative(),
 });
 
+// exactOptional：接口可选字段在 exactOptionalPropertyTypes 下不含 undefined
+// （M0 契约审查确立的 zod 惯例；此 schema 嵌入 v2 图契约的入口快照）。
 const CharacterStateSchema = z.object({
-  location: z.string().optional(),
-  emotion: z.string().optional(),
-  current_goal: z.string().optional(),
-  relationship_to_player: z.string().optional(),
-  known_facts: z.array(z.string()).optional(),
+  location: z.exactOptional(z.string()),
+  emotion: z.exactOptional(z.string()),
+  current_goal: z.exactOptional(z.string()),
+  relationship_to_player: z.exactOptional(z.string()),
+  known_facts: z.exactOptional(z.array(z.string())),
 });
 
 export const StoryStateSchema = z.object({
   scene: z.object({
     id: z.string().min(1),
     location: z.string().min(1),
-    time: z.string().optional(),
+    // exactOptional：StoryState 接口在 exactOptionalPropertyTypes 下要求
+    // 可选字段不含 undefined（M0 契约审查确立的 zod 惯例）。
+    time: z.exactOptional(z.string()),
     purpose: z.string().min(1),
   }),
   canon: z.record(z.string(), z.unknown()),

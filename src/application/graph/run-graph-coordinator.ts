@@ -16,9 +16,20 @@ import type { ClockPort } from "../../core/ports/clock-port.js";
 import type { GraphStorePort } from "../../core/ports/graph-store-port.js";
 import type {
   EdgeChoice,
+  RestorePoint,
+  RunResume,
   RuntimeMoment,
   RunGraphPort,
 } from "../../core/ports/run-graph-port.js";
+import type {
+  ActiveCursor,
+  DecisionNode,
+  InteractionFormSnapshot,
+  PlotEdge,
+  SceneNode,
+  StateSnapshot,
+} from "../../core/graph/types.js";
+import { SNAPSHOT_VERSION } from "../../core/graph/types.js";
 import type {
   DecisionId,
   EdgeId,
@@ -33,8 +44,6 @@ import {
   RUN_ID_PREFIX,
   SCENE_ID_PREFIX,
 } from "../../core/graph/ids.js";
-import type { InteractionFormSnapshot, SceneNode, StateSnapshot } from "../../core/graph/types.js";
-import { SNAPSHOT_VERSION } from "../../core/graph/types.js";
 
 /** M1 种子大纲节点 id（编剧 M3.2 接入后由真实大纲取代；不迁移旧 game）。 */
 export const SEED_OUTLINE_NODE_ID = "ol_seed";
@@ -81,6 +90,99 @@ export class RunGraphCoordinator implements RunGraphPort {
     this.openEdge = null;
     await this.store.putRun({ id: run.id, origin: { kind: "root" }, startedAt: run.startedAt });
     return run.id;
+  }
+
+  /**
+   * 「继续游戏」统一入口（M1.4）：游标存在 → 水合状态机并返回恢复点；
+   * 无游标 → 最新周目已完结则补报结局，否则开新局。孤儿 payload（崩溃时
+   * 已追加事件但边记录未落盘）在恢复时删除——重生成走新边 id（M1.1 决议）。
+   */
+  async restoreOrCreateRun(): Promise<RunResume> {
+    await this.store.initialize();
+    const cursor = await this.store.loadCursor();
+    if (cursor === null) {
+      const lastRun = (await this.store.listRuns()).at(-1);
+      if (lastRun?.endedAt !== undefined && lastRun.ending !== undefined) {
+        return {
+          kind: "ended",
+          endingId: lastRun.ending,
+          endingText: await this.endingTextOf(lastRun.ending),
+        };
+      }
+      await this.startRootRun();
+      return { kind: "fresh" };
+    }
+    return { kind: "active", restore: await this.hydrateFromCursor(cursor) };
+  }
+
+  /** 从游标重建协调器状态机与恢复点材料（快照缺失时 store 会大声抛错）。 */
+  private async hydrateFromCursor(cursor: ActiveCursor): Promise<RestorePoint> {
+    const run = await this.store.getRun(cursor.runId);
+    if (run === null) {
+      throw new Error(`游标指向不存在的周目（结构损坏）：${cursor.runId}`);
+    }
+    const decision = await this.store.getDecision(cursor.position);
+    if (decision === null) {
+      throw new Error(`游标指向不存在的决策节点（结构损坏）：${cursor.position}`);
+    }
+
+    const edges = await this.store.listEdges();
+    await this.discardOrphanPayloads(edges);
+    // 场景节点缓存按模型场景 id 重建（决策入口快照携带 StoryState.scene.id），
+    // 否则恢复后的 openDecision 会为同一场景建出重复场景节点。
+    for (const node of await this.store.listDecisions()) {
+      this.sceneNodes.set(node.entryState.storyState.scene.id, node.sceneId);
+    }
+
+    // 根 → 游标的路径回放：逐节点取「最近走过」的入边（payload.lastSeq
+    // 最大者；M1.4 单入边下唯一，M1.5 retrace 后该规则仍指向当前周目）。
+    const chunks: StoredEvent[][] = [];
+    let nodeId: DecisionId | null = cursor.position;
+    const visited = new Set<string>();
+    while (nodeId !== null && !visited.has(nodeId)) {
+      visited.add(nodeId);
+      const inEdge = pickLatestInEdge(edges, nodeId);
+      if (inEdge === undefined) break;
+      chunks.push(await this.store.readPayload(inEdge.id));
+      nodeId = inEdge.from;
+    }
+    const pathEvents = chunks.reverse().flat();
+
+    const watermark = decision.entryState.memoryDigest.consolidatedThroughEventSeq;
+    const pathLastSeq = pathEvents.at(-1)?.seq ?? 0;
+    this.currentRun = { id: cursor.runId, startedAt: run.startedAt };
+    this.lastDecisionId = cursor.position;
+    this.openEdge = null;
+    return {
+      decision,
+      pathEvents,
+      // 下一个分配槽位：新事件不与重放事件撞号（周目内严格单调）。
+      nextSeq: Math.max(pathLastSeq, watermark) + 1,
+      turnFloor: pathEvents.at(-1)?.turn ?? 1,
+    };
+  }
+
+  /** 有 payload 文件但无边记录 = 崩溃残留，删除（边负载只在收束时定形）。 */
+  private async discardOrphanPayloads(edges: readonly PlotEdge[]): Promise<void> {
+    const recorded = new Set(edges.map((edge) => edge.id));
+    for (const payloadId of await this.store.listPayloadIds()) {
+      if (!recorded.has(payloadId)) {
+        await this.store.deletePayload(payloadId);
+      }
+    }
+  }
+
+  /** 已完结周目的结局文本：从指向结局的边负载回收；开局直落结局为 null。 */
+  private async endingTextOf(endingId: EndingId): Promise<string | null> {
+    for (const edge of await this.store.listEdges()) {
+      if (edge.to.kind !== "ending" || edge.to.id !== endingId) continue;
+      const events = await this.store.readPayload(edge.id);
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const event = events[i];
+        if (event?.type === "end") return event.text ?? null;
+      }
+    }
+    return null;
   }
 
   async beginEdge(choice: EdgeChoice): Promise<void> {
@@ -209,6 +311,16 @@ function toStateSnapshot(moment: RuntimeMoment): StateSnapshot {
     memoryDigest: moment.memoryDigest,
     outlineRevision: moment.outlineRevision,
   };
+}
+
+/** 指向 `nodeId` 的入边中最近走过的一条（payload.lastSeq 最大）。 */
+function pickLatestInEdge(edges: readonly PlotEdge[], nodeId: DecisionId): PlotEdge | undefined {
+  let best: PlotEdge | undefined;
+  for (const edge of edges) {
+    if (edge.to.kind !== "decision" || edge.to.id !== nodeId) continue;
+    if (best === undefined || edge.payload.lastSeq > best.payload.lastSeq) best = edge;
+  }
+  return best;
 }
 
 /** 运行时结局 id → 契约后缀字符集（[A-Za-z0-9._-]）。 */

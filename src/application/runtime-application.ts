@@ -43,6 +43,11 @@ export interface RuntimeApplicationOptions {
   sessionDir?: string;
   /** v2 剧情图根目录（games/<gameId>/ 的父目录，§9）。默认 "games"。 */
   gamesRoot?: string;
+  /**
+   * v2 世界 id（games/<gameId> 目录名）。世界身份跨启动固定——「继续
+   * 游戏」传同一 id 即指向同一张剧情图；缺省每次启动生成新世界。
+   */
+  gameId?: string;
   /** Already-loaded config; skips the disk reload when provided. */
   config?: AppConfig;
   /** voices.yaml path (default "voices.yaml" in the cwd). */
