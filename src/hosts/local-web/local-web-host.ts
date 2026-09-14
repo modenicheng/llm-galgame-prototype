@@ -129,6 +129,7 @@ export class LocalWebHost {
       originGuard: (origin) => isAllowedOrigin(origin, host, port),
       publicConfig: this.publicConfig,
       startGame: () => this.startGame(),
+      onRestartSession: () => this.handleRestart(),
     });
     this.audioRoute = new AudioStreamRoute({
       ttsTasks: this.app.ttsTasks,
@@ -205,14 +206,25 @@ export class LocalWebHost {
    * second run loop.
    */
   private gameStarted = false;
+  /** The live run loop's promise — awaited before a restart rebuilds. */
+  private runPromise: Promise<void> | null = null;
+  /** Guards against concurrent restarts (double click, command + unwind). */
+  private restarting = false;
 
   private startGame(): void {
     if (this.gameStarted) return;
     this.gameStarted = true;
-    void this.app.game.run().catch((error: unknown) => {
+    this.runPromise = this.startRunLoop();
+  }
+
+  /** Run the bound game; exits route through restart/shutdown handling. */
+  private startRunLoop(): Promise<void> {
+    return this.app.game.run().catch((error: unknown) => {
       // RuntimeShutdownError is the expected shutdown path.
       if (error instanceof RuntimeShutdownError) return;
       if (error instanceof RestartRequestedError) {
+        // Detached on purpose: awaiting the restart here would deadlock on
+        // our own promise (handleRestart waits for this loop to settle).
         void this.handleRestart();
         return;
       }
@@ -224,17 +236,30 @@ export class LocalWebHost {
 
   /**
    * Rebuild the runtime with a fresh session id and restart the run loop
-   * (Task 10: restart_session command). The websocket is rebased onto the
-   * new game so reconnecting clients observe the fresh session.
+   * (Task 10: restart_session command). Covers every loop state: running
+   * (the dispatched command unwinds it at the next command boundary —
+   * bounded by the current generation's timeout when one is in flight),
+   * ended, or already crashed (the dispatch is a no-op). The websocket is
+   * rebased onto the new game so live controller connections observe the
+   * fresh session.
    */
-  private async handleRestart(): Promise<void> {
-    this.logger("restarting session…");
-    await this.app.restart();
-    this.runtimeWs.rebase(this.app.game);
-    void this.app.game.run().catch((error: unknown) => {
-      if (error instanceof RuntimeShutdownError) return;
-      this.logger(`game run loop exited after restart: ${String(error)}`);
-    });
+  private handleRestart(): void {
+    if (this.restarting) return;
+    this.restarting = true;
+    void (async () => {
+      try {
+        this.logger("restarting session…");
+        // Wake the run loop so it unwinds gracefully before anything is
+        // torn down; harmless if it already exited.
+        this.app.game.dispatch({ type: "restart_session" });
+        await this.runPromise?.catch(() => {});
+        await this.app.restart();
+        this.runtimeWs.rebase(this.app.game);
+        this.runPromise = this.startRunLoop();
+      } finally {
+        this.restarting = false;
+      }
+    })();
   }
 
   /** §15.3 order: stop commands → abort runtime → close WS → close HTTP → close vite. */

@@ -159,6 +159,9 @@ export class GameViewModel {
     // Reconnect restores the authoritative picture; one-shot cues from the
     // lost window must not be replayed (§6.4).
     this.cues = [];
+    // A restored projection is authoritative — a stale error from the lost
+    // socket must not survive into the restored (or restarted) session.
+    this.lastError = undefined;
     this.mode = this.deriveModeFromProjection(projection);
     this.projectionSeq += 1;
     this.notify();

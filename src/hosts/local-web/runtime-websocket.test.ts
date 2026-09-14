@@ -5,7 +5,7 @@
  * commandId dedup, controller limit (4001), token/origin rejection,
  * catalog + task-status event forwarding, and session-end cleanup.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
@@ -14,6 +14,7 @@ import type { TaskStatusEvent } from "../../application/audio/tts-task-service.j
 import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
 import type { UiProjection } from "../../shared/wire/ui-projection.js";
 import type { ServerMessage } from "../../shared/wire/server-message.js";
+import type { RuntimeStatusSnapshot } from "../../status.js";
 import { isAllowedOrigin } from "./origin-guard.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";
 import { makeFakeGame, makeFakeProjection, testDescriptor, testRecipe } from "./test-fakes.js";
@@ -97,11 +98,13 @@ describe("RuntimeWebSocket", () => {
   let projection: ReturnType<typeof makeFakeProjection>;
   let statusListener: ((event: TaskStatusEvent) => void) | null;
   let startedGame = false;
+  let restartRequests: Mock;
   const clients: WebSocket[] = [];
 
   beforeEach(async () => {
     catalog = new AudioCatalogServiceImpl();
     startedGame = false;
+    restartRequests = vi.fn();
     game = makeFakeGame();
     projection = makeFakeProjection();
 
@@ -125,6 +128,7 @@ describe("RuntimeWebSocket", () => {
       startGame: () => {
         startedGame = true;
       },
+      onRestartSession: () => restartRequests(),
       token: TOKEN,
       controllerLimit: 1,
       originGuard: (origin) => isAllowedOrigin(origin, "127.0.0.1", port),
@@ -423,6 +427,84 @@ describe("RuntimeWebSocket", () => {
       await closeMultiServer(multi, a.ws, b.ws);
     }
   });
+
+  it("routes restart_session to the host instead of the game queue", async () => {
+    const client = await connect();
+    await waitForMessage(client.messages, (m) => m.type === "projection.snapshot");
+
+    client.ws.send(
+      JSON.stringify({
+        type: "runtime.command",
+        commandId: "cmd-restart-1",
+        command: { type: "restart_session" },
+      }),
+    );
+    await waitFor(() => restartRequests.mock.calls.length > 0);
+    expect(restartRequests).toHaveBeenCalledTimes(1);
+    // The host owns the rebuild; the game queue must stay untouched (a queued
+    // restart would never be consumed once the run loop has exited).
+    expect(game.dispatch).not.toHaveBeenCalledWith({ type: "restart_session" });
+  });
+
+  it("rebase re-subscribes live controllers to the new game and pushes its snapshot", async () => {
+    const client = await connect();
+    await waitForMessage(client.messages, (m) => m.type === "projection.snapshot");
+    const snapshotCountBefore = client.messages.filter((m) => m.type === "projection.snapshot").length;
+
+    // RuntimeApplication.restart rebuilt the projection for the new session.
+    const nextGame = makeFakeGame();
+    const nextProjection: UiProjection = {
+      sessionId: "sess-next",
+      phase: "running",
+      recentLines: [],
+    };
+    projection.setSnapshot(nextProjection);
+
+    runtimeWs.rebase(nextGame.game);
+
+    const snapshotOf = (m: ServerMessage) =>
+      m.type === "projection.snapshot"
+        ? (m as { type: "projection.snapshot"; projection: UiProjection })
+        : null;
+    const start = Date.now();
+    let rebased: { projection: UiProjection } | null = null;
+    while (Date.now() - start < 2000) {
+      const found = client.messages.map(snapshotOf).find(
+        (m): m is { type: "projection.snapshot"; projection: UiProjection } =>
+          m !== null && m.projection.sessionId === "sess-next",
+      );
+      if (found) {
+        rebased = found;
+        break;
+      }
+      await sleep(5);
+    }
+    expect(rebased).not.toBeNull();
+    expect(rebased!.projection).toEqual(nextProjection);
+
+    // Old game outputs no longer reach the controller…
+    game.emit({ type: "playback_ready", event: { type: "narration", text: "旧会话", line_id: "old_1" } });
+    // …while new game outputs do, with the per-connection sequence continuing.
+    nextGame.emit({
+      type: "status_changed",
+      status: { phase: "生成", message: "写入新篇" } as RuntimeStatusSnapshot,
+    });
+    await waitForMessage(client.messages, (m) => m.type === "runtime.output" && m.output.type === "status_changed");
+    const outputs = client.messages.filter((m) => m.type === "runtime.output");
+    // Old-session line never arrived.
+    expect(
+      outputs.some(
+        (m) => m.output.type === "playback_ready" && m.output.event.type === "narration",
+      ),
+    ).toBe(false);
+    // Sequences stay strictly monotonic across the rebase.
+    const sequences = outputs.map((m) => (m as { sequence: number }).sequence);
+    for (let i = 1; i < sequences.length; i += 1) {
+      expect(sequences[i]!).toBeGreaterThan(sequences[i - 1]!);
+    }
+    expect(snapshotCountBefore).toBe(1);
+  });
+
   interface MultiServer {
     port: number;
     server: http.Server;
@@ -443,6 +525,7 @@ describe("RuntimeWebSocket", () => {
       startGame: () => {
         startedGame = true;
       },
+      onRestartSession: () => restartRequests(),
       token: TOKEN,
       controllerLimit,
       originGuard: (origin) => isAllowedOrigin(origin, "127.0.0.1", multiPort),

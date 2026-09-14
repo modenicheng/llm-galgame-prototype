@@ -111,6 +111,12 @@
   `docs/superpowers/notes/campus-ops-source-audit.md`）。
 - **文本优先**：`synthesis.provider: disabled`，音频缺省不阻塞启动。
 - **现场文档**：`docs/campus-ops-event-runbook.md`（一人操作/重开/指定种子）。
+- **展位 UI 重开闭环（Task 6，2026-09-14）**：结束页与控制条"重开"均发送
+  `restart_session`，宿主原地重建新会话（新 ID → 种子轮换），ws rebase 对
+  现有连接改挂新 game 并推送新会话投影快照；重开期间按钮 pending；会话切换
+  清空舞台与表单草稿；会话 ID 在控制条角标（点击复制）/结束页/报错横幅展示；
+  等待界面显示运行阶段文案；`UiProjectionStore` 按会话 id 变化重置，旧会话
+  状态不泄漏。生成等待中重开最迟当前段超时（约 60s）生效。
 
 待办：树莓娘正式立绘与音色授权；展位实测后的种子扩充；
 回 `main` 审查（`core:` 提交可回流，campus 内容保留本分支）。

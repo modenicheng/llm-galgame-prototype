@@ -70,17 +70,22 @@ export function makeFakeGame(): FakeGameHandle {
 
 export function makeFakeProjection(
   snapshot: UiProjection = { phase: "idle", recentLines: [] },
-): { projection: UiProjectionStore; setSnapshot: (p: UiProjection) => void } {
+): { projection: UiProjectionStore; setSnapshot: (p: UiProjection) => void; reset: Mock } {
   let current = snapshot;
+  const reset = vi.fn((sessionId: string) => {
+    current = { sessionId, phase: "running", recentLines: [] };
+  });
   return {
     projection: {
       snapshot: () => current,
       applyOutput: vi.fn(),
+      reset,
       subscribe: vi.fn(() => () => {}),
     } as unknown as UiProjectionStore,
     setSnapshot: (next) => {
       current = next;
     },
+    reset,
   };
 }
 

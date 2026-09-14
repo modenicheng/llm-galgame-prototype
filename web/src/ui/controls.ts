@@ -12,6 +12,8 @@ export interface ControlsHooks {
   onVolume(v: number): void;
   onMute(muted: boolean): void;
   onSpeed(charsPerSec: number): void;
+  /** Booth restart: opens a fresh session; current progress is lost. */
+  onRestart(): void;
 }
 
 const MODE_LABEL: Record<PlaybackMode, string> = {
@@ -32,6 +34,8 @@ export class ControlsBar {
   private readonly volumeInput: HTMLInputElement;
   private readonly muteBtn: HTMLButtonElement;
   private readonly speedBtn: HTMLButtonElement;
+  private readonly restartBtn: HTMLButtonElement;
+  private readonly sessionChip: HTMLButtonElement;
   private readonly statusDot: HTMLElement;
   private readonly statusText: HTMLElement;
   private readonly hooks: ControlsHooks;
@@ -39,6 +43,8 @@ export class ControlsBar {
   private mode: PlaybackMode = "manual";
   private muted = false;
   private speed = 32;
+  private restartPending = false;
+  private sessionId: string | undefined;
 
   constructor(root: HTMLElement, hooks: ControlsHooks, initial: { mode: PlaybackMode; volume: number; muted: boolean; speed: number }) {
     this.root = root;
@@ -93,6 +99,26 @@ export class ControlsBar {
       this.hooks.onSpeed(this.speed);
     });
 
+    this.restartBtn = document.createElement("button");
+    this.restartBtn.type = "button";
+    this.restartBtn.className = "ctl ctl--restart";
+    this.restartBtn.addEventListener("click", () => {
+      if (!this.restartPending) this.hooks.onRestart();
+    });
+
+    this.sessionChip = document.createElement("button");
+    this.sessionChip.type = "button";
+    this.sessionChip.className = "ctl ctl--session";
+    this.sessionChip.hidden = true;
+    this.sessionChip.addEventListener("click", () => {
+      const id = this.sessionId;
+      if (id !== undefined && typeof navigator?.clipboard?.writeText === "function") {
+        void navigator.clipboard.writeText(id).catch(() => {
+          // Clipboard may be denied; the chip text still shows the short id.
+        });
+      }
+    });
+
     const status = document.createElement("div");
     status.className = "ctl ctl--status";
     this.statusDot = document.createElement("span");
@@ -101,12 +127,21 @@ export class ControlsBar {
     this.statusText.className = "ctl__status-text";
     status.append(this.statusDot, this.statusText);
 
-    wrap.append(this.modeBtn, volumeLabel, this.muteBtn, this.speedBtn, status);
+    wrap.append(
+      this.modeBtn,
+      volumeLabel,
+      this.muteBtn,
+      this.speedBtn,
+      this.restartBtn,
+      status,
+      this.sessionChip,
+    );
     this.root.append(wrap);
 
     this.renderMode();
     this.renderMute();
     this.renderSpeed();
+    this.renderRestart();
   }
 
   show(): void {
@@ -134,6 +169,24 @@ export class ControlsBar {
     this.renderStatus();
   }
 
+  /** Restart-in-flight state: the button is disabled until the new session lands. */
+  setRestartPending(pending: boolean): void {
+    this.restartPending = pending;
+    this.renderRestart();
+  }
+
+  /** Show the live session id (short) with click-to-copy of the full id. */
+  setSessionId(sessionId: string | undefined): void {
+    this.sessionId = sessionId;
+    if (sessionId === undefined) {
+      this.sessionChip.hidden = true;
+      return;
+    }
+    this.sessionChip.hidden = false;
+    this.sessionChip.title = `点击复制会话 ID：${sessionId}`;
+    setText(this.sessionChip, `会话 ${sessionId.slice(0, 8)}`);
+  }
+
   private renderStatus(): void {
     const connection = (this.root.dataset.connection ?? "connecting") as ConnectionState;
     const buffer = this.bufferedMs > 0 ? ` · 缓冲 ${(this.bufferedMs / 1000).toFixed(1)}s` : "";
@@ -152,5 +205,10 @@ export class ControlsBar {
 
   private renderSpeed(): void {
     setText(this.speedBtn, `字速 ${this.speed}`);
+  }
+
+  private renderRestart(): void {
+    this.restartBtn.disabled = this.restartPending;
+    setText(this.restartBtn, this.restartPending ? "重开中…" : "重开");
   }
 }

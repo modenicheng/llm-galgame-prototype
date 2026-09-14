@@ -348,6 +348,16 @@ export class GameApp {
     this.sendCommand({ type: "cancel_input", previewId: preview.previewId });
   }
 
+  /**
+   * Ask the host to rebuild the runtime with a fresh session (campus booth:
+   * end-screen restart and stuck-session recovery). The new session id
+   * rotates the narrative seed; the rebased websocket pushes a fresh
+   * projection snapshot, which drives the UI transition.
+   */
+  restartSession(): void {
+    this.sendCommand({ type: "restart_session" });
+  }
+
   setMode(mode: PlaybackMode): void {
     this.playbackMode = mode;
     if (mode === "manual") {

@@ -351,6 +351,71 @@ describe("LocalWebHost", () => {
     expect(code).toBe(1006);
   });
 
+  it("rebuilds the runtime on restart_session and pushes the fresh snapshot", async () => {
+    // Fake RuntimeApplication.restart: mirror create-runtime-application —
+    // reset the projection and swap in a fresh game under the same app.
+    const nextGame = makeFakeGame();
+    const restart = vi.fn(async () => {
+      projection.reset("sess-next");
+      app.game = nextGame.game;
+      return app;
+    });
+    (app as unknown as { restart: unknown }).restart = restart;
+
+    const { promise: open, resolve: resolveOpen } = Promise.withResolvers<void>();
+    const messages: ServerMessage[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/runtime?token=${host.getToken()}`, {
+      origin: `http://127.0.0.1:${port}`,
+    });
+    ws.on("open", () => resolveOpen());
+    ws.on("message", (data) => messages.push(JSON.parse(String(data)) as ServerMessage));
+    ws.on("error", () => {});
+    await open;
+    const start = Date.now();
+    while (!messages.some((m) => m.type === "projection.snapshot")) {
+      if (Date.now() - start > 2000) throw new Error("no initial snapshot");
+      await sleep(5);
+    }
+
+    ws.send(
+      JSON.stringify({
+        type: "runtime.command",
+        commandId: "cmd-restart-1",
+        command: { type: "restart_session" },
+      }),
+    );
+
+    // The host unwinds the old loop via a dispatched command, rebuilds the
+    // app, rebases the websocket and starts the fresh run loop.
+    let restartCalls = 0;
+    let nextRuns = 0;
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      restartCalls = restart.mock.calls.length;
+      nextRuns = (nextGame.game as unknown as { run: { mock: { calls: unknown[] } } }).run.mock
+        .calls.length;
+      const freshSnapshot = messages.some(
+        (m) =>
+          m.type === "projection.snapshot" &&
+          (m as { projection: { sessionId?: string } }).projection.sessionId === "sess-next",
+      );
+      if (restartCalls === 1 && nextRuns === 1 && freshSnapshot) break;
+      await sleep(5);
+    }
+    expect(restartCalls).toBe(1);
+    expect(nextRuns).toBe(1);
+    expect(
+      messages.some(
+        (m) =>
+          m.type === "projection.snapshot" &&
+          (m as { projection: { sessionId?: string } }).projection.sessionId === "sess-next",
+      ),
+    ).toBe(true);
+    expect(game.dispatch).toHaveBeenCalledWith({ type: "restart_session" });
+    ws.terminate();
+    await sleep(20);
+  });
+
   it("shuts down in §15.3 order: stops commands, app shutdown, closes server", async () => {
     await host.shutdown();
     expect(app.shutdown).toHaveBeenCalledTimes(1);

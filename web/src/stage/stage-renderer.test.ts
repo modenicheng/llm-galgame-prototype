@@ -116,4 +116,18 @@ describe("StageRenderer", () => {
     renderer.apply(makeState());
     expect(container.querySelectorAll(".stage__bg").length).toBe(1);
   });
+
+  it("clear() 清空背景与角色，后续 apply 正常重建（会话切换用）", () => {
+    const { container, renderer } = setup();
+    renderer.apply(makeState());
+    renderer.clear();
+    expect(container.querySelector(".stage__bg img")).toBeNull();
+    expect(container.querySelector(".stage__bg-item")).toBeNull();
+    expect(container.querySelectorAll("figure.stage__char").length).toBe(0);
+    expect(container.dataset.bgm).toBeUndefined();
+    // 新会话的首个演出照常渲染。
+    renderer.apply(makeState());
+    expect(container.querySelector<HTMLImageElement>(".stage__bg img")?.dataset.asset).toBe("basement");
+    expect(container.querySelectorAll("figure.stage__char").length).toBe(1);
+  });
 });

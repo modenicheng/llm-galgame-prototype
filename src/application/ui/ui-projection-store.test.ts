@@ -7,6 +7,7 @@ import type {
   RuntimeInteractionEvent,
   RuntimeOutput,
 } from "../../core/runtime/runtime-output.js";
+import type { RuntimeStatusSnapshot } from "../../status.js";
 import type { RuntimePlayableEvent } from "../../schema.js";
 import { UiProjectionStoreImpl } from "./ui-projection-store.js";
 
@@ -96,5 +97,50 @@ describe("UiProjectionStore", () => {
     expect(snapshot.currentInteraction).toBeUndefined();
     expect(snapshot.currentPreview).toBeUndefined();
     expect(snapshot.currentLine).toEqual(line);
+  });
+
+  it("reset(sessionId) drops session-scoped state and re-arms as running", () => {
+    const store = new UiProjectionStoreImpl();
+    store.applyOutput({ type: "session_started", sessionId: "sess-1", location: "/tmp/a" });
+    store.applyOutput(opened("int_1"));
+    store.applyOutput({
+      type: "session_ended",
+      ending: { type: "end", ending_id: "end_1", text: "完" },
+    });
+    store.applyOutput({
+      type: "status_changed",
+      status: { phase: "结束" } as RuntimeStatusSnapshot,
+    });
+
+    store.reset("sess-2");
+    const snapshot = store.snapshot();
+    expect(snapshot).toEqual({ sessionId: "sess-2", phase: "running", recentLines: [] });
+  });
+
+  it("drops the old session's state when session_started brings a new session id", () => {
+    const store = new UiProjectionStoreImpl();
+    store.applyOutput({ type: "session_started", sessionId: "sess-1", location: "/tmp/a" });
+    store.applyOutput({ type: "playback_ready", event: line });
+    store.applyOutput({
+      type: "session_ended",
+      ending: { type: "end", ending_id: "end_1", text: "完" },
+    });
+
+    // RuntimeApplication.restart swaps in a new game; the defense in the
+    // store must keep the old ending/lines from leaking into its snapshot.
+    store.applyOutput({ type: "session_started", sessionId: "sess-2", location: "/tmp/b" });
+    const snapshot = store.snapshot();
+    expect(snapshot).toEqual({ sessionId: "sess-2", phase: "running", recentLines: [] });
+  });
+
+  it("keeps accumulating the same session when session_started repeats its id", () => {
+    const store = new UiProjectionStoreImpl();
+    store.applyOutput({ type: "session_started", sessionId: "sess-1", location: "/tmp/a" });
+    store.applyOutput({ type: "playback_ready", event: line });
+    // Re-run of the same session (process restart recovery) must not wipe it.
+    store.applyOutput({ type: "session_started", sessionId: "sess-1", location: "/tmp/a" });
+    const snapshot = store.snapshot();
+    expect(snapshot.currentLine).toEqual(line);
+    expect(snapshot.recentLines).toHaveLength(1);
   });
 });

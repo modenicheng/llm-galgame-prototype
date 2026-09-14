@@ -832,6 +832,14 @@ function dashscopeConfig(): AppConfig {
       // C7a: the fresh SessionIdGenerator id is the core restart contract —
       // the new session must not reuse the old one.
       expect((second.game as any).sessionId).not.toBe(oldSessionId);
+      // The projection must already reflect the fresh session (reset happens
+      // before the host rebases and pushes the snapshot — session_started
+      // only fires later, inside the new game's run()).
+      const snapshot = second.projection.snapshot();
+      expect(snapshot.sessionId).toBe((second.game as any).sessionId);
+      expect(snapshot.sessionId).not.toBe(oldSessionId);
+      expect(snapshot.ending).toBeUndefined();
+      expect(snapshot.recentLines).toEqual([]);
     } finally {
       await rm(sessionDir, { recursive: true, force: true });
     }

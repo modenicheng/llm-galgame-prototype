@@ -15,6 +15,7 @@ export interface AppDomRefs {
   interactionRoot: HTMLElement;
   previewRoot: HTMLElement;
   waitingEl: HTMLElement;
+  waitingPhaseEl: HTMLElement;
   controlsRoot: HTMLElement;
   startRoot: HTMLElement;
   endRoot: HTMLElement;
@@ -105,9 +106,10 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
 
   // Waiting indicator (input committed / generation in flight).
   const waitingEl = el("section", "waiting") as HTMLElement;
+  const waitingPhaseEl = el("span", "waiting__phase", "");
   const dots = el("span", "waiting__dots") as HTMLSpanElement;
   dots.append(el("i", ""), el("i", ""), el("i", ""));
-  waitingEl.append(dots, el("span", "waiting__label", "故事正在书写"));
+  waitingEl.append(dots, el("span", "waiting__label", "故事正在书写"), waitingPhaseEl);
   scene.append(waitingEl);
 
   const controlsRoot = el("section", "controls") as HTMLElement;
@@ -141,6 +143,7 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     el("div", "end-seal", "终"),
     el("h2", "end-title", "剧终"),
     el("p", "end-text", ""),
+    el("p", "end-session", ""),
     button("btn btn--ghost end-restart", "重新开始"),
   );
   endRoot.append(endInner);
@@ -162,6 +165,7 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     interactionRoot,
     previewRoot,
     waitingEl,
+    waitingPhaseEl,
     controlsRoot,
     startRoot,
     endRoot,

@@ -448,3 +448,140 @@ describe("interaction forms", () => {
     ).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Session restart (campus booth): the end-screen button and the controls-bar
+// 重开 both send restart_session; the host's rebased snapshot drives the UI
+// into the fresh session. Session id surfaces in the chip / end screen.
+// ---------------------------------------------------------------------------
+
+describe("session restart (campus booth)", () => {
+  beforeEach(stubBrowserApis);
+
+  let sequence = 0;
+  beforeEach(() => {
+    sequence = 0;
+  });
+
+  async function bootStarted(): Promise<void> {
+    const { boot } = await import("./main.js");
+    document.body.innerHTML = '<div id="app"></div>';
+    await boot();
+    startGame();
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.last).not.toBeNull();
+    });
+    FakeWebSocket.last!.open();
+    await vi.waitFor(() => {
+      const ready = FakeWebSocket.last!.sent.find(
+        (raw) => JSON.parse(raw).type === "client.ready",
+      );
+      expect(ready).toBeDefined();
+    });
+  }
+
+  function feed(output: Record<string, unknown>): void {
+    sequence += 1;
+    FakeWebSocket.last!.onmessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({ type: "runtime.output", sequence, output }),
+      }),
+    );
+  }
+
+  function feedProjection(projection: Record<string, unknown>): void {
+    FakeWebSocket.last!.onmessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({ type: "projection.snapshot", projection }),
+      }),
+    );
+  }
+
+  function sentCommands(): Array<Record<string, unknown>> {
+    return FakeWebSocket.last!.sent.map((raw) => {
+      const message = JSON.parse(raw) as { command?: Record<string, unknown> };
+      return message.command ?? message;
+    });
+  }
+
+  it("ENDING: full ending text plus session id; restart sends restart_session and follows the new session", async () => {
+    await bootStarted();
+    feed({ type: "session_started", sessionId: "sess-abc12345", location: "/sessions/sess-abc12345" });
+    feed({
+      type: "session_ended",
+      ending: { type: "end", ending_id: "end-1", text: "第一局结局全文。\n第二行。" },
+    });
+
+    const overlay = document.querySelector(".overlay--end") as HTMLElement;
+    await vi.waitFor(() => expect(overlay.hasAttribute("hidden")).toBe(false));
+    expect((document.querySelector(".end-text") as HTMLElement).textContent).toContain("第二行。");
+    expect((document.querySelector(".end-session") as HTMLElement).textContent).toContain(
+      "sess-abc12345",
+    );
+
+    const restartBtn = document.querySelector(".end-restart") as HTMLButtonElement;
+    restartBtn.click();
+    await vi.waitFor(() => {
+      expect(sentCommands().some((c) => c.type === "restart_session")).toBe(true);
+    });
+    // Pending while the rebuild is in flight; no page reload happens.
+    expect(restartBtn.disabled).toBe(true);
+    expect(restartBtn.textContent).toContain("正在开启新一局");
+
+    // The host rebases and pushes the fresh session's snapshot: pending
+    // clears, the end screen hides, and the story view re-arms.
+    feedProjection({ sessionId: "sess-next9999", phase: "running", recentLines: [] });
+    await vi.waitFor(() => {
+      expect(restartBtn.disabled).toBe(false);
+      expect(restartBtn.textContent).toBe("重新开始");
+      expect(overlay.hasAttribute("hidden")).toBe(true);
+    });
+  });
+
+  it("controls 重开 confirms, sends restart_session, and exposes the session chip", async () => {
+    const confirmStub = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirmStub);
+    await bootStarted();
+    feed({ type: "session_started", sessionId: "sess-live0001", location: "/sessions/sess-live0001" });
+
+    const restartBtn = document.querySelector(".ctl--restart") as HTMLButtonElement;
+    expect(restartBtn.textContent).toBe("重开");
+
+    // Declined confirm sends nothing.
+    restartBtn.click();
+    expect(sentCommands().some((c) => c.type === "restart_session")).toBe(false);
+
+    // Accepted confirm sends the command and parks the button.
+    confirmStub.mockReturnValue(true);
+    restartBtn.click();
+    await vi.waitFor(() => {
+      expect(sentCommands().some((c) => c.type === "restart_session")).toBe(true);
+    });
+    expect(confirmStub).toHaveBeenCalled();
+    expect(restartBtn.disabled).toBe(true);
+
+    // Session chip shows the short id.
+    const chip = document.querySelector(".ctl--session") as HTMLElement;
+    expect(chip.hasAttribute("hidden")).toBe(false);
+    expect(chip.textContent).toContain("sess-liv");
+
+    // The fresh session's snapshot re-arms the button.
+    feedProjection({ sessionId: "sess-next0002", phase: "running", recentLines: [] });
+    await vi.waitFor(() => expect(restartBtn.disabled).toBe(false));
+  });
+
+  it("shows the runtime phase message while waiting for generation", async () => {
+    await bootStarted();
+    feed({ type: "session_started", sessionId: "sess-wait", location: "/sessions/sess-wait" });
+    feed({ type: "input_committed", previewId: "pv-1" });
+    feed({
+      type: "status_changed",
+      status: { phase: "生成", message: "正在生成回复", bufferedEvents: 0, bufferedDialogueLines: 0, jobs: {}, branches: {}, media: {} as never },
+    });
+
+    const waiting = document.querySelector(".waiting") as HTMLElement;
+    expect(waiting.hasAttribute("hidden")).toBe(false);
+    const phase = document.querySelector(".waiting__phase") as HTMLElement;
+    await vi.waitFor(() => expect(phase.textContent).toContain("正在生成回复"));
+  });
+});

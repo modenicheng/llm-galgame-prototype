@@ -269,6 +269,9 @@ export async function createRuntimeApplication(
       const freshSessionId = new SessionIdGenerator().nextSessionId();
       game = await buildGameFor(config, freshSessionId, options);
       game.subscribe((output) => projection.applyOutput(output));
+      // session_started 在 run() 内才发射，晚于宿主的 ws rebase 推快照——
+      // 投影必须在这里显式重置，浏览器重连/重挂才能拿到干净的新会话快照。
+      projection.reset(freshSessionId);
       // 原地替换 game 字段并返回同一 app 对象：宿主持有的 app 引用保持有效，
       // 只需重新调用 app.game.run()。
       app.game = game;

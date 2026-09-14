@@ -24,7 +24,7 @@ import { BrowserAssetResolver } from "./stage/browser-asset-resolver.js";
 import { BgmController } from "./stage/bgm-controller.js";
 import { SoundEffectController } from "./stage/sound-effect-controller.js";
 import type { StageVisualState } from "./stage/stage-types.js";
-import { show } from "./ui/dom.js";
+import { setText, show } from "./ui/dom.js";
 import "./ui/styles.css";
 
 function tokenFromUrl(): string {
@@ -104,13 +104,46 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
         app.setTextSpeed(cps);
         dialogueBox.setCharsPerSecond(cps);
       },
+      onRestart: () => {
+        // Mid-session restart loses progress; the end-screen path does not
+        // need this guard (nothing is left to lose).
+        if (window.confirm("重开会丢弃当前进度并开启新一局，确定吗？")) {
+          beginRestart();
+        }
+      },
     },
     { mode: "manual", volume: 1, muted: false, speed: 32 },
   );
   const endScreen = new EndScreen(refs.endRoot, {
-    onRestart: () => window.location.reload(),
+    onRestart: () => beginRestart(),
   });
   const errorBanner = new ErrorBanner(refs.bannerRoot);
+
+  // ---------------------------------------------------------------------------
+  // Session restart (campus booth): ask the host to rebuild the runtime with
+  // a fresh session id (rotating the narrative seed). The rebased websocket
+  // pushes a new projection snapshot; the render router picks the new session
+  // up from there. Buttons stay pending until it lands (8s failsafe).
+  // ---------------------------------------------------------------------------
+  let restartPending = false;
+  let restartFailsafe: number | null = null;
+  const endRestartPending = (): void => {
+    restartPending = false;
+    if (restartFailsafe !== null) {
+      clearTimeout(restartFailsafe);
+      restartFailsafe = null;
+    }
+    endScreen.setRestartPending(false);
+    controls.setRestartPending(false);
+  };
+  const beginRestart = (): void => {
+    if (restartPending) return;
+    restartPending = true;
+    endScreen.setRestartPending(true);
+    controls.setRestartPending(true);
+    app.restartSession();
+    restartFailsafe = window.setTimeout(endRestartPending, 8000);
+  };
 
   window.addEventListener("keydown", (event) => {
     if (event.isComposing || event.keyCode === 229) return; // IME composition
@@ -143,6 +176,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   let draftByInteractionId = new Map<string, string>();
   let lastInteractionId: string | null = null;
   let lastVisualState: StageVisualState | undefined = undefined;
+  let lastSessionId: string | undefined = undefined;
 
   const render = (state: GameAppState): void => {
     const view = state.view;
@@ -154,6 +188,20 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
     controls.setConnection(state.connection);
     controls.setAudio(state.audioPlaying, state.bufferedAheadMs);
+    controls.setSessionId(view.sessionId);
+
+    // A session id change means the runtime was rebuilt (restart): drop the
+    // old session's stage picture and form state so the new story opens clean.
+    if (lastSessionId !== undefined && view.sessionId !== lastSessionId) {
+      lastSessionId = view.sessionId;
+      lastVisualState = undefined;
+      lastInteractionId = null;
+      draftByInteractionId.clear();
+      stageRenderer.clear();
+      if (restartPending) endRestartPending();
+    } else if (view.sessionId !== undefined) {
+      lastSessionId = view.sessionId;
+    }
 
     show(refs.startRoot, !started && mode === "BOOTSTRAP");
     show(refs.endRoot, mode === "ENDING");
@@ -162,7 +210,23 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
     show(refs.dialogueRoot, mode === "PLAYING");
     show(refs.previewRoot, mode === "INPUT_PREVIEW");
-    show(refs.waitingEl, mode === "CONTENT_WAITING" || (started && mode === "BOOTSTRAP"));
+    show(
+      refs.waitingEl,
+      mode === "CONTENT_WAITING" || (started && mode === "BOOTSTRAP"),
+    );
+    // Live generation phase (status snapshots flow during CONTENT_WAITING):
+    // lets staff tell "generating" from "stuck" at the booth.
+    if (mode === "CONTENT_WAITING") {
+      const status = view.status as { message?: unknown } | undefined;
+      setText(
+        refs.waitingPhaseEl,
+        typeof status?.message === "string" && status.message.length > 0
+          ? status.message
+          : "",
+      );
+    } else {
+      setText(refs.waitingPhaseEl, "");
+    }
 
     const selectingMode =
       mode === "CHOICE_SELECTING" || mode === "HYBRID_SELECTING" || mode === "INPUT_EDITING";
@@ -215,11 +279,17 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
         previewPanel.show(text);
       }
     } else if (mode === "ENDING" && modeChanged) {
-      if (!endScreen.show(view.ending)) {
+      if (!endScreen.show(view.ending, view.sessionId)) {
         errorBanner.show("结局数据缺失");
       }
     } else if (mode === "ERROR" && modeChanged) {
-      errorBanner.show(view.lastError ?? "未知错误");
+      // Booth ops: the session id travels with the banner so a problem
+      // report screenshot is self-contained.
+      const base = view.lastError ?? "未知错误";
+      const sessionId = view.sessionId;
+      errorBanner.show(
+        sessionId !== undefined ? `${base}（会话 ${sessionId.slice(0, 8)}）` : base,
+      );
     }
 
     // Stage picture (§86): re-render only when the view model hands us a

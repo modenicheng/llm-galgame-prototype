@@ -57,6 +57,17 @@ export class StageRenderer {
     }
   }
 
+  /**
+   * Reset to the empty stage. Used when the session changes (restart): the
+   * old session's ending picture must not linger behind the new story's
+   * first generation.
+   */
+  clear(): void {
+    this.applyBackground(undefined);
+    this.applyCharacters({});
+    delete this.container.dataset.bgm;
+  }
+
   private applyBackground(id: string | undefined): void {
     if (id === this.backgroundId) return;
     this.backgroundId = id;

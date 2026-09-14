@@ -225,6 +225,26 @@ describe("GameViewModel", () => {
     expect(interaction.interaction_id).toBe("choice_2");
   });
 
+  it("a projection restore clears a stale error and re-arms for the new session", () => {
+    const vm = new GameViewModel();
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 1,
+      output: { type: "runtime_error", code: "GENERATION_FAILED", message: "boom" },
+    });
+    expect(vm.state().mode).toBe("ERROR");
+    expect(vm.state().lastError).toBe("GENERATION_FAILED: boom");
+
+    // Session restart: the host pushes a fresh projection snapshot for the
+    // new session id; the stale error must not survive the restore.
+    vm.applyProjection({ phase: "running", sessionId: "sess-next", recentLines: [] });
+    const state = vm.state();
+    expect(state.mode).toBe("CONTENT_WAITING");
+    expect(state.lastError).toBeUndefined();
+    expect(state.sessionId).toBe("sess-next");
+    expect(state.projectionSeq).toBeGreaterThan(0);
+  });
+
   it("enters INPUT_PREVIEW on input_preview_opened", () => {
     const vm = new GameViewModel();
     vm.applyServerMessage({

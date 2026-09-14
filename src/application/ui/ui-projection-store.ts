@@ -25,6 +25,13 @@ export interface UiProjectionStore {
   /** Feed one runtime output into the projection. */
   applyOutput(output: unknown): void;
 
+  /**
+   * Drop every session-scoped field and re-arm the projection for a fresh
+   * session (RuntimeApplication.restart). The next `session_started` for the
+   * same id applies on the clean base.
+   */
+  reset(sessionId: string): void;
+
   /** Current immutable snapshot. */
   snapshot(): UiProjection;
 
@@ -61,6 +68,14 @@ export class UiProjectionStoreImpl implements UiProjectionStore {
     const next: UiProjection = { ...this.projection };
     switch (output.type) {
       case "session_started":
+        // A different session id means the runtime was rebuilt (restart):
+        // stale lines/ending/stage from the old session must never leak
+        // into the fresh session's snapshot.
+        if (next.sessionId !== undefined && next.sessionId !== output.sessionId) {
+          this.projection = this.freshProjection(output.sessionId);
+          for (const listener of this.listeners) listener(this.projection);
+          return;
+        }
         next.sessionId = output.sessionId;
         next.phase = "running";
         break;
@@ -130,6 +145,15 @@ export class UiProjectionStoreImpl implements UiProjectionStore {
 
   snapshot(): UiProjection {
     return this.projection;
+  }
+
+  reset(sessionId: string): void {
+    this.projection = this.freshProjection(sessionId);
+    for (const listener of this.listeners) listener(this.projection);
+  }
+
+  private freshProjection(sessionId: string): UiProjection {
+    return { sessionId, phase: "running", recentLines: [] };
   }
 
   subscribe(listener: (projection: UiProjection) => void): () => void {

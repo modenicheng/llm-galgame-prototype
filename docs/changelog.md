@@ -118,3 +118,27 @@ refill 与 §8.5 修复路径的竞争，命中"播放缓冲顺序与生成事�
   no-character 不再逐行刷 build-skip 告警（角色表非空时仍告警）。
 - 测试：`game-dsl.test.ts` 新增 mid-preview refill 回收回归（无修复时
   过期 refill 孤儿行泄漏进播放，修复后播放序列精确）。
+
+## 2026-09-14 展位 UI：重开闭环与会话可观测（Task 6）
+
+现场验收（代码审计）发现 runbook 承诺与 UI 行为不符：结束页"重新开始"实际是
+页面刷新，重连后仍显示同一个已结束会话（宿主 gameStarted 守卫阻止二次运行）；
+运行时 `restart_session` 链路完整但 web UI 从未发送。以最小改动闭合缺口：
+
+- `runtime-websocket`：`restart_session` 命令改由宿主统一处理（活循环在下一
+  命令边界优雅退出、已结束/已崩溃则 dispatch 为无害 no-op 后直接重建）；
+  `rebase()` 对现有 controller 连接改挂新 game 并推送新会话投影快照
+  （此前只影响新连接，现有浏览器永远看不到新会话）。
+- `LocalWebHost.handleRestart`：保留运行循环 promise，重启前先 dispatch 命令并
+  await 旧循环退出（生成等待中最迟当前段超时生效）；`restarting` 防重入。
+- `RuntimeApplication.restart`：显式 `projection.reset(newSessionId)`——
+  `session_started` 在 `run()` 内才发射，晚于 ws rebase 推快照；
+  `UiProjectionStore` 增 `reset()`，`session_started` 检测会话 id 变化时
+  防御性重置（旧会话台词/结局/舞台不再泄漏进新会话快照）。
+- web UI：结束页重开与控制条"重开"（带确认）发送 `restart_session`；按钮在
+  重建期间 pending（新会话快照到达或 8s 失效保护复位）；会话切换时舞台清空、
+  表单草稿丢弃；会话 ID 在控制条角标（点击复制）/结束页/报错横幅三处可见；
+  等待界面显示运行阶段文案（区分"生成中"与"卡死"）。
+- 测试：投影 reset 与会话 id 变化防御、ws 重启路由 + rebase 重挂推送、宿主
+  重启全链路 + 防重入、bootstrap 重启后投影干净、view-model 快照清理 stale
+  错误、结束页/控件重开交互、舞台 clear。

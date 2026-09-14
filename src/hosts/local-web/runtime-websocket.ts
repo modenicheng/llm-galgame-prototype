@@ -30,6 +30,12 @@ export interface RuntimeWebSocketDeps {
   ttsStatus: (cb: (event: TaskStatusEvent) => void) => () => void;
   /** Start the game run loop on the first controller connection (§10.5). */
   startGame: () => void;
+  /**
+   * Host-owned session rebuild (LocalWebHost.handleRestart): the restart
+   * command must never rely on the command queue — once the run loop has
+   * exited (session ended or crashed) nothing would consume it.
+   */
+  onRestartSession: () => void;
   token: string;
   controllerLimit: number;
   originGuard: (origin: string | undefined) => boolean;
@@ -41,6 +47,10 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 
 interface ConnectionState {
   alive: boolean;
+  /** Per-connection monotonic runtime.output sequence (survives a rebase). */
+  sequence: number;
+  /** Unsubscribes this socket from the currently bound game's outputs. */
+  unsubGame: () => void;
 }
 
 export class RuntimeWebSocket {
@@ -82,11 +92,19 @@ export class RuntimeWebSocket {
   /**
    * Point the websocket at a freshly rebuilt game after a session restart
    * (RuntimeApplication.restart + restart_session command). Existing
-   * connections keep their original subscription; new connections observe
-   * the new game.
+   * controller connections are re-subscribed to the new game and receive a
+   * fresh projection snapshot — restart() has already reset the projection,
+   * so what goes out is the new session's clean state.
    */
   rebase(game: Game): void {
     this.game = game;
+    this.sessionEnded = false;
+    for (const ws of this.controllers) {
+      const state = this.connectionState.get(ws);
+      if (state === undefined) continue;
+      this.bindGameSubscription(ws, state);
+      this.send(ws, { type: "projection.snapshot", projection: this.projection.snapshot() });
+    }
   }
 
   handle(ws: WebSocket, req: IncomingMessage): void {
@@ -111,10 +129,10 @@ export class RuntimeWebSocket {
     }
 
     this.controllers.add(ws);
-    this.connectionState.set(ws, { alive: true });
+    const state: ConnectionState = { alive: true, sequence: 0, unsubGame: () => {} };
+    this.connectionState.set(ws, state);
     this.ensureHeartbeat();
 
-    let sequence = 0;
     // handleUpgrade invokes this callback while the socket is still
     // CONNECTING; `send` drops messages before OPEN, so defer the initial
     // snapshot + descriptor catalog until the handshake completes.
@@ -124,11 +142,7 @@ export class RuntimeWebSocket {
         this.send(ws, { type: "audio.descriptor", descriptor });
       }
     });
-
-    const unsubGame = this.game.subscribe((output) => {
-      if (output.type === "session_ended") this.sessionEnded = true;
-      this.send(ws, { type: "runtime.output", sequence: ++sequence, output });
-    });
+    this.bindGameSubscription(ws, state);
     const unsubCatalog = this.catalog.subscribe((event) => {
       this.send(ws, this.mapCatalogEvent(event));
     });
@@ -144,7 +158,8 @@ export class RuntimeWebSocket {
       this.onMessage(data);
     });
     ws.on("close", () => {
-      unsubGame();
+      const state = this.connectionState.get(ws);
+      state?.unsubGame();
       unsubCatalog();
       unsubStatus();
       this.connectionState.delete(ws);
@@ -158,6 +173,15 @@ export class RuntimeWebSocket {
     });
     ws.on("error", () => {
       // The close event follows; nothing to recover here.
+    });
+  }
+
+  /** Subscribe one controller to the bound game, replacing any prior binding. */
+  private bindGameSubscription(ws: WebSocket, state: ConnectionState): void {
+    state.unsubGame();
+    state.unsubGame = this.game.subscribe((output) => {
+      if (output.type === "session_ended") this.sessionEnded = true;
+      this.send(ws, { type: "runtime.output", sequence: ++state.sequence, output });
     });
   }
 
@@ -179,6 +203,12 @@ export class RuntimeWebSocket {
           this.recentCommandIds.clear();
         }
         this.recentCommandIds.add(message.commandId);
+        if (message.command.type === "restart_session") {
+          // Session rebuilds are host-owned: after a session end the run
+          // loop has exited and a queued command would never be consumed.
+          this.deps.onRestartSession();
+          return;
+        }
         this.game.dispatch(message.command);
         break;
       }
