@@ -19,6 +19,9 @@ generation:
   # 1400 常在长段结尾截断（无 @end）导致整段判失败；2200 给模型足够预算
   max_tokens: 2200
   repair_attempts: 2
+  # 同一段连续修复链上限：链耗尽后续写转入末段收束提示（L2），
+  # 仍连续失败再启用强制收束保险丝（L3）。0 = 不设上限（旧行为）。
+  max_consecutive_repairs: 2
 
 # 文本缓冲阈值（docs §74）：播放达到两句即可开始；正常保持六句未来内容；只剩三句时启动续写
 text_buffer:
@@ -109,14 +112,25 @@ game:
   sessions_dir: sessions
   show_line_ids: true
 
-# 叙事模式：校园分支使用 event 模式（每局一个叙事种子，不限制互动次数）。
+# 叙事模式：校园分支使用 event 模式（每局一个叙事种子，按三级收束节奏结束）。
 narrative:
   # event = 不组装长线 narrative director；每局从 campus-ops.yaml 的
   # 叙事种子开始（按 sessionId 确定性选种，CAMPUS_SCENARIO_SEED_ID 可显式指定）。
   mode: event
-  # 活动模式策略：max_interactions=0 表示不限制；>0 时到达上限后强制收束结局。
+  # 分级收束（全部提示词层面加压，尽量避免运行时硬上限）：
+  #   wrapup_interactions（L1，默认 6）：达到后续写附"进入收束阶段"软提示；
+  #   closing_push_interactions（L2，默认 8）：达到后附"不再开新交互、直接收束"
+  #     强提示，并停止分支预取；
+  #   max_interactions（L3 保险丝，默认 10）：达到后才启用运行时强制收束
+  #     （endingRequired + 合成结局兜底），正常加压下不应触达。
+  # 各级 0 = 禁用；启用项之间必须非递减（L1 ≤ L2 ≤ L3）。
   event:
-    max_interactions: 0
+    wrapup_interactions: 6
+    closing_push_interactions: 8
+    max_interactions: 10
+    # 长回合护栏：单回合模型文本事件超过该数后，续写附"尽快打开交互表单"
+    # 软提示（0 = 禁用）。防止整回合连写数分钟不交还玩家。
+    max_events_between_interactions: 24
   threads:
     max_major_active: 2
     max_minor_active: 3

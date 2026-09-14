@@ -451,10 +451,15 @@ describe("loadConfig narrative section", () => {
 
     const config = await loadConfig(filePath);
 
-    expect(config.narrative.event.max_interactions).toBe(0);
+    expect(config.narrative.event).toEqual({
+      wrapup_interactions: 6,
+      closing_push_interactions: 8,
+      max_interactions: 10,
+      max_events_between_interactions: 24,
+    });
   });
 
-  it("parses narrative.event.max_interactions", async () => {
+  it("parses narrative.event thresholds", async () => {
     const filePath = await writeTempYaml(
       "cfg-event-max",
       [
@@ -474,14 +479,44 @@ describe("loadConfig narrative section", () => {
         "narrative:",
         "  mode: event",
         "  event:",
-        "    max_interactions: 5",
+        "    wrapup_interactions: 4",
+        "    closing_push_interactions: 6",
+        "    max_interactions: 7",
+        "    max_events_between_interactions: 30",
       ].join("\n"),
     );
 
     const config = await loadConfig(filePath);
 
     expect(config.narrative.mode).toBe("event");
-    expect(config.narrative.event.max_interactions).toBe(5);
+    expect(config.narrative.event.wrapup_interactions).toBe(4);
+    expect(config.narrative.event.closing_push_interactions).toBe(6);
+    expect(config.narrative.event.max_interactions).toBe(7);
+    expect(config.narrative.event.max_events_between_interactions).toBe(30);
+  });
+
+  it("rejects non-monotonic event thresholds (L1 ≤ L2 ≤ L3)", async () => {
+    const filePath = await writeTempYaml(
+      "cfg-event-inverted",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "narrative:",
+        "  mode: event",
+        "  event:",
+        "    wrapup_interactions: 6",
+        "    closing_push_interactions: 4",
+        "    max_interactions: 10",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow(
+      /closing_push_interactions 不能小于 wrapup_interactions/,
+    );
   });
 });
 

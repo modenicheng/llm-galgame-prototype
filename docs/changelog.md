@@ -3,6 +3,34 @@
 > 摘编自原 `docs/llm-outputs-refactor.md` §114–§118（该文件 2026-09-04 拆分，
 > 全文见 git 历史）。当前进度权威见 `docs/status.md`。
 
+## 2026-09-14 event 模式分级收束与记忆/上下文管理优化
+
+依据 2026-09-08 展位现场 session（150 事件 / 5.5 分钟 / 6 次交互，全程无
+`@end ending`，人工杀进程收场）诊断"模型停不下来"，四层修复：
+
+1. **修复 `{nonce}` 替换 bug**：`endingRequired` 指令在 `fill()` 之后以字面量
+   `{nonce}` 下发、`FORCED_ENDING_REPAIR_REASON` 同病——模型回显 `@end {nonce}`
+   哨兵校验必然失败。现在生成器侧用请求真实 nonce 注入；修复原因改为指向
+   "任务提示中给定的 nonce"。
+2. **分级收束（尽量避免运行时硬上限）**：`narrative.event` 三级阈值
+   `wrapup_interactions`（L1 软提示，默认 6）/ `closing_push_interactions`
+   （L2 强提示 + 停止分支预取，默认 8）/ `max_interactions`（L3 运行时保险丝，
+   默认 10，启用 0/正值语义不变）；L1 同时把 open_threads 的种子线程投影为
+   ready。交互进度 `本局交互进度：N / 收束目标 M` 注入任务头。
+3. **失控护栏**：`generation.max_consecutive_repairs`（默认 2）——修复链耗尽
+   后续写转 L2 强收束提示，L2 下仍耗尽才启用 L3（保持"不杀 run loop"原则）；
+   `narrative.event.max_events_between_interactions`（默认 24）——自上次交互的
+   模型文本事件超限后续写附"尽快交互"提示（防单回合连写数分钟）。
+4. **记忆/上下文（缓存友好）**：`serializeStoryContext` 输出 `[交互] <题干>`
+   （截断 80 字），滑窗滑过后模型仍看得到自己问过什么；user prompt 段落重排为
+   "静态素材 → 追加式历史 → 易变任务块"以提升 provider 前缀缓存命中；Game
+   历史窗口有界且按 20 条对齐滑动（超 80 事件后前缀仍稳定）；restore 从
+   events.jsonl 重建交互计数与收束级别；快照 nextTurn 改从事件流推导。
+
+测试：`src/game-ending-pressure.test.ts` 7 例（L1/L2 提示与线程投影、L2 停
+预取、L3 强制重试/合成结局、修复原因回归、护栏提示、修复链升级、restore
+重建）；choice 无分支预取组时降级为空 preview 直接续写（原为内部错误）。
+
 ## 2026-08-09 会话问题修复（原 §114）
 
 08-27-59-001Z 会话实测暴露三个内容层问题，均在 `prompts/dsl-protocol.txt` 修复：

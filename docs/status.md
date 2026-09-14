@@ -37,8 +37,14 @@
   hybrid cancel 后 option 仍有效（§106 硬回归）。
 - **端口化**：Game 消费 `StoryGeneratorPort`（InputBridge / tailVisualState /
   repairReason），bootstrap 经 `GeneratorPortFacade` 适配。
-- **event 模式**：`narrative.event.max_interactions`（到达上限强制收束结局，模型
-  连续不结束时运行时合成结局兜底）+ `restart_session` 命令（应用级重建）。
+- **event 模式**：分级收束（2026-09-14）——`wrapup_interactions`（L1 软提示，
+  默认 6）→ `closing_push_interactions`（L2 强提示 + 停止分支预取，默认 8）→
+  `max_interactions`（L3 运行时保险丝：endingRequired + 模型连续不结束时合成
+  结局兜底，默认 10）；交互进度注入 prompt、进入 L1 时种子线程 new → ready。
+  修复链上限 `generation.max_consecutive_repairs`（默认 2）：耗尽转 L2，仍失败
+  才升 L3。长回合护栏 `max_events_between_interactions`（默认 24）：自上次交互
+  的文本事件超限后附"尽快交互"提示。+ `restart_session` 命令（应用级重建）。
+  恢复时从 events.jsonl 重建交互计数与收束级别。
 
 ### 长线剧情（NarrativeDirector，spec 见 superpowers）
 - 第 1+2 步「记忆过去」：committed events → episodes / threads / setups / anchors，

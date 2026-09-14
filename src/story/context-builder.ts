@@ -105,8 +105,11 @@ function buildAuthorConfigSection(config: AuthorConfig): string {
 // ---------------------------------------------------------------------------
 
 /**
- * One plain-text line per history event (docs §69). Interaction / choice /
- * end events are skipped: they are machine prompts, not narrative content.
+ * One plain-text line per history event (docs §69). Interaction prompts are
+ * included as `[交互] …` (truncated): they are the model's own questions, and
+ * without them the sliding window loses track of which topics were already
+ * raised/resolved — a direct cause of aimless continuation. `choice` and
+ * `end` remain skipped (pure machine records).
  */
 export function serializeStoryContext(events: StoryContextEvent[]): string {
   const lines: string[] = [];
@@ -119,6 +122,9 @@ export function serializeStoryContext(events: StoryContextEvent[]): string {
         // Portrait is a runtime visual directive — never sent to the model.
         lines.push(`${event.speaker}: ${event.text}`);
         break;
+      case "interaction":
+        lines.push(`[交互] ${truncateForHistory(event.prompt, 80)}`);
+        break;
       case "player_choice":
         lines.push(`[玩家] 选择：${event.text}`);
         break;
@@ -129,11 +135,19 @@ export function serializeStoryContext(events: StoryContextEvent[]): string {
         lines.push(`[玩家] ${event.text}`);
         break;
       default:
-        // interaction / choice / end — skip (docs §69).
+        // choice / end — skip (docs §69).
         break;
     }
   }
   return lines.join("\n");
+}
+
+/** Cap a single history line so interaction prompts cannot bloat the window. */
+function truncateForHistory(text: string, maxLength: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength)}…`
+    : normalized;
 }
 
 /**
@@ -212,12 +226,19 @@ export interface DslContextInput extends ContextInput {
   tailVisualState?: VisualState;
   /** Model-facing asset catalog (logical ids only, docs §59). */
   modelAssetCatalog?: ModelAssetCatalog;
+  /** Event mode：本局交互进度（让模型感知收束节奏）。 */
+  interactionProgress?: { count: number; target?: number };
 }
 
 /**
- * Build the per-request user prompt for DSL mode: task header, turn, story
- * state, plain-text history, tail visual state, asset catalog, then any
- * task-specific instructions (docs §70).
+ * Build the per-request user prompt for DSL mode.
+ *
+ * Section order is provider-cache-aware (DeepSeek prefix caching bills a
+ * cached prefix much cheaper): the session-static asset catalog leads, the
+ * append-mostly history follows, and everything that changes per request
+ * (state summary, visual tail, task header with nonce/turn/progress, task
+ * instructions) is clustered at the tail. Never insert volatile content
+ * before a stable section — it would invalidate the shared prefix.
  */
 export function buildDslUserPrompt(
   turn: number,
@@ -226,14 +247,10 @@ export function buildDslUserPrompt(
 ): string {
   const sections: string[] = [];
 
-  sections.push(`任务类型：${input.taskType}`);
-  sections.push(`生成段 nonce：${input.generationNonce}`);
-  sections.push(`本次续写目标行数：${input.targetLines}`);
-
-  sections.push(`当前回合：${turn}`);
-
-  sections.push("===== 当前故事状态 =====");
-  sections.push(summarizeState(input.state));
+  if (input.modelAssetCatalog) {
+    sections.push("===== 可用素材 =====");
+    sections.push(serializeModelAssetCatalog(input.modelAssetCatalog));
+  }
 
   sections.push("===== 剧情历史 =====");
   sections.push(
@@ -248,14 +265,26 @@ export function buildDslUserPrompt(
     );
   }
 
+  sections.push("===== 当前故事状态 =====");
+  sections.push(summarizeState(input.state));
+
   if (input.tailVisualState) {
     sections.push("===== 当前舞台状态 =====");
     sections.push(serializeVisualContext(input.tailVisualState));
   }
 
-  if (input.modelAssetCatalog) {
-    sections.push("===== 可用素材 =====");
-    sections.push(serializeModelAssetCatalog(input.modelAssetCatalog));
+  sections.push("===== 本段任务 =====");
+  sections.push(`任务类型：${input.taskType}`);
+  sections.push(`生成段 nonce：${input.generationNonce}`);
+  sections.push(`本次续写目标行数：${input.targetLines}`);
+  sections.push(`当前回合：${turn}`);
+  if (input.interactionProgress) {
+    const { count, target } = input.interactionProgress;
+    sections.push(
+      target !== undefined
+        ? `本局交互进度：${count} / 收束目标 ${target}`
+        : `本局交互进度：${count}`,
+    );
   }
 
   if (extraInstructions) {

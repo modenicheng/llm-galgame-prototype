@@ -86,11 +86,24 @@ interface RefinementContext {
 // Narrative director settings
 // ---------------------------------------------------------------------------
 
+/** Event-mode 分级收束阈值（audit P2-10 扩展）。
+ * 三级递进：L1 软提示 → L2 强提示 → L3 运行时保险丝；0 = 禁用该级。 */
+export interface EventModeConfig {
+  /** L1 收束阶段：交互数达到后，续写请求附"进入收束阶段"软提示。 */
+  wrapup_interactions: number;
+  /** L2 末段收束：交互数达到后，附"不再开新交互、直接收束"强提示，并停止分支预取。 */
+  closing_push_interactions: number;
+  /** L3 保险丝：交互数达到后启用运行时强制收束（endingRequired + 合成结局兜底）。 */
+  max_interactions: number;
+  /** 长回合护栏：一个回合内模型文本事件超过该数后，续写附"尽快打开交互表单"软提示；0 = 禁用。 */
+  max_events_between_interactions: number;
+}
+
 /** Narrative director tuning (threads, setups, consolidation, briefs). */
 export interface NarrativeConfig {
   mode: "longform" | "event";
-  /** 活动模式策略（audit P2-10 最小集）。 */
-  event: { max_interactions: number };
+  /** 活动模式策略（audit P2-10 最小集 + 分级收束）。 */
+  event: EventModeConfig;
   threads: { max_major_active: number; max_minor_active: number };
   setups: { max_active: number };
   consolidation: {
@@ -105,7 +118,12 @@ export interface NarrativeConfig {
 
 export const DEFAULT_NARRATIVE_CONFIG: NarrativeConfig = {
   mode: "longform",
-  event: { max_interactions: 0 },
+  event: {
+    wrapup_interactions: 6,
+    closing_push_interactions: 8,
+    max_interactions: 10,
+    max_events_between_interactions: 24,
+  },
   threads: { max_major_active: 2, max_minor_active: 3 },
   setups: { max_active: 6 },
   consolidation: {
@@ -130,6 +148,8 @@ export interface AppConfig {
     temperature: number;
     max_tokens: number;
     repair_attempts: number;
+    /** 同一段的连续修复链上限（修复段再失败累计计数）；0 = 不设上限（旧行为）。 */
+    max_consecutive_repairs: number;
   };
   /** Text buffering thresholds (docs §74): when to start/refill playback. */
   text_buffer: {
@@ -369,10 +389,21 @@ const NarrativeConfigSchema = z
     mode: z.enum(["longform", "event"]).default("longform"),
     event: z
       .object({
-        // 0 = 不限制；>0 = 故事最多出现这么多次交互，之后强制收束结局。
-        max_interactions: z.number().int().min(0).default(0),
+        // L1 收束阶段：交互数达到后续写附软提示；0 = 禁用该级。
+        wrapup_interactions: z.number().int().min(0).default(6),
+        // L2 末段收束：交互数达到后附强提示并停止分支预取；0 = 禁用该级。
+        closing_push_interactions: z.number().int().min(0).default(8),
+        // L3 保险丝：0 = 不限制；>0 = 故事最多出现这么多次交互，之后强制收束结局。
+        max_interactions: z.number().int().min(0).default(10),
+        // 长回合护栏：单回合模型文本事件上限，超过后续写附"尽快交互"软提示；0 = 禁用。
+        max_events_between_interactions: z.number().int().min(0).default(24),
       })
-      .default({ max_interactions: 0 }),
+      .default({
+        wrapup_interactions: 6,
+        closing_push_interactions: 8,
+        max_interactions: 10,
+        max_events_between_interactions: 24,
+      }),
     threads: z
       .object({
         max_major_active: z.number().int().min(0).max(20).default(2),
@@ -416,6 +447,42 @@ const NarrativeConfigSchema = z
         message: "consolidation.batch_min_events 不能大于 max_events_per_call。",
       });
     }
+    // 分级收束阈值在启用项（>0）之间必须非递减：L1 ≤ L2 ≤ L3。
+    const { wrapup_interactions, closing_push_interactions, max_interactions } = value.event;
+    if (
+      wrapup_interactions > 0 &&
+      closing_push_interactions > 0 &&
+      closing_push_interactions < wrapup_interactions
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["event"],
+        message: "narrative.event.closing_push_interactions 不能小于 wrapup_interactions。",
+      });
+    }
+    if (
+      closing_push_interactions > 0 &&
+      max_interactions > 0 &&
+      max_interactions < closing_push_interactions
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["event"],
+        message: "narrative.event.max_interactions 不能小于 closing_push_interactions。",
+      });
+    }
+    if (
+      wrapup_interactions > 0 &&
+      closing_push_interactions === 0 &&
+      max_interactions > 0 &&
+      max_interactions < wrapup_interactions
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["event"],
+        message: "narrative.event.max_interactions 不能小于 wrapup_interactions。",
+      });
+    }
   })
   .default(DEFAULT_NARRATIVE_CONFIG);
 
@@ -432,7 +499,9 @@ const ConfigSchema = z.object({
   generation: z.object({
     temperature: z.number().min(0).max(2).default(0.9),
     max_tokens: z.number().int().positive().default(2200),
-    repair_attempts: z.number().int().min(0).max(5).default(2)
+    repair_attempts: z.number().int().min(0).max(5).default(2),
+    // 连续修复链上限：0 = 不设上限（旧行为）。
+    max_consecutive_repairs: z.number().int().min(0).max(10).default(2),
   }),
   text_buffer: z
     .object({

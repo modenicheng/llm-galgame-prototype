@@ -13,7 +13,8 @@ import type { NarrativeBrief } from "../../core/narrative/narrative-brief.js";
 /**
  * Render the NarrativeBrief as a director-note section for the writer
  * prompt. `maxRecentRawEvents` is baked into the revision annotation so the
- * model knows how much raw history follows below.
+ * model knows how much raw history precedes it (the note renders after the
+ * history section — user prompts lead with the append-mostly prefix).
  */
 export function renderDirectorNote(
   brief: NarrativeBrief,
@@ -23,7 +24,7 @@ export function renderDirectorNote(
 
   lines.push("===== 导演便签 =====");
   lines.push(
-    `记忆已整理至事件 ${brief.consolidatedThroughEventSeq}（当前事件 ${brief.currentEventSeq}），最近 ${maxRecentRawEvents} 条原始事件见下方剧情历史。`,
+    `记忆已整理至事件 ${brief.consolidatedThroughEventSeq}（当前事件 ${brief.currentEventSeq}），最近 ${maxRecentRawEvents} 条原始事件见上方剧情历史。`,
   );
 
   if (brief.currentGoal !== undefined) {

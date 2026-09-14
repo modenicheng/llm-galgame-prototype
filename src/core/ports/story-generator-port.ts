@@ -37,8 +37,14 @@ export interface ContinuationRequest {
   brief?: NarrativeBrief;
   /** §8.5 修复原因：上一段失败的上下文，嵌入用户 prompt。 */
   repairReason?: string;
-  /** Event mode：本段必须以 @end ending 收束（audit P2-10 强制结局）。 */
+  /** Event mode：本段必须以 @end ending 收束（L3 保险丝，audit P2-10）。 */
   endingRequired?: boolean;
+  /** Event mode 分级收束：wrapup = L1 软提示；closing = L2 强提示（endingRequired 优先）。 */
+  endingPhase?: "wrapup" | "closing";
+  /** Event mode 长回合护栏：本回合文本事件超限，附"尽快打开交互表单"提示。 */
+  requestInteraction?: boolean;
+  /** Event mode 交互进度（注入任务头，让模型感知收束节奏）。 */
+  interactionProgress?: { count: number; target?: number };
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
 }

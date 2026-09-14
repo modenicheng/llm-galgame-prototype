@@ -272,11 +272,32 @@ describe("DSL serializers and prompt builder", () => {
         "[玩家] 选择：继续追问",
         "[玩家] 输入：你明明知道它还在运行。",
         "[玩家] 说吧。",
+        "[交互] 怎么回应？",
       ].join("\n"),
     );
     expect(out).not.toContain("line_id");
     expect(out).not.toContain("seq");
-    expect(out).not.toContain("interaction");
+    // choice/end 机器事件仍被跳过（docs §69）。
+    expect(out).not.toContain("choice");
+    expect(out).not.toContain("end");
+  });
+
+  it("serializeStoryContext truncates and normalizes interaction prompts", () => {
+    const longPrompt = "很长的题干".repeat(40);
+    const out = serializeStoryContext([
+      {
+        type: "interaction",
+        interaction_id: "i1",
+        prompt: `  第一问\n  第二问  ${longPrompt}  `,
+        mode: "choice",
+        options: [
+          { id: "a", text: "好" },
+          { id: "b", text: "不" },
+        ],
+      },
+    ]);
+    expect(out).toBe(`[交互] 第一问 第二问 ${"很长的题干".repeat(14)}很长…`);
+    expect(out.length).toBeLessThan(120);
   });
 
   it("serializeVisualContext formats sections and omits absent ones", () => {

@@ -75,6 +75,33 @@ export function generateNonce(): string {
   return Math.floor(Math.random() * 0x10000).toString(16).padStart(4, "0");
 }
 
+/**
+ * Event mode 收束/节奏指引（docs §70 附加指令）。全部追加在 user prompt
+ * 末尾——这些内容逐请求变化，必须位于稳定前缀（素材/历史/状态）之后，
+ * 否则会打破 provider 前缀缓存。endingRequired（L3 保险丝）优先于
+ * endingPhase（L1/L2）。`{nonce}` 在此替换为请求的真实 nonce：此前该行
+ * 在 fill() 之后以字面量 `{nonce}` 下发，模型回显后哨兵校验必然失败。
+ */
+function appendEventModeGuidance(
+  extra: string,
+  nonce: string,
+  options?: GenerationStreamOptions,
+): string {
+  let result = extra;
+  if (options?.requestInteraction === true) {
+    result +=
+      "\n\n本回合已连续输出较长内容：请在合适的位置尽快打开玩家交互表单（`? ... /?`），把话语权交还玩家。";
+  }
+  if (options?.endingRequired === true) {
+    result += `\n\n本段必须收束结局：用 @end ${nonce} ending 结束，不得打开新的交互表单。`;
+  } else if (options?.endingPhase === "closing") {
+    result += `\n\n剧情已进入最后收束阶段：不要再打开新的交互表单，直接收拢当前线索，用 @end ${nonce} ending 结束本段。`;
+  } else if (options?.endingPhase === "wrapup") {
+    result += `\n\n剧情已进入收束阶段：请在接下来 1–2 次交互内把故事引向自然的结局，不要再开启新的支线；结局收束时用 @end ${nonce} ending 结束。`;
+  }
+  return result;
+}
+
 export interface GenerationStreamOptions {
   /**
    * Called as soon as one complete EventGroup is committed and forwarded
@@ -102,8 +129,14 @@ export interface GenerationStreamOptions {
    * in the user prompt (docs narrative-director §Task-10).
    */
   brief?: NarrativeBrief;
-  /** Event mode：本段必须以 @end ending 收束（audit P2-10 强制结局）。 */
+  /** Event mode：本段必须以 @end ending 收束（L3 保险丝，audit P2-10）。 */
   endingRequired?: boolean;
+  /** Event mode 分级收束：wrapup = L1 软提示；closing = L2 强提示（endingRequired 优先）。 */
+  endingPhase?: "wrapup" | "closing";
+  /** Event mode 长回合护栏：本回合文本事件超限，附"尽快打开交互表单"提示。 */
+  requestInteraction?: boolean;
+  /** Event mode 交互进度（注入任务头，让模型感知收束节奏）。 */
+  interactionProgress?: { count: number; target?: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +210,9 @@ export class StoryGenerator {
     if (options?.brief) {
       ctx.directorBrief = options.brief;
     }
+    if (options?.interactionProgress) {
+      ctx.interactionProgress = options.interactionProgress;
+    }
     if (this.modelCatalog) {
       ctx.modelAssetCatalog = this.modelCatalog;
     }
@@ -202,6 +238,17 @@ export class StoryGenerator {
     );
   }
 
+  /**
+   * History window guard. The Game passes a bounded, prefix-stable window
+   * (generationHistory()); re-slicing to the last `history_events` here
+   * would shift the window start on every commit and defeat provider prefix
+   * caching. Only enforce a generous safety bound for raw callers.
+   */
+  private boundHistory(history: StoryContextEvent[]): StoryContextEvent[] {
+    const cap = this.config.game.history_events;
+    return history.length > cap * 4 ? history.slice(-cap) : history;
+  }
+
   generateBranchPrefetch(
     turn: number,
     state: StoryState,
@@ -211,7 +258,7 @@ export class StoryGenerator {
     signal?: AbortSignal,
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
-    const recentHistory = history.slice(-this.config.game.history_events);
+    const recentHistory = this.boundHistory(history);
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, recentHistory, "branch_prefetch", nonce, options);
     const extra = fill(this.instructions.branch_prefetch, {
@@ -250,7 +297,7 @@ export class StoryGenerator {
     signal?: AbortSignal,
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
-    const recentHistory = history.slice(-this.config.game.history_events);
+    const recentHistory = this.boundHistory(history);
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, recentHistory, "input_response", nonce, options);
     const extra = fill(this.instructions.input_response, {
@@ -314,7 +361,7 @@ export class StoryGenerator {
     signal?: AbortSignal,
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
-    const recentHistory = history.slice(-this.config.game.history_events);
+    const recentHistory = this.boundHistory(history);
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, recentHistory, "continuation", nonce, options);
     let extra = fill(this.instructions.continuation, {
@@ -322,10 +369,7 @@ export class StoryGenerator {
       target_lines: String(this.config.text_buffer.target_lines),
       prefetched: serializeStoryContext(prefetchedEvents),
     });
-    if (options?.endingRequired === true) {
-      extra +=
-        "\n\n本段必须收束结局：用 @end {nonce} ending 结束，不得打开新的交互表单。";
-    }
+    extra = appendEventModeGuidance(extra, nonce, options);
     return this.requestDslEnvelope(
       "continuation",
       "continuation",
@@ -623,6 +667,13 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
             : {}),
           ...(request.endingRequired
             ? { endingRequired: request.endingRequired }
+            : {}),
+          ...(request.endingPhase ? { endingPhase: request.endingPhase } : {}),
+          ...(request.requestInteraction
+            ? { requestInteraction: request.requestInteraction }
+            : {}),
+          ...(request.interactionProgress
+            ? { interactionProgress: request.interactionProgress }
             : {}),
         },
       ),

@@ -213,10 +213,15 @@ const MAX_INTERACTION_MODE_HISTORY = 8;
 
 /**
  * Event mode（audit P2-10）：强制收束重试段带的修复语义——模型必须用
- * `@end <nonce> ending` 收束，不得再打开新的交互表单。
+ * `@end <nonce> ending` 收束，不得再打开新的交互表单。修复原因无法预知
+ * 本次请求的 nonce（由生成器逐请求生成），因此指向"任务提示中给定的
+ * nonce"；此前这里的字面 `{nonce}` 会被模型原样回显，哨兵校验必然失败。
  */
 const FORCED_ENDING_REPAIR_REASON =
-  "玩家已达成最大互动次数，故事必须收束结局；用 @end {nonce} ending 结束，不得打开新的交互表单。";
+  "玩家已达成最大互动次数，故事必须收束结局；用任务提示中给定的 nonce 输出 @end <nonce> ending，不得打开新的交互表单。";
+
+/** Event mode 分级收束级别：0 无 / 1 wrapup（L1 软提示）/ 2 closing（L2 强提示）。 */
+type EndingLevel = 0 | 1 | 2;
 
 /** Registry fallback when no asset catalog is wired. */
 const emptyRegistry: CharacterRegistry = {
@@ -281,10 +286,14 @@ export class Game {
   private suppressRefill = false;
   /** 当前正在播放的段 turn（reconcileTextBuffer 计算续写 turn 用）。 */
   private activeSegmentTurn = 1;
-  /** 已提交的 interaction 数量（event mode 上限计数）。 */
+  /** 已提交的 interaction 数量（event mode 收束分级计数）。 */
   private interactionCount = 0;
-  /** 已达最大互动次数 → 后续生成必须收束结局。 */
+  /** 分级收束级别：0 无 / 1 wrapup（L1 软提示）/ 2 closing（L2 强提示）。 */
+  private endingLevel: EndingLevel = 0;
+  /** L3 保险丝：已达最大互动次数 → 后续生成强制收束结局。 */
   private forceEnding = false;
+  /** 长回合护栏：自上次交互提交以来的模型文本事件（narration+dialogue）数。 */
+  private textEventsSinceInteraction = 0;
   /** 强制收束的重试次数（bounded：合计最多 1 次）。 */
   private forcedEndingRetries = 0;
   private readonly commands = new AsyncEventQueue<RuntimeCommand>();
@@ -423,13 +432,13 @@ export class Game {
       segment = this.startActiveSegment(
         "continuation",
         this.nextResumeTurn,
-        [...this.events],
+        this.generationHistory(),
         [],
       );
       outcome = await this.consumeActiveSegment(
         segment,
         this.nextResumeTurn,
-        [...this.events],
+        this.generationHistory(),
       );
     } else {
       this.status.setPhase("开场生成", "首条完整事件到达后立即进入播放缓冲");
@@ -478,7 +487,7 @@ export class Game {
       if (outcome.type === "buffer") {
         this.activeInteractionId = null;
         this.activePreviewId = null;
-        const historyBefore = [...this.events];
+        const historyBefore = this.generationHistory();
         if (this.forceEnding && segment.endingRequired) {
           // 强制收束重试（bounded）：第一次仍以 buffer 收束 → 带修复语义
           // 再试一次；仍不结束 → 运行时合成结局。
@@ -572,7 +581,7 @@ export class Game {
       }
 
       const currentOutcome = outcome;
-      const historyBeforePreview = [...this.events];
+      const historyBeforePreview = this.generationHistory();
       const speculativeContext: StoryContextEvent[] = [
         ...historyBeforePreview,
         ...currentOutcome.preview,
@@ -779,6 +788,11 @@ export class Game {
     const jobId = kind === "opening" ? "opening" : `continuation:${turn}`;
     const label = kind === "opening" ? "初始剧情" : `第 ${turn} 回合后续`;
     const brief = this.makeBrief(turn);
+    // 分级收束与长回合护栏在请求构建时取值（段生成可能延后于级别推进，
+    // 取当前值即可）；先取局部变量满足 exactOptionalPropertyTypes 收窄。
+    const endingPhase = this.currentEndingPhase();
+    const requestInteraction = this.shouldRequestInteraction();
+    const interactionProgress = this.interactionProgress();
     segment.done = this.runTrackedJob(jobId, label, async () => {
       const genHandle =
         kind === "opening"
@@ -799,6 +813,9 @@ export class Game {
               tailVisualState: this.tailVisualState,
               ...(repairReason !== undefined ? { repairReason } : {}),
               ...(endingRequired ? { endingRequired: true } : {}),
+              ...(endingPhase !== undefined ? { endingPhase } : {}),
+              ...(requestInteraction ? { requestInteraction } : {}),
+              ...(interactionProgress !== undefined ? { interactionProgress } : {}),
             });
 
       // 泵：把 handle 的事件流喂进段队列（与旧 onGroup 直连语义等价）。
@@ -876,6 +893,7 @@ export class Game {
     turn: number,
     priorContext: StoryContextEvent[],
     repairBudget = Math.max(1, this.config.generation.repair_attempts),
+    repairChain = 0,
   ): Promise<SegmentOutcome> {
     let firstPlayableSeen = false;
     // 供低水位续写计算 nextTurn（当前段 turn + 1）。
@@ -930,6 +948,14 @@ export class Game {
             `修复续写预算已耗尽（${failure.message}）；继续沿最后一条成功事件续写`,
           );
         }
+        // 修复链上限：链内连续失败达到 max_consecutive_repairs（0 = 不设
+        // 上限，旧行为）→ 不再无条件续修复。先升 L2（强收束提示随下一次
+        // 修复请求下发）；L2 下仍耗尽 → 启用 L3 保险丝（forceEnding），
+        // 由既有"重试 1 次 → 合成结局"兜底闭环。始终不 throw、不杀 run。
+        const maxChain = this.config.generation.max_consecutive_repairs;
+        if (maxChain > 0 && repairChain >= maxChain) {
+          this.escalateEndingPressure(failure.message);
+        }
 
         // The failed segment may already have published a terminal event
         // (choice/interaction) whose branch prefetches are still running —
@@ -983,6 +1009,7 @@ export class Game {
             turn,
             fullContext,
             repairBudget - 1,
+            repairChain + 1,
           );
           // The caller (run loop) will wait for the *original* segment's done
           // before adopting a live branch. Fully tear down the repaired
@@ -1030,20 +1057,11 @@ export class Game {
         interaction: event,
         stage: this.pendingInteractionStage.get(event.interaction_id) ?? [],
       };
-      // Event mode（audit P2-10）：交互提交时计数；达到上限后强制后续
-      // 生成收束结局。
+      // Event mode（audit P2-10）：交互提交时计数，并按分级收束阈值加压
+      // （L1 软提示 → L2 强提示 + 停预取 → L3 运行时保险丝）。
       this.interactionCount += 1;
-      if (
-        this.config.narrative.mode === "event" &&
-        this.config.narrative.event.max_interactions > 0 &&
-        this.interactionCount >= this.config.narrative.event.max_interactions
-      ) {
-        this.forceEnding = true;
-        this.diagnostics.info(
-          "Game",
-          `已达最大互动次数 ${this.interactionCount}，后续生成强制收束结局`,
-        );
-      }
+      this.textEventsSinceInteraction = 0;
+      this.updateEndingPressure();
       const context = [...priorContext, ...segment.events];
       // §8.4: the interaction is now formally opened (policy already passed
       // in handleDslGroup). Record its mode for consecutive-input tracking.
@@ -1084,6 +1102,21 @@ export class Game {
     this.events.push(...restored.events);
     const lastSeq = restored.events.reduce((max, event) => Math.max(max, event.seq), 0);
     this.seq = lastSeq + 1;
+    // 收束状态从事件流重建：快照不含计数器，重启/恢复后若不清零重建，
+    // 分级收束会从头计数（已进行 6 次交互的会话恢复后又回到无压状态）。
+    this.interactionCount = 0;
+    this.endingLevel = 0;
+    this.forceEnding = false;
+    this.textEventsSinceInteraction = 0;
+    for (const event of restored.events) {
+      if (event.type === "interaction") {
+        this.interactionCount += 1;
+        this.textEventsSinceInteraction = 0;
+      } else if (event.type === "narration" || event.type === "dialogue") {
+        this.textEventsSinceInteraction += 1;
+      }
+    }
+    this.updateEndingPressure();
 
     if (restored.snapshot !== undefined) {
       this.storyState = restored.snapshot.state;
@@ -1145,6 +1178,140 @@ export class Game {
     return events.reduce((max, event) => Math.max(max, event.turn), 0) + 1;
   }
 
+  /**
+   * 生成上下文的历史窗口：有界且前缀稳定。
+   *
+   * - ≤ history_events：全量传递，事件追加时序列化结果只增尾巴，provider
+   *   前缀缓存（DeepSeek）可跨请求复用；
+   * - 超限后按 chunk（20 条）对齐滑动窗口起点：两次起点跳跃之间窗口前缀
+   *   完全稳定，避免逐事件丢头导致每次请求全量缓存失效。
+   * 生成器侧只保留 4×cap 的兜底再切片（boundHistory），不会破坏该窗口。
+   */
+  private generationHistory(): StoryContextEvent[] {
+    const cap = this.config.game.history_events;
+    const chunk = 20;
+    const total = this.events.length;
+    if (total <= cap) return this.events.slice();
+    const start = Math.floor((total - cap) / chunk) * chunk;
+    return this.events.slice(start);
+  }
+
+  // ------------------------------------------------------------------
+  // Event mode 分级收束（L1 wrapup / L2 closing / L3 forceEnding 保险丝）
+  // ------------------------------------------------------------------
+
+  /**
+   * 交互提交后按配置阈值推进收束级别。加压只作用于 event 模式；阈值
+   * 0 = 禁用该级。级别只升不降（会话内单调）。
+   */
+  private updateEndingPressure(): void {
+    if (this.config.narrative.mode !== "event") return;
+    const event = this.config.narrative.event;
+    const count = this.interactionCount;
+    if (
+      event.max_interactions > 0 &&
+      count >= event.max_interactions &&
+      !this.forceEnding
+    ) {
+      this.forceEnding = true;
+      this.diagnostics.warn(
+        "Game",
+        `已达硬上限 ${count} 次交互，启用强制收束保险丝（L3）`,
+      );
+    }
+    if (
+      event.closing_push_interactions > 0 &&
+      count >= event.closing_push_interactions &&
+      this.endingLevel < 2
+    ) {
+      this.endingLevel = 2;
+      this.diagnostics.info(
+        "Game",
+        `${count} 次交互，进入末段收束（L2 强提示，停止分支预取）`,
+      );
+      return;
+    }
+    if (
+      event.wrapup_interactions > 0 &&
+      count >= event.wrapup_interactions &&
+      this.endingLevel < 1
+    ) {
+      this.endingLevel = 1;
+      this.applyWrapUpThreadSignal();
+      this.diagnostics.info(
+        "Game",
+        `${count} 次交互，进入收束阶段（L1 软提示）`,
+      );
+    }
+  }
+
+  /**
+   * 进入 L1 后把仍在打开状态的线索线程标记为 ready——模型在
+   * `[Open Threads]` 里看到收束信号，纯确定性投影、零 LLM 参与。
+   */
+  private applyWrapUpThreadSignal(): void {
+    const threads = this.storyState.open_threads;
+    if (!threads.some((t) => t.status === "new" || t.status === "active")) {
+      return;
+    }
+    this.storyState = {
+      ...this.storyState,
+      open_threads: threads.map((thread) =>
+        thread.status === "new" || thread.status === "active"
+          ? { ...thread, status: "ready" }
+          : thread,
+      ),
+    };
+  }
+
+  /** 当前续写请求应携带的收束级别（L3 时由 endingRequired 表达，不重复下发）。 */
+  private currentEndingPhase(): "wrapup" | "closing" | undefined {
+    if (this.forceEnding) return undefined;
+    if (this.endingLevel === 2) return "closing";
+    if (this.endingLevel === 1) return "wrapup";
+    return undefined;
+  }
+
+  /** 长回合护栏：自上次交互以来的文本事件超限且尚未收束加压 → 提示尽快交互。 */
+  private shouldRequestInteraction(): boolean {
+    const threshold =
+      this.config.narrative.event.max_events_between_interactions;
+    return (
+      threshold > 0 &&
+      this.textEventsSinceInteraction >= threshold &&
+      this.endingLevel === 0 &&
+      !this.forceEnding
+    );
+  }
+
+  /** 交互进度注入（任务头）：让模型感知自己处于本局的哪个阶段。 */
+  private interactionProgress(): { count: number; target?: number } | undefined {
+    if (this.config.narrative.mode !== "event") return undefined;
+    const wrapup = this.config.narrative.event.wrapup_interactions;
+    return wrapup > 0
+      ? { count: this.interactionCount, target: wrapup }
+      : { count: this.interactionCount };
+  }
+
+  /** 修复链耗尽（或 L2 下仍耗尽）时的收束升级：先 L2，再 L3 保险丝。 */
+  private escalateEndingPressure(reason: string): void {
+    if (this.endingLevel < 2) {
+      this.endingLevel = 2;
+      this.diagnostics.warn(
+        "Game",
+        `修复链达到上限（${reason}）：续写转入末段收束提示（L2）`,
+      );
+      return;
+    }
+    if (this.config.narrative.mode === "event" && !this.forceEnding) {
+      this.forceEnding = true;
+      this.diagnostics.warn(
+        "Game",
+        `修复链在 L2 下仍连续失败（${reason}）：启用强制收束保险丝（L3）`,
+      );
+    }
+  }
+
   private replayVisualState(events: readonly StoredEvent[]): VisualState {
     let state = createInitialVisualState();
     for (const event of events) {
@@ -1165,7 +1332,7 @@ export class Game {
       events: [interaction],
       queue: new AsyncEventQueue<RuntimeModelEvent>(),
       done: Promise.resolve(),
-      branchManager: this.createBranchManagerForTerminal(interaction, turn, [...this.events]),
+      branchManager: this.createBranchManagerForTerminal(interaction, turn, this.generationHistory()),
       terminal: interaction,
       schedulerReleased: true,
       endStatus: null,
@@ -1181,7 +1348,7 @@ export class Game {
     interaction: InteractionEvent,
     turn: number,
   ): Promise<SegmentOutcome> {
-    const context = [...this.events];
+    const context = this.generationHistory();
     if (interaction.mode === "choice") {
       const choice: ChoiceEvent = {
         type: "choice",
@@ -1410,6 +1577,9 @@ export class Game {
     context: StoryContextEvent[],
   ): BranchManager | null {
     if (terminal.mode === "choice" || terminal.mode === "hybrid") {
+      // L2 末段收束（含 L3 强制收束）：不再为交互点预取分支——模型此时
+      // 本就不该开新交互，预取只会烧 token 并给"继续展开"提供燃料。
+      if (this.endingLevel >= 2 || this.forceEnding) return null;
       const choice: ChoiceEvent = {
         type: "choice",
         prompt: terminal.prompt,
@@ -1676,8 +1846,6 @@ export class Game {
     prefetchContext: StoryContextEvent[],
     interactionId?: string,
   ): Promise<ChoiceSelection> {
-    if (!branchManager) throw new Error("内部错误：choice 缺少分支预取组。 ");
-
     this.status.setPhase("等待选择", "各分支正在并行预取；可随时选择");
     // Legacy choice events have no interaction_id; DSL-compiled choice
     // interactions carry the runtime-generated id (docs §30).
@@ -1711,6 +1879,17 @@ export class Game {
     // event (audit finding 5).
     this.narrativeDirector?.checkpoint("interaction_completed");
     this.diagnostics.info("player", `你选择了：${selected.text}`);
+
+    // L2/L3 收束段不允许分支预取（createBranchManagerForTerminal 返回
+    // null）：模型此时违规打开的交互没有候选分支，空 preview 直接交给
+    // 后续续写接管（不取回任何预取片段）。
+    if (!branchManager) {
+      this.diagnostics.warn(
+        "Game",
+        `交互 ${scopeId} 无分支预取组（收束阶段），选择后直接续写`,
+      );
+      return { preview: [] };
+    }
 
     const { preview, liveSelection } = await this.adoptSelectedBranch(
       selected,
@@ -2014,7 +2193,7 @@ export class Game {
     this.pendingRefillSegment = this.startActiveSegment(
       "continuation",
       nextTurn,
-      [...this.events],
+      this.generationHistory(),
       [],
     );
     void this.pendingRefillSegment.done.catch(() => undefined);
@@ -2119,6 +2298,11 @@ export class Game {
       source: "model"
     };
     this.seq += 1;
+    // 长回合护栏计数：累计自上次交互以来的模型文本事件（buffer 段会推进
+    // turn 标签但不重置计数——"很久没开交互点"跨段存在）。
+    if (stored.type === "narration" || stored.type === "dialogue") {
+      this.textEventsSinceInteraction += 1;
+    }
     await this.record(stored);
   }
 
@@ -2475,7 +2659,7 @@ export class Game {
     const handle = this.generator.generateInputResponse({
       turn: turn + 1,
       state: this.storyState,
-      history: [...this.events],
+      history: this.generationHistory(),
       interaction,
       playerInput: text,
       signal: controller.signal,
@@ -2843,7 +3027,9 @@ export class Game {
       state: this.storyState,
       visualState: this.renderedVisualState,
       phase: "active",
-      nextTurn: this.activeSegmentTurn + 1,
+      // 从事件流推导：activeSegmentTurn 在挂起交互/后台 refill 期间会落后
+      // 于已提交事件（现场快照曾出现 nextTurn=4 而事件已到 turn 8）。
+      nextTurn: this.nextTurnAfter(this.events),
       lastEventSeq: this.seq - 1,
       ...(this.resumeInteraction !== undefined
         ? { resumeInteraction: this.resumeInteraction }

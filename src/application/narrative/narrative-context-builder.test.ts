@@ -37,7 +37,7 @@ describe("renderDirectorNote", () => {
     const note = renderDirectorNote(makeBrief(), 40);
     expect(note).toContain("===== 导演便签 =====");
     expect(note).toContain(
-      "记忆已整理至事件 120（当前事件 135），最近 40 条原始事件见下方剧情历史。",
+      "记忆已整理至事件 120（当前事件 135），最近 40 条原始事件见上方剧情历史。",
     );
   });
 
@@ -55,7 +55,7 @@ describe("renderDirectorNote", () => {
 
   it("annotates the raw-history window with the exact count passed in", () => {
     const note = renderDirectorNote(makeBrief(), 80);
-    expect(note).toContain("最近 80 条原始事件见下方剧情历史");
+    expect(note).toContain("最近 80 条原始事件见上方剧情历史");
   });
 
   it("renders threads, setups, episodes, anchors and revealLocks sections", () => {
