@@ -17,3 +17,9 @@ assets/raw/
 
 # pi-subagents tooling state
 .pi-subagents/
+
+.v2c/
+.zcode/
+
+# image-gen 工具默认输出目录
+output/
