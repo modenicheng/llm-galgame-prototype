@@ -14,6 +14,8 @@ import {
   EpisodeSummaryOpSchema,
 } from "../../core/narrative/memory-operation.js";
 import { serializeStoryContext } from "../../story/context-builder.js";
+import type { Metrics } from "../../runtime/metrics.js";
+import { parseLLMUsage } from "./llm-usage.js";
 import type {
   MemoryConsolidatorPort,
   ConsolidationRequest,
@@ -58,6 +60,7 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
   private readonly client: OpenAI;
   private readonly model: string;
   private readonly diagnostics: DiagnosticSink;
+  private readonly metrics: Metrics | undefined;
 
   constructor(private readonly opts: {
     apiKey: string;
@@ -65,6 +68,7 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
     config: NarrativeConfig;
     diagnostics?: DiagnosticSink;
     client?: OpenAI;
+    metrics?: Metrics;
   }) {
     this.client =
       opts.client ??
@@ -75,11 +79,13 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
       });
     this.model = opts.api.model;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
+    this.metrics = opts.metrics;
   }
 
   async consolidate(request: ConsolidationRequest): Promise<ConsolidationResult> {
     const userMessage = this.buildUserMessage(request);
 
+    const callStart = Date.now();
     const response = await this.client.chat.completions.create({
       model: this.model,
       messages: [
@@ -91,6 +97,14 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
     });
 
     const rawContent = response.choices[0]?.message?.content ?? "";
+    this.metrics?.recordLLMRequest(
+      "narrative_consolidation",
+      parseLLMUsage(response.usage) ?? {
+        input: 0,
+        output: Math.ceil(rawContent.length / 4),
+      },
+      Date.now() - callStart,
+    );
 
     let parsed: unknown;
     try {

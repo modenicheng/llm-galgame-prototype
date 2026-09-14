@@ -21,8 +21,9 @@ import {
   type SegmentEndStatus,
 } from "../../core/protocol/gal-dsl/types.js";
 import type { InstructionSet, PromptBundle } from "../../prompts.js";
-import type { LLMRequestCounts } from "../../runtime/metrics.js";
+import type { LLMRequestType } from "../../runtime/metrics.js";
 import { Metrics } from "../../runtime/metrics.js";
+import { parseLLMUsage, type LLMUsageReading } from "./llm-usage.js";
 import type {
   ChoiceEvent,
   ChoiceOption,
@@ -259,7 +260,7 @@ export class StoryGenerator {
       nonce,
     });
     return this.requestDslEnvelope(
-      "continuation",
+      "input_response",
       "input_response",
       ["buffer"],
       nonce,
@@ -296,7 +297,7 @@ export class StoryGenerator {
       nonce,
     });
     return this.requestDslEnvelope(
-      "continuation",
+      "input_bridge",
       "input_bridge",
       ["buffer"],
       nonce,
@@ -348,7 +349,7 @@ export class StoryGenerator {
    * newline is dropped (docs §49–§50).
    */
   private async requestDslEnvelope(
-    type: LLMRequestCounts extends Record<infer K, number> ? K : never,
+    type: LLMRequestType,
     taskType: string,
     allowedReasons: readonly SegmentEndReason[],
     nonce: string,
@@ -383,7 +384,13 @@ export class StoryGenerator {
       let streamChars = 0;
       const allGroups: EventGroupDraft[] = [];
       let streamAborted = false;
-      let usage = { input: 0, output: 0 };
+      let usage: { input: number; output: number; cachedInput?: number } = {
+        input: 0,
+        output: 0,
+      };
+      // Real counters reported by the provider on the final stream chunk;
+      // null when the gateway strips usage (estimate fallback below).
+      let apiUsage: LLMUsageReading | null = null;
 
       const controller = new AbortController();
       const signalCleanup = signal
@@ -413,6 +420,7 @@ export class StoryGenerator {
               { role: "user" as const, content: `${userPrompt}${repairInstruction}` },
             ],
             stream: true,
+            stream_options: { include_usage: true },
           },
           { signal: controller.signal },
         );
@@ -421,6 +429,10 @@ export class StoryGenerator {
         const parser = new DslSegmentParser({ expectedNonce: nonce, allowedReasons });
 
         for await (const chunk of stream) {
+          // Usage rides the final chunk, which usually carries empty choices —
+          // capture it before the content check skips empty chunks.
+          const chunkUsage = parseLLMUsage(chunk.usage);
+          if (chunkUsage) apiUsage = chunkUsage;
           const content = chunk.choices[0]?.delta?.content;
           if (!content) continue;
           if (firstLineMs === 0) firstLineMs = Date.now();
@@ -516,9 +528,18 @@ export class StoryGenerator {
         }
 
         const latencyMs = Date.now() - callStart;
-        usage = { input: 0, output: Math.ceil(streamChars / 4) };
+        if (apiUsage) {
+          usage = {
+            input: apiUsage.input,
+            output: apiUsage.output,
+            cachedInput: apiUsage.cachedInput,
+          };
+        } else {
+          // Provider didn't report usage: keep the legacy char-based estimate.
+          usage = { input: 0, output: Math.ceil(streamChars / 4) };
+        }
         console.log(
-          `[LLM] ${type}(${taskType}) ${latencyMs}ms lines=${lineIndex} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${lastError || "ok"}`,
+          `[LLM] ${type}(${taskType}) ${latencyMs}ms lines=${lineIndex} in=${usage.input} out=${usage.output} cached=${usage.cachedInput ?? 0} src=${apiUsage ? "api" : "est"} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${lastError || "ok"}`,
         );
 
         // Structurally invalid line with nothing forwarded yet → retry with

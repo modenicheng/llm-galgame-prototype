@@ -61,10 +61,22 @@ function printMetrics(game: Game, metrics: Metrics): void {
   console.log(`  开场生成：     ${snap.llm.requests.opening}`);
   console.log(`  分支预取：     ${snap.llm.requests.branch_prefetch}`);
   console.log(`  剧情续写：     ${snap.llm.requests.continuation}`);
+  console.log(`  输入过渡：     ${snap.llm.requests.input_bridge}`);
+  console.log(`  输入回应：     ${snap.llm.requests.input_response}`);
+  if (
+    snap.llm.requests.plot_plan > 0 ||
+    snap.llm.requests.narrative_consolidation > 0
+  ) {
+    console.log(`  导演规划：     ${snap.llm.requests.plot_plan}`);
+    console.log(`  记忆整理：     ${snap.llm.requests.narrative_consolidation}`);
+  }
 
   console.log("\n── Token 用量 ──");
   console.log(`  输入 token：   ${snap.llm.tokens.input}`);
   console.log(`  输出 token：   ${snap.llm.tokens.output}`);
+  console.log(
+    `  缓存命中：     ${snap.llm.tokens.cached_input}（命中率 ${(snap.llm.cache_hit_rate * 100).toFixed(1)}%）`,
+  );
 
   console.log("\n── 生成延迟 (ms) ──");
   console.log(`  样本数：       ${snap.llm.latency_ms.samples}`);
