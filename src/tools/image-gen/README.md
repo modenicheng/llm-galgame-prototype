@@ -1,75 +1,163 @@
-# image-gen — gpt-image-2 / 2.5 图像生成小工具
+# image-gen 使用指南
 
-对接 OpenAI Images API 兼容形态的 `gpt-image-2` / `gpt-image-2.5`（sunburst / flare）系列模型，
-生成与编辑图像。**core + CLI 双层设计**：CLI 适合手工出图；core 可被任何脚本 import 复用。
-官方 API、中转站均可（baseURL + apiKey 独立配置在 `.env`）。
+对接 gpt-image-2 / gpt-image-2.5（sunburst / flare）系列图像生成与编辑 API 的独立小工具。
+采用 **core + CLI 双层设计**：CLI 适合手工出图，core 可被任意脚本 import 复用。
+官方 API 与 OpenAI 兼容中转站均可接入，`baseURL` 与 `apiKey` 独立配置在 `.env`。
 
 ```
 src/tools/image-gen/
 ├── types.ts      类型与模型枚举（零依赖）
 ├── defaults.ts   内置默认参数（回退链最后一层）
-├── validate.ts   参数归一化 + 全量校验（错误参数本地拦截，绝不发送）
-├── client.ts     HTTP 客户端：JSON/multipart、SSE 流、超时、429/5xx 退避重试
-├── env.ts        .env 配置加载（必填 baseUrl/apiKey + 可选默认层）
-├── files.ts      文件读写助手（图片落盘、本地图片读取）
-└── cli.ts        命令行入口（generate / edit 子命令）
+├── validate.ts   参数归一化 + 全量校验（非法参数本地拦截，绝不发往服务端）
+├── client.ts     HTTP 客户端：JSON / multipart、SSE 流、超时、429/5xx 退避重试
+├── env.ts        .env 配置加载（必填 baseURL/apiKey + 可选默认层）
+├── files.ts      文件读写助手（结果落盘、本地图片读取）
+├── cli.ts        命令行入口（generate / edit 子命令）
+└── *.test.ts     单元测试（fetch 注入，无网络）
 ```
 
-零新增依赖：仅用仓库已有的 `zod`（响应校验）与 Node 20+ 内置 `fetch` / `FormData` / `parseArgs`。
+零新增依赖：仅使用仓库已有的 `zod`（响应结构校验）与 Node 20+ 内置的
+`fetch` / `FormData` / `parseArgs`。要求 Node ≥ 20。
 
-## 1. 配置 .env
+---
 
-复制 `.env.example` 追加段到仓库根目录 `.env`（已被 .gitignore 忽略）：
+## 1. 快速开始
+
+**① 配置 `.env`**（仓库根目录，`.env` 已被 .gitignore 忽略）：
 
 ```bash
-# 必填
-IMAGE_GEN_BASE_URL=https://api.openai.com/v1   # 填到 /v1 这一层；中转站填其给出的地址
-IMAGE_GEN_API_KEY=sk-xxxx                      # 与 BASE_URL 配套的 Key
-
-# 可选（参数默认值的中间层，CLI 显式参数优先）
-# IMAGE_GEN_MODEL=gpt-image-2
-# IMAGE_GEN_SIZE=auto
-# IMAGE_GEN_QUALITY=auto
-# IMAGE_GEN_TIMEOUT_MS=300000
-# IMAGE_GEN_MAX_RETRIES=2
-# IMAGE_GEN_OUTPUT_DIR=output/image-gen
+IMAGE_GEN_BASE_URL=https://api.openai.com/v1
+IMAGE_GEN_API_KEY=sk-xxxxxxxx
 ```
 
-裸域名（无路径）的 baseURL 会自动补 `/v1`。
-
-## 2. CLI 用法
+**② 出第一张图**：
 
 ```bash
-# 文生图（竖版立绘）
-npm run image -- generate "雨夜校园天台，少女回望镜头，赛璐璐风格" --size 1024x1536 --quality high
-
-# 透明背景 PNG，一次两张
-npm run image -- generate "角色立绘，白底" --background transparent --format png --n 2
-
-# 流式 + 保存部分图预览
-npm run image -- generate "cg：夕阳下的教室" --stream --partial-images 2 --save-partials
-
-# 图片编辑：垫图 + 局部重绘（mask 透明区域为重绘区）
-npm run image -- edit "把背景换成黄昏" --image ./photo.png --input-fidelity high
-npm run image -- edit "只改面部表情" --image ./standee.png --mask ./mask.png
-
-npm run image -- help   # 全部选项
+npm run image -- generate "雨夜校园天台，少女回望镜头，赛璐璐风格" --size 1024x1536
 ```
 
-结果默认写入 `output/image-gen/`（已 gitignore），文件名 `{时间戳}-{model}-{size}-{序号}.png`，
-并打印 usage tokens。**退出码**：0 成功；2 参数/配置错误（未发请求）；1 API/网络错误。
+**③ 取结果**：图片默认写入 `output/image-gen/`，同时打印 token 用量：
 
-## 3. 脚本调用 core
+```
+已保存: output/image-gen/20260914-143012-gpt-image-2-1024x1536-01.png
+tokens: input=52 output=1420 total=1472
+```
 
-```ts
-import "dotenv/config";                       // 复用仓库 scripts/*.mjs 的惯例
+---
+
+## 2. .env 配置参考
+
+| 变量 | 必填 | 说明 | 默认 |
+|---|---|---|---|
+| `IMAGE_GEN_BASE_URL` | ✅ | API 地址，**填到 `/v1` 这一层**（工具拼接 `/images/generations` 等路径）；裸域名会自动补 `/v1` | — |
+| `IMAGE_GEN_API_KEY` | ✅ | 与 BASE_URL 配套的 Key | — |
+| `IMAGE_GEN_MODEL` | — | 默认模型（中间默认层，显式传参优先） | `gpt-image-2` |
+| `IMAGE_GEN_SIZE` | — | 默认尺寸 | `auto` |
+| `IMAGE_GEN_QUALITY` | — | 默认画质档 | `auto` |
+| `IMAGE_GEN_TIMEOUT_MS` | — | 单次请求超时（毫秒） | `300000` |
+| `IMAGE_GEN_MAX_RETRIES` | — | 429/5xx/网络错误的最大重试次数（`0` 关闭重试） | `2` |
+| `IMAGE_GEN_OUTPUT_DIR` | — | 结果输出目录 | `output/image-gen` |
+
+可选变量的值为空字符串时视同未配置。完整的示例见仓库根目录 `.env.example` 的
+“图像生成”段落。
+
+---
+
+## 3. CLI 使用
+
+入口：`npm run image -- <子命令> [参数]`（`--` 不能省，否则参数会被 npm 吃掉）。
+
+### 3.1 generate — 文生图
+
+```bash
+# 竖版立绘（高质量）
+npm run image -- generate "雨夜校园天台，少女回望镜头，赛璐璐风格" \
+  --size 1024x1536 --quality high
+
+# 透明底 PNG 立绘，一次两张
+npm run image -- generate "校服少女立绘，全身，白底" \
+  --background transparent --format png --n 2
+
+# 横版 CG，2.5 系列最高画质
+npm run image -- generate "夕阳教室，光尘浮动，电影感构图" \
+  --model gpt-image-2.5-sunburst --size 1536x1024 --quality xhigh
+
+# 任意尺寸（16 的倍数，宽高比 1:3 ~ 3:1）
+npm run image -- generate "手机竖屏壁纸" --size 1152x2048
+
+# 流式生成并保存逐步精化的部分图预览
+npm run image -- generate "cg：天台决战" --stream --partial-images 2 --save-partials
+```
+
+### 3.2 edit — 图片编辑（垫图 / mask 局部重绘）
+
+```bash
+# 垫图改背景，高保真保留原图主体
+npm run image -- edit "把背景换成黄昏的操场" \
+  --image ./assets/raw/standee.png --input-fidelity high
+
+# 多张参考图（最多 16 张）
+npm run image -- edit "融合两张角色的服装设计" \
+  --image ./a.png --image ./b.webp
+
+# mask 局部重绘：mask 图中“透明区域”为重绘区（尺寸须与参考图一致）
+npm run image -- edit "只改变面部表情为惊讶" \
+  --image ./standee.png --mask ./mask.png
+```
+
+`--image` / `--mask` 支持 `.png` / `.jpg` / `.jpeg` / `.webp`。
+
+### 3.3 选项参考
+
+共用选项（CLI flag > `.env` 中间默认层 > 内置默认）：
+
+| Flag | 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `--model` | 见 §5 模型表 | `gpt-image-2` | 模型 ID（含日期快照） |
+| `--size` | `auto` / `WxH` | `auto` | 规则见 §5 |
+| `--quality` | `auto` `low` `medium` `high`（`xhigh` `max` 仅 2.5 系列） | `auto` | 画质档 |
+| `--n` | 1~10 | `1` | 生成张数 |
+| `--background` | `auto` `transparent` `opaque` | `auto` | 透明底需配 png/webp |
+| `--format` | `png` `jpeg` `webp` | 不发送（服务端 png） | 输出格式 |
+| `--compression` | 0~100 | 不发送 | 仅 jpeg/webp 有效 |
+| `--moderation` | `low` `auto` | `auto` | 内容审核强度 |
+| `--stream` | 布尔开关 | 关 | SSE 流式，配合 `--partial-images` 0~3 |
+| `--save-partials` | 布尔开关 | 关 | 保存部分图预览（`*-partialNN.png`） |
+| `--user` | 任意标识 | 不发送 | 终端用户标识（便于服务端归因） |
+| `--out` | 目录 | `output/image-gen` | 输出目录 |
+| `--timeout` | 毫秒 | `300000` | 单次请求超时 |
+| `--retries` | ≥0 | `2` | 重试次数 |
+
+edit 专属：`--image <路径>`（可重复，1~16 张）、`--mask <路径>`、
+`--input-fidelity high|low`。
+
+### 3.4 输出与退出码
+
+- 文件名：`{本地时间戳}-{model}-{size}-{序号}.{ext}`；流式部分图为
+  `{前缀}-partial{NN}.png`
+- 打印内容：保存路径、`revised prompt`（模型改写的提示词，若有）、token 用量
+- 退出码：**0** 成功；**2** 参数/配置错误（未发出网络请求）；**1** API/网络错误
+- 进度信息（流式部分图等）走 stderr，结果路径走 stdout，便于重定向
+
+---
+
+## 4. 脚本调用（core API）
+
+core 不读 `.env`、不做文件 IO，任何脚本都能安全复用。
+
+### 4.1 一次性脚本（推荐放 `scripts/*.mjs`，与仓库现有脚本一致）
+
+```js
+// scripts/gen-assets.mjs
+import "dotenv/config";
 import { createImageClient } from "../src/tools/image-gen/client.js";
 import { loadEnvConfig } from "../src/tools/image-gen/env.js";
 import { loadImageFile, saveImages, defaultBasename } from "../src/tools/image-gen/files.js";
 
-const env = loadEnvConfig();
+const env = loadEnvConfig(); // 缺配置会抛 ImageParamError，报错信息一次列全
 const client = createImageClient({ apiKey: env.apiKey, baseUrl: env.baseUrl });
 
+// 文生图（可传自己的中间默认层：client.generate(params) 的 params 键支持 snake_case）
 const result = await client.generate({
   prompt: "雨夜校园天台，赛璐璐风格",
   size: "1024x1536",
@@ -79,64 +167,127 @@ const result = await client.generate({
 await saveImages(result.images, "output/image-gen", defaultBasename(result.model, result.size));
 
 // 编辑（垫图）
-const img = await loadImageFile("assets/raw/ref.png");
-await client.edit({ prompt: "换成冬季制服", images: [img], inputFidelity: "high" });
+const ref = await loadImageFile("assets/raw/standee.png");
+await client.edit({ prompt: "换成冬季制服", images: [ref], inputFidelity: "high" });
 
-// 流式
+// 流式：partial 事件逐张到达，completed 收敛为最终结果
 for await (const event of client.generateStream({ prompt: "封面图" })) {
   if (event.type === "partial") console.log(`部分图 #${event.index + 1}`);
-  else saveImages(event.result.images, "output/image-gen", "cover");
+  else await saveImages(event.result.images, "output/image-gen", "cover");
 }
 ```
 
-脚本可传自己的默认层：`client.generate(params)` 无 env 依赖的等价形式是
-`createImageClient({ apiKey, baseUrl })`；默认值回退见下。
+构建后的运行时（Node 产物）等价导入路径为
+`dist/node/tools/image-gen/client.js`（`npm run build:node` 产物）。
 
-## 4. 默认值回退链
+### 4.2 错误处理范式
 
+```js
+import { ImageParamError } from "../src/tools/image-gen/validate.js";
+import { ImageApiError } from "../src/tools/image-gen/client.js";
+
+try {
+  await client.generate({ prompt: "..." });
+} catch (error) {
+  if (error instanceof ImageParamError) {
+    console.error("参数有问题，未发请求：", error.issues); // 字段级中文原因数组
+  } else if (error instanceof ImageApiError) {
+    console.error(`API 失败 status=${error.status}`, error.message, error.requestId);
+  } else {
+    throw error;
+  }
+}
 ```
-显式参数（CLI flag / 脚本入参）
-  > .env 中间默认层（IMAGE_GEN_MODEL / SIZE / QUALITY；loadEnvConfig().fallbacks）
-    > 内置默认（defaults.ts：gpt-image-2 / auto / auto / n=1 / background=auto / moderation=auto / stream=false）
+
+### 4.3 client 选项
+
+```ts
+createImageClient({
+  apiKey: string;        // 必填
+  baseUrl?: string;      // 默认 https://api.openai.com/v1
+  timeoutMs?: number;    // 默认 300000
+  maxRetries?: number;   // 默认 2（429/5xx/网络错误，指数退避 0.5s 起）
+  fetchImpl?: typeof fetch;   // 测试注入
+  sleepImpl?: (ms) => Promise<void>; // 测试注入
+});
 ```
 
-core 层 `resolveGenerationParams(params, fallbacks)` 亦可接收自定义中间层。
+校验在 `generate` / `edit` / `generateStream` / `editStream` 入口强制执行，
+绕过 CLI 直接调用同样受保护。`resolveGenerationParams(params, fallbacks?)` /
+`resolveEditParams(params, fallbacks?)` 也可单独使用（返回强类型参数或抛
+`ImageParamError`）。
+
+---
 
 ## 5. 参数全集与校验规则
 
-校验失败的参数**在本地报错、绝不发往服务端**；问题一次性全部列出（退出码 2）。
+校验失败的问题会**一次性全部列出**，且不发出网络请求。输入形态宽松：
+camelCase 与 snake_case（`output_format`）等价、字符串数字（`"3"`）自动转换、
+未知键直接报错。
+
+### 5.1 模型
+
+| 模型 ID | 说明 |
+|---|---|
+| `gpt-image-2` | 默认；稳定基础款（快照 `gpt-image-2-2026-04-21`） |
+| `gpt-image-2.5-sunburst`（`-2026-09-08`） | 2.5 基础款，画质优先，编辑精度更高 |
+| `gpt-image-2.5-flare`（`-2026-09-08`） | 2.5 提速款，延迟约减半 |
+
+### 5.2 参数规则
 
 | 参数 | 允许值 / 规则 | 默认 |
 |---|---|---|
-| `prompt` | 必填，非空白，≤32000 字符 | — |
-| `model` | `gpt-image-2`、`gpt-image-2-2026-04-21`、`gpt-image-2.5-sunburst(-2026-09-08)`、`gpt-image-2.5-flare(-2026-09-08)` | `gpt-image-2` |
-| `size` | `auto`；标准 `1024x1024` / `1536x1024` / `1024x1536`；任意 `WxH`：宽高均 16 的倍数、宽高比 1:3~3:1、≤3840×2160、≥256 | `auto` |
-| `quality` | `auto` `low` `medium` `high`；`xhigh` `max` **仅 2.5 系列**（配 gpt-image-2 本地报错） | `auto` |
-| `n` | 整数 1~10 | 1 |
+| `prompt` | 必填，非空白，≤ 32000 字符 | — |
+| `size` | `auto`；标准 `1024x1024` `1536x1024` `1024x1536`；任意 `WxH`：宽高均为 16 的倍数、宽高比 1:3~3:1、≤ 3840×2160、≥ 256 | `auto` |
+| `quality` | `auto` `low` `medium` `high`；`xhigh` `max` **仅 2.5 系列**（配 gpt-image-2 本地报错并给出可用档位） | `auto` |
+| `n` | 整数 1~10 | `1` |
 | `background` | `transparent` `opaque` `auto`；transparent 与 jpeg 组合本地报错 | `auto` |
-| `outputFormat` | `png` `jpeg` `webp` | 不发送（服务端 png） |
-| `outputCompression` | 整数 0~100，仅 jpeg/webp（配 png 本地报错） | 不发送 |
+| `outputFormat` | `png` `jpeg` `webp` | 不发送（服务端默认 png） |
+| `outputCompression` | 整数 0~100，仅 jpeg/webp 有效（配 png 本地报错） | 不发送 |
 | `moderation` | `low` `auto` | `auto` |
-| `stream` | 布尔；`partialImages`(0~3) 必须配合 stream | `false` |
-| `user` | 终端用户标识 | 不发送 |
-| edit：`images` | 1~16 张 png/jpg/webp | 必填 |
-| edit：`mask` | 单张，透明区域为重绘区 | 不发送 |
-| edit：`inputFidelity` | `high` `low` | 不发送 |
-| ~~`responseFormat`~~ / ~~`style`~~ | gpt-image 系列**不支持**，传入即本地报错 | — |
+| `stream` | 布尔；`partialImages`（0~3）必须配合 stream | `false` |
+| `user` | 字符串 | 不发送 |
+| edit `images` | 1~16 张 png/jpg/webp | 必填 |
+| edit `mask` | 单张；透明像素 = 重绘区 | 不发送 |
+| edit `inputFidelity` | `high` `low` | 不发送 |
+| ~~`responseFormat`~~ / ~~`style`~~ | gpt-image 系列**不支持**（固定返回 b64_json；style 为 dall-e-3 专属），传入即本地报错 | — |
 
-输入形态宽松：camelCase 与 snake_case（`output_format`）等价，字符串数字（`"3"`）自动转换；
-未知键直接报错。
+### 5.3 默认值回退链
 
-## 6. 错误类型
+```
+显式参数（CLI flag / 脚本入参）
+  > .env 中间默认层（IMAGE_GEN_MODEL / SIZE / QUALITY）
+    > 内置默认（defaults.ts：gpt-image-2 / auto / auto / n=1 / background=auto
+      / moderation=auto / stream=false）
+```
 
-| 错误 | 抛出时机 | 处理建议 |
-|---|---|---|
-| `ImageParamError` | 参数/配置校验失败（含 .env 缺失、未知 flag） | 按 `issues` 修正后重试 |
-| `ImageApiError` | HTTP 非 2xx（`status` 为状态码）或网络失败（`status=0`） | 429/5xx 已自动退避重试（默认 2 次）；查看 `message`/`code`/`requestId` |
+---
 
-## 7. 冒烟验证（需要真实 Key，会产生少量费用）
+## 6. 排障指南
+
+| 现象 | 原因与处理 |
+|---|---|
+| `缺少 IMAGE_GEN_BASE_URL / IMAGE_GEN_API_KEY` | 未配置 `.env`；复制 `.env.example` 的图像生成段落到根目录 `.env` 后填写 |
+| `HTTP 401` | Key 无效或与 BASE_URL 不配套（中转站的 key 配中转站的域名） |
+| `HTTP 429`（已自动重试仍失败） | 限流；降低并发、稍后再试，或提升账号 tier |
+| `HTTP 400` 且消息含某参数名 | 中转站不支持该参数/模型（如 `xhigh`）；换官方端点或去掉该参数 |
+| `响应项缺少 b64_json…` | 中转站改写了响应结构（返回了 url 等）；确认中转未转换响应，或联系其支持 |
+| status=0 且消息含 `timed out` | 超时；`--timeout 600000` 或 `IMAGE_GEN_TIMEOUT_MS` 调大（xhigh 大图可能超 2 分钟） |
+| status=0 且消息含 `ECONNREFUSED` 等 | 网络不通/代理问题；检查 BASE_URL 拼写与本地代理 |
+| Windows 下提示词被截断 | Git Bash / PowerShell 引号转义差异；建议整个提示词用双引号包裹，内部避免再嵌双引号 |
+
+费用提示：计费按模型 × 画质 × 尺寸（token 计价），每次运行结束会打印 usage，
+便于估算；`--quality low` + 小尺寸适合验证连通性。
+
+---
+
+## 7. 开发
 
 ```bash
-npm run image -- generate "smoke test: a red apple on a table" --size 1024x1024 --quality low
-npm run typecheck && npm test   # 本地校验/单测不需要 Key
+npm run typecheck          # 类型检查
+npx vitest run src/tools/image-gen   # 仅本工具的 52 个用例
+npm test                   # 全仓库测试
 ```
+
+改动校验规则时同步更新 `validate.test.ts` 的校验矩阵；请求体结构改动以
+OpenAI Images API 参考（developers.openai.com/api/reference）为准。
