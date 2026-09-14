@@ -183,12 +183,14 @@ export async function createRuntimeApplication(
         api: config.api,
         config: config.narrative,
         diagnostics,
+        metrics,
       });
       const planner = new PlotPlannerAdapter({
         apiKey,
         api: config.api,
         config: config.narrative,
         diagnostics,
+        metrics,
       });
       const service = new NarrativeDirectorService({
         config: config.narrative,

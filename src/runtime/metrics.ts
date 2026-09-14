@@ -18,13 +18,26 @@ export interface LLMRequestCounts {
   opening: number;
   branch_prefetch: number;
   continuation: number;
+  /** Scene-transition narration after a confirmed free-text input. */
+  input_bridge: number;
+  /** NPC response to a confirmed free-text input. */
+  input_response: number;
+  /** Longform mode: director plan generation. */
+  plot_plan: number;
+  /** Longform mode: memory consolidation. */
+  narrative_consolidation: number;
   speculative: number;
 }
+
+/** Discriminator for one LLM request type (key of LLMRequestCounts). */
+export type LLMRequestType = keyof LLMRequestCounts;
 
 /** Aggregated LLM token statistics. */
 export interface LLMTokenStats {
   input: number;
   output: number;
+  /** Input tokens served from the provider prefix cache (subset of input). */
+  cached_input: number;
 }
 
 /** Aggregated end-to-end generation latency (milliseconds). */
@@ -87,6 +100,8 @@ export interface MetricsSnapshot {
   llm: {
     requests: LLMRequestCounts;
     tokens: LLMTokenStats;
+    /** tokens.cached_input / tokens.input, or 0 when no input was billed. */
+    cache_hit_rate: number;
     latency_ms: LLMLatencyStats;
   };
   prefetch: PrefetchStats;
@@ -123,10 +138,15 @@ export class Metrics {
     opening: 0,
     branch_prefetch: 0,
     continuation: 0,
+    input_bridge: 0,
+    input_response: 0,
+    plot_plan: 0,
+    narrative_consolidation: 0,
     speculative: 0,
   };
   private inputTokens = 0;
   private outputTokens = 0;
+  private cachedInputTokens = 0;
   private latencySamples: number[] = [];
 
   // --- Prefetch ---
@@ -163,13 +183,14 @@ export class Metrics {
 
   /** Record a completed LLM generation request. */
   recordLLMRequest(
-    type: LLMRequestCounts extends Record<infer K, number> ? K : never,
-    tokens: { input: number; output: number },
+    type: LLMRequestType,
+    tokens: { input: number; output: number; cachedInput?: number },
     latencyMs: number,
   ): void {
     this.requestCounts[type] += 1;
     this.inputTokens += tokens.input;
     this.outputTokens += tokens.output;
+    this.cachedInputTokens += tokens.cachedInput ?? 0;
     this.latencySamples.push(latencyMs);
   }
 
@@ -290,7 +311,12 @@ export class Metrics {
         tokens: {
           input: this.inputTokens,
           output: this.outputTokens,
+          cached_input: this.cachedInputTokens,
         },
+        cache_hit_rate: this.computeRate(
+          this.cachedInputTokens,
+          this.inputTokens,
+        ),
         latency_ms: {
           p50: percentile(sortedLatency, 0.5),
           p95: percentile(sortedLatency, 0.95),
@@ -338,10 +364,15 @@ export class Metrics {
       opening: 0,
       branch_prefetch: 0,
       continuation: 0,
+      input_bridge: 0,
+      input_response: 0,
+      plot_plan: 0,
+      narrative_consolidation: 0,
       speculative: 0,
     };
     this.inputTokens = 0;
     this.outputTokens = 0;
+    this.cachedInputTokens = 0;
     this.latencySamples = [];
     this.branchesRequested = 0;
     this.branchesHit = 0;

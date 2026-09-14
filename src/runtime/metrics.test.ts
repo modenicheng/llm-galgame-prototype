@@ -109,6 +109,58 @@ describe("Metrics token accumulation", () => {
     expect(snap.llm.tokens.input).toBe(48);
     expect(snap.llm.tokens.output).toBe(82);
   });
+
+  it("should accumulate cached input tokens and default them to zero", () => {
+    const snap0 = m.snapshot();
+    expect(snap0.llm.tokens.cached_input).toBe(0);
+
+    m.recordLLMRequest(
+      "continuation",
+      { input: 100, output: 50, cachedInput: 64 },
+      100,
+    );
+    m.recordLLMRequest("opening", { input: 40, output: 20 }, 100);
+
+    const snap = m.snapshot();
+    expect(snap.llm.tokens.cached_input).toBe(64);
+  });
+
+  it("should compute cache hit rate over billed input tokens", () => {
+    m.recordLLMRequest(
+      "continuation",
+      { input: 100, output: 50, cachedInput: 25 },
+      100,
+    );
+    m.recordLLMRequest("opening", { input: 100, output: 50 }, 100);
+
+    const snap = m.snapshot();
+    expect(snap.llm.cache_hit_rate).toBeCloseTo(0.125, 5);
+  });
+
+  it("should report zero cache hit rate when no input was billed", () => {
+    const snap = m.snapshot();
+    expect(snap.llm.cache_hit_rate).toBe(0);
+  });
+
+  it("should track input bridge and input response requests independently", () => {
+    m.recordLLMRequest("input_bridge", { input: 10, output: 5 }, 100);
+    m.recordLLMRequest("input_response", { input: 20, output: 8 }, 100);
+    m.recordLLMRequest("input_response", { input: 20, output: 8 }, 100);
+
+    const snap = m.snapshot();
+    expect(snap.llm.requests.input_bridge).toBe(1);
+    expect(snap.llm.requests.input_response).toBe(2);
+    expect(snap.llm.requests.continuation).toBe(0);
+  });
+
+  it("should track longform planner and consolidator requests", () => {
+    m.recordLLMRequest("plot_plan", { input: 10, output: 5 }, 100);
+    m.recordLLMRequest("narrative_consolidation", { input: 15, output: 6 }, 100);
+
+    const snap = m.snapshot();
+    expect(snap.llm.requests.plot_plan).toBe(1);
+    expect(snap.llm.requests.narrative_consolidation).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

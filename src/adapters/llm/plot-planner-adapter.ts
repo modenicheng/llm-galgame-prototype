@@ -14,6 +14,8 @@ import {
   NON_TERMINAL_SETUP_STATUSES,
 } from "../../application/narrative/memory-consolidator.js";
 import { PLANNER_RECENT_EVENTS_MAX } from "../../application/narrative/plot-planner.js";
+import type { Metrics } from "../../runtime/metrics.js";
+import { parseLLMUsage } from "./llm-usage.js";
 
 // ---------------------------------------------------------------------------
 // System prompt (fixed Chinese instruction — Task 7 brief)
@@ -36,6 +38,7 @@ export class PlotPlannerAdapter implements PlotPlannerPort {
   private readonly model: string;
   private readonly config: NarrativeConfig;
   private readonly diagnostics: DiagnosticSink;
+  private readonly metrics: Metrics | undefined;
 
   constructor(private readonly opts: {
     apiKey: string;
@@ -43,6 +46,7 @@ export class PlotPlannerAdapter implements PlotPlannerPort {
     config: NarrativeConfig;
     diagnostics?: DiagnosticSink;
     client?: OpenAI;
+    metrics?: Metrics;
   }) {
     this.client =
       opts.client ??
@@ -54,11 +58,13 @@ export class PlotPlannerAdapter implements PlotPlannerPort {
     this.model = opts.api.model;
     this.config = opts.config;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
+    this.metrics = opts.metrics;
   }
 
   async plan(request: PlotPlannerRequest): Promise<PlannerProposal> {
     const userMessage = this.buildUserMessage(request);
 
+    const callStart = Date.now();
     const response = await this.client.chat.completions.create({
       model: this.model,
       messages: [
@@ -70,6 +76,14 @@ export class PlotPlannerAdapter implements PlotPlannerPort {
     });
 
     const rawContent = response.choices[0]?.message?.content ?? "";
+    this.metrics?.recordLLMRequest(
+      "plot_plan",
+      parseLLMUsage(response.usage) ?? {
+        input: 0,
+        output: Math.ceil(rawContent.length / 4),
+      },
+      Date.now() - callStart,
+    );
 
     let parsed: unknown;
     try {
