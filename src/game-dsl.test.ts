@@ -880,7 +880,11 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     const runPromise = game.run();
     const controller = new MemoryController({
       onInteractionOpened: (output, ctrl) => {
-        ctrl.select(output.interactionId, output.interaction.options[0]!.id);
+        const { interaction } = output;
+        if (!("options" in interaction)) {
+          throw new Error("expected a choice interaction");
+        }
+        ctrl.select(output.interactionId, interaction.options[0]!.id);
       },
     });
     controller.attach(game);

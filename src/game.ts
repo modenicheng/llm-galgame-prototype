@@ -1908,18 +1908,21 @@ export class Game {
    * 消除；这里是最后防线，保证任何未知路径的失序只降级不卡死。
    */
   private advanceBufferedEvent(event: RuntimeBufferEvent): void {
+    const eventId = "line_id" in event ? event.line_id : event.type;
     const bufferedEvent = this.playbackBuffer.advance();
     if (bufferedEvent === event) return;
     if (bufferedEvent === undefined) {
       this.diagnostics.warn(
         "Game",
-        `播放缓冲缺少事件 ${event.line_id}（缓冲被重置或生产者被回收）；跳过对账继续播放`,
+        `播放缓冲缺少事件 ${eventId}（缓冲被重置或生产者被回收）；跳过对账继续播放`,
       );
       return;
     }
+    const bufferedId =
+      "line_id" in bufferedEvent ? bufferedEvent.line_id : bufferedEvent.type;
     this.diagnostics.warn(
       "Game",
-      `播放缓冲顺序与生成事件流不一致（缓冲头 ${bufferedEvent.line_id} ≠ 播放 ${event.line_id}）；重置缓冲继续播放`,
+      `播放缓冲顺序与生成事件流不一致（缓冲头 ${bufferedId} ≠ 播放 ${eventId}）；重置缓冲继续播放`,
     );
     this.playbackBuffer.clear();
   }

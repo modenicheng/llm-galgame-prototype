@@ -105,7 +105,7 @@ export class PlaybackBuffer {
     const head = this.events.slice(0, this.cursor);
     const tail = this.events
       .slice(this.cursor)
-      .filter((event) => !lineIds.has(event.line_id));
+      .filter((event) => !("line_id" in event && lineIds.has(event.line_id)));
     this.events = [...head, ...tail];
   }
 }
