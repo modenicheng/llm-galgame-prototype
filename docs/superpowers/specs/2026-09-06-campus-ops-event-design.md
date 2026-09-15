@@ -94,6 +94,8 @@
 
 不得直接从私有 `bitnp-raspberrygirl-vtuber-frontend` 复制分层部件或 Godot 资源到本仓库。素材引用要记录源仓库、commit、作者/许可、用途和是否允许再分发。
 
+**树莓娘资产流通约定（2026-09-15 起）**：无论来源与授权状态如何，树莓娘的所有资产（分层原稿、导出差分、正式或占位立绘）一律不得进入 git 版本库、不得上传到任何远程渠道或外部在线服务，只能以直接复制文件的方式在内部流通。`.gitignore` 排除 `assets/characters/raspberry/` 与 `assets/raw/`，禁止 `git add -f`。细节见 `assets/ATTRIBUTION.md`。
+
 ## 8. 非目标
 
 - 不把项目变成真正的云盘、镜像源、预约后台、面试系统或工单系统。

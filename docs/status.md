@@ -112,8 +112,11 @@
 - **角色适配**：`prompts/characters.txt` 分层（BITNP 已核对事实 / 本分支
   演绎）；世界规则、事实边界写入 `story_line.txt`/`guideline.txt`/
   `author.yaml`；结局只依据本局 committed facts。
-- **资源策略**：背景复用 clubroom/hallway；树莓娘为项目自制占位立绘
-  （单 variant）；BITNP 素材未授权不接入（来源审计见
+- **资源策略**：背景使用 clubroom/wencui_corridor；树莓娘为基于负责人提供的
+  官方分层原稿加工的差分立绘（base + 18 表情差分 + 剪影，2026-09-15 接入，
+  仅限内部流通）；另有 4 个自制 AI 通用配角立绘（female_A/female_B/male_A/
+  male_B，各 base + smile/surprised/embarrassed，2026-09-15 接入，仅限内部
+  流通）；BITNP 其余素材未授权不接入（来源审计见
   `docs/superpowers/notes/campus-ops-source-audit.md`）。
 - **文本优先**：`synthesis.provider: disabled`，音频缺省不阻塞启动。
 - **现场文档**：`docs/campus-ops-event-runbook.md`（一人操作/重开/指定种子）。
@@ -124,5 +127,5 @@
   等待界面显示运行阶段文案；`UiProjectionStore` 按会话 id 变化重置，旧会话
   状态不泄漏。生成等待中重开最迟当前段超时（约 60s）生效。
 
-待办：树莓娘正式立绘与音色授权；展位实测后的种子扩充；
+待办：树莓娘音色授权（差分立绘已于 2026-09-15 接入）；展位实测后的种子扩充；
 回 `main` 审查（`core:` 提交可回流，campus 内容保留本分支）。

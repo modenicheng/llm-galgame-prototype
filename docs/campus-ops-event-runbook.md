@@ -11,9 +11,18 @@
 
 ## 启动（一人可完成）
 
-1. `.env` 中配置 `OPENAI_API_KEY`（文本模式不需要任何 TTS key）。
-2. `npm install && npm run dev`，浏览器自动打开本地页面。
-3. 首局即自动从一条叙事种子开始（开场会点明"此刻在处理什么事"）。
+1. 准备角色资产（仅新机器需要）：从内部联系人处**直接复制**到本地——
+   `assets/characters/raspberry/`（树莓娘立绘，共 20 个 PNG：`base` 基准 +
+   18 个表情差分 + `mysterious_silhouette` 剪影）与
+   `assets/characters/{female_A,female_B,male_A,male_B}/`（4 个自制 AI
+   通用配角立绘，每角色 4 个 PNG：`base` + smile/surprised/embarrassed），
+   以及 `assets/raw/DAnew_version/`（分层原稿与导出差分）。这些资产按约定
+   不入库、不上传，克隆仓库后不会有，也不要
+   `git add -f`（见 [assets/ATTRIBUTION.md](../assets/ATTRIBUTION.md)）。
+   文件不齐会在加载时报错。
+2. `.env` 中配置 `OPENAI_API_KEY`（文本模式不需要任何 TTS key）。
+3. `npm install && npm run dev`，浏览器自动打开本地页面。
+4. 首局即自动从一条叙事种子开始（开场会点明"此刻在处理什么事"）。
 
 ### 指定演示种子（可选）
 

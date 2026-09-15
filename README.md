@@ -28,6 +28,8 @@ TTS 音色创建与绑定见 [docs/agents/TTS-音色配置指南.md](./docs/agen
   已确认的事实自然生成（`@end` 仅为引擎终止标记）。
 - 文本优先：`synthesis.provider: disabled`，不依赖 TTS key；树莓娘立绘为
   项目自制占位图，BITNP 官方素材未经授权不接入。
+- 树莓娘资产仅限内部流通：所有树莓娘资产不入库、不上传，只能直接复制分发
+  （详见 [assets/ATTRIBUTION.md](./assets/ATTRIBUTION.md)）。
 - 现场运行（一人操作、重开、指定种子）见
   [docs/campus-ops-event-runbook.md](./docs/campus-ops-event-runbook.md)；
   设计与素材授权边界见
