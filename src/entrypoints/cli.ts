@@ -8,25 +8,132 @@ import type { Game } from "../game.js";
 import type { Metrics } from "../runtime/metrics.js";
 import { CliController } from "../apps/cli/cli-controller.js";
 import { TerminalUI, UserExitError } from "../apps/cli/terminal-ui.js";
+import {
+  countLegacyLogFiles,
+  deleteSessionSave,
+  listSessionSaves,
+  summarizeArchive,
+  type SessionSaveSummary,
+} from "../adapters/storage/session-archive.js";
 
-function parseArgs(argv: string[]): { configPath: string; debugRuntime: boolean } {
+function parseArgs(argv: string[]): {
+  configPath: string;
+  debugRuntime: boolean;
+  saves: boolean;
+  deleteSave?: string;
+} {
   let configPath = "config.yaml";
   let debugRuntime = false;
+  let saves = false;
+  let deleteSave: string | undefined;
 
-  for (const arg of argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === undefined) continue;
     if (arg === "--debug-runtime") {
       debugRuntime = true;
+    } else if (arg === "--saves") {
+      saves = true;
+    } else if (arg === "--delete-save") {
+      const value = argv[++i];
+      if (value !== undefined) deleteSave = value;
+    } else if (arg.startsWith("--delete-save=")) {
+      deleteSave = arg.slice("--delete-save=".length);
     } else if (!arg.startsWith("--") && arg.endsWith(".yaml")) {
       configPath = arg;
     }
   }
 
-  return { configPath, debugRuntime };
+  return {
+    configPath,
+    debugRuntime,
+    saves,
+    ...(deleteSave !== undefined ? { deleteSave } : {}),
+  };
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function saveStatus(save: SessionSaveSummary): string {
+  if (save.phase === "ended") return "已结束";
+  if (save.phase === "active") return "进行中";
+  return "无快照";
+}
+
+function printSaveList(saves: readonly SessionSaveSummary[]): void {
+  console.log("\n── 存档列表 ──");
+  if (saves.length === 0) {
+    console.log("  （暂无存档）");
+    return;
+  }
+  for (const save of saves) {
+    const when = (save.lastPlayedAt ?? save.createdAt ?? "").replace("T", " ").slice(0, 16);
+    const ending = save.phase === "ended" ? ` 结局=${save.endingId ?? "?"}` : "";
+    console.log(
+      `  ${save.sessionId}  ${saveStatus(save)}  回合${save.turnCount}/交互${save.interactionCount}` +
+        `  事件${save.eventCount}${ending}  ${when}  ${formatBytes(save.sizeBytes)}`,
+    );
+  }
+}
+
+async function handleSaveCommands(
+  config: AppConfig,
+  commands: { list: boolean; deleteId?: string },
+): Promise<void> {
+  const sessionsDir = config.game.sessions_dir;
+
+  if (commands.list) {
+    const saves = await listSessionSaves(sessionsDir);
+    printSaveList(saves);
+    const archive = summarizeArchive(saves, await countLegacyLogFiles(sessionsDir));
+    console.log("\n── 存档汇总 ──");
+    console.log(
+      `  存档总数：${archive.totalSaves}（进行中 ${archive.active} / 已结束 ${archive.ended}` +
+        ` / 无快照 ${archive.withoutSnapshot}）`,
+    );
+    if (archive.ended > 0) {
+      const endings = Object.entries(archive.endings)
+        .map(([id, count]) => `${id} ×${count}`)
+        .join("，");
+      console.log(`  结局分布：${endings}`);
+    }
+    console.log(`  事件总数：${archive.totalEvents}　磁盘占用：${formatBytes(archive.totalSizeBytes)}`);
+    if (archive.legacyFiles > 0) {
+      console.log(
+        `  遗留扁平日志：${archive.legacyFiles} 个（${formatBytes(archive.legacyBytes)}，` +
+          `旧版平铺布局、不可读档；如需清理请手动删除）`,
+      );
+    }
+  }
+
+  if (commands.deleteId !== undefined) {
+    const saves = await listSessionSaves(sessionsDir);
+    const target = saves.find((save) => save.sessionId === commands.deleteId);
+    if (target) {
+      printSaveList([target]);
+    }
+    await deleteSessionSave(sessionsDir, commands.deleteId);
+    console.log(`\n已删除存档：${commands.deleteId}`);
+  }
 }
 
 async function main(): Promise<void> {
-  const { configPath, debugRuntime } = parseArgs(process.argv.slice(2));
+  const { configPath, debugRuntime, saves, deleteSave } = parseArgs(process.argv.slice(2));
   const config: AppConfig = await loadConfig(configPath);
+
+  // 存档统计与管理：只需要配置里的 sessions_dir，不必引导整个运行时。
+  if (saves || deleteSave !== undefined) {
+    await handleSaveCommands(config, {
+      list: saves,
+      ...(deleteSave !== undefined ? { deleteId: deleteSave } : {}),
+    });
+    return;
+  }
+
   const app: RuntimeApplication = await createRuntimeApplication({ configPath, config });
 
   const ui = new TerminalUI(

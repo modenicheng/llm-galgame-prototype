@@ -78,6 +78,11 @@
 - `sessions/<sessionId>/` 会话目录：`events.jsonl` + narrative 记忆三件套
   （narrative-state.json / episodes.jsonl / narrative-ops.jsonl）+
   `director-plan.json`；director 关闭时 flush 落盘。
+- **存档统计与管理**（`src/adapters/storage/session-archive.ts`）：跨会话视角的
+  存档列表/统计（事件与交互计数、回合进度、phase/ending、叙事记忆在位、
+  磁盘占用、遗留扁平日志盘点）与按目录删除（sessionId 严格校验防路径逃逸）。
+  入口：CLI `--saves` / `--delete-save <id>`；Web 侧只读 `GET /api/saves`
+  （删除不开放 HTTP）。存档槽位/任意进度存读仍为路线图项。
 
 ## 简化 / 未完成
 

@@ -3,6 +3,24 @@
 > 摘编自原 `docs/llm-outputs-refactor.md` §114–§118（该文件 2026-09-04 拆分，
 > 全文见 git 历史）。当前进度权威见 `docs/status.md`。
 
+## 2026-09-16 存档统计与管理（session archive）
+
+补齐跨会话持久化视角（此前只有单会话读写与 load/resume，无任何列表/统计/
+删除能力；`sessions/` 根下还堆着 pre-P1-7 布局的数百个遗留扁平日志）：
+
+1. **session-archive 模块**（`src/adapters/storage/session-archive.ts`）：
+   扫描 `sessions/<id>/` 产出每存档摘要（事件按 source/type 分桶、交互与
+   回合计数、首末时间戳、state.json 的 phase/ending、叙事记忆在位、字节数）
+   与全库汇总（进行中/已结束/无快照、结局分布、遗留扁平文件盘点）。
+   容错读取：坏行计数不致命；删除是唯一写操作，sessionId 严格白名单校验
+   （防路径逃逸）+ 目录判定。
+2. **CLI**：`--saves` 列表+汇总、`--delete-save <id>` 定向删除（均只需
+   config，不引导运行时）；Web 宿主新增只读 `GET /api/saves`（删除不开放
+   HTTP 面）。
+
+测试：`session-archive.test.ts` 11 例（布局扫描、容错、遗留盘点、聚合、
+id 校验、删除安全）+ 宿主 `/api/saves` 用例；全套 1468 通过。
+
 ## 2026-09-14 event 模式分级收束与记忆/上下文管理优化
 
 依据 2026-09-08 展位现场 session（150 事件 / 5.5 分钟 / 6 次交互，全程无

@@ -20,6 +20,11 @@ import type { RuntimeApplication } from "../../application/runtime-application.j
 import type { AssetCatalog, PublicAssetManifest } from "../../core/assets/types.js";
 import { buildPublicAssetManifest } from "../../application/assets/asset-manifest.js";
 import { RestartRequestedError, RuntimeShutdownError } from "../../game.js";
+import {
+  countLegacyLogFiles,
+  listSessionSaves,
+  summarizeArchive,
+} from "../../adapters/storage/session-archive.js";
 import { isAllowedOrigin } from "./origin-guard.js";
 import { AudioStreamRoute } from "./audio-stream-route.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";
@@ -324,6 +329,10 @@ export class LocalWebHost {
       this.sendJson(res, 200, this.assetManifest);
       return;
     }
+    if (req.method === "GET" && pathname === "/api/saves") {
+      void this.handleSavesRequest(res);
+      return;
+    }
     if (req.method === "GET" && pathname.startsWith("/game-assets/")) {
       if (this.assetRoot === null) {
         this.sendJson(res, 404, { error: "asset catalog unavailable" });
@@ -337,6 +346,21 @@ export class LocalWebHost {
       return;
     }
     this.serveStatic(req, res);
+  }
+
+  /**
+   * Read-only save listing for the browser (statistics & future "pick a
+   * save" flows). Deletion stays CLI-only: no destructive HTTP surface.
+   */
+  private async handleSavesRequest(res: ServerResponse): Promise<void> {
+    try {
+      const saves = await listSessionSaves(this.config.game.sessions_dir);
+      const stats = summarizeArchive(saves, await countLegacyLogFiles(this.config.game.sessions_dir));
+      this.sendJson(res, 200, { saves, stats });
+    } catch (error) {
+      this.logger(`save listing failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.sendJson(res, 500, { error: "save listing failed" });
+    }
   }
 
   private serveStatic(req: IncomingMessage, res: ServerResponse): void {

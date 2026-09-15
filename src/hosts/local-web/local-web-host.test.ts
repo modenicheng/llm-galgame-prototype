@@ -213,6 +213,39 @@ describe("LocalWebHost", () => {
     expect(configJson.game.show_line_ids).toBe(true);
   });
 
+  it("serves the save archive at GET /api/saves", async () => {
+    const savesDir = mkdtempSync(path.join(tmpdir(), "web-saves-"));
+    try {
+      mkdirSync(path.join(savesDir, "2026-09-16T09-00-00-000Z"), { recursive: true });
+      writeFileSync(
+        path.join(savesDir, "2026-09-16T09-00-00-000Z", "state.json"),
+        JSON.stringify({ phase: "ended", ending: { ending_id: "end_a" } }),
+      );
+      const savesConfig = makeConfig({ game: { sessions_dir: savesDir } });
+      const savesHost = new LocalWebHost({ config: savesConfig, app, dev: false, logger: () => {} });
+      const started = await savesHost.start();
+      try {
+        const result = await request(started.port, "GET", "/api/saves");
+        expect(result.status).toBe(200);
+        const body = JSON.parse(result.text) as {
+          saves: Array<{ sessionId: string; phase?: string; endingId?: string }>;
+          stats: { totalSaves: number; ended: number; endings: Record<string, number> };
+        };
+        expect(body.saves).toHaveLength(1);
+        const save = body.saves[0];
+        expect(save?.sessionId).toBe("2026-09-16T09-00-00-000Z");
+        expect(save?.phase).toBe("ended");
+        expect(save?.endingId).toBe("end_a");
+        expect(body.stats.totalSaves).toBe(1);
+        expect(body.stats.endings).toEqual({ end_a: 1 });
+      } finally {
+        await savesHost.shutdown();
+      }
+    } finally {
+      rmSync(savesDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns 404 JSON for unknown API paths", async () => {
     const result = await request(port, "GET", "/api/nope");
     expect(result.status).toBe(404);

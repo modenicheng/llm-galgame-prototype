@@ -58,11 +58,14 @@
 
 ## 3. 存档系统（多周目的前置）
 
-- 现状：`SessionStorePort` 只有 append/saveSnapshot，无 load/resume——重启即
-  失忆，是当前最大的持久化缺口（见 status.md）。
+- 现状：会话恢复闭环已由 `3743ba8` 落地（load/resume：事件日志回放 + 快照
+  元数据 + 视觉状态/交互游标）；跨会话的存档统计与管理 v1 已上线
+  （`session-archive`：列表/统计/删除，CLI `--saves` / `--delete-save`，
+  Web 只读 `GET /api/saves`，见 status.md 持久化节）。仍缺：存档槽位、
+  任意进度存/读、启动时选档界面。
 - 方向：
-  - 会话恢复闭环（load/resume：事件日志 + 叙事记忆 + 导演计划 + 视觉状态）。
-  - 存档槽位、任意进度存/读。
+  - ~~会话恢复闭环（load/resume）~~（已完成）。
+  - 存档槽位、任意进度存/读；新会话可选"从某存档继续"。
 - 注意：存档不只是事件回放——长线记忆、导演计划、VisualState 都需要一起快照，
   否则恢复后「吞设定」。恢复流程按「接管体检」原型设计：重放 committed
   events 重建长线记忆，全部就绪后才放行首次生成（见同 spec §12 Phase C）。
