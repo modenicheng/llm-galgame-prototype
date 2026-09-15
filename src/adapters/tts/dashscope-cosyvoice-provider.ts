@@ -297,24 +297,19 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
         `rate=${request.rate} pitch=${request.pitch} volume=${request.volume} seed=${request.seed}`,
     );
 
-    let response: Response;
-    try {
-      response = await fetchImpl(baseUrl, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "X-DashScope-Data-Inspector": "enable",
-          "X-DashScope-SSE": "enable",
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      // Abort propagates as-is (the caller triggered it); network failures
-      // also propagate unchanged — typed mapping only covers HTTP/SSE/timeout.
-      throw error;
-    }
+    // Abort propagates as-is (the caller triggered it); network failures
+    // also propagate unchanged — typed mapping only covers HTTP/SSE/timeout.
+    const response = await fetchImpl(baseUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "X-DashScope-Data-Inspector": "enable",
+        "X-DashScope-SSE": "enable",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
 
     if (!response.ok) {
       let detail = "";
@@ -365,6 +360,12 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
       clearTimeout(firstChunkTimer);
       cleanup();
       completion.reject(reason);
+    };
+    const buildCompletion = (durationMs?: number): TtsCompletion => {
+      const result: TtsCompletion =
+        durationMs === undefined ? { totalBytes: bytesSent } : { totalBytes: bytesSent, durationMs };
+      if (providerRequestId !== undefined) result.providerRequestId = providerRequestId;
+      return result;
     };
 
     // Abort is a normal end: abort the fetch, stop parsing, resolve with bytes so far.
@@ -421,19 +422,12 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
           corr,
           `bytes=${bytesSent} elapsed=${Date.now() - startedAt}ms req=${providerRequestId ?? "none"}`,
         );
-        const result: TtsCompletion = {
-          totalBytes: bytesSent,
-          durationMs: estimatePcmDurationMs(bytesSent, request.sampleRate),
-        };
-        if (providerRequestId !== undefined) result.providerRequestId = providerRequestId;
-        settleResolve(result);
+        settleResolve(buildCompletion(estimatePcmDurationMs(bytesSent, request.sampleRate)));
       } catch (error) {
         if (signal.aborted) {
           // Consumer aborted: abort is a normal end — resolve with partial bytes.
           queue.finish();
-          const result: TtsCompletion = { totalBytes: bytesSent };
-          if (providerRequestId !== undefined) result.providerRequestId = providerRequestId;
-          settleResolve(result);
+          settleResolve(buildCompletion());
         } else {
           const mapped =
             error instanceof TtsProviderError

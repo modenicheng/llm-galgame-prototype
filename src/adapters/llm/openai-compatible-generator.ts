@@ -398,6 +398,24 @@ export class StoryGenerator {
       // the wrap thrown to the runtime so error-class detection survives it.
       let streamError: unknown = undefined;
 
+      // 行级 DSL 失败（解析失败 / 组校验失败同构）的统一收束：已转发组
+      // （流式消费）→ 保留已转发前缀、以流错误中止（循环后转 throw，交给
+      // 运行时修复路径）；尚无转发 → 记为可重试的 lastError。非协议错误
+      // 原样上抛。
+      const onDslLineFailure = (error: DslProtocolError, kind: string): void => {
+        streamAborted = true;
+        if (options?.onGroup && allGroups.length > 0) {
+          streamError = error;
+          lastError = `DSL 流在第 ${lineIndex} 行校验失败：${error.message}`;
+        } else {
+          lastError = `第 ${lineIndex} 行${kind}：${error.message}`;
+        }
+        controller.abort();
+      };
+      const forwardGroups = (groups: readonly EventGroupDraft[]): void => {
+        for (const group of groups) options?.onGroup?.(group);
+      };
+
       try {
         const stream = await this.client.chat.completions.create(
           {
@@ -438,14 +456,7 @@ export class StoryGenerator {
               parsed = parseDslLine(trimmed);
             } catch (error) {
               if (error instanceof DslProtocolError) {
-                streamAborted = true;
-                if (options?.onGroup && allGroups.length > 0) {
-                  streamError = error;
-                  lastError = `DSL 流在第 ${lineIndex} 行校验失败：${error.message}`;
-                } else {
-                  lastError = `第 ${lineIndex} 行不是合法 DSL：${error.message}`;
-                }
-                controller.abort();
+                onDslLineFailure(error, "不是合法 DSL");
                 break;
               }
               throw error;
@@ -456,14 +467,7 @@ export class StoryGenerator {
               emitted = parser.pushLine(parsed);
             } catch (error) {
               if (error instanceof DslProtocolError) {
-                streamAborted = true;
-                if (options?.onGroup && allGroups.length > 0) {
-                  streamError = error;
-                  lastError = `DSL 流在第 ${lineIndex} 行校验失败：${error.message}`;
-                } else {
-                  lastError = `第 ${lineIndex} 行 DSL 校验失败：${error.message}`;
-                }
-                controller.abort();
+                onDslLineFailure(error, "DSL 校验失败");
                 break;
               }
               throw error;
@@ -471,9 +475,7 @@ export class StoryGenerator {
 
             if (emitted.length > 0) {
               allGroups.push(...emitted);
-              for (const group of emitted) {
-                options?.onGroup?.(group);
-              }
+              forwardGroups(emitted);
             }
           }
           if (streamAborted) break;
@@ -498,9 +500,7 @@ export class StoryGenerator {
               const emitted = parser.pushLine(parsed);
               if (emitted.length > 0) {
                 allGroups.push(...emitted);
-                for (const group of emitted) {
-                  options?.onGroup?.(group);
-                }
+                forwardGroups(emitted);
               }
             } catch (error) {
               if (error instanceof DslProtocolError) {
