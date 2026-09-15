@@ -2057,6 +2057,9 @@ export class Game {
         if (command.type !== "preview_input") throw new RuntimeShutdownError();
         text = command.text.trim().slice(0, interaction.input.max_length);
       }
+      // 空白输入不进提交路径：边契约要求 choice.text ≥ 1，空文本会在边收束时
+      // （远离错误现场）炸开——这里重开表单等待有效输入，与取消分支同构。
+      if (text.length === 0) continue;
 
       // Freeze the text and enter preview.
       const session = this.inputEngine.startEditing(interaction);

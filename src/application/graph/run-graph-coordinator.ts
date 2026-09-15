@@ -210,13 +210,19 @@ export class RunGraphCoordinator implements RunGraphPort {
     }
   }
 
-  /** 已完结周目的结局文本：从指向结局的边负载回收；开局直落结局为 null。 */
+  /**
+   * 已完结周目的结局文本：从指向结局的边负载回收；开局直落结局为 null。
+   * 同一结局 id 可被多个周目到达（运行时 ending_N 易重号），倒序扫描取
+   * 最近写入的边——ended 恢复呈现的应是最新周目的文本。
+   */
   private async endingTextOf(endingId: EndingId): Promise<string | null> {
-    for (const edge of await this.store.listEdges()) {
-      if (edge.to.kind !== "ending" || edge.to.id !== endingId) continue;
+    const edges = await this.store.listEdges();
+    for (let i = edges.length - 1; i >= 0; i -= 1) {
+      const edge = edges[i];
+      if (edge === undefined || edge.to.kind !== "ending" || edge.to.id !== endingId) continue;
       const events = await this.store.readPayload(edge.id);
-      for (let i = events.length - 1; i >= 0; i -= 1) {
-        const event = events[i];
+      for (let j = events.length - 1; j >= 0; j -= 1) {
+        const event = events[j];
         if (event?.type === "end") return event.text ?? null;
       }
     }

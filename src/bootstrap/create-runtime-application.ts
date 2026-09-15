@@ -7,7 +7,6 @@
  * consume the returned `RuntimeApplication` and differ only in their
  * presentation layer.
  */
-import { randomUUID } from "node:crypto";
 import { loadApiKey, loadAuthorConfig, loadConfig } from "../config.js";
 import type { AppConfig } from "../config.js";
 import { loadVoices, validateDashscopeEnv } from "../config/voices.js";

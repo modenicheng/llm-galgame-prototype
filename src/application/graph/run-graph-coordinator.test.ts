@@ -304,6 +304,34 @@ describe("RunGraphCoordinator restore (M1.4)", () => {
     }
   });
 
+  it("ended text prefers the most recent run reaching the same ending id", async () => {
+    const made = await makeCoordinator();
+    try {
+      // 周目 1 → end_fin（文本 A）；周目 2（结局后重开 root）→ 同一 end_fin（文本 B）。
+      // 运行时 ending id 易重号：恢复 ended 必须呈现最新周目的文本。
+      const first = reopenAt(made.root, made.gameId);
+      await first.coordinator.startRootRun();
+      await first.coordinator.openDecision({ modelSceneId: "天台", form: makeForm(), moment: makeMoment() });
+      await first.coordinator.beginEdge({ kind: "option", text: "留下" });
+      await first.coordinator.appendEdgeEvents([makeEndEvent(4, "初版的结局。")]);
+      await first.coordinator.reachEnding({ endingId: "fin", moment: makeMoment() });
+
+      const second = reopenAt(made.root, made.gameId);
+      const secondResume = await second.coordinator.restoreOrCreateRun({ restart: true });
+      expect(secondResume.kind).toBe("fresh");
+      await second.coordinator.openDecision({ modelSceneId: "天台", form: makeForm(), moment: makeMoment() });
+      await second.coordinator.beginEdge({ kind: "option", text: "追上去" });
+      await second.coordinator.appendEdgeEvents([makeEndEvent(4, "重开后的结局。")]);
+      await second.coordinator.reachEnding({ endingId: "fin", moment: makeMoment() });
+
+      const third = reopenAt(made.root, made.gameId);
+      const resume = await third.coordinator.restoreOrCreateRun();
+      expect(resume).toEqual({ kind: "ended", endingId: "end_fin", endingText: "重开后的结局。" });
+    } finally {
+      await rm(made.root, { recursive: true, force: true });
+    }
+  });
+
   it("an ending reached before any decision restores with a null text", async () => {
     const made = await makeCoordinator();
     try {

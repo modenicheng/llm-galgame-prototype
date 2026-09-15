@@ -25,21 +25,23 @@ export function formSnapshotFromInteraction(event: InteractionEvent): Interactio
 
 /**
  * 恢复重放（M1.4）：契约表单快照 → 运行时交互事件。运行时 id
- * （interaction/option）局部于本次运行、按运行时惯例重铸；契约只保留
- * 语义（prompt/选项文本/输入提示语），input 的 kind/max_length 不入
- * 契约、按默认重建。
+ * （interaction/option）局部于本次运行、按运行时惯例重铸（interaction_N
+ * 与 interaction_N_opt_M，与 buildRuntimeInteraction 同一形状，docs §30）；
+ * 契约只保留语义（prompt/选项文本/输入提示语），input 的 kind/max_length
+ * 不入契约、按默认重建。
  */
 export function interactionFromFormSnapshot(
   form: InteractionFormSnapshot,
   interactionId: string,
 ): InteractionEvent {
+  const optionId = (index: number) => `${interactionId}_opt_${index}`;
   if (form.mode === "choice") {
     return {
       type: "interaction",
       interaction_id: interactionId,
       prompt: form.prompt,
       mode: "choice",
-      options: (form.options ?? []).map((text, index) => ({ id: `option_${index}`, text })),
+      options: (form.options ?? []).map((text, index) => ({ id: optionId(index), text })),
     };
   }
   const input: InputSpec = {
@@ -61,7 +63,7 @@ export function interactionFromFormSnapshot(
     interaction_id: interactionId,
     prompt: form.prompt,
     mode: "hybrid",
-    options: (form.options ?? []).map((text, index) => ({ id: `option_${index}`, text })),
+    options: (form.options ?? []).map((text, index) => ({ id: optionId(index), text })),
     input,
   };
 }

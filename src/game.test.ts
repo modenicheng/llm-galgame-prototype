@@ -3511,6 +3511,44 @@ describe("Interaction command scoping (stale / double-submit)", () => {
     expect(g.activePreviewId).toBeNull();
   });
 
+  it("whitespace-only input is rejected at the boundary and the form re-opens (edge contract: choice text ≥ 1)", async () => {
+    const config = makeGameConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    vi.mocked(generator.generateOpening).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
+    );
+    vi.mocked(generator.generateInputResponse).mockImplementation(() =>
+      handleFromDrafts("input", [narrationEvent("回应。")]),
+    );
+    vi.mocked(generator.generateContinuation).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
+    );
+
+    let opened = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        opened += 1;
+        controller.submitInput(output.interactionId, opened === 1 ? "   " : "你好");
+      },
+      onInputPreviewOpened: (output) => controller.confirm(output.previewId),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // 空白输入没有进预览/提交路径：表单重开一次，只有有效输入被记录。
+    expect(controller.count("interaction_opened")).toBe(2);
+    expect(controller.count("input_preview_opened")).toBe(1);
+    expect(controller.count("input_committed")).toBe(1);
+    const g = game as unknown as GameScopingInternals;
+    const playerInputs = g.events.filter((e) => e.type === "player_input");
+    expect(playerInputs).toHaveLength(1);
+    expect(playerInputs[0]!).toMatchObject({ text: "你好" });
+  });
+
   it("race: select_choice then preview_input in the same tick — only the first wins, the second is dropped, deferredCommands stays empty", async () => {
     const config = makeGameConfig();
     const status = makeMockStatus();

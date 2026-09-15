@@ -37,9 +37,9 @@ export const InteractionFormSnapshotSchema = z
     /** 当时呈现给玩家的表单提示语（恢复重放表单时原样还原）。 */
     prompt: z.string().min(1),
     /** choice/hybrid 的选项文本（运行时生成的 id 不入契约，文本即语义）。 */
-    options: z.array(z.string().min(1)).optional(),
+    options: z.exactOptional(z.array(z.string().min(1))),
     /** input/hybrid 的输入框提示语。 */
-    placeholder: z.string().optional(),
+    placeholder: z.exactOptional(z.string().min(1)),
   })
   .refine(
     (form) =>
