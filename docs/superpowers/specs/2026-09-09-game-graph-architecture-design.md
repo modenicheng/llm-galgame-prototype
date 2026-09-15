@@ -71,10 +71,13 @@ interface PlotEdge {
   id: EdgeId;
   from: DecisionId;
   choice: { kind: "option" | "free_input"; text: string };  // 玩家的选择原文
-  payload: EventRef[];                // 边负载：此选择后至下一决策前的 committed 事件
-  endState: StateSnapshot;            // 末态 = 汇流比较对象
-  to: DecisionId | EndingId;
-  confluence?: {                      // 汇流成立时的判定凭据（可审计、可推翻）
+  payload: EdgePayloadStats;        // 落地修订（2026-09-15 补记）：负载事件外置于
+                                    // payloads/<edgeId>.jsonl（§9 布局），契约字段为
+                                    // 负载统计 { eventCount, firstSeq, lastSeq }
+  endState: StateSnapshot;          // 末态 = 汇流比较对象
+  to: EdgeEndpoint;                 // 落地修订（2026-09-15 补记）：判别联合
+                                    // { kind: "decision" | "ending"; id }
+  confluence?: {                    // 汇流成立时的判定凭据（可审计、可推翻）
     matchedNode: DecisionId; judgedBy: string; confidence: number; rationale: string;
   };
 }
@@ -95,6 +98,11 @@ interface ActiveCursor {               // 活动游标：v1 每世界一个
   runId: RunId; position: DecisionId;
 }
 ```
+
+（2026-09-15 存储注记，随 M2 前置修订落地：边的 endState **内联** ⟺ 结局端点
+（无快照归宿）∨ 汇流边——汇流边内联保存真实末态（与后继入口 ≈ 不等），凭据
+承担差异审计；**普通决策端点不落盘**，由后继节点的入口快照派生、写入时校验
+精确一致（「同一次快照写两处」不变量的门禁）。详见执行清单偏差记录。）
 
 **建模取向的理由**：回溯的自然锚点是「决策瞬间」；汇流不变量以决策节点的
 入口状态为基准最简洁。选择是边的属性（同一决策节点被不同周目以不同选择

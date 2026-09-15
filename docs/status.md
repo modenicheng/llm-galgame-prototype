@@ -1,6 +1,6 @@
 # 实施进度对照（status）
 
-> 快照日期：**2026-09-14**，对照 `main` 分支代码。本文是唯一的进度权威文档；
+> 快照日期：**2026-09-15**，对照 `main` 分支代码。本文是唯一的进度权威文档；
 > 设计规范见 `docs/llm-outputs-refactor.md`，变更记录见 `docs/changelog.md`。
 > 后续开发完成/变更条目时请同步更新本文。
 
@@ -76,6 +76,8 @@
   `graph/snapshots/<decisionId>.json`（决策入口快照 = 运行时状态唯一物理真源）+
   `graph/payloads/<edgeId>.jsonl`（边负载 = 回放数据）+ `cursor.json`（活动周目
   游标）。原子写（tmp+rename）；快照缺失而索引行存在 = 结构损坏大声抛错。
+  边 endState 内联 ⟺ 结局端点 ∨ 汇流边（2026-09-15 修订，M2 前置）；普通
+  决策端点由后继入口快照派生、写入校验精确一致。
 - **「继续游戏」三态入口（M1.4/M1.5）**：`restoreOrCreateRun`——游标恢复
   （入口快照重建 story/visual/memory，全路径边负载经 seq 水位过滤重放进导演，
   seq/turn 播种保证单调）/ 周目已完结补发结局 / 全新开局；`restart` 模式弃局
@@ -101,6 +103,12 @@
 - **CLI 音频**：`media.audio.enabled=false` 默认纯文本（CLI 不接 TTS 播放）。
 - **回溯只到游标（最前沿节点）**：任意祖先节点回溯 + 同选项快进随 M5.3 回溯
   入口 UI 落地（见执行清单 M5.3 注记）。
+- **「继续游戏」宿主未接线**：闭环只在运行时层成立（`options.gameId` 跨启动
+  固定世界）；web/cli 入口均不传 gameId，进程重启后开新世界——M5.0 接线
+  （见执行清单）。
+- **seq 为 per-Game-instance 计数**：fresh 分支不播种，同世界第二个 root 周目
+  seq 从 1 回绕（M1 无汇流无影响）；M2.1 落地前须决议播种策略（见执行清单
+  M2.1 注记）。
 
 ## 近期提交锚点
 
