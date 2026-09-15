@@ -6,6 +6,11 @@ import {
   InputResponseSession,
 } from "./core/interaction/input-session.js";
 import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
+import {
+  InteractionPolicyViolationError,
+  RestartRequestedError,
+  RuntimeShutdownError,
+} from "./core/runtime/errors.js";
 import type {
   RuntimeOutput,
   StagePresentationDelta,
@@ -42,7 +47,10 @@ import type {
   SegmentEndStatus,
 } from "./core/protocol/gal-dsl/types.js";
 import type { AssetCatalog } from "./core/assets/types.js";
-import { toCharacterRegistry } from "./core/assets/catalog.js";
+import {
+  EMPTY_CHARACTER_REGISTRY,
+  toCharacterRegistry,
+} from "./core/assets/catalog.js";
 import {
   createDefaultsFromRegistry,
   createInitialVisualState,
@@ -187,30 +195,6 @@ export interface GamePorts {
   runMode?: "resume" | "restart";
 }
 
-/** Raised when the driver sends `shutdown`. */
-export class RuntimeShutdownError extends Error {
-  constructor() {
-    super("运行时已收到关闭指令");
-    this.name = "RuntimeShutdownError";
-  }
-}
-
-/** Raised when the driver sends `restart_session` — the host rebuilds the runtime. */
-export class RestartRequestedError extends Error {
-  constructor() {
-    super("运行时已收到重启指令");
-    this.name = "RestartRequestedError";
-  }
-}
-
-/** Raised when a generated interaction violates InteractionPolicy (§8.5). */
-export class InteractionPolicyViolationError extends Error {
-  constructor(reason: string) {
-    super(`InteractionPolicy 拒绝：${reason}`);
-    this.name = "InteractionPolicyViolationError";
-  }
-}
-
 /** §8.4: keep only the most recent formally-opened interaction modes. */
 const MAX_INTERACTION_MODE_HISTORY = 8;
 
@@ -220,19 +204,6 @@ const MAX_INTERACTION_MODE_HISTORY = 8;
  */
 const FORCED_ENDING_REPAIR_REASON =
   "玩家已达成最大互动次数，故事必须收束结局；用 @end {nonce} ending 结束，不得打开新的交互表单。";
-
-/** Registry fallback when no asset catalog is wired. */
-const emptyRegistry: CharacterRegistry = {
-  resolveByScriptName(): undefined {
-    return undefined;
-  },
-  resolveById(): undefined {
-    return undefined;
-  },
-  entries(): CharacterRegistryEntry[] {
-    return [];
-  },
-};
 
 export class Game {
   private readonly events: StoredEvent[] = [];
@@ -338,7 +309,7 @@ export class Game {
     this.interactionPolicy = new InteractionPolicy(config.interaction);
     this.storyState = createInitialState();
     this.catalog = catalog;
-    this.registry = catalog ? toCharacterRegistry(catalog) : emptyRegistry;
+    this.registry = catalog ? toCharacterRegistry(catalog) : EMPTY_CHARACTER_REGISTRY;
     this.defaults = createDefaultsFromRegistry(this.registry);
     this.reduce = createVisualStateReducer(this.defaults);
     this.status.subscribe((snapshot) => {

@@ -56,6 +56,19 @@ export function toModelCatalog(catalog: AssetCatalog): ModelAssetCatalog {
   };
 }
 
+/** Registry fallback when no asset catalog is wired (Game without `assets.catalog`). */
+export const EMPTY_CHARACTER_REGISTRY: CharacterRegistry = {
+  resolveByScriptName(): undefined {
+    return undefined;
+  },
+  resolveById(): undefined {
+    return undefined;
+  },
+  entries(): CharacterRegistryEntry[] {
+    return [];
+  },
+};
+
 /**
  * Build the CharacterRegistry from catalog character bindings (docs §7,
  * §10). `resolveById` accepts the internal id first, then falls back to

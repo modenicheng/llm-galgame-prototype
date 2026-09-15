@@ -19,7 +19,7 @@ import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
 import type { RuntimeApplication } from "../../application/runtime-application.js";
 import type { AssetCatalog, PublicAssetManifest } from "../../core/assets/types.js";
 import { buildPublicAssetManifest } from "../../application/assets/asset-manifest.js";
-import { RestartRequestedError, RuntimeShutdownError } from "../../game.js";
+import { RestartRequestedError, RuntimeShutdownError } from "../../core/runtime/errors.js";
 import { isAllowedOrigin } from "./origin-guard.js";
 import { AudioStreamRoute } from "./audio-stream-route.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";

@@ -3,7 +3,7 @@ import { loadConfig } from "../config.js";
 import type { AppConfig } from "../config.js";
 import { createRuntimeApplication } from "../bootstrap/create-runtime-application.js";
 import type { RuntimeApplication } from "../application/runtime-application.js";
-import { RestartRequestedError, RuntimeShutdownError } from "../game.js";
+import { RestartRequestedError, RuntimeShutdownError } from "../core/runtime/errors.js";
 import type { Game } from "../game.js";
 import type { Metrics } from "../runtime/metrics.js";
 import { CliController } from "../apps/cli/cli-controller.js";
