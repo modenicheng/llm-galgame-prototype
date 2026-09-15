@@ -21,14 +21,18 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@imgly/background-removal-node": "^1.4.5",
     "dotenv": "latest",
+    "onnxruntime-node": "~1.17.0",
     "openai": "latest",
+    "pngjs": "^7.0.0",
     "ws": "latest",
     "yaml": "latest",
     "zod": "latest"
   },
   "devDependencies": {
     "@types/node": "latest",
+    "@types/pngjs": "^6.0.5",
     "@types/ws": "latest",
     "fake-indexeddb": "latest",
     "happy-dom": "latest",

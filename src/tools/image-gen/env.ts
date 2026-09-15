@@ -17,6 +17,8 @@ import { ImageParamError, isKnownModel, isValidSize } from "./validate.js";
 export const DEFAULT_OUTPUT_DIR = "output/image-gen";
 
 const KNOWN_QUALITIES: readonly string[] = ["auto", "low", "medium", "high", "xhigh", "max"];
+const KNOWN_CUTOUT_ENGINES: readonly string[] = ["ai", "flood"];
+const KNOWN_CUTOUT_DEVICES: readonly string[] = ["cpu", "dml"];
 
 export interface ImageGenEnvConfig {
   baseUrl: string;
@@ -26,6 +28,12 @@ export interface ImageGenEnvConfig {
   timeoutMs?: number;
   maxRetries?: number;
   outputDir: string;
+  /** 抠图引擎：ai（默认）或 flood。 */
+  cutoutEngine: "ai" | "flood";
+  /** AI 抠图执行设备：cpu（默认）或 dml（DirectML，批处理推荐）。 */
+  cutoutDevice: "cpu" | "dml";
+  /** 独立 .onnx 模型文件路径（IMAGE_GEN_CUTOUT_MODEL_PATH）。 */
+  cutoutModelPath?: string;
 }
 
 function trimEnv(env: NodeJS.ProcessEnv, key: string): string | undefined {
@@ -101,6 +109,26 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): ImageGenEnv
   const maxRetries = intEnv(env, "IMAGE_GEN_MAX_RETRIES", issues, 0);
   const outputDir = trimEnv(env, "IMAGE_GEN_OUTPUT_DIR");
 
+  let cutoutEngine: "ai" | "flood" = "ai";
+  const engineRaw = trimEnv(env, "IMAGE_GEN_CUTOUT_ENGINE");
+  if (engineRaw !== undefined && engineRaw.length > 0) {
+    if (!KNOWN_CUTOUT_ENGINES.includes(engineRaw)) {
+      issues.push(`IMAGE_GEN_CUTOUT_ENGINE "${engineRaw}" 不合法（${KNOWN_CUTOUT_ENGINES.join(" / ")}）`);
+    } else {
+      cutoutEngine = engineRaw as "ai" | "flood";
+    }
+  }
+  let cutoutDevice: "cpu" | "dml" = "cpu";
+  const deviceRaw = trimEnv(env, "IMAGE_GEN_CUTOUT_DEVICE");
+  if (deviceRaw !== undefined && deviceRaw.length > 0) {
+    if (!KNOWN_CUTOUT_DEVICES.includes(deviceRaw)) {
+      issues.push(`IMAGE_GEN_CUTOUT_DEVICE "${deviceRaw}" 不合法（${KNOWN_CUTOUT_DEVICES.join(" / ")}）`);
+    } else {
+      cutoutDevice = deviceRaw as "cpu" | "dml";
+    }
+  }
+  const cutoutModelPath = trimEnv(env, "IMAGE_GEN_CUTOUT_MODEL_PATH");
+
   if (issues.length > 0) throw new ImageParamError(issues);
 
   return {
@@ -110,5 +138,8 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): ImageGenEnv
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(maxRetries !== undefined ? { maxRetries } : {}),
     outputDir: outputDir !== undefined && outputDir.length > 0 ? outputDir : DEFAULT_OUTPUT_DIR,
+    cutoutEngine,
+    cutoutDevice,
+    ...(cutoutModelPath !== undefined && cutoutModelPath.length > 0 ? { cutoutModelPath } : {}),
   };
 }

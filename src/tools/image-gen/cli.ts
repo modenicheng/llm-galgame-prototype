@@ -18,11 +18,13 @@ import {
   DEFAULT_TIMEOUT_MS,
   ImageApiError,
 } from "./client.js";
-import { loadEnvConfig } from "./env.js";
+import { loadEnvConfig, type ImageGenEnvConfig } from "./env.js";
 import { defaultBasename, loadImageFile, saveImages, savePartialImages } from "./files.js";
+import { processForCutout, withCutoutPromptHint } from "./cutout.js";
 import { ImageParamError, MAX_EDIT_IMAGES, resolveGenerationParams } from "./validate.js";
 import type {
   EditParamsInput,
+  GeneratedImage,
   GenerationParamsInput,
   ImageFileInput,
   ImageGenResult,
@@ -48,6 +50,16 @@ const USAGE = `image-gen — gpt-image-2 / 2.5 图像生成工具
   --moderation <low|auto>
   --stream                流式（SSE 逐步精化，配合 --partial-images 0-3）
   --save-partials         保存部分图预览（仅流式有效）
+  --cutout                自动抠图模式：自动注入白底提示词、请求透明 png；
+                          结果若无真透明则自动抠图，默认 AI 引擎（ISNet 软边，
+                          发丝友好），失败自动回退白底几何抠图（详见 README §3.5）
+  --cutout-engine <e>     ai（默认）| flood（纯几何离线，不加载模型）
+  --cutout-device <d>     cpu（默认）| dml（DirectML，推理约 7x 提速，但会话
+                          初始化约 14s，适合一个进程批量抠多张的脚本）
+  --cutout-clean          仅 flood 引擎生效：清除发丝间/领口等封闭白缝
+                          （面积≤0.5% 且被深色描边包围；对帆布鞋类有破洞风险，
+                          建议配合 --keep-raw 对比）
+  --keep-raw              抠图发生时保留原始图（{前缀}-raw-NN.png）
   --user <标识>           终端用户标识
   --out <目录>            输出目录（默认 output/image-gen 或 IMAGE_GEN_OUTPUT_DIR）
   --timeout <毫秒>        单次请求超时（默认 300000）
@@ -80,6 +92,11 @@ interface SharedValues {
   timeout?: string;
   retries?: string;
   "save-partials": boolean;
+  cutout: boolean;
+  "cutout-engine"?: string;
+  "cutout-device"?: string;
+  "cutout-clean": boolean;
+  "keep-raw": boolean;
 }
 
 interface EditValues extends SharedValues {
@@ -104,6 +121,11 @@ const sharedOptions = {
   timeout: { type: "string" },
   retries: { type: "string" },
   "save-partials": { type: "boolean", default: false },
+  cutout: { type: "boolean", default: false },
+  "cutout-engine": { type: "string" },
+  "cutout-device": { type: "string" },
+  "cutout-clean": { type: "boolean", default: false },
+  "keep-raw": { type: "boolean", default: false },
 } as const;
 
 const editOptions = {
@@ -176,6 +198,56 @@ function baseParams(values: SharedValues, prompt: string): GenerationParamsInput
   };
 }
 
+/** --cutout 的请求侧改写：注入白底提示词 + 自动透明 png；与明确冲突的显式参数报错。 */
+function applyCutoutParams(params: GenerationParamsInput): GenerationParamsInput {
+  if (params.background === "opaque") {
+    throw new ImageParamError(["--cutout 与 --background opaque 冲突（抠图模式需要透明背景）"]);
+  }
+  if (params.outputFormat !== undefined && params.outputFormat !== "png") {
+    throw new ImageParamError([
+      `--cutout 需要 png 输出（当前 --format ${String(params.outputFormat)}）；请去掉 --format 或改为 png`,
+    ]);
+  }
+  return {
+    ...params,
+    prompt: withCutoutPromptHint(String(params.prompt ?? "")),
+    background: params.background ?? "transparent",
+    outputFormat: "png",
+  };
+}
+
+interface CutoutRunOptions {
+  keepRaw: boolean;
+  clean: boolean;
+  engine: "ai" | "flood";
+  device: "cpu" | "dml";
+  modelPath?: string;
+}
+
+function buildCutoutOptions(values: SharedValues, env: ImageGenEnvConfig): CutoutRunOptions | undefined {
+  if (!values.cutout) return undefined;
+  const engineRaw = values["cutout-engine"];
+  if (engineRaw !== undefined && engineRaw !== "ai" && engineRaw !== "flood") {
+    throw new ImageParamError([`--cutout-engine 必须是 ai / flood，收到 "${engineRaw}"`]);
+  }
+  const deviceRaw = values["cutout-device"];
+  if (deviceRaw !== undefined && deviceRaw !== "cpu" && deviceRaw !== "dml") {
+    throw new ImageParamError([`--cutout-device 必须是 cpu / dml，收到 "${deviceRaw}"`]);
+  }
+  const engine = engineRaw ?? env.cutoutEngine;
+  const device = deviceRaw ?? env.cutoutDevice;
+  if (engine === "ai" && values["cutout-clean"]) {
+    console.error("  提示: --cutout-clean 仅对 --cutout-engine flood 生效，当前引擎下已忽略");
+  }
+  return {
+    keepRaw: values["keep-raw"],
+    clean: values["cutout-clean"],
+    engine,
+    device,
+    ...(env.cutoutModelPath !== undefined ? { modelPath: env.cutoutModelPath } : {}),
+  };
+}
+
 function formatUsage(usage: ImageUsage | undefined): string | null {
   if (usage === undefined) return null;
   const parts: string[] = [];
@@ -185,9 +257,48 @@ function formatUsage(usage: ImageUsage | undefined): string | null {
   return parts.length > 0 ? `tokens: ${parts.join(" ")}` : null;
 }
 
-async function reportResult(result: ImageGenResult, outDir: string, baseName?: string): Promise<void> {
+async function reportResult(
+  result: ImageGenResult,
+  outDir: string,
+  baseName?: string,
+  cutout?: CutoutRunOptions,
+): Promise<void> {
   const name = baseName ?? defaultBasename(result.model, result.size);
-  const paths = await saveImages(result.images, outDir, name);
+  let images: GeneratedImage[] = [...result.images];
+  let raws: GeneratedImage[] = [];
+  if (cutout !== undefined) {
+    const processed: GeneratedImage[] = [];
+    for (const image of result.images) {
+      const outcome = await processForCutout(image, {
+        engine: cutout.engine,
+        cleanEnclosed: cutout.clean,
+        device: cutout.device,
+        ...(cutout.modelPath !== undefined ? { modelPath: cutout.modelPath } : {}),
+      });
+      if (outcome.action === "ai-matting") {
+        const percent = ((outcome.removedRatio ?? 0) * 100).toFixed(1);
+        console.error(`  已 AI 抠图（透明区域 ${percent}%，发丝软边）`);
+        raws.push(image);
+      } else if (outcome.action === "cutout") {
+        const percent = ((outcome.removedRatio ?? 0) * 100).toFixed(1);
+        const note = outcome.fallbackFromAi === true ? "AI 抠图失败，已回退白底抠图" : "已自动抠图";
+        console.error(`  ${note}（移除背景 ${percent}%）`);
+        raws.push(image);
+      } else if (outcome.action === "kept-alpha") {
+        console.error("  已含透明通道，跳过抠图");
+      } else if (outcome.action === "no-background") {
+        console.error("  背景不是可识别的浅色，未能抠图，保留原图");
+      }
+      processed.push(outcome.image);
+    }
+    images = processed;
+  }
+
+  const paths = await saveImages(images, outDir, name);
+  if (cutout !== undefined && cutout.keepRaw && raws.length > 0) {
+    const rawPaths = await saveImages(raws, outDir, `${name}-raw`);
+    for (const rawPath of rawPaths) console.error(`  原图已保留: ${rawPath}`);
+  }
   for (const filePath of paths) console.log(`已保存: ${filePath}`);
   for (const image of result.images) {
     if (image.revisedPrompt !== undefined) console.log(`revised prompt: ${image.revisedPrompt}`);
@@ -229,23 +340,25 @@ async function runGenerate(argv: string[]): Promise<void> {
     maxRetries: intOption("--retries", values.retries, 0) ?? env.maxRetries ?? DEFAULT_MAX_RETRIES,
   });
   const params = baseParams(values, prompt);
+  const cutoutOptions = buildCutoutOptions(values, env);
+  const finalParams = cutoutOptions !== undefined ? applyCutoutParams(params) : params;
   const outDir = values.out ?? env.outputDir;
 
   if (!values.stream) {
-    await reportResult(await client.generate(params), outDir);
+    await reportResult(await client.generate(finalParams), outDir, undefined, cutoutOptions);
     return;
   }
   // 先解析一次以确定输出文件名前缀（client 内部会再校验一次，双保险）。
-  const resolved = resolveGenerationParams(params, env.fallbacks);
+  const resolved = resolveGenerationParams(finalParams, env.fallbacks);
   const baseName = defaultBasename(resolved.model, resolved.size);
   console.error(`流式生成中… model=${resolved.model} size=${values.size ?? resolved.size}`);
   const result = await consumeStream(
-    client.generateStream(params),
+    client.generateStream(finalParams),
     outDir,
     baseName,
     values["save-partials"],
   );
-  await reportResult(result, outDir, baseName);
+  await reportResult(result, outDir, baseName, cutoutOptions);
 }
 
 async function runEdit(argv: string[]): Promise<void> {
@@ -275,22 +388,24 @@ async function runEdit(argv: string[]): Promise<void> {
     ...(mask !== undefined ? { mask } : {}),
     inputFidelity: values["input-fidelity"],
   };
+  const cutoutOptions = buildCutoutOptions(values, env);
+  const finalParams = cutoutOptions !== undefined ? applyCutoutParams(params) : params;
   const outDir = values.out ?? env.outputDir;
 
   if (!values.stream) {
-    await reportResult(await client.edit(params), outDir);
+    await reportResult(await client.edit(finalParams), outDir, undefined, cutoutOptions);
     return;
   }
-  const resolved = resolveGenerationParams(params, env.fallbacks);
+  const resolved = resolveGenerationParams(finalParams, env.fallbacks);
   const baseName = defaultBasename(resolved.model, resolved.size);
   console.error(`流式编辑中… model=${resolved.model} images=${images.length}`);
   const result = await consumeStream(
-    client.editStream(params),
+    client.editStream(finalParams),
     outDir,
     baseName,
     values["save-partials"],
   );
-  await reportResult(result, outDir, baseName);
+  await reportResult(result, outDir, baseName, cutoutOptions);
 }
 
 async function main(): Promise<void> {

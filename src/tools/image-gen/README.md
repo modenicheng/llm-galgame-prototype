@@ -12,12 +12,16 @@ src/tools/image-gen/
 ├── client.ts     HTTP 客户端：JSON / multipart、SSE 流、超时、429/5xx 退避重试
 ├── env.ts        .env 配置加载（必填 baseURL/apiKey + 可选默认层）
 ├── files.ts      文件读写助手（结果落盘、本地图片读取）
+├── cutout.ts     几何抠图（边界连通泛洪）+ 抠图决策入口（双引擎）
+├── matting.ts    AI 抠图引擎（ISNet 模型，onnxruntime-node 直载，CPU/DirectML）
 ├── cli.ts        命令行入口（generate / edit 子命令）
-└── *.test.ts     单元测试（fetch 注入，无网络）
+└── *.test.ts     单元测试（fetch/模型注入，无网络）
 ```
 
-零新增依赖：仅使用仓库已有的 `zod`（响应结构校验）与 Node 20+ 内置的
-`fetch` / `FormData` / `parseArgs`。要求 Node ≥ 20。
+零新增运行时依赖：仅使用仓库已有的 `zod`（响应结构校验）与 Node 20+ 内置的
+`fetch` / `FormData` / `parseArgs`；抠图功能额外使用 `pngjs`（PNG 编解码）、
+`onnxruntime-node`（本地推理）与 `@imgly/background-removal-node`（仅作 ISNet
+模型数据来源，不引用其代码）。要求 Node ≥ 20。
 
 ---
 
@@ -57,6 +61,9 @@ tokens: input=52 output=1420 total=1472
 | `IMAGE_GEN_TIMEOUT_MS` | — | 单次请求超时（毫秒） | `300000` |
 | `IMAGE_GEN_MAX_RETRIES` | — | 429/5xx/网络错误的最大重试次数（`0` 关闭重试） | `2` |
 | `IMAGE_GEN_OUTPUT_DIR` | — | 结果输出目录 | `output/image-gen` |
+| `IMAGE_GEN_CUTOUT_ENGINE` | — | 抠图引擎：`ai`（默认，ISNet 软边）/ `flood`（纯几何离线） | `ai` |
+| `IMAGE_GEN_CUTOUT_DEVICE` | — | AI 抠图执行设备：`cpu`（默认）/ `dml`（DirectML，批量推荐） | `cpu` |
+| `IMAGE_GEN_CUTOUT_MODEL_PATH` | — | 独立 .onnx 模型文件路径（缺省用 imgly 包内自带的模型资源） | — |
 
 可选变量的值为空字符串时视同未配置。完整的示例见仓库根目录 `.env.example` 的
 “图像生成”段落。
@@ -87,6 +94,9 @@ npm run image -- generate "手机竖屏壁纸" --size 1152x2048
 
 # 流式生成并保存逐步精化的部分图预览
 npm run image -- generate "cg：天台决战" --stream --partial-images 2 --save-partials
+
+# 透明底立绘（自动抠图兜底，见 §3.5）
+npm run image -- generate "大学生形象立绘，站姿全身像" --size 1024x1536 --cutout --keep-raw
 ```
 
 ### 3.2 edit — 图片编辑（垫图 / mask 局部重绘）
@@ -107,6 +117,46 @@ npm run image -- edit "只改变面部表情为惊讶" \
 
 `--image` / `--mask` 支持 `.png` / `.jpg` / `.jpeg` / `.webp`。
 
+### 3.5 透明背景与自动抠图（--cutout）
+
+**原生支持**：gpt-image 系列支持 `background: "transparent"`（要求输出 png/webp），
+即 `--background transparent --format png`，多数情况下直接产出带 alpha 通道的立绘。
+
+**但遵从度不是 100%**：模型偶发渲染成白底甚至棋盘格假透明；走中转站时透明参数
+也可能被丢弃。因此推荐立绘一律使用 `--cutout` 模式（双保险）：
+
+1. **请求侧自动注入**：提示词自动追加“纯白色背景，主体完整，边缘清晰锐利，无阴影，
+   无渐变，无杂物”（已含白底关键词则不重复）；同时自动设置
+   `background: transparent` + `output_format: png`（与显式 `--background opaque`、
+   `--format jpeg|webp` 组合会直接报错）。
+2. **结果侧自动处理**：逐张检测 alpha——已有真透明（占比 ≥1%）直接采用并提示
+   “跳过抠图”；否则自动抠图兜底。
+3. `--keep-raw` 可在抠图发生时保留原图（`{前缀}-raw-NN.png`）。
+
+**抠图引擎**（`--cutout-engine`，默认 `ai`）：
+
+- **`ai`（推荐）**：ISNet 分割模型，`onnxruntime-node` 本地推理（`matting.ts`
+  直载，模型资源随 imgly 包本地分发，无需联网）。输出**带羽化的软边 alpha**，
+  发丝、碎发边缘干净（实测立绘发丝效果远好于几何方案）。执行设备由
+  `--cutout-device` 选择：默认 CPU（1024×1536 约 2s/张）；`dml`（DirectML）
+  推理约 7× 提速（实测 RTX 5060：1862ms → 268ms），但会话初始化约 14s，
+  **适合一个进程连抠多张的批处理脚本**，单张建议 CPU。模型失败自动回退
+  `flood` 并提示。
+- **`flood`**：纯几何方案（零模型、确定性强）——从图像边界连通泛洪移除近白
+  像素（容差 40），绝不误伤角色内部白色区域；可选 `--cutout-clean` 清除被
+  深色描边包围的小面积封闭白缝（发丝间/领口，面积 ≤0.5%）。局限：发丝间
+  封闭白缝会残留、硬边无羽化，仅作为离线兜底。
+
+许可证说明：推理栈（onnxruntime）与模型（ISNet）均为 **MIT**；AI 引擎运行时
+只读取 imgly 包内的模型数据文件，不引用其 AGPL 代码。
+
+当前限制：
+
+- **棋盘格假透明**与深色/复杂背景：AI 引擎通常可处理；flood 引擎无法移除
+  （会提示“未能抠图，保留原图”）；
+- 抠图边缘为软边但极端发丝仍可能有轻微残留，重要素材建议 `--keep-raw` 保留
+  原图备选。
+
 ### 3.3 选项参考
 
 共用选项（CLI flag > `.env` 中间默认层 > 内置默认）：
@@ -123,6 +173,11 @@ npm run image -- edit "只改变面部表情为惊讶" \
 | `--moderation` | `low` `auto` | `auto` | 内容审核强度 |
 | `--stream` | 布尔开关 | 关 | SSE 流式，配合 `--partial-images` 0~3 |
 | `--save-partials` | 布尔开关 | 关 | 保存部分图预览（`*-partialNN.png`） |
+| `--cutout` | 布尔开关 | 关 | 自动抠图模式（见 §3.5）：注入白底提示词、请求透明 png、必要时自动抠图 |
+| `--cutout-engine` | `ai` / `flood` | `ai` | AI 模型抠图（软边发丝）或纯几何离线抠图 |
+| `--cutout-device` | `cpu` / `dml` | `cpu` | AI 引擎执行设备：dml（DirectML）推理约 7× 提速，但会话初始化约 14s，适合批量脚本 |
+| `--cutout-clean` | 布尔开关 | 关 | 仅 flood 引擎：追加清除封闭白缝（发丝间/领口）；对帆布鞋类有破洞风险 |
+| `--keep-raw` | 布尔开关 | 关 | 抠图发生时保留原始图（`{前缀}-raw-NN.png`） |
 | `--user` | 任意标识 | 不发送 | 终端用户标识（便于服务端归因） |
 | `--out` | 目录 | `output/image-gen` | 输出目录 |
 | `--timeout` | 毫秒 | `300000` | 单次请求超时 |
@@ -271,6 +326,9 @@ camelCase 与 snake_case（`output_format`）等价、字符串数字（`"3"`）
 | `HTTP 401` | Key 无效或与 BASE_URL 不配套（中转站的 key 配中转站的域名） |
 | `HTTP 429`（已自动重试仍失败） | 限流；降低并发、稍后再试，或提升账号 tier |
 | `HTTP 400` 且消息含某参数名 | 中转站不支持该参数/模型（如 `xhigh`）；换官方端点或去掉该参数 |
+| `--cutout` 提示“AI 抠图失败，已回退白底抠图” | 模型加载/推理失败；查看上方错误详情。flood 回退可用但发丝效果差，可检查 `IMAGE_GEN_CUTOUT_MODEL_PATH` 或重跑 |
+| `--cutout` 提示“未能抠图，保留原图” | 背景既无真透明、flood 也没找到近白背景；改用默认 AI 引擎或调整提示词 |
+| `--cutout` 与 `--background opaque` / `--format jpeg|webp` 报冲突 | 抠图模式固定透明 png 输出；去掉冲突 flag 即可 |
 | `响应项缺少 b64_json…` | 中转站改写了响应结构（返回了 url 等）；确认中转未转换响应，或联系其支持 |
 | status=0 且消息含 `timed out` | 超时；`--timeout 600000` 或 `IMAGE_GEN_TIMEOUT_MS` 调大（xhigh 大图可能超 2 分钟） |
 | status=0 且消息含 `ECONNREFUSED` 等 | 网络不通/代理问题；检查 BASE_URL 拼写与本地代理 |
