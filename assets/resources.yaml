@@ -1,20 +1,26 @@
 # 校园技术社团分支资源目录（campus branch asset catalog）
 #
 # 素材策略（docs/superpowers/specs/2026-09-06-campus-ops-event-design.md §7）：
-# - 背景复用现有校园（clubroom/hallway）素材；地下据点不入目录。
-# - 树莓娘立绘为项目自制纯色占位图，不含任何官方角色绘制；
-#   BITNP 素材未获授权前不接入、不复制、不再分发。
+# - 背景使用校园（clubroom/wencui_corridor）素材；地下据点不入目录。
+# - 树莓娘立绘基于项目负责人提供的官方分层原稿，经自制蓝幕差分管线加工产出
+#   （2026-09-15），资产不入库、不上传，仅限内部流通；
+#   BITNP 其余素材未获授权前不接入、不复制、不再分发。
 # - 语音未配置：audio provider 为 disabled，缺失音色时降级为纯文本，
 #   不阻塞启动。
 
+# 这个字段只存通用的资产调用规则，不要在里面写素材状态
 guidance: |
   当前素材覆盖校园社团部室与走廊场景，围绕技术社团值班日常展开。
 
   背景应尽量复用已有资源，不要因为轻微视角变化频繁切换。
 
-  树莓娘目前只有一张占位立绘（placeholder）：
-  所有表情变体共用同一张图，不要期待表情有视觉区别；
-  可以用 `ch raspberry:default` 改变站位，但立绘画面不会变化。
+  按台词情绪用 `ch raspberry:<变体>` 切换表情，
+  悬念/身份未揭示场面可用剪影。
+
+  通用配角男生A/男生B/女生A/女生B（male_A/male_B/female_A/female_B）
+  可用于来访者、同学、路人等群像场面，
+  用 `ch <角色>:<变体>` 在 base/smile/surprised/embarrassed 间切换表情；
+  他们默认站在左右侧，不要抢占树莓娘的中央位。
 
   角色只能使用其"可用立绘组"内的素材组；
   默认每个角色只有自己的立绘组。
@@ -24,38 +30,12 @@ guidance: |
   角色离场用 ch <id> exit，不要只依赖 hide。
 
 backgrounds:
-  hallway_day:
-    src: backgrounds/hallway_day.jpg
-    description: |
-      校园室内长走廊，左侧有窗户和水槽，右侧有教室、公告栏与楼梯。
-      明亮白天光线。
-      适合白天值班、招新与日常交流场景。
-
-  hallway_evening:
-    src: backgrounds/hallway_evening.jpg
-    description: |
-      同一校园走廊，整体为明显的暖黄色/橙色傍晚光线。
-      适合放学后气氛缓和的交流场景。
-
-  hallway_night_on:
-    src: backgrounds/hallway_night_on.jpg
-    description: |
-      同一走廊，窗外已是夜色，走廊内部仍有照明。
-      适合夜间活动仍在继续的场景。
-
-  hallway_night_off:
-    src: backgrounds/hallway_night_off.jpg
-    description: |
-      同一走廊，窗外夜色，室内灯光明显关闭或大幅减弱，整体很暗。
-      适合闭馆前后、需要安静的场面。
-
   clubroom_day:
     src: backgrounds/clubroom_day.jpg
     description: |
       校园社团活动室/教室，有黑板、书架、长桌、电脑、打印设备和大量椅子。
       白天窗光明亮。
       适合技术分享、值班接待与设备排查的主场景。
-
   clubroom_evening:
     src: backgrounds/clubroom_evening.jpg
     description: |
@@ -73,6 +53,33 @@ backgrounds:
     description: |
       同一社团活动室，窗外是夜色，室内照明关闭或显著减弱，整体呈暗蓝色。
       适合锁门前最后的确认或安静场景。
+
+  wencui_corridor_day:
+    src: backgrounds/wencui_corridor_day.jpg
+    description: |
+      文萃楼高层走廊，左侧是整面落地窗（能看到对面教学楼与楼下过道），
+      窗下有白色暖气片，地面光洁，右侧依次是房间门。白天阳光充足。
+      适合白天的值班、带路讲解、走廊偶遇场景。
+
+  wencui_corridor_evening:
+    src: backgrounds/wencui_corridor_evening.jpg
+    description: |
+      同一文萃楼走廊，窗外变为橙粉色晚霞，夕阳斜照进走廊。
+      适合傍晚收尾、活动散场后的交流场景。
+
+  wencui_corridor_night_on:
+    src: backgrounds/wencui_corridor_night_on.jpg
+    description: |
+      同一文萃楼走廊，窗外是夜色与对面楼里零星的灯光，
+      走廊顶灯保持开启，明亮温暖。
+      适合夜间值班、深夜仍在排查的场景。
+
+  wencui_corridor_night_off:
+    src: backgrounds/wencui_corridor_night_off.jpg
+    description: |
+      同一文萃楼走廊，室内灯已全部关闭，只有窗外月光和远处路灯的微光，
+      整体很暗。
+      适合锁门前最后检查、夜深人静的场面。
 
 bgm:
   relax:
@@ -99,20 +106,187 @@ sound_effects:
       电子设备发出的短促提示音（合成占位），可用于设备反应或提示。
 
 sprite_sets:
+  # 树莓娘资产目录不入库（内部流通约定，见 assets/ATTRIBUTION.md）；
+  # 新环境需先把立绘文件直接复制到 characters/raspberry/ 才能加载。
   raspberry:
     description: |
-      树莓娘占位立绘（项目自制纯色占位，非官方素材）。
-      只有一个变体，所有表情共用。
+      树莓娘差分立绘（基于负责人提供的官方分层原稿加工，仅限内部流通）。
+      base 为基准形态，其余为表情/情绪差分与剪影，全身图、透明背景。
 
     variants:
-      default:
-        src: characters/raspberry/placeholder.png
-        description: 唯一占位立绘，无表情区分。
+      base:
+        src: characters/raspberry/base.png
+        description: 基准立绘，表情平和开朗（默认变体）。
+      mysterious_silhouette:
+        src: characters/raspberry/mysterious_silhouette.png
+        description: 全黑剪影，用于角色未登场揭示或悬念场面。
+      calm:
+        src: characters/raspberry/calm.png
+        description: 平静、沉稳。
+      gentle_smile:
+        src: characters/raspberry/gentle_smile.png
+        description: 温柔的微笑。
+      speaking_smile:
+        src: characters/raspberry/speaking_smile.png
+        description: 面带笑容开口说话。
+      sly_smile:
+        src: characters/raspberry/sly_smile.png
+        description: 狡黠、促狭的笑。
+      delighted:
+        src: characters/raspberry/delighted.png
+        description: 喜出望外、明显的高兴。
+      joyful:
+        src: characters/raspberry/joyful.png
+        description: 欢快、雀跃。
+      proud:
+        src: characters/raspberry/proud.png
+        description: 自豪、得意。
+      cheer:
+        src: characters/raspberry/cheer.png
+        description: 元气满满、加油打气。
+      content:
+        src: characters/raspberry/content.png
+        description: 满足、惬意。
+      embarrassed:
+        src: characters/raspberry/embarrassed.png
+        description: 害羞、窘迫。
+      surprised:
+        src: characters/raspberry/surprised.png
+        description: 惊讶、意外。
+      thinking:
+        src: characters/raspberry/thinking.png
+        description: 思考、沉吟。
+      serious:
+        src: characters/raspberry/serious.png
+        description: 严肃、认真。
+      explaining:
+        src: characters/raspberry/explaining.png
+        description: 讲解、说明中的样子。
+      annoyed:
+        src: characters/raspberry/annoyed.png
+        description: 恼火、不耐烦。
+      displeased:
+        src: characters/raspberry/displeased.png
+        description: 不悦、闹别扭。
+      uneasy:
+        src: characters/raspberry/uneasy.png
+        description: 不安、忐忑。
+      guarded:
+        src: characters/raspberry/guarded.png
+        description: 戒备、警惕。
+
+  # 自制 AI 通用角色立绘（2026-09-15，画风/比例参考树莓娘 calm.png，
+  # 由 scripts/gen-cast-bases.mjs 蓝幕管线产出）；
+  # 资产目录不入库（内部流通约定，见 assets/ATTRIBUTION.md），
+  # 新环境需先把立绘文件直接复制到 characters/<id>/ 才能加载。
+  female_A:
+    description: |
+      女生A：温柔娴静的女大学生学姐形象。亚麻棕色齐颈波波头短发、
+      奶白色发卡，米白色V领针织开衫配白衬衫、暗红格纹百褶及膝裙。
+      base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
+    variants:
+      base:
+        src: characters/female_A/base.png
+        description: 基准立绘，表情平静温和（默认变体）。
+      smile:
+        src: characters/female_A/smile.png
+        description: 明朗开心的笑容。
+      surprised:
+        src: characters/female_A/surprised.png
+        description: 惊讶、意外。
+      embarrassed:
+        src: characters/female_A/embarrassed.png
+        description: 害羞、窘迫。
+
+  female_B:
+    description: |
+      女生B：活力四射的女高中生后辈形象。焦糖色低双马尾、珍珠发饰，
+      奶油色水手服配深绿领结与百褶裙、白色过膝袜。
+      base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
+    variants:
+      base:
+        src: characters/female_B/base.png
+        description: 基准立绘，表情平静温和（默认变体）。
+      smile:
+        src: characters/female_B/smile.png
+        description: 明朗开心的笑容。
+      surprised:
+        src: characters/female_B/surprised.png
+        description: 惊讶、意外。
+      embarrassed:
+        src: characters/female_B/embarrassed.png
+        description: 害羞、窘迫。
+
+  male_A:
+    description: |
+      男生A：开朗阳光的男高中生形象。栗色蓬松短碎发，
+      白短袖衬衫外罩浅灰V领针织背心、深灰长裤、白色运动鞋。
+      base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
+    variants:
+      base:
+        src: characters/male_A/base.png
+        description: 基准立绘，表情平静温和（默认变体）。
+      smile:
+        src: characters/male_A/smile.png
+        description: 明朗开心的笑容。
+      surprised:
+        src: characters/male_A/surprised.png
+        description: 惊讶、意外。
+      embarrassed:
+        src: characters/male_A/embarrassed.png
+        description: 害羞、窘迫。
+
+  male_B:
+    description: |
+      男生B：沉稳安静的男性学长形象。黑色清爽短发、银灰色细框眼镜，
+      燕麦色圆领毛衣内搭白衬衫、深炭灰长裤、棕色皮鞋。
+      base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
+    variants:
+      base:
+        src: characters/male_B/base.png
+        description: 基准立绘，表情平静温和（默认变体）。
+      smile:
+        src: characters/male_B/smile.png
+        description: 明朗开心的笑容。
+      surprised:
+        src: characters/male_B/surprised.png
+        description: 惊讶、意外。
+      embarrassed:
+        src: characters/male_B/embarrassed.png
+        description: 害羞、窘迫。
 
 characters:
   raspberry:
     script_name: 树莓娘
     display_name: 树莓娘
     sprite_set: raspberry
-    default_variant: default
+    default_variant: base
     default_position: center
+
+  female_A:
+    script_name: 女生A
+    display_name: 同学甲
+    sprite_set: female_A
+    default_variant: base
+    default_position: right
+
+  female_B:
+    script_name: 女生B
+    display_name: 同学乙
+    sprite_set: female_B
+    default_variant: base
+    default_position: left
+
+  male_A:
+    script_name: 男生A
+    display_name: 同学丙
+    sprite_set: male_A
+    default_variant: base
+    default_position: left
+
+  male_B:
+    script_name: 男生B
+    display_name: 同学丁
+    sprite_set: male_B
+    default_variant: base
+    default_position: right

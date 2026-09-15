@@ -206,36 +206,67 @@ describe("loadAssetCatalog", () => {
     );
     const catalog = await loadAssetCatalog(resourcesPath);
 
-    // Campus branch: no hideout backgrounds, reused clubroom/hallway set.
+    // Campus branch: no hideout backgrounds; clubroom set + wencui corridor set.
     expect(catalog.guidance).toContain("校园社团部室与走廊");
     expect(Object.keys(catalog.backgrounds)).toEqual([
-      "hallway_day",
-      "hallway_evening",
-      "hallway_night_on",
-      "hallway_night_off",
       "clubroom_day",
       "clubroom_evening",
       "clubroom_night_on",
       "clubroom_night_off",
+      "wencui_corridor_day",
+      "wencui_corridor_evening",
+      "wencui_corridor_night_on",
+      "wencui_corridor_night_off",
     ]);
     expect(catalog.bgm.relax!.src).toBe("audio/bgm/relax.mp3");
     expect(catalog.bgm.calm!.src).toBe("audio/bgm/calm.mp3");
     expect(catalog.bgm.mountain!.src).toBe("audio/bgm/mountain.mp3");
     expect(catalog.soundEffects.terminal_beep!.src).toBe("audio/se/terminal_beep.ogg");
-    // Raspberry Girl placeholder-only sprite set (project-original art).
-    expect(Object.keys(catalog.spriteSets)).toEqual(["raspberry"]);
+    // Raspberry Girl diff sprite set (internal-only art, see assets/ATTRIBUTION.md)
+    //   + 自制 AI 通用角色立绘组（female_A/female_B/male_A/male_B）。
+    expect(Object.keys(catalog.spriteSets)).toEqual([
+      "raspberry",
+      "female_A",
+      "female_B",
+      "male_A",
+      "male_B",
+    ]);
     expect(catalog.characters.raspberry).toEqual({
       characterId: "raspberry",
       scriptName: "树莓娘",
       displayName: "树莓娘",
       spriteSet: "raspberry",
-      defaultVariant: "default",
+      defaultVariant: "base",
       defaultPosition: "center",
       allowedSpriteSets: ["raspberry"],
     });
-    expect(catalog.spriteSets.raspberry!.variants.default!.src).toBe(
-      "characters/raspberry/placeholder.png",
+    const raspberryVariants = catalog.spriteSets.raspberry!.variants;
+    expect(raspberryVariants.base!.src).toBe("characters/raspberry/base.png");
+    expect(raspberryVariants.mysterious_silhouette!.src).toBe(
+      "characters/raspberry/mysterious_silhouette.png",
     );
+    // base + 18 表情差分 + 剪影。
+    expect(Object.keys(raspberryVariants)).toHaveLength(20);
+    // 自制 AI 通用角色：各有 base + 3 表情差分，默认站左右侧（不占树莓娘中央位）。
+    for (const castId of ["female_A", "female_B", "male_A", "male_B"]) {
+      const castVariants = catalog.spriteSets[castId]!.variants;
+      expect(Object.keys(castVariants)).toEqual([
+        "base",
+        "smile",
+        "surprised",
+        "embarrassed",
+      ]);
+      expect(castVariants.base!.src).toBe(`characters/${castId}/base.png`);
+      expect(catalog.characters[castId]).toEqual({
+        characterId: castId,
+        scriptName: expect.any(String),
+        displayName: expect.any(String),
+        spriteSet: castId,
+        defaultVariant: "base",
+        defaultPosition: castId === "female_A" || castId === "male_B" ? "right" : "left",
+        allowedSpriteSets: [castId],
+      });
+    }
     // 未授权的旧故事素材不得出现在校园分支目录中。
     expect(catalog.characters.suyao).toBeUndefined();
     expect(catalog.characters.linche).toBeUndefined();
