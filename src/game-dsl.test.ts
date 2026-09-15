@@ -21,7 +21,7 @@ import type {
 import type { AppConfig } from "./config.js";
 import { Game } from "./game.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
-import { RuntimeStatus } from "./status.js";
+import { RuntimeStatus } from "./runtime/status.js";
 import {
   makeTestConfig,
   makeTestPorts,

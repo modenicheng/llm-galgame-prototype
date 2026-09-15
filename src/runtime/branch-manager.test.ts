@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { BranchManager } from "./branch-manager.js";
 import { Metrics } from "./metrics.js";
-import { RuntimeStatus } from "../status.js";
+import { RuntimeStatus } from "./status.js";
 import type { BranchCandidate, BranchStatus, GeneratedEvent } from "../story/types.js";
 import type { ChoiceOption, RuntimePlayableEvent, ChoiceEvent } from "../schema.js";
 

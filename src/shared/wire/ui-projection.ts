@@ -10,7 +10,7 @@
 import type { RuntimePlayableEvent } from "../../schema.js";
 import type { RuntimeInteractionEvent } from "../../core/runtime/runtime-output.js";
 import type { EndEvent } from "../../schema.js";
-import type { RuntimeStatusSnapshot } from "../../status.js";
+import type { RuntimeStatusSnapshot } from "../../runtime/status.js";
 import type { VisualState } from "../../core/presentation/types.js";
 
 export interface UiProjection {

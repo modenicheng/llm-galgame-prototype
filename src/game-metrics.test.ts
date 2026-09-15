@@ -9,7 +9,7 @@ import type { MetricsSnapshot } from "./runtime/metrics.js";
 import { makeTestConfig, makeTestPorts } from "./test-helpers.js";
 import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
-import type { RuntimeStatus } from "./status.js";
+import type { RuntimeStatus } from "./runtime/status.js";
 import type { AppConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------

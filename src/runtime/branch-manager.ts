@@ -10,8 +10,8 @@
  * class.
  */
 
-import { BranchPrefetchGroup } from "../prefetch.js";
-import type { BranchPrefetchOptions, LiveBranchSelection } from "../prefetch.js";
+import { BranchPrefetchGroup } from "./prefetch.js";
+import type { BranchPrefetchOptions, LiveBranchSelection } from "./prefetch.js";
 import type { ChoiceOption, RuntimePlayableEvent } from "../schema.js";
 import type {
   BranchCandidate,

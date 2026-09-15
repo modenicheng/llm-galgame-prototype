@@ -16,7 +16,7 @@ import type {
   InputResponseRequest,
 } from "./core/ports/story-generator-port.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
-import type { RuntimeStatus } from "./status.js";
+import type { RuntimeStatus } from "./runtime/status.js";
 import type { AppConfig } from "./config.js";
 import type {
   NarrationDraftEvent,

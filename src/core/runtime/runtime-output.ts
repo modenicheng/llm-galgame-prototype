@@ -9,7 +9,7 @@ import type {
   InteractionEvent,
   RuntimePlayableEvent,
 } from "../../schema.js";
-import type { RuntimeStatusSnapshot } from "../../status.js";
+import type { RuntimeStatusSnapshot } from "../../runtime/status.js";
 import type { StageCue, VisualState } from "../presentation/types.js";
 
 /** Interaction surface the runtime exposes to the driver. */

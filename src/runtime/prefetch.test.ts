@@ -11,7 +11,7 @@ import type {
   ChoiceEvent,
   ChoiceOption,
   RuntimePlayableEvent,
-} from "./schema.js";
+} from "../schema.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

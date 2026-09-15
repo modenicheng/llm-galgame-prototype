@@ -9,7 +9,7 @@ import type {
   RuntimeNarrationEvent,
   EndEvent,
 } from "../../schema.js";
-import type { RuntimeStatusSnapshot } from "../../status.js";
+import type { RuntimeStatusSnapshot } from "../../runtime/status.js";
 
 export class UserExitError extends Error {
   constructor() {

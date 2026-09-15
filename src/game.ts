@@ -34,7 +34,7 @@ import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { NarrativeDirectorPort } from "./core/ports/narrative-director-port.js";
 import type { NarrativeBrief } from "./core/narrative/narrative-brief.js";
 import { BranchManager } from "./runtime/branch-manager.js";
-import type { LiveBranchSelection } from "./prefetch.js";
+import type { LiveBranchSelection } from "./runtime/prefetch.js";
 import { GenerationScheduler } from "./runtime/generation-scheduler.js";
 import { Metrics } from "./runtime/metrics.js";
 import type { MetricsSnapshot } from "./runtime/metrics.js";
@@ -92,7 +92,7 @@ import type {
   GeneratedEvent,
   StoryState,
 } from "./story/types.js";
-import type { RuntimeStatus } from "./status.js";
+import type { RuntimeStatus } from "./runtime/status.js";
 
 interface ActiveSegment {
   turn: number;

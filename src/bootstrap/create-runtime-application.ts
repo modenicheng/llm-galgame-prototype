@@ -19,7 +19,7 @@ import { SystemClock } from "../adapters/platform/system-clock.js";
 import { RunGraphCoordinator } from "../application/graph/run-graph-coordinator.js";
 import { loadPrompts } from "../prompts.js";
 import { Metrics } from "../runtime/metrics.js";
-import { RuntimeStatus } from "../status.js";
+import { RuntimeStatus } from "../runtime/status.js";
 import { UiProjectionStoreImpl } from "../application/ui/ui-projection-store.js";
 import { AudioCatalogServiceImpl } from "../application/audio/audio-catalog-service.js";
 import { AudioDescriptorFactory } from "../application/audio/audio-descriptor-factory.js";

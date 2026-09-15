@@ -1,4 +1,4 @@
-import type { ChoiceEvent, ChoiceOption, RuntimePlayableEvent } from "./schema.js";
+import type { ChoiceEvent, ChoiceOption, RuntimePlayableEvent } from "../schema.js";
 import type { RuntimeStatus } from "./status.js";
 
 interface Deferred<T> {
