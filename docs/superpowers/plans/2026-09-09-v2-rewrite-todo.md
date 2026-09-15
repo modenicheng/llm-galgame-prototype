@@ -99,6 +99,7 @@
 - [ ] M4.2 剪报防火墙：演员上下文组装迁移至导演——**复用 context-builder 的 serialize\***；禁入：未实现大纲节点、结局候选、其他周目剧情
 - [ ] M4.3 防守节拍策划（偏题引回方案进演出指令）
 - [ ] M4.4 删除 DirectorPlan / PlotPlanner 独立 LLM 与 NarrativeBrief（战术规划并入导演编排，剪报取代便签）；confirmatory：NarrativeDirector 记忆子层保留（consolidator 等不动）
+- [ ] M4.5 演员运行时拆分（2026-09-15 挂项，game.ts 收窄）：M3.5/M4.4 两笔删除落地后执行——交互驱动（choice/input/hybrid + 两阶段提交，~520 行）抽至 `src/runtime/` 独立模块，game.ts 保留 run 循环 + 段生命周期 + 恢复 + 图提交（目标 ~1500 行）；game*.test.ts 沿同缝拆分。**前置已落（2026-09-15）**：game.test.ts 已按 describe 拆为 game-graph-restore / game-input / game-interactions + 共享 game-test-kit；公共契约词汇（RuntimeShutdownError 等三类）已迁 `core/runtime/errors.ts`，宿主不再为错误类型 import game.ts。过 GH 门
 - [ ] **GH-1 + GH-2**
 
 ## M5 图 UI 与结算
