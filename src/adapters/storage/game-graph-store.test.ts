@@ -141,6 +141,37 @@ describe("边：endState 派生与门禁", () => {
     }
   });
 
+  it("keeps a confluence edge's true inline endState (≈ successor entry) without the equality gate", async () => {
+    const { store, gameDir } = await makeStore();
+    try {
+      const entry = makeSnapshot({ outlineRevision: 4 });
+      const trueEnd = makeSnapshot({ outlineRevision: 7 });
+      await store.putDecision(makeDecision({ id: "dc_g1" }));
+      await store.putDecision(makeDecision({ id: "dc_g2", entryState: entry }));
+      // 汇流边的真实末态 ≠ 后继入口（§3.3 只保证 ≈）：内联保存，不设门禁。
+      await store.putEdge(
+        makeEdge({
+          id: "eg_g1",
+          from: "dc_g1",
+          to: { kind: "decision", id: "dc_g2" },
+          endState: trueEnd,
+          confluence: {
+            matchedNode: "dc_g2",
+            judgedBy: "director-llm",
+            confidence: 0.8,
+            rationale: "殊途同归：两条路径的舞台与关系状态等价",
+          },
+        }),
+      );
+      const edges = await store.listEdges();
+      expect(edges).toHaveLength(1);
+      expect(edges[0]?.endState).toEqual(trueEnd);
+      expect(edges[0]?.confluence?.matchedNode).toBe("dc_g2");
+    } finally {
+      await rm(path.dirname(gameDir), { recursive: true, force: true });
+    }
+  });
+
   it("stores an ending-pointed edge inline and composes it back", async () => {
     const { store, gameDir } = await makeStore();
     try {

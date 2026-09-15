@@ -76,13 +76,19 @@ const EdgeRecordSchema = z
     }),
     payload: EdgePayloadStatsSchema,
     to: EdgeEndpointSchema,
-    /** 仅 `to.kind === "ending"` 时内联（结局没有快照归宿）。 */
-    endState: StateSnapshotSchema.optional(),
-    confluence: ConfluenceEvidenceSchema.optional(),
+    /**
+     * 内联 ⟺ 结局端点（无快照归宿）或汇流边（真实末态与后继入口 ≈ 不等，
+     * §3.3；凭据承担差异）。普通决策端点由后继入口快照派生、不落盘。
+     */
+    endState: z.exactOptional(StateSnapshotSchema),
+    confluence: z.exactOptional(ConfluenceEvidenceSchema),
   })
-  .refine((record) => (record.to.kind === "ending") === (record.endState !== undefined), {
-    message: "inline endState is required exactly for ending endpoints",
-  });
+  .refine(
+    (record) =>
+      (record.to.kind === "ending" || record.confluence !== undefined) ===
+      (record.endState !== undefined),
+    { message: "inline endState is required exactly for ending endpoints and confluence edges" },
+  );
 
 type EdgeRecord = z.infer<typeof EdgeRecordSchema>;
 
@@ -259,30 +265,40 @@ export class GameGraphStore implements GraphStorePort {
 
   async putEdge(edge: PlotEdge): Promise<void> {
     const parsed = PlotEdgeSchema.parse(edge);
+    const base = {
+      id: parsed.id,
+      from: parsed.from,
+      choice: parsed.choice,
+      payload: parsed.payload,
+      to: parsed.to,
+    };
     let record: EdgeRecord;
-    if (parsed.to.kind === "ending") {
-      record = parsed;
+    if (parsed.to.kind === "ending" || parsed.confluence !== undefined) {
+      // 结局端点与汇流边：真实末态内联。汇流边末态按定义只与后继入口
+      // ≈ 相等（§3.3），凭据（judgedBy/confidence/rationale）承担差异。
+      record = {
+        ...base,
+        endState: parsed.endState,
+        ...(parsed.confluence === undefined ? {} : { confluence: parsed.confluence }),
+      };
     } else {
-      // 决策端点：endState 由后继入口快照派生，落盘前校验一致（§3.3 不变量
-      // 的写入门禁——不一致即 Game 侧 bug，大声拒绝）。
+      // 普通决策端点：endState 由后继入口快照派生，落盘前校验一致（§3.3
+      // 不变量的写入门禁——不一致即 Game 侧 bug，大声拒绝）。
       const successorEntry = await this.readSnapshot(parsed.to.id);
       if (stableStringify(successorEntry) !== stableStringify(parsed.endState)) {
         throw new Error(
           `边 ${parsed.id} 的 endState 与后继节点 ${parsed.to.id} 的入口快照不一致`,
         );
       }
-      const { endState: _derived, ...index } = parsed;
-      record = index;
+      record = base;
     }
     await this.appendRecord(GAME_STORAGE_LAYOUT.edges, record);
   }
 
   private async composeEdge(record: EdgeRecord): Promise<PlotEdge> {
+    // 内联真实末态（结局端点/汇流边）优先；普通决策端点从后继入口派生。
     const endState =
-      record.to.kind === "ending" ? record.endState : await this.readSnapshot(record.to.id);
-    if (endState === undefined) {
-      throw new Error(`结局边 ${record.id} 缺少内联 endState`);
-    }
+      record.endState !== undefined ? record.endState : await this.readSnapshot(record.to.id);
     return {
       id: record.id,
       from: record.from,

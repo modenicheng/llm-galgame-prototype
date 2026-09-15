@@ -11,8 +11,9 @@
  * - 决策节点的入口快照单独落盘（`snapshots/<decisionId>.json`），是运行
  *   时状态的唯一物理真源；`decisions.jsonl` 只存索引（id/sceneId/form），
  *   `getDecision` 读取时组合成完整 DecisionNode。
- * - 边的 endState 在决策端点时不落盘（由后继节点的入口快照派生，写入时
- *   校验一致）；仅结局端点内联存储（结局没有快照归宿）。
+ * - 边的 endState 在普通决策端点时不落盘（由后继节点的入口快照派生，
+ *   写入时校验一致）；结局端点与汇流边内联存储——结局没有快照归宿，
+ *   汇流边的真实末态按定义只与后继入口 ≈ 相等（§3.3），凭据承担差异。
  */
 import type { StoredEvent } from "../../schema.js";
 import type {
@@ -43,8 +44,12 @@ export interface GraphStorePort {
   listDecisions(): Promise<DecisionNode[]>;
 
   /**
-   * Persist an edge. For a decision endpoint the successor node must already
-   * exist and its entry snapshot must equal `edge.endState`; mismatch throws.
+   * Persist an edge. A plain decision endpoint derives endState from the
+   * successor's entry snapshot and demands exact equality (mismatch throws).
+   * Ending endpoints and confluence edges keep their true endState inline:
+   * a confluence edge's endState is ≈ (not ===) the successor entry by
+   * definition (§3.3), so the evidence — not an equality gate — carries the
+   * audit trail for the difference.
    */
   putEdge(edge: PlotEdge): Promise<void>;
 
