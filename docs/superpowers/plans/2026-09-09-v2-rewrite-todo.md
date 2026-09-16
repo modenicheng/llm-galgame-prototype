@@ -74,7 +74,14 @@
 
 ## M2 汇流
 
-- [ ] M2.1 ConfluenceJudge port（接口签名按契约冻结）+ 首个 adapter（LLM 主观判定，复用现有 LLM client；确定性比较器为可插拔可选件，默认不实现）。前置已落（2026-09-15）：存储层汇流边 endState 内联化修订（见偏差记录末条）——原 exact-相等门禁与 §3.3「≈」定义正面矛盾，不修则 M2.2 无法落边。落地前还须决议（2026-09-15 审查 A2）：seq 目前是 per-Game-instance 而非 per-world 单调——fresh 分支（结局后新 root 周目）不播种，第二周目 seq 从 1 回绕，同世界边负载 seq 重叠；`pickLatestInEdge`（lastSeq 最大 = 最近走过）与 M2.4 末态索引都隐含依赖「新周目 seq 更大」。二选一：fresh 也从世界最大 seq 播种（store 需 maxEventSeq 类查询），或明确记档接受 best-effort
+- [x] M2.1 ✅（2026-09-16）ConfluenceJudge port（`core/ports/confluence-judge-port.ts`：
+  `judge({endState, candidateEntry}) → {equivalent, confidence, rationale, judgedBy}`；
+  候选枚举（如同场景过滤）是调用方的确定性职责，不入签名——自本条起即 §3.3
+  冻结签名）+ 首个 adapter（`adapters/llm/confluence-judge-adapter.ts`，复用
+  openai-compatible client，json_object + zod 校验；确定性比较器不实现，可插拔
+  路径记于端口头注）。前置已落（2026-09-15）：存储层汇流边 endState 内联化修订
+  （见偏差记录）。A2 seq 决议：选「从世界最大 seq 播种」并升格为统一规则
+  （fresh 与 retrace 同式，理由与载体见偏差记录 2026-09-16 条）。
 - [ ] M2.2 场景内汇流：新边 endState vs 同场景既有决策节点入口态 → 命中即指向既有节点（判定凭据落盘到边）；异步后台，不阻塞播放
 - [ ] M2.3 端到端验证：离谱输入 → 防守节拍引回 → 与既有路径汇流（图上如实呈现）
 - [ ] M2.4 末态索引 + 场景间/滞后汇流（独立可勾，可后置到 M4 之后）
@@ -204,4 +211,17 @@
   DeleteBranch 提供 GC 原语后随节点删除一并处理。孤儿 payload 已在恢复时清理
   （M1.4），两者窗口同源、处置不同是有意的（payload 会被误当成真实边读回，
   不可达节点不会）。
+- 2026-09-16（M2.1，A2 决议）：seq 播种统一为
+  `nextSeq = max(世界最大 seq, 路径末事件 seq, digest 水位) + 1`，fresh 与
+  retrace 同式。世界最大 seq 取各边 payload 统计 lastSeq 的最大值（开局段
+  事件不入图、孤儿 payload 恢复时删除 ⟹ recorded edges 即存活事件全集），
+  无需新增 store 查询。较清单原稿增强：原稿 A 仅提 fresh 播种，但 retrace 的
+  `max(路径, 水位)` 规则在 M5.3 任意祖先回溯下仍有撞号隐患（被弃分支的 seq
+  可大于回溯点的路径末 seq），统一按世界最大值对两者一并免疫。选 A 非 B 的
+  理由（正确性而非偏好）：M2.2 汇流使同节点多入边成真后，① seq 回绕会让
+  `pickLatestInEdge`（lastSeq 最大 = 最近走过）选错边；② M1.4 记忆追赶按
+  `seq > 水位` 过滤重放事件，混合路径上周目二的回绕 seq 全部 ≤ 周目一水位，
+  会被整段静默过滤——恢复后记忆丢失整个新分支，是正确性 bug。载体：
+  `RunResume` fresh 变体增加 `nextSeq` 字段（运行时端口类型，非 §3 冻结
+  schema），Game fresh 分支播种 `this.seq`；MemoryRunGraph 默认值同步。
 

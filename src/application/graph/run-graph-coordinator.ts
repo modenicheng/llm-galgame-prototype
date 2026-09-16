@@ -117,8 +117,11 @@ export class RunGraphCoordinator implements RunGraphPort {
           endingText: await this.endingTextOf(lastRun.ending),
         };
       }
+      // seq 从世界最大值播种（M2.1 决议）：结局后重开的新 root 周目不得
+      // 从 1 回绕——同世界边负载 seq 重叠会破坏跨周目单调性。
+      const worldMax = worldMaxSeq(await this.store.listEdges());
       await this.startRootRun();
-      return { kind: "fresh" };
+      return { kind: "fresh", nextSeq: worldMax + 1 };
     }
     if (options?.restart) {
       return { kind: "active", restore: await this.restartFromCursor(cursor) };
@@ -194,8 +197,9 @@ export class RunGraphCoordinator implements RunGraphPort {
     return {
       decision,
       pathEvents,
-      // 下一个分配槽位：新事件不与重放事件撞号（周目内严格单调）。
-      nextSeq: Math.max(pathLastSeq, watermark) + 1,
+      // 下一个分配槽位：新事件不与重放事件撞号（周目内严格单调），且不与
+      // 同世界其他周目（含被弃分支）的 seq 撞号（跨周目单调，M2.1 决议）。
+      nextSeq: Math.max(worldMaxSeq(edges), pathLastSeq, watermark) + 1,
       turnFloor: pathEvents.at(-1)?.turn ?? 1,
     };
   }
@@ -355,6 +359,14 @@ function toStateSnapshot(moment: RuntimeMoment): StateSnapshot {
     memoryDigest: moment.memoryDigest,
     outlineRevision: moment.outlineRevision,
   };
+}
+
+/**
+ * 世界最大已落盘事件 seq（各边负载统计的 lastSeq 取最大）。开局段事件不
+ * 入图、孤儿 payload 恢复时删除，故 recorded edges 的统计即存活事件的全集。
+ */
+function worldMaxSeq(edges: readonly PlotEdge[]): number {
+  return edges.reduce((max, edge) => Math.max(max, edge.payload.lastSeq), 0);
 }
 
 /** 指向 `nodeId` 的入边中最近走过的一条（payload.lastSeq 最大）。 */

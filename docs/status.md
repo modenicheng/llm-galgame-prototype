@@ -1,6 +1,6 @@
 # 实施进度对照（status）
 
-> 快照日期：**2026-09-15**，对照 `main` 分支代码。本文是唯一的进度权威文档；
+> 快照日期：**2026-09-16**，对照 `main` 分支代码。本文是唯一的进度权威文档；
 > 设计规范见 `docs/llm-outputs-refactor.md`，变更记录见 `docs/changelog.md`。
 > 后续开发完成/变更条目时请同步更新本文。
 
@@ -90,8 +90,9 @@
 
 - **v2 剧情图架构（实施中）**：M0 契约冻结、M1.1 记忆摘要映射、M1.2 图存储、
   M1.3 演员接图、M1.4 游标恢复、M1.5 新周目入口（root/retrace）、M1.6 sessions
-  JSONL store 删除均已完成；M2 汇流、M3 编剧+大纲+世界生成、M4 导演+剪报防火墙、
-  M5 图 UI+结算待做——逐项进度见执行清单。
+  JSONL store 删除、M2.1 ConfluenceJudge port + LLM 判定 adapter 均已完成；
+  M2.2/M2.3 场景内汇流与端到端验证、M2.4 末态索引、M3 编剧+大纲+世界生成、
+  M4 导演+剪报防火墙、M5 图 UI+结算待做——逐项进度见执行清单。
 - **event mode / forced ending / max_interactions**：过渡期保留（恢复后
   interactionCount 清零、不跨周目累计）；M3.5 由大纲结局驱动替代时整体删除。
 - **PlaybackBuffer 未迁 EventGroup**：采用 §63 展平方案（事件携带 `stage` 字段），
@@ -106,9 +107,9 @@
 - **「继续游戏」宿主未接线**：闭环只在运行时层成立（`options.gameId` 跨启动
   固定世界）；web/cli 入口均不传 gameId，进程重启后开新世界——M5.0 接线
   （见执行清单）。
-- **seq 为 per-Game-instance 计数**：fresh 分支不播种，同世界第二个 root 周目
-  seq 从 1 回绕（M1 无汇流无影响）；M2.1 落地前须决议播种策略（见执行清单
-  M2.1 注记）。
+- **seq 播种已按世界最大值统一（M2.1 决议，2026-09-16）**：`nextSeq =
+  max(世界最大 seq, 路径末 seq, digest 水位) + 1`，同世界新 root 周目不再从
+  1 回绕；跨周目单调是 M2.2 汇流后 `pickLatestInEdge` 与记忆水位过滤的前提。
 
 ## 近期提交锚点
 

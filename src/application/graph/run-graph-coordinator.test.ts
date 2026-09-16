@@ -202,7 +202,7 @@ describe("RunGraphCoordinator restore (M1.4)", () => {
     const { coordinator, store, root } = await makeCoordinator();
     try {
       const resume = await coordinator.restoreOrCreateRun();
-      expect(resume).toEqual({ kind: "fresh" });
+      expect(resume).toEqual({ kind: "fresh", nextSeq: 1 });
       expect(await store.loadCursor()).toBeNull();
       expect(await store.listRuns()).toHaveLength(1);
     } finally {
@@ -222,7 +222,7 @@ describe("RunGraphCoordinator restore (M1.4)", () => {
       expect(resume.restore.decision.form).toEqual(makeForm({ prompt: "第二个决策" }));
       expect(resume.restore.decision.entryState).toEqual({ snapshotVersion: 1, ...built.entry2 });
       expect(resume.restore.pathEvents).toEqual(built.e1Events);
-      // nextSeq = max(路径末 seq 5, digest 水位 3) + 1；turn = 路径末事件 turn
+      // nextSeq = max(世界最大 seq 5, 路径末 seq 5, digest 水位 3) + 1；turn = 路径末事件 turn
       expect(resume.restore.nextSeq).toBe(6);
       expect(resume.restore.turnFloor).toBe(2);
 
@@ -318,10 +318,10 @@ describe("RunGraphCoordinator restore (M1.4)", () => {
 
       const second = reopenAt(made.root, made.gameId);
       const secondResume = await second.coordinator.restoreOrCreateRun({ restart: true });
-      expect(secondResume.kind).toBe("fresh");
+      expect(secondResume).toEqual({ kind: "fresh", nextSeq: 5 });
       await second.coordinator.openDecision({ modelSceneId: "天台", form: makeForm(), moment: makeMoment() });
       await second.coordinator.beginEdge({ kind: "option", text: "追上去" });
-      await second.coordinator.appendEdgeEvents([makeEndEvent(4, "重开后的结局。")]);
+      await second.coordinator.appendEdgeEvents([makeEndEvent(5, "重开后的结局。")]);
       await second.coordinator.reachEnding({ endingId: "fin", moment: makeMoment() });
 
       const third = reopenAt(made.root, made.gameId);
@@ -384,16 +384,20 @@ describe("RunGraphCoordinator retrace (M1.5)", () => {
     }
   });
 
-  it("restart on an ended world (no cursor) starts a fresh root run instead of reporting the ending", async () => {
+  it("restart on an ended world (no cursor) starts a fresh root run seeded from world max seq", async () => {
     const made = await makeCoordinator();
     try {
       const { coordinator } = reopenAt(made.root, made.gameId);
       await coordinator.startRootRun();
+      await coordinator.openDecision({ modelSceneId: "天台", form: makeForm(), moment: makeMoment() });
+      await coordinator.beginEdge({ kind: "option", text: "留下" });
+      await coordinator.appendEdgeEvents([makeEndEvent(4, "初版的结局。")]);
       await coordinator.reachEnding({ endingId: "solo", moment: makeMoment() });
 
       const { coordinator: reopened, store: store2 } = reopenAt(made.root, made.gameId);
       const resume = await reopened.restoreOrCreateRun({ restart: true });
-      expect(resume).toEqual({ kind: "fresh" });
+      // 世界最大 seq = 4（周目 1 的末边负载）→ 新 root 周目从 5 起算（M2.1 决议）
+      expect(resume).toEqual({ kind: "fresh", nextSeq: 5 });
       const runs = await store2.listRuns();
       expect(runs).toHaveLength(2);
       expect(runs.at(-1)?.origin).toEqual({ kind: "root" });
@@ -408,7 +412,7 @@ describe("RunGraphCoordinator retrace (M1.5)", () => {
     try {
       const { coordinator: reopened, store: store2 } = reopenAt(made.root, made.gameId);
       const resume = await reopened.restoreOrCreateRun({ restart: true });
-      expect(resume).toEqual({ kind: "fresh" });
+      expect(resume).toEqual({ kind: "fresh", nextSeq: 1 });
       expect(await store2.listRuns()).toHaveLength(1);
     } finally {
       await rm(made.root, { recursive: true, force: true });

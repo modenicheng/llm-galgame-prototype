@@ -117,7 +117,7 @@ export class MemoryRunGraph implements RunGraphPort {
   }> = [];
   readonly endings: Array<{ endingId: string; moment: unknown }> = [];
   /** 可编程的恢复结果；fresh（默认）会顺带登记一次 root run。 */
-  resume: RunResume = { kind: "fresh" };
+  resume: RunResume = { kind: "fresh", nextSeq: 1 };
   private idCounter = 0;
 
   async restoreOrCreateRun(_options?: { restart?: boolean }): Promise<RunResume> {

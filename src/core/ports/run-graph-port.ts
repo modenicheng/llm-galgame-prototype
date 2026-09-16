@@ -43,7 +43,9 @@ export interface RestorePoint {
    */
   pathEvents: StoredEvent[];
   /**
-   * seq 计数器播种（下一个分配槽位）：max(路径末事件 seq, digest 水位) + 1，
+   * seq 计数器播种（下一个分配槽位）：max(世界最大 seq, 路径末事件 seq,
+   * digest 水位) + 1——世界最大 seq 入列保证跨周目单调（M2.1 决议：混入
+   * 其他周目边的路径上，回绕 seq 会击穿水位过滤与最近入边判定），后两项
    * 保证恢复后新事件不与重放事件撞号、周目内严格单调。
    */
   nextSeq: number;
@@ -53,7 +55,15 @@ export interface RestorePoint {
 
 /** 「继续游戏」入口的三态结果：全新 / 周目已完结 / 游标恢复。 */
 export type RunResume =
-  | { kind: "fresh" }
+  | {
+      kind: "fresh";
+      /**
+       * seq 播种（下一个分配槽位）：世界最大 seq + 1（M2.1 决议）。同一
+       * 世界的新 root 周目不从 1 起算——同世界边负载 seq 重叠会破坏跨周目
+       * 单调性（最近入边判定、记忆水位过滤都依赖它）。首个世界为 1。
+       */
+      nextSeq: number;
+    }
   | {
       kind: "ended";
       /** 已完结周目的契约结局 id。 */

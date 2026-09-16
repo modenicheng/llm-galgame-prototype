@@ -383,6 +383,9 @@ export class Game {
       segment = this.startRestoredSegment(resume.restore);
       outcome = await this.resumeRestoredInteraction(segment);
     } else {
+      // fresh：seq 从世界最大值播种（M2.1 决议）——同一世界的新 root 周目
+      // （结局后再玩）不得与既有周目的边负载 seq 重叠。
+      this.seq = resume.nextSeq;
       this.status.setPhase("开场生成", "首条完整事件到达后立即进入播放缓冲");
       segment = this.startActiveSegment("opening", 1, [], []);
       outcome = await this.consumeActiveSegment(segment, 1, []);
