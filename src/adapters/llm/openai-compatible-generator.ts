@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import type { ChatCompletionCreateParamsStreaming } from "openai/resources/chat/completions.js";
 import type { AppConfig, AuthorConfig } from "../../config.js";
 import {
   buildDslUserPrompt,
@@ -30,8 +31,7 @@ import type {
   StoryContextEvent,
 } from "../../schema.js";
 import type { NarrativeBrief } from "../../core/narrative/narrative-brief.js";
-import type { GenerationEnvelope, StoryState, StoryStatePatch } from "../../story/types.js";
-import { mergePatches } from "../../story/patch.js";
+import type { GenerationEnvelope, StoryState } from "../../story/types.js";
 import {
   createGenerationHandle,
   type BranchPrefetchRequest,
@@ -335,6 +335,43 @@ export class StoryGenerator {
   }
 
   /**
+   * Repair prompt appended on retries: the provider-internal failure and the
+   * Game-level repair reason (docs §47–§48).
+   */
+  private buildRepairInstruction(lastError: string, repairReason?: string): string {
+    const parts = [lastError, repairReason].filter((reason): reason is string =>
+      Boolean(reason),
+    );
+    if (parts.length === 0) return "";
+    return `\n${parts
+      .map(
+        (reason) =>
+          `上一份输出出错：${reason}。请修正该问题后从失败位置继续，不要重复已输出的内容。`,
+      )
+      .join("\n")}`;
+  }
+
+  /** OpenAI streaming request body (DeepSeek thinking toggle as TOP-LEVEL field). */
+  private buildStreamRequest(
+    maxTokens: number,
+    userContent: string,
+  ): ChatCompletionCreateParamsStreaming {
+    return {
+      model: this.config.api.model,
+      temperature: this.config.generation.temperature,
+      ...(this.config.api.token_limit_field === "max_tokens"
+        ? { max_tokens: maxTokens }
+        : { max_completion_tokens: maxTokens }),
+      ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
+      messages: [
+        { role: "system" as const, content: this.systemPrompt },
+        { role: "user" as const, content: userContent },
+      ],
+      stream: true,
+    };
+  }
+
+  /**
    * DSL-mode streaming request (docs §40–§51).
    * retry/abort/metrics skeleton, but each line is parsed by the Gal DSL
    * pipeline: fence markers are skipped, parseDslLine + DslSegmentParser
@@ -362,17 +399,7 @@ export class StoryGenerator {
 
       // On retry: add repair instruction describing the previous failure
       // (provider-internal `lastError` and/or Game-level options.repairReason).
-      const repairParts = [lastError, options?.repairReason].filter(
-        (reason): reason is string => Boolean(reason),
-      );
-      const repairInstruction = repairParts.length
-        ? `\n${repairParts
-            .map(
-              (reason) =>
-                `上一份输出出错：${reason}。请修正该问题后从失败位置继续，不要重复已输出的内容。`,
-            )
-            .join("\n")}`
-        : "";
+      const repairInstruction = this.buildRepairInstruction(lastError, options?.repairReason);
 
       const callStart = Date.now();
       let firstLineMs = 0;
@@ -413,105 +440,71 @@ export class StoryGenerator {
         for (const group of groups) options?.onGroup?.(group);
       };
 
-      try {
-        const stream = await this.client.chat.completions.create(
-          {
-            model: this.config.api.model,
-            temperature: this.config.generation.temperature,
-            ...(this.config.api.token_limit_field === "max_tokens"
-              ? { max_tokens: maxTokens }
-              : { max_completion_tokens: maxTokens }),
-            // DeepSeek reasoning models: thinking toggle as a TOP-LEVEL field.
-            ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
-            messages: [
-              { role: "system" as const, content: this.systemPrompt },
-              { role: "user" as const, content: `${userPrompt}${repairInstruction}` },
-            ],
-            stream: true,
-          },
-          { signal: controller.signal },
-        );
+      const decoder = new StreamLineDecoder();
+      const parser = new DslSegmentParser({ expectedNonce: nonce, allowedReasons });
 
-        const decoder = new StreamLineDecoder();
-        const parser = new DslSegmentParser({ expectedNonce: nonce, allowedReasons });
+      /** 解码一行为事件组；返回 false 表示该行校验失败、流必须停止。 */
+      const processDslLine = (rawLine: string): boolean => {
+        // Tolerate markdown fence markers around the DSL payload.
+        const trimmed = rawLine.trim();
+        if (trimmed.startsWith("```") || trimmed.endsWith("```")) return true;
 
-        for await (const chunk of stream) {
-          const content = chunk.choices[0]?.delta?.content;
-          if (!content) continue;
-          if (firstLineMs === 0) firstLineMs = Date.now();
-          streamChars += content.length;
-
-          for (const rawLine of decoder.push(content)) {
-            lineIndex += 1;
-
-            // Tolerate markdown fence markers around the DSL payload.
-            const trimmed = rawLine.trim();
-            if (trimmed.startsWith("```") || trimmed.endsWith("```")) continue;
-
-            let parsed: DslLine;
-            try {
-              parsed = parseDslLine(trimmed);
-            } catch (error) {
-              if (error instanceof DslProtocolError) {
-                onDslLineFailure(error, "不是合法 DSL");
-                break;
-              }
-              throw error;
-            }
-
-            let emitted: EventGroupDraft[];
-            try {
-              emitted = parser.pushLine(parsed);
-            } catch (error) {
-              if (error instanceof DslProtocolError) {
-                onDslLineFailure(error, "DSL 校验失败");
-                break;
-              }
-              throw error;
-            }
-
-            if (emitted.length > 0) {
-              allGroups.push(...emitted);
-              forwardGroups(emitted);
-            }
-          }
-          if (streamAborted) break;
+        let parsed: DslLine;
+        try {
+          parsed = parseDslLine(trimmed);
+        } catch (error) {
+          if (!(error instanceof DslProtocolError)) throw error;
+          onDslLineFailure(error, "不是合法 DSL");
+          return false;
         }
 
-        signalCleanup();
+        let emitted: EventGroupDraft[];
+        try {
+          emitted = parser.pushLine(parsed);
+        } catch (error) {
+          if (!(error instanceof DslProtocolError)) throw error;
+          onDslLineFailure(error, "DSL 校验失败");
+          return false;
+        }
 
-        // Truncated tail without a trailing newline: try it, but drop the
-        // partial when it is structurally invalid (docs §49–§50). A valid
-        // tail that still lacks the sentinel lands in the incomplete branch
-        // below — never a hard failure with already-forwarded groups.
+        if (emitted.length > 0) {
+          allGroups.push(...emitted);
+          forwardGroups(emitted);
+        }
+        return true;
+      };
+
+      // Truncated tail without a trailing newline: try it, but drop the
+      // partial when it is structurally invalid (docs §49–§50). A valid
+      // tail that still lacks the sentinel lands in the incomplete branch
+      // below — never a hard failure with already-forwarded groups.
+      const flushTruncatedTail = (): void => {
+        if (streamAborted) return;
         const tail = decoder.flush();
-        if (!streamAborted && tail !== null) {
-          const trimmed = tail.trim();
-          if (
-            trimmed.length > 0 &&
-            !trimmed.startsWith("```") &&
-            !trimmed.endsWith("```")
-          ) {
-            try {
-              const parsed = parseDslLine(trimmed);
-              const emitted = parser.pushLine(parsed);
-              if (emitted.length > 0) {
-                allGroups.push(...emitted);
-                forwardGroups(emitted);
-              }
-            } catch (error) {
-              if (error instanceof DslProtocolError) {
-                this.metrics?.recordSchemaValidationFailure();
-                console.warn(
-                  `[LLM] ${type} 输出在末尾被截断，已丢弃残片（截断于第 ${lineIndex + 1} 行）`,
-                );
-              } else {
-                throw error;
-              }
-            }
-          }
+        if (tail === null) return;
+        const trimmed = tail.trim();
+        if (trimmed.length === 0 || trimmed.startsWith("```") || trimmed.endsWith("```")) {
+          return;
         }
+        try {
+          const emitted = parser.pushLine(parseDslLine(trimmed));
+          if (emitted.length > 0) {
+            allGroups.push(...emitted);
+            forwardGroups(emitted);
+          }
+        } catch (error) {
+          if (!(error instanceof DslProtocolError)) throw error;
+          this.metrics?.recordSchemaValidationFailure();
+          console.warn(
+            `[LLM] ${type} 输出在末尾被截断，已丢弃残片（截断于第 ${lineIndex + 1} 行）`,
+          );
+        }
+      };
 
+      // 流收束（无异常路径）：complete → 返回 envelope；可重试失败 → 记入
+      // lastError 并返回 null（外层进入下一轮 attempt）；已转发前缀不完整
+      // → 抛出，交给运行时修复路径。
+      const finalizeAttempt = (): GenerationEnvelope | null => {
         const latencyMs = Date.now() - callStart;
         usage = { input: 0, output: Math.ceil(streamChars / 4) };
         console.log(
@@ -528,14 +521,14 @@ export class StoryGenerator {
           if (options?.onGroup && allGroups.length > 0) {
             throw new Error(lastError, { cause: streamError });
           }
-          continue;
+          return null;
         }
 
         // Empty output — nothing at all (fences alone do not count).
         if (lineIndex === 0 && allGroups.length === 0) {
           this.metrics?.recordLLMRequest(type, usage, latencyMs);
           lastError = "模型返回空内容。";
-          continue;
+          return null;
         }
 
         const result = parser.finish();
@@ -560,6 +553,33 @@ export class StoryGenerator {
           );
         }
         lastError = "段结束时没有 @end 哨兵（截断）";
+        return null;
+      };
+
+      try {
+        const stream = await this.client.chat.completions.create(
+          this.buildStreamRequest(maxTokens, `${userPrompt}${repairInstruction}`),
+          { signal: controller.signal },
+        );
+
+        for await (const chunk of stream) {
+          const content = chunk.choices[0]?.delta?.content;
+          if (!content) continue;
+          if (firstLineMs === 0) firstLineMs = Date.now();
+          streamChars += content.length;
+
+          for (const rawLine of decoder.push(content)) {
+            lineIndex += 1;
+            if (!processDslLine(rawLine)) break;
+          }
+          if (streamAborted) break;
+        }
+
+        signalCleanup();
+        flushTruncatedTail();
+
+        const envelope = finalizeAttempt();
+        if (envelope !== null) return envelope;
       } catch (error) {
         signalCleanup();
         if (signal?.aborted || isAbortError(error)) throw error;
@@ -573,11 +593,6 @@ export class StoryGenerator {
   }
 }
 
-function mergePatchesList(patches: StoryStatePatch[]): StoryStatePatch {
-  let merged: StoryStatePatch = {};
-  for (const patch of patches) merged = mergePatches(merged, patch);
-  return merged;
-}
 
 // ---------------------------------------------------------------------------
 // StoryGeneratorPort facade
