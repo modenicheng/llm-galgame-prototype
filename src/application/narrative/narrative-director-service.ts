@@ -66,7 +66,10 @@ import {
   factId,
   beliefId,
 } from "./memory-consolidator.js";
-import type { MemoryConsolidatorPort } from "./memory-consolidator.js";
+import type {
+  MemoryConsolidatorPort,
+  ConsolidationOutcome,
+} from "./memory-consolidator.js";
 import {
   PlotPlanner,
   PLANNER_RECENT_EVENTS_MAX,
@@ -601,54 +604,16 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
     const applied = await this.mutateMemory(async (current) => {
       const shadow = structuredClone(current);
-      let appliedCount = 0;
-
       // Timeline fields are checkpoint units (narrative beats), not event
       // seqs: classifySetup's age math compares them against the checkpoint
       // counter (audit finding 3).
       const nowCheckpoint = current.checkpointCount;
-
-      // 1) Episode
-      if (outcome.episode !== null) {
-        shadow.recentEpisodeIds.unshift(outcome.episode.id);
-        if (shadow.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
-          shadow.recentEpisodeIds = shadow.recentEpisodeIds.slice(
-            0,
-            MAX_RECENT_EPISODE_IDS,
-          );
-        }
-        appliedCount += 1;
-      }
-
-      // 2) Thread ops (shared pure apply; timeline in checkpoint units)
-      for (const op of outcome.threadOps) {
-        applyThreadOpToState(shadow, op, nowCheckpoint);
-        appliedCount += 1;
-      }
-
-      // 3) Setup ops
-      for (const op of outcome.setupOps) {
-        applySetupOpToState(shadow, op, nowCheckpoint);
-        appliedCount += 1;
-      }
-
-      // 4) Fact ops（§5.2，MA-B）：id 与 consolidator 校验循环同一确定性
-      // 公式（revision 派生，重放幂等）；checkpoint 用本批真实值。
-      const idRevision = current.revision + 1;
-      let factSeq = 0;
-      const newFacts: FactRecord[] = [];
-      for (const op of outcome.factOps) {
-        applyFactOpToState(shadow, op, factId(idRevision, ++factSeq), nowCheckpoint);
-        newFacts.push(shadow.facts[shadow.facts.length - 1]!);
-        appliedCount += 1;
-      }
-
-      // 5) Belief ops（§6.1，MA-B）：correct 解析目标后追加新认知。
-      let beliefSeq = 0;
-      for (const op of outcome.beliefOps) {
-        applyBeliefOpToState(shadow, op, beliefId(idRevision, ++beliefSeq), nowCheckpoint);
-        appliedCount += 1;
-      }
+      const { appliedCount, newFacts } = this.applyOutcomeToShadow(
+        shadow,
+        outcome,
+        nowCheckpoint,
+        current.revision + 1,
+      );
 
       // --- Advance state (on the shadow) ---
       shadow.revision += 1;
@@ -696,6 +661,63 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     }
     this.lastConsolidateAt = Date.now();
     return { applied: applied.applied, rejected };
+  }
+
+  /**
+   * 把已校验的 consolidation 结果应用到 shadow（纯内存、原地修改）。
+   * fact/belief id 与 consolidator 校验循环同一确定性公式（revision 派生，
+   * 重放幂等）；checkpoint 用本批真实值。返回应用计数与本批新 facts
+   * （供 facts.jsonl 留痕）。
+   */
+  private applyOutcomeToShadow(
+    shadow: NarrativeMemoryState,
+    outcome: ConsolidationOutcome,
+    nowCheckpoint: number,
+    idRevision: number,
+  ): { appliedCount: number; newFacts: FactRecord[] } {
+    let appliedCount = 0;
+
+    // 1) Episode
+    if (outcome.episode !== null) {
+      shadow.recentEpisodeIds.unshift(outcome.episode.id);
+      if (shadow.recentEpisodeIds.length > MAX_RECENT_EPISODE_IDS) {
+        shadow.recentEpisodeIds = shadow.recentEpisodeIds.slice(
+          0,
+          MAX_RECENT_EPISODE_IDS,
+        );
+      }
+      appliedCount += 1;
+    }
+
+    // 2) Thread ops (shared pure apply; timeline in checkpoint units)
+    for (const op of outcome.threadOps) {
+      applyThreadOpToState(shadow, op, nowCheckpoint);
+      appliedCount += 1;
+    }
+
+    // 3) Setup ops
+    for (const op of outcome.setupOps) {
+      applySetupOpToState(shadow, op, nowCheckpoint);
+      appliedCount += 1;
+    }
+
+    // 4) Fact ops（§5.2，MA-B）
+    let factSeq = 0;
+    const newFacts: FactRecord[] = [];
+    for (const op of outcome.factOps) {
+      applyFactOpToState(shadow, op, factId(idRevision, ++factSeq), nowCheckpoint);
+      newFacts.push(shadow.facts[shadow.facts.length - 1]!);
+      appliedCount += 1;
+    }
+
+    // 5) Belief ops（§6.1，MA-B）：correct 解析目标后追加新认知。
+    let beliefSeq = 0;
+    for (const op of outcome.beliefOps) {
+      applyBeliefOpToState(shadow, op, beliefId(idRevision, ++beliefSeq), nowCheckpoint);
+      appliedCount += 1;
+    }
+
+    return { appliedCount, newFacts };
   }
 
   // -----------------------------------------------------------------------

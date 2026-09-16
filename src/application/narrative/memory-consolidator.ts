@@ -201,11 +201,6 @@ export class MemoryConsolidator {
     // budget, seed-then-reinforce, repeated advances...). A rejected op is
     // NOT applied to the shadow. (Audit finding 4.)
     const rejected: RejectedOp[] = [];
-    const threadOps: ThreadOp[] = [];
-    const setupOps: SetupOp[] = [];
-    const factOps: FactOp[] = [];
-    const beliefOps: BeliefOp[] = [];
-    const findings: AuditFinding[] = [];
     const shadow = structuredClone(memory);
     const batchLastSeq = batch[batch.length - 1]!.seq;
 
@@ -235,27 +230,77 @@ export class MemoryConsolidator {
       });
     }
 
+    const threadOps = this.filterThreadOps(result, shadow, rejected);
+    const setupOps = this.filterSetupOps(result, shadow, batchLastSeq, rejected);
+    const factOps = this.filterFactOps(
+      result,
+      shadow,
+      memory.revision + 1,
+      batchLastSeq,
+      rejected,
+    );
+    const beliefOps = this.filterBeliefOps(
+      result,
+      shadow,
+      stateCharacters,
+      memory.revision + 1,
+      batchLastSeq,
+      rejected,
+    );
+    const findings = this.collectFindings(result, batchLastSeq, rejected);
+
+    return { result, episode, threadOps, setupOps, factOps, beliefOps, findings, rejected };
+  }
+
+  // -------------------------------------------------------------------------
+  // Per-op-class validation filters (transactional against `shadow`)
+  // -------------------------------------------------------------------------
+
+  private filterThreadOps(
+    result: ConsolidationResult,
+    shadow: NarrativeMemoryState,
+    rejected: RejectedOp[],
+  ): ThreadOp[] {
+    const accepted: ThreadOp[] = [];
     for (const op of result.threadOps) {
       const reason = validateThreadOp(op, shadow, this.config);
       if (reason === null) {
-        threadOps.push(op);
+        accepted.push(op);
         applyThreadOpToState(shadow, op, 0); // checkpoint irrelevant for validation
       } else {
         rejected.push({ kind: "thread", op, reason, rule: rejectionRule(reason) });
       }
     }
+    return accepted;
+  }
 
+  private filterSetupOps(
+    result: ConsolidationResult,
+    shadow: NarrativeMemoryState,
+    batchLastSeq: number,
+    rejected: RejectedOp[],
+  ): SetupOp[] {
+    const accepted: SetupOp[] = [];
     for (const op of result.setupOps) {
       const reason = validateSetupOp(op, shadow, this.config, batchLastSeq);
       if (reason === null) {
-        setupOps.push(op);
+        accepted.push(op);
         applySetupOpToState(shadow, op, 0); // checkpoint irrelevant for validation
       } else {
         rejected.push({ kind: "setup", op, reason, rule: rejectionRule(reason) });
       }
     }
+    return accepted;
+  }
 
-    // --- MA-B：facts（§5.2）---
+  private filterFactOps(
+    result: ConsolidationResult,
+    shadow: NarrativeMemoryState,
+    idRevision: number,
+    batchLastSeq: number,
+    rejected: RejectedOp[],
+  ): FactOp[] {
+    const accepted: FactOp[] = [];
     let establishCount = 0;
     let factSeq = 0;
     for (const op of result.factOps) {
@@ -269,7 +314,7 @@ export class MemoryConsolidator {
           rejected.push({
             kind: "fact",
             op,
-            reason: `[FACT_BUDGET_EXCEEDED] 每批 establish 上限 ${MAX_ESTABLISH_PER_BATCH}`,
+            reason: "[FACT_BUDGET_EXCEEDED] 每批 establish 上限 3",
             rule: "FACT_BUDGET_EXCEEDED",
           });
           continue;
@@ -277,11 +322,21 @@ export class MemoryConsolidator {
         establishCount += 1;
       }
       // 影子应用：amend 在影子中标 superseded，供后续 op 校验看到（事务性）。
-      applyFactOpToState(shadow, op, factId(memory.revision + 1, ++factSeq), 0);
-      factOps.push(op);
+      applyFactOpToState(shadow, op, factId(idRevision, ++factSeq), 0);
+      accepted.push(op);
     }
+    return accepted;
+  }
 
-    // --- MA-B：beliefs（§6.1）---
+  private filterBeliefOps(
+    result: ConsolidationResult,
+    shadow: NarrativeMemoryState,
+    stateCharacters: readonly string[],
+    idRevision: number,
+    batchLastSeq: number,
+    rejected: RejectedOp[],
+  ): BeliefOp[] {
+    const accepted: BeliefOp[] = [];
     let beliefSeq = 0;
     const perCharacterOps = new Map<string, number>();
     for (const op of result.beliefOps) {
@@ -295,7 +350,7 @@ export class MemoryConsolidator {
         rejected.push({
           kind: "belief",
           op,
-          reason: `[BELIEF_BUDGET_EXCEEDED] 角色 ${op.characterId} 每批 belief op 上限 ${MAX_BELIEF_OPS_PER_CHARACTER_PER_BATCH}`,
+          reason: "[BELIEF_BUDGET_EXCEEDED] 每角色每批 belief op 上限 2",
           rule: "BELIEF_BUDGET_EXCEEDED",
         });
         continue;
@@ -309,36 +364,43 @@ export class MemoryConsolidator {
           rejected.push({
             kind: "belief",
             op,
-            reason: `[BELIEF_BUDGET_EXCEEDED] 角色 ${op.characterId} active beliefs 已达上限 ${this.config.beliefs.max_active_per_character}`,
+            reason: "[BELIEF_BUDGET_EXCEEDED] 角色 active beliefs 已达上限",
             rule: "BELIEF_BUDGET_EXCEEDED",
           });
           continue;
         }
       }
       perCharacterOps.set(op.characterId, count + 1);
-      applyBeliefOpToState(shadow, op, beliefId(memory.revision + 1, ++beliefSeq), 0);
-      beliefOps.push(op);
+      applyBeliefOpToState(shadow, op, beliefId(idRevision, ++beliefSeq), 0);
+      accepted.push(op);
     }
+    return accepted;
+  }
 
-    // --- MA-B：findings（§9.2）——不修改任何记忆状态，只留痕/晋升 ---
+  /** findings 不修改记忆状态：逐条校验 + 批量上限（§9.2）。 */
+  private collectFindings(
+    result: ConsolidationResult,
+    batchLastSeq: number,
+    rejected: RejectedOp[],
+  ): AuditFinding[] {
+    const accepted: AuditFinding[] = [];
     if (result.findings.length > MAX_FINDINGS_PER_BATCH) {
       rejected.push({
         kind: "finding",
         op: result.findings,
-        reason: `[FINDING_BATCH_EXCEEDED] 每批 findings 上限 ${MAX_FINDINGS_PER_BATCH}（收到 ${result.findings.length}）`,
+        reason: "[FINDING_BATCH_EXCEEDED] 每批 findings 上限 5",
         rule: "FINDING_BATCH_EXCEEDED",
       });
     }
     for (const finding of result.findings.slice(0, MAX_FINDINGS_PER_BATCH)) {
       const reason = validateFinding(finding, batchLastSeq);
       if (reason === null) {
-        findings.push(finding);
+        accepted.push(finding);
       } else {
         rejected.push({ kind: "finding", op: finding, reason, rule: rejectionRule(reason) });
       }
     }
-
-    return { result, episode, threadOps, setupOps, factOps, beliefOps, findings, rejected };
+    return accepted;
   }
 }
 

@@ -125,8 +125,7 @@ export type InteractionEvent =
  * All event types the model may produce within a generation segment.
  * Excludes runtime-only fields like `line_id`.
  *
- * Includes `ChoiceEvent` for backward compatibility with the legacy
- * `mode: "choice"` instead.
+ * Includes `ChoiceEvent` for the branch-prefetch draft shape.
  */
 export type GeneratedEvent =
   | DialogueDraftEvent
@@ -135,10 +134,6 @@ export type GeneratedEvent =
   | EndEvent
   | ChoiceEvent;
 
-/**
- * A state patch that the model returns alongside events. All fields are
- * optional; the runtime merges only the keys the model explicitly provides.
- */
 /**
  * The top-level result of a generation request: ordered events plus the
  * DSL segment end status. state_patch 已随 §80–§81 删除（StoryState 由

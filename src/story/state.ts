@@ -4,14 +4,10 @@
  * `createInitialState` produces a blank/default state at the start of a
  * new session. `summarizeState` compresses the state into a text block
  * suitable for inclusion in the LLM's context window.
- *
- * `serializeState` / `deserializeState` handle JSON round-tripping with
- * Zod validation. `saveStateSnapshot` is an async filesystem wrapper.
+ * （MA-A2：serialize/deserialize 已随图存储接管序列化而删除。）
  */
 
-import { writeFile } from "node:fs/promises";
 import type { StoryState } from "./types.js";
-import { StoryStateSchema } from "./types.js";
 
 /**
  * Create a fresh `StoryState` with sensible defaults.
@@ -77,35 +73,4 @@ export function summarizeState(state: StoryState): string {
   lines.push(`[Recent] ${state.recent_summary}`);
 
   return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Serialization
-// ---------------------------------------------------------------------------
-
-/**
- * Serialize a `StoryState` to a compact JSON string.
- */
-export function serializeState(state: StoryState): string {
-  return JSON.stringify(state);
-}
-
-/**
- * Deserialize a JSON string back into a `StoryState`, with Zod validation.
- * Throws if the JSON is malformed or the shape is invalid.
- */
-export function deserializeState(json: string): StoryState {
-  const parsed: unknown = JSON.parse(json);
-  return StoryStateSchema.parse(parsed) as StoryState;
-}
-
-/**
- * Persist a `StoryState` snapshot to disk as a JSON file.
- */
-export async function saveStateSnapshot(
-  state: StoryState,
-  filePath: string,
-): Promise<void> {
-  const json = serializeState(state);
-  await writeFile(filePath, json, "utf8");
 }

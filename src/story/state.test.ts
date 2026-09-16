@@ -4,12 +4,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import {
-  createInitialState,
-  summarizeState,
-  serializeState,
-  deserializeState,
-} from "./state.js";
+import { createInitialState, summarizeState } from "./state.js";
 import type { StoryState, CharacterState } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -164,66 +159,5 @@ describe("summarizeState", () => {
     });
     const summary = summarizeState(state);
     expect(summary.length).toBeLessThan(2000);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// serializeState / deserializeState
-// ---------------------------------------------------------------------------
-
-describe("serializeState", () => {
-  it("should produce valid JSON for a default state", () => {
-    const state = createInitialState();
-    const json = serializeState(state);
-    expect(() => JSON.parse(json)).not.toThrow();
-    const parsed = JSON.parse(json);
-    expect(parsed.scene.id).toBe("prologue");
-  });
-
-  it("should produce compact JSON without extra whitespace", () => {
-    const state = createInitialState();
-    const json = serializeState(state);
-    expect(json.split("\n").length).toBe(1);
-  });
-});
-
-describe("deserializeState", () => {
-  it("should deserialize a valid JSON string back to a StoryState", () => {
-    const original = createInitialState({
-      scene: {
-        id: "chapter1",
-        location: "throne_room",
-        time: "dawn",
-        purpose: "confront the king",
-      },
-      characters: {
-        hero: { location: "throne_room" },
-      },
-      recent_summary: "The hero entered the throne room.",
-    });
-
-    const json = serializeState(original);
-    const restored = deserializeState(json);
-    expect(restored).toEqual(original);
-  });
-
-  it("should round-trip a state with no characters", () => {
-    const original = createInitialState();
-    const json = serializeState(original);
-    const restored = deserializeState(json);
-    expect(restored).toEqual(original);
-    expect(restored.characters).toEqual({});
-  });
-
-  it("should throw on malformed JSON", () => {
-    expect(() => deserializeState("not valid json {{{ ")).toThrow();
-  });
-
-  it("should throw when JSON is valid but fails Zod validation", () => {
-    expect(() =>
-      deserializeState(
-        JSON.stringify({ scene: { id: "x" } }),
-      ),
-    ).toThrow();
   });
 });

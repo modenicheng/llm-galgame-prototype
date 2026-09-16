@@ -225,7 +225,7 @@
 每道门 = `npm test` + `npm run typecheck` + `npm run build` 三绿 + repo-hygiene 机械检查通过，再触发该 skill 的**完整档**执行：机械检查之外，必须把 SKILL §B 的 subagent 只读评审 prompt 原样派发出去，P1/P2 问题当场修复。快速档（仅 §A + 新文件过目）每 3–4 张卡跑一次，同由该 skill 承载；阈值与豁免以仓库根 `.hygiene.config.json` 为准。skill 为用户级安装，未安装环境按本段要点降级执行（三绿 + 行数/标记扫描 + 七条 subagent 评审）。
 
 - [x] **GH-P1**：无附加项。（2026-09-17 过门：三绿 + 机械检查 + subagent 评审 16 条，P2 当场修复、P3 记附录 B）
-- [ ] **GH-P2**：narrative-director-service.test.ts 豁免移除；getBrief 零 await 断言在位。
+- [x] **GH-P2**：narrative-director-service.test.ts 豁免移除；getBrief 零 await 断言在位。（2026-09-17 过门：三绿 + 机械检查 + subagent 评审 17 条，P2 当场修复、P3 记附录 B）
 - [ ] **GH-P3**：世界生成无确认闸门行为核对；outline 冻结原则测试在位。
 - [ ] **GH-P4**：M4.4 grep 清单清零；game.ts 豁免移除；`src/application/director|world|outline` 新目录进依赖方向评审。
 - [ ] **GH-P5**：event mode / story_line grep 清零；config 死键负面断言齐。
@@ -348,6 +348,7 @@
 （历史/素材前置、任务头置尾），删除 `game.history_events`（schema、config.yaml、全部 fixture/断言）；
 目的 = provider 前缀缓存命中（相邻请求共享「系统提示 + 历史 + 素材」前缀，回溯 = 重放天然截尾）。
 基线由 1421 测试更新为 1422 测试（布局顺序断言重写）；规范回写 llm-outputs-refactor §70。
+- 2026-09-17（GH-P2 卫生门）：subagent 只读评审 17 条（P2×5、P3×12，无 P1）。**P2 当场修复**：① `MemoryConsolidator.consolidate` 按 op 类别拆出 filterThreadOps/filterSetupOps/filterFactOps/filterBeliefOps/collectFindings 五个私有方法；② `runConsolidatePending` 的 shadow 应用段抽为 `applyOutcomeToShadow`；③ json 记忆存储三处 tmp+rename 原子写抽 `writeAtomic`，episodes/ops 旧读写并入泛化 jsonl 通道，`writeEndingReport` 接线 `EndingReportSchema` 校验；④ 死导出 `VALID_SETUP_TRANSITIONS` 删除（与 validator 规则漂移，validator 为唯一真源）；⑤ `state.ts` 的 serializeState/deserializeState/saveStateSnapshot 生产零引用，删除（序列化已由图存储接管）。**P3 记档**：getBrief/classifySetup/plot-planner.plan 函数长度与 directive 字面量重复；ACTIVE/TERMINAL 状态集合双声明（memory-validator 与 memory-consolidator）；service 的 MemoryConsolidatorPort 兼容 re-export；config 默认值三处派生；THREAD_CREATE_MISSING_FIELDS 与 zod superRefine 重复校验；hasConsolidator/hasPlanner 双层守卫；consolidationPromise 非空组合静默兜底；apply*OpToState 对无实体 op 静默 no-op；types.ts legacy ChoiceEvent 分支与半改残缺注释；testing.ts 硬编码版本号（应引 SNAPSHOT_VERSION）——除已随手修复的注释/孤儿项外，其余待后续卡顺带清偿。
 - 2026-09-17（MA-A2 落地，D10 执行）：`SNAPSHOT_VERSION` 2→3——StoryState 契约收缩为 reconcile 投影产物（scene/characters/recent_summary），canon/open_threads/player_profile/角色 emotion·current_goal·relationship_to_player·known_facts 死字段清除；StoryStatePatch/patch.ts/GenerationEnvelope.state_patch/BranchCandidate.state_patch/BranchManager statePatch 参数整体删除；物品/场景关键细节语义由 MA-B facts 承载（P2 要点 ⑤），汇流等价键如需从 facts scope 派生。dev 存档废弃不迁移。
 - 2026-09-17（MA-B 落地，D4 执行）：`SNAPSHOT_VERSION` 1→2——`MemoryDigest` 增 facts/beliefs 全文嵌入（决议 D6：恢复不依赖 canon 可用性）；旧 v1 快照读取即拒（zod literal 不匹配走结构损坏路径），dev 存档废弃不做迁移。facts.brief_max / beliefs.max_active_per_character 配置键随读取者同期就位（MA-A 偏差 ① 的清偿）。dsl-protocol.txt 增一行事实/认知边界规则。
 - 2026-09-17（MA-A 落地）：记忆 spec Phase A 五项全部落地（depth/RESOLVE_OR_DROP、intendedPayoff 硬拒 + author warning、ending-report 异步聚合、lessons 拒绝码计数自动晋升 + brief 规避清单、facts/lessons jsonl 通道）。偏差两条：① 拒绝 reason 引入 `[CODE] ` 稳定规则码前缀（§7.2 来源 2 的计数键；人话部分未变）；② facts.brief_max / beliefs.max_active_per_character 配置键随 MA-B 与其读取者同期加入（避免阶段内成为死键）。`narrative-director-service.test.ts` 沿子系统缝拆分为 lifecycle/consolidation/brief/replan 四文件 + `narrative-director-test-kit.ts`，allowlist 移除。

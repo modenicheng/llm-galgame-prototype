@@ -22,6 +22,7 @@ import { DirectorPlanSchema } from "../../core/narrative/director-plan.js";
 import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import {
   EpisodeMemorySchema,
+  EndingReportSchema,
   FactRecordSchema,
   LessonSchema,
   NarrativeMemoryStateSchema,
@@ -106,54 +107,30 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
       state = EMPTY_STATE;
     }
 
-    const episodes: EpisodeMemory[] = [];
-    const seenIds = new Set<string>();
-    try {
-      const raw = await readFile(this.episodesPath, "utf8");
-      for (const line of raw.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed.length === 0) continue;
-        try {
-          const parsed: unknown = JSON.parse(trimmed);
-          const checked = EpisodeMemorySchema.safeParse(parsed);
-          if (checked.success) {
-            // Dedupe by id: a failed persist retry may append the same
-            // episode id twice (id is revision-derived and idempotent).
-            if (!seenIds.has(checked.data.id)) {
-              seenIds.add(checked.data.id);
-              episodes.push(checked.data);
-            }
-          }
-        } catch {
-          // Corrupt single episode line → skip it, keep the rest.
-        }
-      }
-    } catch {
-      // Missing episodes file → empty list.
-    }
+    // 与 facts/lessons 同一泛化 jsonl 通道（损坏行跳过、按 id 去重）。
+    const episodes = await this.loadJsonl(this.episodesPath, EpisodeMemorySchema);
 
     return { state, episodes };
   }
 
-  async saveState(state: NarrativeMemoryState): Promise<void> {
+  /** tmp+rename 原子写（saveState/savePlan/writeEndingReport 共用）。 */
+  private async writeAtomic(filePath: string, content: string): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    const tmpPath = `${this.statePath}.tmp-${process.pid}-${Date.now()}`;
-    await writeFile(tmpPath, JSON.stringify(state), "utf8");
-    await rename(tmpPath, this.statePath);
+    const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tmpPath, content, "utf8");
+    await rename(tmpPath, filePath);
+  }
+
+  async saveState(state: NarrativeMemoryState): Promise<void> {
+    await this.writeAtomic(this.statePath, JSON.stringify(state));
   }
 
   async appendEpisodes(episodes: EpisodeMemory[]): Promise<void> {
-    if (episodes.length === 0) return;
-    await mkdir(this.dir, { recursive: true });
-    const lines = episodes.map((ep) => JSON.stringify(ep)).join("\n");
-    await appendFile(this.episodesPath, `${lines}\n`, "utf8");
+    await this.appendJsonl(this.episodesPath, episodes);
   }
 
   async appendOps(ops: RejectedOp[]): Promise<void> {
-    if (ops.length === 0) return;
-    await mkdir(this.dir, { recursive: true });
-    const lines = ops.map((op) => JSON.stringify(op)).join("\n");
-    await appendFile(this.opsPath, `${lines}\n`, "utf8");
+    await this.appendJsonl(this.opsPath, ops);
   }
 
   async loadPlan(): Promise<DirectorPlan | null> {
@@ -175,10 +152,7 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
   }
 
   async savePlan(plan: DirectorPlan): Promise<void> {
-    await mkdir(this.dir, { recursive: true });
-    const tmpPath = `${this.planPath}.tmp-${process.pid}-${Date.now()}`;
-    await writeFile(tmpPath, JSON.stringify(plan), "utf8");
-    await rename(tmpPath, this.planPath);
+    await this.writeAtomic(this.planPath, JSON.stringify(plan));
   }
 
   // ---------------------------------------------------------------------
@@ -258,9 +232,7 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
   }
 
   async writeEndingReport(report: EndingReport): Promise<void> {
-    await mkdir(this.dir, { recursive: true });
-    const tmpPath = `${this.endingReportPath}.tmp-${process.pid}-${Date.now()}`;
-    await writeFile(tmpPath, JSON.stringify(report, null, 2), "utf8");
-    await rename(tmpPath, this.endingReportPath);
+    const checked = EndingReportSchema.parse(report);
+    await this.writeAtomic(this.endingReportPath, JSON.stringify(checked, null, 2));
   }
 }

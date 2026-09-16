@@ -216,7 +216,3 @@ export function makePlan(
 ): StoryPlan {
   return { threads, setups, anchors };
 }
-
-// ---------------------------------------------------------------------------
-// NarrativeDirectorService tests
-// ---------------------------------------------------------------------------

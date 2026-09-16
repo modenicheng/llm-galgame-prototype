@@ -17,7 +17,6 @@ import {
   EpisodeMemorySchema,
   NarrativeMemoryStateSchema,
   VALID_THREAD_TRANSITIONS,
-  VALID_SETUP_TRANSITIONS,
 } from "./memory-types.js";
 import {
   ThreadOpSchema,
@@ -382,43 +381,6 @@ describe("VALID_THREAD_TRANSITIONS", () => {
   it("marks resolved and abandoned as terminal (empty transition lists)", () => {
     expect(VALID_THREAD_TRANSITIONS.resolved).toEqual([]);
     expect(VALID_THREAD_TRANSITIONS.abandoned).toEqual([]);
-  });
-});
-
-describe("VALID_SETUP_TRANSITIONS", () => {
-  it("has exactly one entry per SetupStatus", () => {
-    const statuses: SetupStatus[] = [
-      "planned",
-      "seeded",
-      "reinforced",
-      "ready",
-      "paid_off",
-      "dropped",
-    ];
-    expect(Object.keys(VALID_SETUP_TRANSITIONS).sort()).toEqual(
-      [...statuses].sort(),
-    );
-  });
-
-  it("maps the documented transitions", () => {
-    expect(VALID_SETUP_TRANSITIONS.planned).toEqual(["seeded", "dropped"]);
-    expect(VALID_SETUP_TRANSITIONS.seeded).toEqual([
-      "reinforced",
-      "ready",
-      "paid_off",
-      "dropped",
-    ]);
-    expect(VALID_SETUP_TRANSITIONS.reinforced).toEqual([
-      "ready",
-      "paid_off",
-      "dropped",
-    ]);
-    expect(VALID_SETUP_TRANSITIONS.ready).toEqual(["paid_off", "dropped"]);
-  });
-
-  it("marks paid_off and dropped as terminal (empty transition lists)", () => {
-    expect(VALID_SETUP_TRANSITIONS.paid_off).toEqual([]);
-    expect(VALID_SETUP_TRANSITIONS.dropped).toEqual([]);
   });
 });
 

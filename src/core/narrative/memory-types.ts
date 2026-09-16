@@ -379,15 +379,3 @@ export const VALID_THREAD_TRANSITIONS: Record<
   abandoned: [],
 };
 
-/**
- * Legal SetupStatus transitions, keyed by current status.
- * `paid_off` and `dropped` are terminal (map to []).
- */
-export const VALID_SETUP_TRANSITIONS: Record<SetupStatus, SetupStatus[]> = {
-  planned: ["seeded", "dropped"],
-  seeded: ["reinforced", "ready", "paid_off", "dropped"],
-  reinforced: ["ready", "paid_off", "dropped"],
-  ready: ["paid_off", "dropped"],
-  paid_off: [],
-  dropped: [],
-};
