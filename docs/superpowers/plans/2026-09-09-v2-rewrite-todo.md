@@ -35,7 +35,7 @@
 
 ## 2. 现状基线（2026-09-17，含 D9 落地）
 
-**验证基线**：1436 测试 / 97 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
+**验证基线**：1434 测试 / 97 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
 
 已完成 M0–M2.2（历史细节见附录 A）。已落地组件：
 
@@ -221,7 +221,7 @@
 
 每道门 = `npm test` + `npm run typecheck` + `npm run build` 三绿 + repo-hygiene 机械检查通过，再触发该 skill 的**完整档**执行：机械检查之外，必须把 SKILL §B 的 subagent 只读评审 prompt 原样派发出去，P1/P2 问题当场修复。快速档（仅 §A + 新文件过目）每 3–4 张卡跑一次，同由该 skill 承载；阈值与豁免以仓库根 `.hygiene.config.json` 为准。skill 为用户级安装，未安装环境按本段要点降级执行（三绿 + 行数/标记扫描 + 七条 subagent 评审）。
 
-- [ ] **GH-P1**：无附加项。
+- [x] **GH-P1**：无附加项。（2026-09-17 过门：三绿 + 机械检查 + subagent 评审 16 条，P2 当场修复、P3 记附录 B）
 - [ ] **GH-P2**：narrative-director-service.test.ts 豁免移除；getBrief 零 await 断言在位。
 - [ ] **GH-P3**：世界生成无确认闸门行为核对；outline 冻结原则测试在位。
 - [ ] **GH-P4**：M4.4 grep 清单清零；game.ts 豁免移除；`src/application/director|world|outline` 新目录进依赖方向评审。
@@ -346,3 +346,4 @@
 目的 = provider 前缀缓存命中（相邻请求共享「系统提示 + 历史 + 素材」前缀，回溯 = 重放天然截尾）。
 基线由 1421 测试更新为 1422 测试（布局顺序断言重写）；规范回写 llm-outputs-refactor §70。
 - 2026-09-17（StoryState 瘦身立项，决议 D10）：审查确认 StoryState 富字段（canon/open_threads/player_profile/角色 emotion·current_goal·relationship_to_player·known_facts）自 state_patch 应用路径删除后无写入者（status.md §80–§81 记录）。立项 MA-A2 卡（P2，置于 MA-B 之后），`SNAPSHOT_VERSION` 再递增获预授权；同批清扫 patch.ts 与 GenerationEnvelope.state_patch 死代码。物品/场景关键细节的语义记录归 MA-B facts 承载，不进 storyState 结构字段。
+- 2026-09-17（GH-P1 卫生门）：subagent 只读评审 16 条（P2×5、P3×11，无 P1）。**P2 当场修复**：① `create-runtime-application.ts` 主函数拆出 `selectTtsProvider`/`buildAudioStack`/`buildGraphCoordinator`，导出 `DEFAULT_GAMES_ROOT`（web.ts 不再硬编码 "games"）；② `requestDslEnvelope` 拆出 `buildStreamRequest`/`buildRepairInstruction` 方法与 processDslLine/flushTruncatedTail/finalizeAttempt 具名闭包（尾冲嵌套 5 层→早返回）；③ `media.audio` V1 平面字段全删（enabled/provider/active_target_lines/refill_threshold_lines/branch_prefetch_lines/batch_size/max_concurrency/mock_latency_ms/output_dir——生产零读取的死键，config 无死键纪律），同批清 `mergePatchesList` 死代码与 `CreateRuntimeApplication` 死导出。**P3 记档（待后续卡顺带清偿，不阻塞）**：cli.ts `printMetrics` 死参数 game 与 reduce 求均值 ×3；web/cli `parseArgs` 近重复；last-game.test 临时目录模板 ×6；config 默认值在 zod `.default` 与代码 `??` 多处派生（含 bootstrap 兜底 cosyvoice_v3_flash/22050/2）；`interaction.default_mode` 校验但运行时不消费的死键；`makeCtx(null as unknown as StoryState)` 类型欺骗（buildSystemContext 入参应收窄）；GeneratorPortFacade 5 处条件展开；`confluence?.enabled` 可选链与类型矛盾；MediaPlannerPort `isReady`/`waitUntilReady` 过渡桩。基线 1434 测试 / 97 文件。
