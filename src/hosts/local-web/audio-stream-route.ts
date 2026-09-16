@@ -201,6 +201,10 @@ export class AudioStreamRoute {
 
     req.on("data", onData);
     req.on("end", onEnd);
+    // Without this, a client disconnect mid-upload leaves the promise
+    // pending forever (leaked req/res closures), and a stream 'error' event
+    // with no listener crashes the process.
+    req.on("error", onError);
     return promise;
   }
 
