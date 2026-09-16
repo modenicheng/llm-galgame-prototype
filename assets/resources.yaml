@@ -215,9 +215,8 @@ sprite_sets:
         description: 戒备、警惕。
 
   # 自制 AI 通用角色立绘（2026-09-15，画风/比例参考树莓娘 calm.png，
-  # 由 scripts/gen-cast-bases.mjs 蓝幕管线产出）；
-  # 资产目录不入库（内部流通约定，见 assets/ATTRIBUTION.md），
-  # 新环境需先把立绘文件直接复制到 characters/<id>/ 才能加载。
+  # 由 scripts/gen-cast-bases.mjs 蓝幕管线产出）；AI 原创内容，
+  # 随仓库分发（授权说明见 assets/ATTRIBUTION.md）。
   female_A:
     description: |
       女生A：温柔娴静的女大学生学姐形象。亚麻棕色齐颈波波头短发、

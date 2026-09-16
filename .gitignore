@@ -25,9 +25,6 @@ assets/raw/
 output/
 # 树莓娘资产仅限内部流通：不入库、不上传，只能直接复制（见 assets/ATTRIBUTION.md）
 assets/characters/raspberry/
-# 自制 AI 通用角色立绘（cast）仅限内部流通：不入库、不上传，只能直接复制
-# （见 assets/ATTRIBUTION.md；产出源 output/image-gen/cast/ 同样被上方 output/ 规则忽略）
-assets/characters/female_A/
-assets/characters/female_B/
-assets/characters/male_A/
-assets/characters/male_B/
+# 自制 AI 通用角色立绘（cast，assets/characters/{female_A,female_B,male_A,male_B}/）
+# 为 AI 原创、经项目负责人确认随仓库分发；产出源 output/image-gen/cast/
+# 仍被上方 output/ 规则忽略（见 assets/ATTRIBUTION.md）。

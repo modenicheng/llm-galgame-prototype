@@ -117,11 +117,11 @@
 - **角色适配**：`prompts/characters.txt` 分层（BITNP 已核对事实 / 本分支
   演绎）；世界规则、事实边界写入 `story_line.txt`/`guideline.txt`/
   `author.yaml`；结局只依据本局 committed facts。
-- **资源策略**：背景使用 clubroom/wencui_corridor；树莓娘为基于负责人提供的
-  官方分层原稿加工的差分立绘（base + 18 表情差分 + 剪影，2026-09-15 接入，
-  仅限内部流通）；另有 4 个自制 AI 通用配角立绘（female_A/female_B/male_A/
-  male_B，各 base + smile/surprised/embarrassed，2026-09-15 接入，仅限内部
-  流通）；BITNP 其余素材未授权不接入（来源审计见
+- **资源策略**：背景使用 clubroom/wencui_corridor/campus_road/club_plaza；
+  树莓娘为基于负责人提供的官方分层原稿加工的差分立绘（base + 18 表情差分 +
+  剪影，2026-09-15 接入，仅限内部流通）；另有 4 个自制 AI 通用配角立绘
+  （female_A/female_B/male_A/male_B，各 base + smile/surprised/embarrassed，
+  2026-09-15 接入，AI 原创随仓库分发）；BITNP 其余素材未授权不接入（来源审计见
   `docs/superpowers/notes/campus-ops-source-audit.md`）。
 - **文本优先**：`synthesis.provider: disabled`，音频缺省不阻塞启动。
 - **现场文档**：`docs/campus-ops-event-runbook.md`（一人操作/重开/指定种子）。
