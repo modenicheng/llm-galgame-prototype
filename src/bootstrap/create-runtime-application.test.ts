@@ -554,6 +554,125 @@ function dashscopeConfig(): AppConfig {
   });
 
   // -------------------------------------------------------------------
+  // M5.0 宿主接线：世界身份跨进程固定
+  // -------------------------------------------------------------------
+
+  it("exposes the explicit gameId and a generated one when omitted", async () => {
+    const config = makeTestConfig({
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+    const root = await mkdtemp(path.join(tmpdir(), "galgame-m50-"));
+    generatorState.opening = {
+      events: [],
+      groups: [{ prelude: [], main: { type: "narration", text: "第一幕" } }],
+      state_patch: undefined,
+      segmentEnd: { kind: "complete", nonce: "0000", reason: "ending" },
+    };
+    try {
+      const explicit = await createRuntimeApplication({
+        config,
+        sessionDir: root,
+        gamesRoot: path.join(root, "games"),
+        gameId: "game_m50_explicit",
+      });
+      expect(explicit.gameId).toBe("game_m50_explicit");
+
+      const generated = await createRuntimeApplication({
+        config,
+        sessionDir: root,
+        gamesRoot: path.join(root, "games"),
+      });
+      // 缺省 = 每次启动新世界：生成时间戳式 id。
+      expect(generated.gameId).toMatch(/^game_/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses the same graph world and restores the cursor across launches with an explicit gameId", async () => {
+    const config = makeTestConfig({
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+    const root = await mkdtemp(path.join(tmpdir(), "galgame-m50-"));
+    const gamesRoot = path.join(root, "games");
+    // 开局：旁白 + input 交互（停驻），让首个决策节点与游标落盘。
+    generatorState.opening = {
+      events: [],
+      groups: [
+        { prelude: [], main: { type: "narration", text: "第一幕" } },
+        {
+          prelude: [],
+          main: {
+            type: "interaction",
+            interaction: {
+              prompt: "说什么？",
+              mode: "input",
+              inputPlaceholder: "...",
+            },
+          },
+        },
+      ],
+      state_patch: undefined,
+      segmentEnd: undefined,
+    };
+    try {
+      const first = await createRuntimeApplication({
+        config,
+        sessionDir: root,
+        gamesRoot,
+        gameId: "game_m50",
+        sessionId: "s1",
+      });
+      const controller1 = new MemoryController();
+      controller1.attach(first.game);
+      const run1 = first.game.run().catch((error: unknown) => error);
+      await controller1.advanceUntilInteractionOrEnd();
+      await first.shutdown();
+      await run1;
+
+      const gameDir = path.join(gamesRoot, "game_m50");
+      expect(existsSync(path.join(gameDir, "cursor.json"))).toBe(true);
+      const decisionsBefore = await readFile(
+        path.join(gameDir, "graph", "decisions.jsonl"),
+        "utf8",
+      );
+
+      // 第二次启动同一世界：恢复游标（不重开生成、不新建世界、不复制节点）。
+      generatorState.opening = {
+        events: [],
+        groups: [{ prelude: [], main: { type: "narration", text: "不该被生成的开场" } }],
+        state_patch: undefined,
+        segmentEnd: undefined,
+      };
+      const second = await createRuntimeApplication({
+        config,
+        sessionDir: root,
+        gamesRoot,
+        gameId: "game_m50",
+        sessionId: "s2",
+      });
+      expect(second.gameId).toBe("game_m50");
+      const controller2 = new MemoryController();
+      controller2.attach(second.game);
+      const run2 = second.game.run().catch((error: unknown) => error);
+      // 恢复路径重放交互表单并停驻；advanceUntilInteractionOrEnd 到位即证明
+      // 表单从快照重放（若误走 fresh 开局，会直接播完旁白结尾而非停驻交互）。
+      await controller2.advanceUntilInteractionOrEnd();
+      await second.shutdown();
+      await run2;
+
+      expect((await readdir(gamesRoot)).filter((d) => !d.startsWith("."))).toEqual([
+        "game_m50",
+      ]);
+      expect(await readFile(path.join(gameDir, "graph", "decisions.jsonl"), "utf8")).toBe(
+        decisionsBefore,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------
   // Narrative director assembly tests (Task 11)
   // -------------------------------------------------------------------
 

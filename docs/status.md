@@ -91,6 +91,11 @@
   （入口快照重建 story/visual/memory，全路径边负载经 seq 水位过滤重放进导演，
   seq/turn 播种保证单调）/ 周目已完结补发结局 / 全新开局；`restart` 模式弃局
   活跃周目（abandonedAt）并在游标节点开 retrace 新周目（restart_session 接线）。
+- **宿主世界接线（M5.0）**：web/cli 入口 `--game <id>` 与环境变量
+  `VIBEGAL_GAME_ID`（参数优先）固定世界；local-web 未显式指定时读
+  `games/.last-game` 续玩，启动后写回（best-effort：损坏/缺失即开新世界，
+  读写失败不阻塞启动；id 只接受安全字符集，防路径逃逸）。CLI 不读写
+  `.last-game`。`RuntimeApplication.gameId` 暴露给宿主。
 - `sessions/<sessionId>/` 仅存 narrative 记忆工作缓存（narrative-state.json /
   episodes.jsonl / narrative-ops.jsonl + director-plan.json）；**可丢弃**——恢复
   永不读它，v1 的事件日志 `events.jsonl` 与内存态快照已随 M1.6 删除。
@@ -100,9 +105,9 @@
 - **v2 剧情图架构（实施中）**：M0 契约冻结、M1.1 记忆摘要映射、M1.2 图存储、
   M1.3 演员接图、M1.4 游标恢复、M1.5 新周目入口（root/retrace）、M1.6 sessions
   JSONL store 删除、M2.1 ConfluenceJudge port + LLM 判定 adapter、M2.2 场景内
-  汇流（后台判定 + 有界改绑 + promise 链互斥）均已完成；执行清单已于
-  2026-09-16 重整为**交付版**（任务卡 P1–P6：M5.0 宿主接线 → 记忆审计
-  Phase A/B → 编剧+大纲+世界生成 → 导演+剪报 → 收束+canon+汇流补完 →
+  汇流（后台判定 + 有界改绑 + promise 链互斥）、M5.0 宿主接线均已完成；
+  执行清单已于 2026-09-16 重整为**交付版**（任务卡 P1–P6：M5.0 宿主接线 →
+  记忆审计 Phase A/B → 编剧+大纲+世界生成 → 导演+剪报 → 收束+canon+汇流补完 →
   图 UI+结算；M2.3 端到端验证归人工清单）。待做清单与卫生门见执行清单。
 - **event mode / forced ending / max_interactions**：过渡期保留（恢复后
   interactionCount 清零、不跨周目累计）；M3.5 由大纲结局驱动替代时整体删除。
@@ -115,9 +120,6 @@
 - **CLI 音频**：`media.audio.enabled=false` 默认纯文本（CLI 不接 TTS 播放）。
 - **回溯只到游标（最前沿节点）**：任意祖先节点回溯 + 同选项快进随 M5.3 回溯
   入口 UI 落地（见执行清单 M5.3 注记）。
-- **「继续游戏」宿主未接线**：闭环只在运行时层成立（`options.gameId` 跨启动
-  固定世界）；web/cli 入口均不传 gameId，进程重启后开新世界——M5.0 接线
-  （见执行清单）。
 - **seq 播种已按世界最大值统一（M2.1 决议，2026-09-16）**：`nextSeq =
   max(世界最大 seq, 路径末 seq, digest 水位) + 1`，同世界新 root 周目不再从
   1 回绕；跨周目单调是 M2.2 汇流后 `pickLatestInEdge` 与记忆水位过滤的前提。

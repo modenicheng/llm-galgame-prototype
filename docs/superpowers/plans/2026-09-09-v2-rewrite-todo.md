@@ -35,7 +35,7 @@
 
 ## 2. 现状基线（2026-09-17，含 D9 落地）
 
-**验证基线**：1422 测试 / 96 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
+**验证基线**：1436 测试 / 97 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
 
 已完成 M0–M2.2（历史细节见附录 A）。已落地组件：
 
@@ -48,7 +48,7 @@
 | 演员管线 | `src/game.ts` + `src/runtime/*` + `src/core/protocol/*` | DSL 流式生成、低水位/预取、交互两阶段提交 |
 | 叙事记忆 | `src/application/narrative/*` + `src/adapters/llm/*consolidator*/plot-planner-adapter` | consolidator（threads/setups/anchors/episodes）、PlotPlanner/DirectorPlan、getBrief 同步零 await |
 | 组装根 | `src/bootstrap/create-runtime-application.ts` | gameId/gamesRoot 可注入；缺省每次启动新世界 |
-| 宿主 | `src/hosts/local-web/`、`src/apps/cli/`、`src/entrypoints/` | 均不传 gameId（M5.0 修） |
+| 宿主 | `src/hosts/local-web/`、`src/apps/cli/`、`src/entrypoints/` | M5.0 已接线：`--game`/`VIBEGAL_GAME_ID`/`games/.last-game` |
 
 **不可回归的行为不变量**（既有测试已锁定，改动前先读对应测试）：
 1. seq 播种 `nextSeq = max(世界最大 seq, 路径末事件 seq, digest 水位) + 1`（fresh 与 retrace 同式，跨周目单调）；
@@ -76,11 +76,12 @@
 
 ### P1 快速见效
 
-- [ ] **M5.0 宿主接线**（提前执行，原属 P6）
+- [x] **M5.0 宿主接线**（提前执行，原属 P6）
   前置：无。关联：`create-runtime-application.ts` 的 `options.gameId`（已支持）。
   目标：世界身份跨进程固定，「继续游戏」对真实用户可达。
   要点：① web/cli 入口接受 gameId（启动参数 `--game <id>` 与环境变量 `VIBEGAL_GAME_ID`，参数优先）传入 `options.gameId`；② local-web 在未显式指定时持久化最近世界到 `games/.last-game`（best-effort 读写，损坏/缺失即开新世界，读写失败不阻塞启动）；③ 新世界的正式入口随 M3.3，本卡不做 UI。
   验收：单测——同一 gameId 两次 `createRuntimeApplication`（tmpdir gamesRoot）得到同一图位置并恢复游标；显式指定优先于 `.last-game`；`.last-game` 损坏容错。
+  落地（2026-09-17）：解析器与读写集中在 `src/hosts/local-web/last-game.ts`（非法 id 大声抛错、`.last-game` 非法内容视为无记录、id 字符集白名单防路径逃逸）；`RuntimeApplication.gameId` 暴露给宿主；CLI 不读写 `.last-game`（那是 web 的续玩通道）。
 
 ### P2 记忆审计（memory-audit Phase A/B）
 

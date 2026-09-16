@@ -17,6 +17,11 @@ import type { AssetCatalog } from "../core/assets/types.js";
 
 export interface RuntimeApplication {
   game: Game;
+  /**
+   * 世界 id（games/<gameId>/ 目录名，§9）。显式传入或启动时生成；
+   * local-web 用它维护 games/.last-game（M5.0）。
+   */
+  gameId: string;
   audioCatalog: AudioCatalogService;
   ttsTasks: TtsTaskService;
   projection: UiProjectionStore;

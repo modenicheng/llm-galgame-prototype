@@ -246,6 +246,7 @@ export async function createRuntimeApplication(
 
   const app: RuntimeApplication = {
     game,
+    gameId,
     audioCatalog: catalog,
     ttsTasks,
     projection,

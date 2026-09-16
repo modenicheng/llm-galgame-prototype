@@ -8,26 +8,46 @@ import type { Game } from "../game.js";
 import type { Metrics } from "../runtime/metrics.js";
 import { CliController } from "../apps/cli/cli-controller.js";
 import { TerminalUI, UserExitError } from "../apps/cli/terminal-ui.js";
+import { resolveExplicitGameId } from "../hosts/local-web/last-game.js";
 
-function parseArgs(argv: string[]): { configPath: string; debugRuntime: boolean } {
+function parseArgs(argv: string[]): {
+  configPath: string;
+  debugRuntime: boolean;
+  game: string | undefined;
+} {
   let configPath = "config.yaml";
   let debugRuntime = false;
+  let game: string | undefined;
 
-  for (const arg of argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
     if (arg === "--debug-runtime") {
       debugRuntime = true;
+    } else if (arg === "--game") {
+      game = argv[i + 1];
+      if (game === undefined) {
+        throw new Error("--game 需要一个世界 id 参数");
+      }
+      i += 1;
     } else if (!arg.startsWith("--") && arg.endsWith(".yaml")) {
       configPath = arg;
     }
   }
 
-  return { configPath, debugRuntime };
+  return { configPath, debugRuntime, game };
 }
 
 async function main(): Promise<void> {
-  const { configPath, debugRuntime } = parseArgs(process.argv.slice(2));
+  const { configPath, debugRuntime, game } = parseArgs(process.argv.slice(2));
   const config: AppConfig = await loadConfig(configPath);
-  const app: RuntimeApplication = await createRuntimeApplication({ configPath, config });
+  // M5.0：CLI 显式指定世界（参数 > 环境变量）；不读写 .last-game（那是
+  // local-web 的「继续游戏」通道）。都缺 → 开新世界。
+  const gameId = resolveExplicitGameId(game, process.env);
+  const app: RuntimeApplication = await createRuntimeApplication({
+    configPath,
+    config,
+    ...(gameId !== undefined ? { gameId } : {}),
+  });
 
   const ui = new TerminalUI(
     config.game.show_line_ids,
