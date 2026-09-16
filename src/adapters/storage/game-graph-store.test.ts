@@ -87,7 +87,7 @@ describe("决策节点：快照唯一真源", () => {
       await store.putDecision(makeDecision({ id: "dc_b2" }));
       const nodes = await store.listDecisions();
       expect(nodes.map((n) => n.id).sort()).toEqual(["dc_b1", "dc_b2"]);
-      expect(nodes[0]?.entryState.snapshotVersion).toBe(1);
+      expect(nodes[0]?.entryState.snapshotVersion).toBe(2);
     } finally {
       await rm(path.dirname(gameDir), { recursive: true, force: true });
     }

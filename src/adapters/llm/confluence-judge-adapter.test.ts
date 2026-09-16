@@ -52,7 +52,7 @@ function makeSnapshot(overrides?: {
       : {}),
   });
   return {
-    snapshotVersion: 1,
+    snapshotVersion: 2,
     storyState,
     visualState: { characters: {} },
     memoryDigest: EMPTY_MEMORY_DIGEST,

@@ -69,6 +69,9 @@ vi.mock("../adapters/llm/narrative-consolidator-adapter.js", () => ({
         },
         threadOps: [],
         setupOps: [],
+        factOps: [],
+        beliefOps: [],
+        findings: [],
       };
     }
   },

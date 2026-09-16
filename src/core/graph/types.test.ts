@@ -25,12 +25,12 @@ const hybridForm = {
 describe("StateSnapshot", () => {
   it("accepts a minimal valid snapshot", () => {
     const parsed = StateSnapshotSchema.parse(makeSnapshot());
-    expect(parsed.snapshotVersion).toBe(1);
+    expect(parsed.snapshotVersion).toBe(2);
   });
 
   it("rejects an unknown snapshotVersion", () => {
     // 故意的契约违规：字面量类型绕开 Partial<StateSnapshot> 的 1 类型约束
-    const invalid = { ...makeSnapshot(), snapshotVersion: 2 } as Record<string, unknown>;
+    const invalid = { ...makeSnapshot(), snapshotVersion: 1 } as Record<string, unknown>;
     expect(StateSnapshotSchema.safeParse(invalid).success).toBe(false);
   });
 

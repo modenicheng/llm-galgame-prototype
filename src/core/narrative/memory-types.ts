@@ -110,6 +110,10 @@ export interface NarrativeMemoryState {
   setups: Record<string, SetupPayoff>;
   anchors: Record<string, StoryAnchorState>;
   recentEpisodeIds: string[];
+  /** 角色认知表（记忆 spec §6.2，MA-B）：活状态，correct 后移入 resolved。 */
+  beliefs: BeliefState[];
+  /** 既定事实内存投影（§5.3，MA-B）：含 superseded 历史。 */
+  facts: FactRecord[];
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +163,19 @@ export interface FactRecord {
   amends?: string;
   scope?: { characters?: string[]; location?: string };
   importance?: "major" | "minor";
+}
+
+/** 角色认知状态（记忆 spec §6.2，MA-B）：活状态，与 threads/setups 同文件。 */
+export interface BeliefState {
+  id: string;
+  characterId: string;
+  /** 命题式 ≤80 字。 */
+  content: string;
+  /** active = 角色当前认知；resolved = 已被 correct（保留供审计/终局）。 */
+  status: "active" | "resolved";
+  createdAtCheckpoint: number;
+  resolvedAtCheckpoint?: number;
+  origin: "learn" | "believe" | "correct";
 }
 
 /** 终局报告（记忆 spec §8.4）：确定性聚合，无 LLM。 */
@@ -259,6 +276,32 @@ export const EpisodeMemorySchema: z.ZodType<EpisodeMemory> = z.object({
   importance: z.enum(["major", "normal"]),
 });
 
+export const BeliefStateSchema: z.ZodType<BeliefState> = z.object({
+  id: z.string().min(1),
+  characterId: z.string().min(1),
+  content: z.string().min(1).max(80),
+  status: z.enum(["active", "resolved"]),
+  createdAtCheckpoint: z.number().int().nonnegative(),
+  resolvedAtCheckpoint: z.exactOptional(z.number().int().nonnegative()),
+  origin: z.enum(["learn", "believe", "correct"]),
+});
+
+export const FactRecordSchema: z.ZodType<FactRecord> = z.object({
+  id: z.string().min(1),
+  content: z.string().min(1),
+  evidenceEventSeqs: z.array(z.number().int().positive()),
+  checkpoint: z.number().int().nonnegative(),
+  superseded: z.boolean(),
+  amends: z.exactOptional(z.string().min(1)),
+  scope: z.exactOptional(
+    z.object({
+      characters: z.exactOptional(z.array(z.string().min(1))),
+      location: z.exactOptional(z.string().min(1)),
+    }),
+  ),
+  importance: z.exactOptional(z.enum(["major", "minor"])),
+});
+
 export const NarrativeMemoryStateSchema: z.ZodType<NarrativeMemoryState> =
   z.object({
     revision: z.number().int().nonnegative(),
@@ -268,6 +311,9 @@ export const NarrativeMemoryStateSchema: z.ZodType<NarrativeMemoryState> =
     setups: z.record(z.string().min(1), SetupPayoffSchema),
     anchors: z.record(z.string().min(1), StoryAnchorStateSchema),
     recentEpisodeIds: z.array(z.string().min(1)),
+    // MA-B：旧持久化状态缺段时降级为空（工作缓存可丢弃）。
+    beliefs: z.array(BeliefStateSchema).default([]),
+    facts: z.array(FactRecordSchema).default([]),
   });
 
 const LessonTagSchema = z.enum([
@@ -289,22 +335,6 @@ export const LessonSchema: z.ZodType<Lesson> = z.object({
   occurrences: z.number().int().positive(),
   active: z.boolean(),
   createdAtCheckpoint: z.number().int().nonnegative(),
-});
-
-export const FactRecordSchema: z.ZodType<FactRecord> = z.object({
-  id: z.string().min(1),
-  content: z.string().min(1),
-  evidenceEventSeqs: z.array(z.number().int().positive()),
-  checkpoint: z.number().int().nonnegative(),
-  superseded: z.boolean(),
-  amends: z.exactOptional(z.string().min(1)),
-  scope: z.exactOptional(
-    z.object({
-      characters: z.exactOptional(z.array(z.string().min(1))),
-      location: z.exactOptional(z.string().min(1)),
-    }),
-  ),
-  importance: z.exactOptional(z.enum(["major", "minor"])),
 });
 
 export const EndingReportSchema: z.ZodType<EndingReport> = z.object({

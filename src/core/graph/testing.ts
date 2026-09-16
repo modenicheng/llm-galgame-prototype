@@ -11,7 +11,7 @@ import type {
 
 export function makeSnapshot(overrides?: Partial<StateSnapshot>): StateSnapshot {
   return {
-    snapshotVersion: 1,
+    snapshotVersion: 2,
     storyState: {
       scene: { id: "scene_1", location: "地下室", purpose: "发现旧终端" },
       canon: {},
@@ -28,6 +28,8 @@ export function makeSnapshot(overrides?: Partial<StateSnapshot>): StateSnapshot 
       threads: [],
       setups: [],
       anchors: [],
+      facts: [],
+      beliefs: [],
     },
     outlineRevision: 0,
     ...overrides,

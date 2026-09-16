@@ -325,4 +325,79 @@ describe("NarrativeConsolidatorAdapter", () => {
     expect(result.threadOps).toEqual([]);
     expect(result.setupOps).toEqual([]);
   });
+
+  it("parses MA-B extended output (factOps/beliefOps/findings) with tolerance for omission", async () => {
+    const content = JSON.stringify({
+      episode: {
+        summary: "测试摘要",
+        characters: ["char1"],
+        locations: ["loc1"],
+        threads: ["t1"],
+        setups: ["s1"],
+        importance: "normal",
+      },
+      threadOps: [],
+      setupOps: [],
+      factOps: [
+        {
+          type: "establish",
+          content: "终端会对苏遥的指纹反应",
+          evidenceEventSeqs: [1, 2],
+          importance: "major",
+        },
+      ],
+      beliefOps: [
+        {
+          type: "believe",
+          characterId: "char1",
+          content: "char1 相信终端需要钥匙",
+          evidenceEventSeqs: [1],
+        },
+      ],
+      findings: [
+        {
+          dimension: "fact-conflict",
+          severity: "major",
+          content: "与既有事实矛盾",
+          evidenceEventSeqs: [2],
+        },
+      ],
+    });
+    const adapter = new NarrativeConsolidatorAdapter({
+      apiKey: "key",
+      api: makeApiConfig(),
+      config: DEFAULT_NARRATIVE_CONFIG,
+      client: makeFakeClient({ content }),
+    });
+    const result = await adapter.consolidate({
+      events: makeFakeEvents(),
+      threads: [],
+      setups: [],
+      stateLocation: "loc1",
+      stateCharacters: ["char1"],
+    });
+    expect(result.factOps).toHaveLength(1);
+    expect(result.factOps[0]!.content).toContain("指纹");
+    expect(result.beliefOps).toHaveLength(1);
+    expect(result.beliefOps[0]!.type).toBe("believe");
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.severity).toBe("major");
+
+    // 旧输出（缺 MA-B 段）容错为空数组
+    const legacy = await new NarrativeConsolidatorAdapter({
+      apiKey: "key",
+      api: makeApiConfig(),
+      config: DEFAULT_NARRATIVE_CONFIG,
+      client: makeFakeClient(),
+    }).consolidate({
+      events: makeFakeEvents(),
+      threads: [],
+      setups: [],
+      stateLocation: "loc1",
+      stateCharacters: ["char1"],
+    });
+    expect(legacy.factOps).toEqual([]);
+    expect(legacy.beliefOps).toEqual([]);
+    expect(legacy.findings).toEqual([]);
+  });
 });

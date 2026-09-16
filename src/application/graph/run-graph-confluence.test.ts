@@ -83,6 +83,8 @@ function makeMoment(marker: string, sceneId = SCENE_A): RuntimeMoment {
       threads: [],
       setups: [],
       anchors: [],
+      facts: [],
+      beliefs: [],
     },
     outlineRevision: 0,
   };

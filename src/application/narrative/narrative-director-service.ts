@@ -27,6 +27,7 @@ import type {
   StoryAnchorState,
   EpisodeMemory,
   Lesson,
+  FactRecord,
 } from "../../core/narrative/memory-types.js";
 import {
   VALID_THREAD_TRANSITIONS,
@@ -35,6 +36,7 @@ import type {
   ThreadOp,
   SetupOp,
   RejectedOp,
+  AuditFinding,
 } from "../../core/narrative/memory-operation.js";
 import type {
   NarrativeBrief,
@@ -46,6 +48,8 @@ import type { MemoryDigest } from "../../core/graph/types.js";
 import {
   applyThreadOpToState,
   applySetupOpToState,
+  applyFactOpToState,
+  applyBeliefOpToState,
   setupPrerequisitesSatisfied,
 } from "./memory-validator.js";
 import {
@@ -53,11 +57,14 @@ import {
   scheduleSetups,
 } from "./setup-scheduler.js";
 import { retrieveEpisodes } from "./episode-retriever.js";
+import { retrieveFacts } from "./fact-retriever.js";
 import { LessonService } from "./lesson-service.js";
 import { buildEndingReport } from "./ending-report.js";
 import {
   MemoryConsolidator,
   ACTIVE_THREAD_STATUSES,
+  factId,
+  beliefId,
 } from "./memory-consolidator.js";
 import type { MemoryConsolidatorPort } from "./memory-consolidator.js";
 import {
@@ -114,6 +121,8 @@ function normalizeNarrativeConfig(raw: NarrativeConfig): NarrativeConfig {
     threads: { ...d.threads, ...raw.threads },
     setups: { ...d.setups, ...raw.setups },
     lessons: { ...d.lessons, ...raw.lessons },
+    facts: { ...d.facts, ...raw.facts },
+    beliefs: { ...d.beliefs, ...raw.beliefs },
     consolidation: { ...d.consolidation, ...raw.consolidation },
     brief: { ...d.brief, ...raw.brief },
     plan: { ...d.plan, ...raw.plan },
@@ -248,6 +257,8 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       setups: { ...seedSetups, ...loadedState.setups },
       anchors: { ...seedAnchors, ...loadedState.anchors },
       recentEpisodeIds: [...loadedState.recentEpisodeIds],
+      facts: [...loadedState.facts],
+      beliefs: [...loadedState.beliefs],
     };
 
     this.episodes = [...loadedEpisodes];
@@ -368,6 +379,18 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       revealLocks: planInEffect?.revealLocks ?? [],
       // 规避清单（§7.3）：纯内存切片，零 await（§11 红线）。
       avoidanceLessons: this.lessonService.briefLessons(),
+      // 相关既定事实（§5.3）+ 在场角色认知（§6.2）：纯内存数组扫描。
+      relatedFacts: retrieveFacts(this.memory.facts, {
+        characters: request.characters,
+        location: request.location,
+        max: this.config.facts.brief_max,
+      }),
+      characterBeliefs: this.memory.beliefs.filter(
+        (b) =>
+          b.status === "active" &&
+          (request.characters.length === 0 ||
+            request.characters.includes(b.characterId)),
+      ),
     };
     // exactOptionalPropertyTypes: an explicit `undefined` is not assignable
     // to an optional property — assign conditionally instead.
@@ -609,6 +632,24 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         appliedCount += 1;
       }
 
+      // 4) Fact ops（§5.2，MA-B）：id 与 consolidator 校验循环同一确定性
+      // 公式（revision 派生，重放幂等）；checkpoint 用本批真实值。
+      const idRevision = current.revision + 1;
+      let factSeq = 0;
+      const newFacts: FactRecord[] = [];
+      for (const op of outcome.factOps) {
+        applyFactOpToState(shadow, op, factId(idRevision, ++factSeq), nowCheckpoint);
+        newFacts.push(shadow.facts[shadow.facts.length - 1]!);
+        appliedCount += 1;
+      }
+
+      // 5) Belief ops（§6.1，MA-B）：correct 解析目标后追加新认知。
+      let beliefSeq = 0;
+      for (const op of outcome.beliefOps) {
+        applyBeliefOpToState(shadow, op, beliefId(idRevision, ++beliefSeq), nowCheckpoint);
+        appliedCount += 1;
+      }
+
       // --- Advance state (on the shadow) ---
       shadow.revision += 1;
       shadow.consolidatedThroughEventSeq = newWatermark;
@@ -622,6 +663,10 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
           // In-memory episode list swaps in sync with the state, inside
           // the chain, so a concurrent writer cannot lose either half.
           this.episodes = [...this.episodes, outcome.episode];
+        }
+        if (newFacts.length > 0) {
+          // facts.jsonl append-only 留痕（§5.3）；facts 真源随 state 快照走。
+          await this.store.appendFacts(newFacts);
         }
       } catch (err) {
         this.pendingEvents = [...pending, ...this.pendingEvents];
@@ -645,6 +690,9 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     }
     if (rejected.length > 0) {
       await this.recordRejectedOps(rejected);
+    }
+    if (outcome.findings.length > 0) {
+      await this.recordFindings(outcome.findings);
     }
     this.lastConsolidateAt = Date.now();
     return { applied: applied.applied, rejected };
@@ -831,6 +879,51 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   // -----------------------------------------------------------------------
   // Internal: scheduling
   // -----------------------------------------------------------------------
+
+  /**
+   * MA-B（§9.2/§9.3）：findings 全量落 narrative-ops.jsonl 留痕（复用被拒 op
+   * 通道的文件）；critical/major 自动蒸馏成 lesson（§7.2 来源 1），下批 brief
+   * 规避清单即生效。失败仅告警，绝不参与记忆提交。
+   */
+  private async recordFindings(findings: readonly AuditFinding[]): Promise<void> {
+    try {
+      await this.store.appendOps(
+        findings.map((f) => ({
+          kind: "finding" as const,
+          op: f,
+          reason: `[FINDING:${f.severity}] ${f.content}`,
+        })),
+      );
+    } catch (err) {
+      this.diagnostics.warn(
+        "NarrativeDirector",
+        `appendOps(findings) failed: ${String(err)}`,
+      );
+    }
+    const promoted: Lesson[] = [];
+    for (const finding of findings) {
+      if (finding.severity !== "critical" && finding.severity !== "major") continue;
+      promoted.push(
+        this.lessonService.promote(
+          finding.dimension,
+          finding.content.slice(0, 100),
+          "audit",
+          finding.subject,
+          this.memory.checkpointCount,
+        ),
+      );
+    }
+    if (promoted.length > 0) {
+      try {
+        await this.store.appendLessons(promoted);
+      } catch (err) {
+        this.diagnostics.warn(
+          "NarrativeDirector",
+          `appendLessons(findings) failed: ${String(err)}`,
+        );
+      }
+    }
+  }
 
   private maybeSchedule(): void {
     if (!this.hasConsolidator) return;

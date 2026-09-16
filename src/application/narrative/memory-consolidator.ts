@@ -24,15 +24,26 @@ import type {
   ThreadOp,
   SetupOp,
   EpisodeSummaryOp,
+  FactOp,
+  BeliefOp,
+  AuditFinding,
   RejectedOp,
 } from "../../core/narrative/memory-operation.js";
 import {
   validateThreadOp,
   validateSetupOp,
   validateEpisodeOp,
+  validateFactOp,
+  validateBeliefOp,
+  validateFinding,
   applyThreadOpToState,
   applySetupOpToState,
+  applyFactOpToState,
+  applyBeliefOpToState,
   rejectionRule,
+  MAX_ESTABLISH_PER_BATCH,
+  MAX_BELIEF_OPS_PER_CHARACTER_PER_BATCH,
+  MAX_FINDINGS_PER_BATCH,
 } from "./memory-validator.js";
 
 // ---------------------------------------------------------------------------
@@ -51,6 +62,10 @@ export interface ConsolidationResult {
   episode: EpisodeSummaryOp;
   threadOps: ThreadOp[];
   setupOps: SetupOp[];
+  /** MA-B 扩展（§4）：facts/beliefs/findings 搭载同一 consolidator 调用。 */
+  factOps: FactOp[];
+  beliefOps: BeliefOp[];
+  findings: AuditFinding[];
 }
 
 export interface MemoryConsolidatorPort {
@@ -67,6 +82,10 @@ export interface ConsolidationOutcome {
   threadOps: ThreadOp[];
   /** Setup ops that passed validation. */
   setupOps: SetupOp[];
+  /** MA-B：通过校验的 facts/beliefs/findings（预算与逐条校验后）。 */
+  factOps: FactOp[];
+  beliefOps: BeliefOp[];
+  findings: AuditFinding[];
   /** Ops rejected by the validators (Task 5 rules). */
   rejected: RejectedOp[];
 }
@@ -184,7 +203,11 @@ export class MemoryConsolidator {
     const rejected: RejectedOp[] = [];
     const threadOps: ThreadOp[] = [];
     const setupOps: SetupOp[] = [];
+    const factOps: FactOp[] = [];
+    const beliefOps: BeliefOp[] = [];
+    const findings: AuditFinding[] = [];
     const shadow = structuredClone(memory);
+    const batchLastSeq = batch[batch.length - 1]!.seq;
 
     let episode: EpisodeMemory | null = null;
     const epReason = validateEpisodeOp(result.episode);
@@ -195,7 +218,7 @@ export class MemoryConsolidator {
       episode = {
         id: `ep_${memory.revision + 1}_${fromSeq}`,
         fromEventSeq: fromSeq,
-        toEventSeq: batch[batch.length - 1]!.seq,
+        toEventSeq: batchLastSeq,
         summary: result.episode.summary,
         characters: result.episode.characters,
         locations: result.episode.locations,
@@ -223,7 +246,7 @@ export class MemoryConsolidator {
     }
 
     for (const op of result.setupOps) {
-      const reason = validateSetupOp(op, shadow, this.config, batch[batch.length - 1]!.seq);
+      const reason = validateSetupOp(op, shadow, this.config, batchLastSeq);
       if (reason === null) {
         setupOps.push(op);
         applySetupOpToState(shadow, op, 0); // checkpoint irrelevant for validation
@@ -232,8 +255,102 @@ export class MemoryConsolidator {
       }
     }
 
-    return { result, episode, threadOps, setupOps, rejected };
+    // --- MA-B：facts（§5.2）---
+    let establishCount = 0;
+    let factSeq = 0;
+    for (const op of result.factOps) {
+      const reason = validateFactOp(op, shadow.facts, batchLastSeq);
+      if (reason !== null) {
+        rejected.push({ kind: "fact", op, reason, rule: rejectionRule(reason) });
+        continue;
+      }
+      if (op.type === "establish") {
+        if (establishCount >= MAX_ESTABLISH_PER_BATCH) {
+          rejected.push({
+            kind: "fact",
+            op,
+            reason: `[FACT_BUDGET_EXCEEDED] 每批 establish 上限 ${MAX_ESTABLISH_PER_BATCH}`,
+            rule: "FACT_BUDGET_EXCEEDED",
+          });
+          continue;
+        }
+        establishCount += 1;
+      }
+      // 影子应用：amend 在影子中标 superseded，供后续 op 校验看到（事务性）。
+      applyFactOpToState(shadow, op, factId(memory.revision + 1, ++factSeq), 0);
+      factOps.push(op);
+    }
+
+    // --- MA-B：beliefs（§6.1）---
+    let beliefSeq = 0;
+    const perCharacterOps = new Map<string, number>();
+    for (const op of result.beliefOps) {
+      const reason = validateBeliefOp(op, shadow.beliefs, stateCharacters, batchLastSeq);
+      if (reason !== null) {
+        rejected.push({ kind: "belief", op, reason, rule: rejectionRule(reason) });
+        continue;
+      }
+      const count = perCharacterOps.get(op.characterId) ?? 0;
+      if (count >= MAX_BELIEF_OPS_PER_CHARACTER_PER_BATCH) {
+        rejected.push({
+          kind: "belief",
+          op,
+          reason: `[BELIEF_BUDGET_EXCEEDED] 角色 ${op.characterId} 每批 belief op 上限 ${MAX_BELIEF_OPS_PER_CHARACTER_PER_BATCH}`,
+          rule: "BELIEF_BUDGET_EXCEEDED",
+        });
+        continue;
+      }
+      if (op.type !== "correct") {
+        // 每角色 active 上限（§6.1：超限拒新保旧）。
+        const activeCount = shadow.beliefs.filter(
+          (b) => b.characterId === op.characterId && b.status === "active",
+        ).length;
+        if (activeCount >= this.config.beliefs.max_active_per_character) {
+          rejected.push({
+            kind: "belief",
+            op,
+            reason: `[BELIEF_BUDGET_EXCEEDED] 角色 ${op.characterId} active beliefs 已达上限 ${this.config.beliefs.max_active_per_character}`,
+            rule: "BELIEF_BUDGET_EXCEEDED",
+          });
+          continue;
+        }
+      }
+      perCharacterOps.set(op.characterId, count + 1);
+      applyBeliefOpToState(shadow, op, beliefId(memory.revision + 1, ++beliefSeq), 0);
+      beliefOps.push(op);
+    }
+
+    // --- MA-B：findings（§9.2）——不修改任何记忆状态，只留痕/晋升 ---
+    if (result.findings.length > MAX_FINDINGS_PER_BATCH) {
+      rejected.push({
+        kind: "finding",
+        op: result.findings,
+        reason: `[FINDING_BATCH_EXCEEDED] 每批 findings 上限 ${MAX_FINDINGS_PER_BATCH}（收到 ${result.findings.length}）`,
+        rule: "FINDING_BATCH_EXCEEDED",
+      });
+    }
+    for (const finding of result.findings.slice(0, MAX_FINDINGS_PER_BATCH)) {
+      const reason = validateFinding(finding, batchLastSeq);
+      if (reason === null) {
+        findings.push(finding);
+      } else {
+        rejected.push({ kind: "finding", op: finding, reason, rule: rejectionRule(reason) });
+      }
+    }
+
+    return { result, episode, threadOps, setupOps, factOps, beliefOps, findings, rejected };
   }
+}
+
+/** 确定性 fact id（revision 派生，重放幂等——与 episode id 同一纪律）。
+ * 服务端应用时必须用同一公式重新生成（shadow 校验与应用分离）。 */
+export function factId(revision: number, seq: number): string {
+  return `fact_${revision}_${seq}`;
+}
+
+/** 确定性 belief id。 */
+export function beliefId(revision: number, seq: number): string {
+  return `belief_${revision}_${seq}`;
 }
 
 function emptyOutcome(): ConsolidationOutcome {
@@ -242,6 +359,9 @@ function emptyOutcome(): ConsolidationOutcome {
     episode: null,
     threadOps: [],
     setupOps: [],
+    factOps: [],
+    beliefOps: [],
+    findings: [],
     rejected: [],
   };
 }

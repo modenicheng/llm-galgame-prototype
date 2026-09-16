@@ -13,11 +13,16 @@ import type {
   NarrativeMemoryState,
   PlotThread,
   SetupPayoff,
+  FactRecord,
+  BeliefState,
 } from "../../core/narrative/memory-types.js";
 import type {
   ThreadOp,
   SetupOp,
   EpisodeSummaryOp,
+  FactOp,
+  BeliefOp,
+  AuditFinding,
 } from "../../core/narrative/memory-operation.js";
 import type { SetupDirective } from "../../core/narrative/director-plan.js";
 import type { NarrativeConfig } from "../../config.js";
@@ -341,6 +346,183 @@ const EPISODE_ARRAY_FIELDS = [
   "threads",
   "setups",
 ] as const;
+
+// ---------------------------------------------------------------------------
+// MA-B 校验（记忆 spec §5.2/§6.1/§9.2）
+// ---------------------------------------------------------------------------
+
+/** 每批 establish 预算（§5.2）：纠错（amend）不限量。 */
+export const MAX_ESTABLISH_PER_BATCH = 3;
+/** 每批每角色 belief op 预算（§6.1）。 */
+export const MAX_BELIEF_OPS_PER_CHARACTER_PER_BATCH = 2;
+/** 每批 findings 上限（§9.2，prompt 同步声明，防刷屏）。 */
+export const MAX_FINDINGS_PER_BATCH = 5;
+
+function checkEvidenceRange(
+  seqs: readonly number[],
+  maxEvidenceSeq: number | undefined,
+  rule: string,
+  what: string,
+): string | null {
+  if (maxEvidenceSeq === undefined) return null;
+  for (const seq of seqs) {
+    if (!Number.isInteger(seq) || seq < 1 || seq > maxEvidenceSeq) {
+      return fail(rule, `证据事件 ${seq} 不在已提交范围（≤ ${maxEvidenceSeq}）`);
+    }
+  }
+  return null;
+}
+
+/**
+ * Validate a fact op against the existing fact records.
+ * `factCountByContent` semantics live in the consolidator's batch loop;
+ * here we check per-op rules only (§5.2).
+ */
+export function validateFactOp(
+  op: FactOp,
+  facts: readonly FactRecord[],
+  maxEvidenceSeq?: number,
+): string | null {
+  if (op.evidenceEventSeqs.length < 1 || op.evidenceEventSeqs.length > 3) {
+    return fail("FACT_EVIDENCE_COUNT", "fact 证据事件须 1..3 条");
+  }
+  const rangeError = checkEvidenceRange(
+    op.evidenceEventSeqs,
+    maxEvidenceSeq,
+    "FACT_EVIDENCE_OUT_OF_RANGE",
+    "fact",
+  );
+  if (rangeError !== null) return rangeError;
+
+  if (op.type === "amend") {
+    if (op.id === undefined) {
+      return fail("FACT_AMEND_WITHOUT_ID", "amend 必须引用被修订的 fact id");
+    }
+    const target = facts.find((f) => f.id === op.id);
+    if (target === undefined) {
+      return fail("FACT_AMEND_UNKNOWN_ID", `amend 引用的 fact ${op.id} 不存在`);
+    }
+    if (target.superseded) {
+      return fail("FACT_AMEND_SUPERSEDED", `fact ${op.id} 已被修订过，不能再次 amend`);
+    }
+    return null;
+  }
+  return null;
+}
+
+/** Validate a belief op (§6.1). `knownCharacters` = 权威角色 ID 集合。 */
+export function validateBeliefOp(
+  op: BeliefOp,
+  beliefs: readonly BeliefState[],
+  knownCharacters: readonly string[],
+  maxEvidenceSeq?: number,
+): string | null {
+  const rangeError = checkEvidenceRange(
+    op.evidenceEventSeqs,
+    maxEvidenceSeq,
+    "BELIEF_EVIDENCE_OUT_OF_RANGE",
+    "belief",
+  );
+  if (rangeError !== null) return rangeError;
+
+  if (
+    knownCharacters.length > 0 &&
+    !knownCharacters.includes(op.characterId)
+  ) {
+    return fail(
+      "BELIEF_UNKNOWN_CHARACTER",
+      `角色 ${op.characterId} 不在已整理事件中出现，不能获得认知`,
+    );
+  }
+  if (op.type === "correct") {
+    if (op.replacesBeliefId === undefined) {
+      return fail("BELIEF_CORRECT_WITHOUT_TARGET", "correct 必须引用被纠正的 belief id");
+    }
+    const target = beliefs.find((b) => b.id === op.replacesBeliefId);
+    if (target === undefined) {
+      return fail("BELIEF_CORRECT_UNKNOWN_ID", `被纠正的 belief ${op.replacesBeliefId} 不存在`);
+    }
+    if (target.status !== "active") {
+      return fail("BELIEF_CORRECT_INACTIVE", `belief ${op.replacesBeliefId} 已不是 active 状态`);
+    }
+    return null;
+  }
+  return null;
+}
+
+/** Validate an audit finding shape (§9.2)。 */
+export function validateFinding(
+  finding: AuditFinding,
+  maxEvidenceSeq?: number,
+): string | null {
+  return checkEvidenceRange(
+    finding.evidenceEventSeqs,
+    maxEvidenceSeq,
+    "FINDING_EVIDENCE_OUT_OF_RANGE",
+    "finding",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// MA-B 状态应用（与 applyThreadOpToState 同性质：纯函数，原地修改）
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply a validated fact op: establish pushes a new record; amend marks the
+ * target superseded and appends the new record with `amends` back-link.
+ * `id` 由调用方生成（确定性：revision 派生，重放幂等）。
+ */
+export function applyFactOpToState(
+  state: NarrativeMemoryState,
+  op: FactOp,
+  id: string,
+  checkpoint: number,
+): void {
+  const record: FactRecord = {
+    id,
+    content: op.content,
+    evidenceEventSeqs: [...op.evidenceEventSeqs],
+    checkpoint,
+    superseded: false,
+    ...(op.id !== undefined ? { amends: op.id } : {}),
+    ...(op.scope !== undefined ? { scope: op.scope } : {}),
+    ...(op.importance !== undefined ? { importance: op.importance } : {}),
+  };
+  if (op.type === "amend" && op.id !== undefined) {
+    const target = state.facts.find((f) => f.id === op.id);
+    if (target !== undefined) {
+      target.superseded = true;
+    }
+  }
+  state.facts.push(record);
+}
+
+/**
+ * Apply a validated belief op: learn/believe push a new active belief;
+ * correct resolves the replaced belief and appends the corrected one.
+ */
+export function applyBeliefOpToState(
+  state: NarrativeMemoryState,
+  op: BeliefOp,
+  id: string,
+  checkpoint: number,
+): void {
+  if (op.type === "correct" && op.replacesBeliefId !== undefined) {
+    const target = state.beliefs.find((b) => b.id === op.replacesBeliefId);
+    if (target !== undefined) {
+      target.status = "resolved";
+      target.resolvedAtCheckpoint = checkpoint;
+    }
+  }
+  state.beliefs.push({
+    id,
+    characterId: op.characterId,
+    content: op.content,
+    status: "active",
+    createdAtCheckpoint: checkpoint,
+    origin: op.type,
+  });
+}
 
 /**
  * Validate an episode summary op: non-empty summary ≤ 200 chars, every

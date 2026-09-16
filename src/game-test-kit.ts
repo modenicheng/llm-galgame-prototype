@@ -304,6 +304,8 @@ export function makeDirectorFake(
     anchors: [],
     revealLocks: [],
     avoidanceLessons: [],
+    relatedFacts: [],
+    characterBeliefs: [],
     ...briefOverrides,
   };
   return {

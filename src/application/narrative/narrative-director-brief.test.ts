@@ -251,7 +251,10 @@ describe("NarrativeDirectorService brief", () => {
           importance: "normal",
         },
         threadOps: [],
-        setupOps: [],
+        setupOps: [],
+        factOps: [],
+        beliefOps: [],
+        findings: [],
       } satisfies ConsolidationResult);
       const fakePort: MemoryConsolidatorPort = { consolidate: consolidateFn };
 

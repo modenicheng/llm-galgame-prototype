@@ -85,6 +85,10 @@ export interface NarrativeConfig {
   setups: { max_active: number; max_untouched_checkpoints: number };
   /** 教训库（记忆 spec §7）：rejection 自动晋升阈值 + brief 规避清单上限。 */
   lessons: { auto_from_rejections: number; brief_max: number };
+  /** 既定事实（§5）：brief 相关事实集上限（MA-B）。 */
+  facts: { brief_max: number };
+  /** 角色认知（§6）：每角色 active beliefs 上限，超限拒新保旧（MA-B）。 */
+  beliefs: { max_active_per_character: number };
   consolidation: {
     batch_min_events: number;
     max_events_per_call: number;
@@ -103,6 +107,8 @@ export const DEFAULT_NARRATIVE_CONFIG: NarrativeConfig = {
   threads: { max_major_active: 2, max_minor_active: 3 },
   setups: { max_active: 6, max_untouched_checkpoints: 6 },
   lessons: { auto_from_rejections: 2, brief_max: 8 },
+  facts: { brief_max: 8 },
+  beliefs: { max_active_per_character: 8 },
   consolidation: {
     batch_min_events: 4,
     max_events_per_call: 80,
@@ -362,6 +368,18 @@ const NarrativeConfigSchema = z
         brief_max: z.number().int().min(1).max(50).default(8),
       })
       .default({ auto_from_rejections: 2, brief_max: 8 }),
+    facts: z
+      .object({
+        // brief 相关既定事实集上限（§5.3，MA-B）。
+        brief_max: z.number().int().min(1).max(50).default(8),
+      })
+      .default({ brief_max: 8 }),
+    beliefs: z
+      .object({
+        // 每角色 active beliefs 上限，超限拒新保旧（§6.1，MA-B）。
+        max_active_per_character: z.number().int().min(1).max(50).default(8),
+      })
+      .default({ max_active_per_character: 8 }),
     consolidation: z
       .object({
         batch_min_events: z.number().int().min(1).max(100).default(4),

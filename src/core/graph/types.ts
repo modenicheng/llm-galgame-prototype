@@ -10,6 +10,8 @@
 import { z } from "zod";
 import { StoryStateSchema } from "../../story/types.js";
 import {
+  BeliefStateSchema,
+  FactRecordSchema,
   PlotThreadSchema,
   SetupPayoffSchema,
   StoryAnchorStateSchema,
@@ -24,8 +26,10 @@ import {
   SceneIdSchema,
 } from "./ids.js";
 
-/** 快照契约版本。字段集变更时递增，读取方按版本拒绝不认识的快照。 */
-export const SNAPSHOT_VERSION = 1;
+/** 快照契约版本。字段集变更时递增，读取方按版本拒绝不认识的快照。
+ * v2（决议 D4，MA-B）：MemoryDigest 增 facts/beliefs 全文嵌入（D6）；
+ * 旧 v1 快照读取即拒（dev 存档废弃不做迁移）。 */
+export const SNAPSHOT_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // 交互表单快照 — 决策节点上"当时呈现给玩家的表单"
@@ -64,7 +68,10 @@ export const MemoryDigestSchema = z.object({
   threads: z.array(PlotThreadSchema),
   setups: z.array(SetupPayoffSchema),
   anchors: z.array(StoryAnchorStateSchema),
-  // facts / beliefs（memory-audit Phase B）落地后加入；加入即 SNAPSHOT_VERSION 修订。
+  // MA-B（v2）：facts/beliefs 全文嵌入（决议 D6）——恢复不得依赖 canon 或
+  // 会话工作缓存的可用性。
+  facts: z.array(FactRecordSchema),
+  beliefs: z.array(BeliefStateSchema),
 });
 export type MemoryDigest = z.infer<typeof MemoryDigestSchema>;
 

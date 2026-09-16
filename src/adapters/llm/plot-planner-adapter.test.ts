@@ -69,6 +69,8 @@ function makeFakeRequest(): PlotPlannerRequest {
       },
     },
     recentEpisodeIds: [],
+    beliefs: [],
+    facts: [],
   };
   return {
     events: [],

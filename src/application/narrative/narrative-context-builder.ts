@@ -93,6 +93,20 @@ export function renderDirectorNote(
     }
   }
 
+  if (brief.relatedFacts.length > 0) {
+    lines.push("[相关既定事实]");
+    for (const fact of brief.relatedFacts) {
+      lines.push(`- ${fact.content}`);
+    }
+  }
+
+  if (brief.characterBeliefs.length > 0) {
+    lines.push("[角色认知]");
+    for (const belief of brief.characterBeliefs) {
+      lines.push(`- ${belief.characterId}：${belief.content}`);
+    }
+  }
+
   if (brief.avoidanceLessons.length > 0) {
     lines.push("[规避清单]");
     for (const lesson of brief.avoidanceLessons) {

@@ -49,7 +49,10 @@ describe("NarrativeDirectorService consolidation", () => {
           importance: "normal",
         },
         threadOps: [],
-        setupOps: [],
+        setupOps: [],
+        factOps: [],
+        beliefOps: [],
+        findings: [],
       });
       const svc = new NarrativeDirectorService({
         config: makeConfig(),
@@ -91,7 +94,10 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "normal",
           },
           threadOps: [{ type: "touch", id: "t1", progress: "new summary" }],
-          setupOps: [],
+          setupOps: [],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
         plan,
       });
@@ -129,7 +135,10 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "normal",
           },
           threadOps: [{ type: "advance", id: "t1" }],
-          setupOps: [],
+          setupOps: [],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
         plan,
       });
@@ -160,7 +169,10 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "major",
           },
           threadOps: [{ type: "resolve", id: "t1" }],
-          setupOps: [],
+          setupOps: [],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
         plan,
       });
@@ -191,7 +203,10 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "normal",
           },
           threadOps: [{ type: "abandon", id: "t1" }],
-          setupOps: [],
+          setupOps: [],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
         plan,
       });
@@ -227,7 +242,10 @@ describe("NarrativeDirectorService consolidation", () => {
               progress: "A new mystery emerges",
             },
           ],
-          setupOps: [],
+          setupOps: [],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
         plan: makePlan(),
       });
@@ -271,13 +289,16 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "normal",
           },
           threadOps: [],
-          setupOps: [
+          setupOps: [
             { type: "seed", id: "s1" },
             { type: "reinforce", id: "s2" },
             { type: "payoff", id: "s3" },
             { type: "hold", id: "s4" },
             { type: "drop", id: "s5" },
           ],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
         plan,
       });
@@ -311,7 +332,10 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "major",
           },
           threadOps: [],
-          setupOps: [],
+          setupOps: [],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
         plan: makePlan(),
       });
@@ -356,9 +380,12 @@ describe("NarrativeDirectorService consolidation", () => {
             { type: "resolve", id: "t1" }, // invalid: already resolved
             { type: "touch", id: "ghost" }, // invalid: does not exist
           ],
-          setupOps: [
+          setupOps: [
             { type: "seed", id: "ghost-s" }, // invalid: does not exist
           ],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
         plan,
       });
@@ -401,10 +428,13 @@ describe("NarrativeDirectorService consolidation", () => {
             { type: "advance", id: "t-valid" }, // valid
             { type: "touch", id: "ghost" }, // invalid - rejected
           ],
-          setupOps: [
+          setupOps: [
             { type: "seed", id: "s-valid" }, // valid
             { type: "payoff", id: "ghost-s" }, // invalid - rejected
           ],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
         plan,
       });
@@ -439,7 +469,10 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "normal",
           },
           threadOps: [],
-          setupOps: [],
+          setupOps: [],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
       const diag = new RecordingDiagnostics();
@@ -499,7 +532,10 @@ describe("NarrativeDirectorService consolidation", () => {
           importance: "normal",
         },
         threadOps: [],
-        setupOps: [],
+        setupOps: [],
+        factOps: [],
+        beliefOps: [],
+        findings: [],
       } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
       const diag = new RecordingDiagnostics();
@@ -551,7 +587,10 @@ describe("NarrativeDirectorService consolidation", () => {
           importance: "normal",
         },
         threadOps: [],
-        setupOps: [],
+        setupOps: [],
+        factOps: [],
+        beliefOps: [],
+        findings: [],
       } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
       const diag = new RecordingDiagnostics();
@@ -614,7 +653,10 @@ describe("NarrativeDirectorService consolidation", () => {
           importance: "normal",
         },
         threadOps: [],
-        setupOps: [],
+        setupOps: [],
+        factOps: [],
+        beliefOps: [],
+        findings: [],
       } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = {
         consolidate: consolidateFn,
@@ -683,7 +725,10 @@ describe("NarrativeDirectorService consolidation", () => {
                   importance: "normal",
                 },
                 threadOps: [],
-                setupOps: [],
+                setupOps: [],
+                factOps: [],
+                beliefOps: [],
+                findings: [],
               }) satisfies ConsolidationResult,
           ),
       );

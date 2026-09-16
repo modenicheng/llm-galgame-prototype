@@ -25,6 +25,8 @@ function makeBrief(overrides: Partial<NarrativeBrief> = {}): NarrativeBrief {
     anchors: [],
     revealLocks: [],
     avoidanceLessons: [],
+    relatedFacts: [],
+    characterBeliefs: [],
     ...overrides,
   };
 }

@@ -35,7 +35,7 @@
 
 ## 2. 现状基线（2026-09-17，含 D9 落地）
 
-**验证基线**：1466 测试 / 102 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
+**验证基线**：1479 测试 / 103 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
 
 已完成 M0–M2.2（历史细节见附录 A）。已落地组件：
 
@@ -94,10 +94,11 @@
   验收：记忆 spec §12 Phase A 验收的自动化等价（全量绿；RESOLVE_OR_DROP 进 brief 的单测；ending-report 数值单测）；getBrief 零新增 await 的断言（§11 红线）。
   落地（2026-09-17）：①–⑤ 全部落地——`memory-types` 增 depth/Lesson/FactRecord/EndingReport（含 schema）；`memory-validator` 拒绝 reason 带稳定规则码前缀（`[CODE] `，`rejectionRule()` 解析）+ SETUP_SEED_WITHOUT_INTENDED_PAYOFF 规则；`classifySetup` 增超期第三档（先于前置门）与 heavy 积累门控（ready 无法 reinforce 时 hold 观望）；`lesson-service.ts`（新）拒绝码计数晋升 + 滚动窗口 + brief 排序；`ending-report.ts`（新）确定性聚合，service 在 observeCommitted 检测 `type:"end"` 后 fire-and-forget 写 `ending-report.json`（零 game.ts 改动）；store 增 facts/lessons jsonl 通道与 ending-report 原子写；brief 增 `avoidanceLessons` + [规避清单]/超期语气/「未定回收计划」渲染；story-plan loader 缺 intended_payoff 记 warning。测试拆分完成（4 文件 + test-kit，2421 行原文件删除，allowlist 移除）。偏差：facts/beliefs 配置键（facts.brief_max / beliefs.max_active_per_character）随 MA-B 与其读取者同期加入，避免当前成为死键（记附录 B）。
 
-- [ ] **MA-B consolidator 扩展 + digest v2**（记忆 spec §12 Phase B 条目 6–9）
+- [x] **MA-B consolidator 扩展 + digest v2**（记忆 spec §12 Phase B 条目 6–9）
   前置：MA-A。关联：§5/§6/§9/§10/§14；决议 D4/D6。
   要点：① FactOp/BeliefOp/AuditFinding 进 consolidator 输出 schema 与 prompt（`adapters/llm/narrative-consolidator-adapter.ts`）；② validator 扩展 + facts/beliefs 内存与持久化 + audit→lesson 晋升（§7.2 来源 1）；③ fact-retriever + brief 三段渲染（[相关既定事实][角色认知][规避清单]）+ dsl-protocol.txt 一行规则；④ **SNAPSHOT_VERSION 1→2**：`MemoryDigestSchema` 增 facts/beliefs，`src/core/graph/memory-digest.ts` 双向映射扩展（D6：digest 内嵌全文；recentEpisodeIds 仍不入）；⑤ 幂等/去重/预算全链路测试。
   验收：恢复后 facts/beliefs 从 digest 完整重建的单测（新世界快照 v2 可往返）；spec §14 对应层全绿；spec §12 Phase B 的「跑一局」验收归人工清单。
+  落地（2026-09-17）：① `FactOp/BeliefOp/AuditFinding` schema（memory-operation）进 consolidator 输出契约与 prompt（旧输出缺段容错为空数组）；② validator 增 `validateFactOp/validateBeliefOp/validateFinding`（证据范围/角色权威/amend 链/correct 目标），`MemoryConsolidator` 增批内预算（establish ≤3、每角色 belief ≤2、findings ≤5，超限拒新），facts/beliefs 影子应用保事务性；③ `fact-retriever.ts`（新）+ brief 增 `relatedFacts/characterBeliefs` + [相关既定事实]/[角色认知] 渲染 + dsl-protocol.txt 规则行；④ **SNAPSHOT_VERSION 1→2**（决议 D4），`MemoryDigestSchema` 增 facts/beliefs 全文（D6），`NarrativeMemoryState` 增 facts/beliefs 段（旧 narrative-state.json 缺段降级为空）；findings 全量落 narrative-ops.jsonl、major+ 自动成 lesson（来源 1）；facts.jsonl append-only 留痕（真源随 state 快照）。⑤ 预算/幂等/digest v2 往返/adapter 容错测试齐。
 
 - [ ] **MA-A2 StoryState 瘦身（死字段清除）**
   前置：MA-B（仅为止 D4 版本号表述漂移，无技术依赖）。关联：设计 §3.2；决议 D10；附录 A「open_threads 双台账」挂账清偿。
@@ -346,6 +347,7 @@
 （历史/素材前置、任务头置尾），删除 `game.history_events`（schema、config.yaml、全部 fixture/断言）；
 目的 = provider 前缀缓存命中（相邻请求共享「系统提示 + 历史 + 素材」前缀，回溯 = 重放天然截尾）。
 基线由 1421 测试更新为 1422 测试（布局顺序断言重写）；规范回写 llm-outputs-refactor §70。
+- 2026-09-17（MA-B 落地，D4 执行）：`SNAPSHOT_VERSION` 1→2——`MemoryDigest` 增 facts/beliefs 全文嵌入（决议 D6：恢复不依赖 canon 可用性）；旧 v1 快照读取即拒（zod literal 不匹配走结构损坏路径），dev 存档废弃不做迁移。facts.brief_max / beliefs.max_active_per_character 配置键随读取者同期就位（MA-A 偏差 ① 的清偿）。dsl-protocol.txt 增一行事实/认知边界规则。
 - 2026-09-17（MA-A 落地）：记忆 spec Phase A 五项全部落地（depth/RESOLVE_OR_DROP、intendedPayoff 硬拒 + author warning、ending-report 异步聚合、lessons 拒绝码计数自动晋升 + brief 规避清单、facts/lessons jsonl 通道）。偏差两条：① 拒绝 reason 引入 `[CODE] ` 稳定规则码前缀（§7.2 来源 2 的计数键；人话部分未变）；② facts.brief_max / beliefs.max_active_per_character 配置键随 MA-B 与其读取者同期加入（避免阶段内成为死键）。`narrative-director-service.test.ts` 沿子系统缝拆分为 lifecycle/consolidation/brief/replan 四文件 + `narrative-director-test-kit.ts`，allowlist 移除。
 - 2026-09-17（StoryState 瘦身立项，决议 D10）：审查确认 StoryState 富字段（canon/open_threads/player_profile/角色 emotion·current_goal·relationship_to_player·known_facts）自 state_patch 应用路径删除后无写入者（status.md §80–§81 记录）。立项 MA-A2 卡（P2，置于 MA-B 之后），`SNAPSHOT_VERSION` 再递增获预授权；同批清扫 patch.ts 与 GenerationEnvelope.state_patch 死代码。物品/场景关键细节的语义记录归 MA-B facts 承载，不进 storyState 结构字段。
 - 2026-09-17（GH-P1 卫生门）：subagent 只读评审 16 条（P2×5、P3×11，无 P1）。**P2 当场修复**：① `create-runtime-application.ts` 主函数拆出 `selectTtsProvider`/`buildAudioStack`/`buildGraphCoordinator`，导出 `DEFAULT_GAMES_ROOT`（web.ts 不再硬编码 "games"）；② `requestDslEnvelope` 拆出 `buildStreamRequest`/`buildRepairInstruction` 方法与 processDslLine/flushTruncatedTail/finalizeAttempt 具名闭包（尾冲嵌套 5 层→早返回）；③ `media.audio` V1 平面字段全删（enabled/provider/active_target_lines/refill_threshold_lines/branch_prefetch_lines/batch_size/max_concurrency/mock_latency_ms/output_dir——生产零读取的死键，config 无死键纪律），同批清 `mergePatchesList` 死代码与 `CreateRuntimeApplication` 死导出。**P3 记档（待后续卡顺带清偿，不阻塞）**：cli.ts `printMetrics` 死参数 game 与 reduce 求均值 ×3；web/cli `parseArgs` 近重复；last-game.test 临时目录模板 ×6；config 默认值在 zod `.default` 与代码 `??` 多处派生（含 bootstrap 兜底 cosyvoice_v3_flash/22050/2）；`interaction.default_mode` 校验但运行时不消费的死键；`makeCtx(null as unknown as StoryState)` 类型欺骗（buildSystemContext 入参应收窄）；GeneratorPortFacade 5 处条件展开；`confluence?.enabled` 可选链与类型矛盾；MediaPlannerPort `isReady`/`waitUntilReady` 过渡桩。基线 1434 测试 / 97 文件。

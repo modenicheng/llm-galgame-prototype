@@ -27,6 +27,8 @@ const EMPTY_STATE: NarrativeMemoryState = {
   setups: {},
   anchors: {},
   recentEpisodeIds: [],
+    beliefs: [],
+    facts: [],
 };
 
 function makeState(): NarrativeMemoryState {
@@ -57,6 +59,8 @@ function makeState(): NarrativeMemoryState {
       },
     },
     recentEpisodeIds: ["ep_1"],
+    beliefs: [],
+    facts: [],
   };
 }
 

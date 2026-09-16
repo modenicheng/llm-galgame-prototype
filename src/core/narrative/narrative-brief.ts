@@ -11,12 +11,16 @@
 import { z } from "zod";
 
 import {
+  BeliefStateSchema,
   EpisodeMemorySchema,
+  FactRecordSchema,
   LessonSchema,
   StoryAnchorStateSchema,
 } from "./memory-types.js";
 import type {
+  BeliefState,
   EpisodeMemory,
+  FactRecord,
   Lesson,
   PlotThread,
   StoryAnchorState,
@@ -64,6 +68,10 @@ export interface NarrativeBrief {
   revealLocks: string[];
   /** 规避清单（记忆 spec §7.3，MA-A）：active lessons，occurrences 降序。 */
   avoidanceLessons: Lesson[];
+  /** 相关既定事实（§5.3，MA-B）：fact-retriever 选取，checkpoint 倒序。 */
+  relatedFacts: FactRecord[];
+  /** 在场角色的 active 认知（§6.2，MA-B）。 */
+  characterBeliefs: BeliefState[];
   // 第 3 步新增（可选；无有效计划时为 undefined → 渲染省略 [导演目标]）
   phase?: DirectorPhase;
   currentGoal?: string;
@@ -99,6 +107,8 @@ export const NarrativeBriefSchema: z.ZodType<NarrativeBrief> = z.object({
   anchors: z.array(StoryAnchorStateSchema),
   revealLocks: z.array(z.string().min(1)),
   avoidanceLessons: z.array(LessonSchema),
+  relatedFacts: z.array(FactRecordSchema),
+  characterBeliefs: z.array(BeliefStateSchema),
   phase: z.exactOptional(DirectorPhaseSchema),
   currentGoal: z.exactOptional(z.string().min(1).max(200)),
   beats: z.exactOptional(z.array(PlannedBeatSchema).min(1).max(6)),

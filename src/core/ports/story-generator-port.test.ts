@@ -127,6 +127,8 @@ function makeBrief(): NarrativeBrief {
     anchors: [],
     revealLocks: [],
     avoidanceLessons: [],
+    relatedFacts: [],
+    characterBeliefs: [],
   };
 }
 

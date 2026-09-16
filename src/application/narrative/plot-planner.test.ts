@@ -17,6 +17,8 @@ function makeMemory(overrides: Partial<NarrativeMemoryState> = {}): NarrativeMem
       a3: { id: "a3", purpose: "揭示来历", prerequisites: ["a2"], required: false, status: "pending" },
     },
     recentEpisodeIds: [],
+    beliefs: [],
+    facts: [],
     ...overrides,
   };
 }

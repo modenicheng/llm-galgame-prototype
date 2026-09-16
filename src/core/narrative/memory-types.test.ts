@@ -142,6 +142,8 @@ const validMemoryState: NarrativeMemoryState = {
   setups: { "setup-1": validSetup },
   anchors: { "anchor-1": validAnchor },
   recentEpisodeIds: ["ep-6", "ep-5"],
+  beliefs: [],
+  facts: [],
 };
 
 const validThreadOp: ThreadOp = {
@@ -190,6 +192,8 @@ const validBrief: NarrativeBrief = {
   anchors: [validAnchor],
   revealLocks: [],
   avoidanceLessons: [],
+    relatedFacts: [],
+    characterBeliefs: [],
 };
 
 // ---------------------------------------------------------------------------

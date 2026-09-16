@@ -18,9 +18,12 @@ export const EMPTY_MEMORY_DIGEST: MemoryDigest = {
   threads: [],
   setups: [],
   anchors: [],
+  facts: [],
+  beliefs: [],
 };
 
-/** 嵌入决策节点入口/末态快照前的摘要化（丢弃缓存态字段）。 */
+/** 嵌入决策节点入口/末态快照前的摘要化（丢弃缓存态字段）。
+ * MA-B（v2）：facts/beliefs 全文嵌入（决议 D6）——恢复不得依赖 canon。 */
 export function memoryDigestFromState(state: NarrativeMemoryState): MemoryDigest {
   return {
     revision: state.revision,
@@ -29,6 +32,8 @@ export function memoryDigestFromState(state: NarrativeMemoryState): MemoryDigest
     threads: Object.values(state.threads),
     setups: Object.values(state.setups),
     anchors: Object.values(state.anchors),
+    facts: state.facts.map((fact) => ({ ...fact })),
+    beliefs: state.beliefs.map((belief) => ({ ...belief })),
   };
 }
 
@@ -42,5 +47,7 @@ export function memoryStateFromDigest(digest: MemoryDigest): NarrativeMemoryStat
     setups: Object.fromEntries(digest.setups.map((setup) => [setup.id, setup])),
     anchors: Object.fromEntries(digest.anchors.map((anchor) => [anchor.id, anchor])),
     recentEpisodeIds: [],
+    facts: digest.facts.map((fact) => ({ ...fact })),
+    beliefs: digest.beliefs.map((belief) => ({ ...belief })),
   };
 }

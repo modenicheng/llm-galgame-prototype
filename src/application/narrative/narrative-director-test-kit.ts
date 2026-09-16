@@ -151,6 +151,8 @@ export function emptyState(): NarrativeMemoryState {
     setups: {},
     anchors: {},
     recentEpisodeIds: [],
+    beliefs: [],
+    facts: [],
   };
 }
 

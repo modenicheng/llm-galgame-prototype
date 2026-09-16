@@ -64,6 +64,8 @@ function emptyState(): NarrativeMemoryState {
     setups: {},
     anchors: {},
     recentEpisodeIds: [],
+    beliefs: [],
+    facts: [],
   };
 }
 
@@ -128,6 +130,9 @@ function makeResult(
     episode: makeEpisodeOp(),
     threadOps: [],
     setupOps: [],
+    factOps: [],
+    beliefOps: [],
+    findings: [],
     ...overrides,
   };
 }
@@ -276,6 +281,9 @@ describe("MemoryConsolidator", () => {
           },
           threadOps: [],
           setupOps: [],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
       };
       const consolidator = makeConsolidator(port);
@@ -305,6 +313,9 @@ describe("MemoryConsolidator", () => {
           },
           threadOps: [],
           setupOps: [],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
       };
       const consolidator = makeConsolidator(port);
@@ -358,6 +369,9 @@ describe("MemoryConsolidator", () => {
             { type: "seed", id: "s1" }, // valid
             { type: "seed", id: "ghost-s" }, // invalid: does not exist
           ],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
       );
       const consolidator = makeConsolidator({ consolidate });
@@ -394,6 +408,9 @@ describe("MemoryConsolidator", () => {
             { type: "seed", id: "s1" },
             { type: "seed", id: "s1" },
           ],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
       );
       const consolidator = makeConsolidator({ consolidate });
@@ -436,6 +453,9 @@ describe("MemoryConsolidator", () => {
             { type: "seed", id: "s1" },
             { type: "seed", id: "s2" },
           ],
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
       );
       const consolidator = makeConsolidator({ consolidate });
@@ -494,6 +514,9 @@ describe("MemoryConsolidator", () => {
           episode: makeEpisodeOp({ summary: "" }), // rejected
           threadOps: [{ type: "touch", id: "ghost" }], // rejected
           setupOps: [{ type: "seed", id: "ghost-s" }], // rejected
+          factOps: [],
+          beliefOps: [],
+          findings: [],
         }),
       );
       const consolidator = makeConsolidator({ consolidate });
@@ -612,6 +635,140 @@ describe("MemoryConsolidator", () => {
       expect(outcome.episode).toBeNull();
       expect(outcome.rejected).toEqual([]);
       expect(consolidate).not.toHaveBeenCalled();
+    });
+  });
+  // -----------------------------------------------------------------------
+  // MA-B：facts / beliefs / findings 分流与预算
+  // -----------------------------------------------------------------------
+  describe("consolidate — MA-B facts/beliefs/findings", () => {
+    it("passes validated factOps and enforces the establish budget (≤3/batch)", async () => {
+      const events = [1, 2, 3, 4, 5].map((n) => makeEvent(n));
+      const consolidate = vi.fn().mockResolvedValue(
+        makeResult({
+          factOps: [
+            { type: "establish", content: "事实一", evidenceEventSeqs: [1] },
+            { type: "establish", content: "事实二", evidenceEventSeqs: [2] },
+            { type: "establish", content: "事实三", evidenceEventSeqs: [3] },
+            { type: "establish", content: "事实四（超预算）", evidenceEventSeqs: [4] },
+          ],
+        }),
+      );
+      const outcome = await makeConsolidator({ consolidate }).consolidate(
+        events,
+        emptyState(),
+        "",
+        [],
+      );
+
+      expect(outcome.factOps).toHaveLength(3);
+      const budgetRejected = outcome.rejected.find(
+        (r) => r.rule === "FACT_BUDGET_EXCEEDED",
+      );
+      expect(budgetRejected).toBeDefined();
+    });
+
+    it("rejects amend referencing an unknown or already-superseded fact", async () => {
+      const consolidate = vi.fn().mockResolvedValue(
+        makeResult({
+          factOps: [
+            { type: "amend", id: "ghost", content: "修订不存在的事实", evidenceEventSeqs: [1] },
+          ],
+        }),
+      );
+      const outcome = await makeConsolidator({ consolidate }).consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "",
+        [],
+      );
+      expect(outcome.factOps).toHaveLength(0);
+      expect(outcome.rejected[0]?.rule).toBe("FACT_AMEND_UNKNOWN_ID");
+    });
+
+    it("applies accepted facts to the validation shadow (amend chain in one batch)", async () => {
+      // 第一条 establish 落影子后，同批 amend 才能引用…… establish 的 id 由
+      // 应用方生成，同批 establish 不可被 amend 引用（无 id）——这里只验证
+      // amend 指向既有快照中的 fact 时被接受并传递。
+      const memory = emptyState();
+      memory.facts.push({
+        id: "fact_1_1",
+        content: "旧事实",
+        evidenceEventSeqs: [1],
+        checkpoint: 1,
+        superseded: false,
+      });
+      const consolidate = vi.fn().mockResolvedValue(
+        makeResult({
+          factOps: [
+            { type: "amend", id: "fact_1_1", content: "新事实", evidenceEventSeqs: [1], importance: "major" },
+          ],
+        }),
+      );
+      const outcome = await makeConsolidator({ consolidate }).consolidate(
+        [makeEvent(1)],
+        memory,
+        "",
+        [],
+      );
+      expect(outcome.factOps).toHaveLength(1);
+      expect(outcome.factOps[0]!.type).toBe("amend");
+    });
+
+    it("rejects beliefOps for unknown characters and enforces per-character budget", async () => {
+      const events = [1, 2, 3].map((n) => makeEvent(n));
+      const consolidate = vi.fn().mockResolvedValue(
+        makeResult({
+          beliefOps: [
+            { type: "learn", characterId: "苏遥", content: "c1", evidenceEventSeqs: [1] },
+            { type: "learn", characterId: "苏遥", content: "c2", evidenceEventSeqs: [1] },
+            { type: "learn", characterId: "苏遥", content: "c3", evidenceEventSeqs: [1] },
+            { type: "learn", characterId: "路人", content: "c4", evidenceEventSeqs: [1] },
+          ],
+        }),
+      );
+      const outcome = await makeConsolidator({ consolidate }).consolidate(
+        events,
+        emptyState(),
+        "",
+        ["苏遥"],
+      );
+
+      expect(outcome.beliefOps).toHaveLength(2);
+      const rules = outcome.rejected.map((r) => r.rule);
+      expect(rules).toContain("BELIEF_BUDGET_EXCEEDED");
+      expect(rules).toContain("BELIEF_UNKNOWN_CHARACTER");
+    });
+
+    it("passes findings through and rejects batches exceeding the findings cap", async () => {
+      const finding = {
+        dimension: "fact-conflict" as const,
+        severity: "major" as const,
+        content: "与既有事实矛盾",
+        evidenceEventSeqs: [1],
+      };
+      const consolidate = vi.fn().mockResolvedValue(
+        makeResult({
+          findings: [finding],
+        }),
+      );
+      const ok = await makeConsolidator({ consolidate }).consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "",
+        [],
+      );
+      expect(ok.findings).toHaveLength(1);
+
+      const six = Array.from({ length: 6 }, () => finding);
+      const consolidate2 = vi.fn().mockResolvedValue(makeResult({ findings: six }));
+      const over = await makeConsolidator({ consolidate: consolidate2 }).consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "",
+        [],
+      );
+      expect(over.findings).toHaveLength(5);
+      expect(over.rejected.map((r) => r.rule)).toContain("FINDING_BATCH_EXCEEDED");
     });
   });
 });

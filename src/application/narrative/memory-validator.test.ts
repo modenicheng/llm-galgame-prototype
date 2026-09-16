@@ -76,6 +76,8 @@ function makeMemory(
     setups: {},
     anchors: {},
     recentEpisodeIds: [],
+    beliefs: [],
+    facts: [],
     ...overrides,
   };
 }

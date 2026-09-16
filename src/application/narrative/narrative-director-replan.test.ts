@@ -42,6 +42,9 @@ describe("NarrativeDirectorService replan", () => {
         },
         threadOps: [],
         setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
       } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
       const store = new FakeStore();
@@ -79,6 +82,9 @@ describe("NarrativeDirectorService replan", () => {
         },
         threadOps: [],
         setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
       } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
       const store = new FakeStore();
@@ -150,6 +156,9 @@ describe("NarrativeDirectorService replan", () => {
         },
         threadOps: [],
         setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
       };
       resolveConsolidator(batch1Result);
       await p1;
@@ -167,6 +176,9 @@ describe("NarrativeDirectorService replan", () => {
         },
         threadOps: [],
         setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
       } satisfies ConsolidationResult);
 
       const result2 = await svc.consolidatePending();
@@ -195,6 +207,9 @@ describe("NarrativeDirectorService replan", () => {
           },
           threadOps: [],
           setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
         } satisfies ConsolidationResult)
         .mockResolvedValueOnce({
           episode: {
@@ -207,6 +222,9 @@ describe("NarrativeDirectorService replan", () => {
           },
           threadOps: [],
           setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
         } satisfies ConsolidationResult)
         .mockResolvedValueOnce({
           episode: {
@@ -219,6 +237,9 @@ describe("NarrativeDirectorService replan", () => {
           },
           threadOps: [],
           setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
         } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
 
@@ -348,6 +369,9 @@ describe("NarrativeDirectorService replan", () => {
         },
         threadOps: [],
         setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
       });
       const result1 = await p1;
       const result2 = await p2;
@@ -369,6 +393,9 @@ describe("NarrativeDirectorService replan", () => {
         },
         threadOps: [],
         setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
       } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
       const store = new FakeStore();
@@ -615,6 +642,9 @@ describe("NarrativeDirectorService replan", () => {
         },
         threadOps: [],
         setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
       } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = { consolidate: consolidateFn };
       const planner = makeFakePlanner(FAKE_PROPOSAL);
@@ -826,6 +856,9 @@ describe("NarrativeDirectorService replan", () => {
         },
         threadOps: [{ type: "advance", id: "t1" }],
         setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
       });
 
       // No timers: the two resolves each schedule one continuation (both
@@ -893,6 +926,9 @@ describe("NarrativeDirectorService replan", () => {
         },
         threadOps: [],
         setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
       } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = {
         consolidate: consolidateFn,
@@ -970,6 +1006,9 @@ describe("NarrativeDirectorService replan", () => {
         },
         threadOps: [],
         setupOps: [],
+factOps: [],
+beliefOps: [],
+findings: [],
       } satisfies ConsolidationResult);
       const consolidator: MemoryConsolidatorPort = {
         consolidate: consolidateFn,

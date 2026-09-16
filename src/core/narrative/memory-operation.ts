@@ -32,6 +32,44 @@ export interface EpisodeSummaryOp {
   importance: EpisodeImportance;
 }
 
+// ---------------------------------------------------------------------------
+// MA-B（记忆 spec §5.2/§6.1/§9.2）：consolidator 输出契约扩展
+// ---------------------------------------------------------------------------
+
+/** 既定事实 op（§5.2）。establish 每批 ≤3；amend 不限量（纠错优先）。 */
+export interface FactOp {
+  type: "establish" | "amend";
+  /** amend 必填：指向被修订的 fact。 */
+  id?: string;
+  /** 条件句式 ≤120 字。 */
+  content: string;
+  /** 1..3 条证据事件 seq（必须落在本批范围内）。 */
+  evidenceEventSeqs: number[];
+  scope?: { characters?: string[]; location?: string };
+  importance?: "major" | "minor";
+}
+
+/** 角色认知 op（§6.1）。learn=获知、believe=可能错误的信念、correct=纠正。 */
+export interface BeliefOp {
+  type: "learn" | "believe" | "correct";
+  characterId: string;
+  /** 命题式 ≤80 字。 */
+  content: string;
+  evidenceEventSeqs: number[];
+  /** correct 必填：被纠正的 belief id。 */
+  replacesBeliefId?: string;
+}
+
+/** 审计发现（§9.2）。只产事实与判级，不触发回改；major+ 自动成 lesson。 */
+export interface AuditFinding {
+  dimension: "belief-violation" | "fact-conflict" | "character-consistency";
+  severity: "critical" | "major" | "normal" | "minor";
+  /** ≤120 字事实描述（不含改写建议）。 */
+  content: string;
+  evidenceEventSeqs: number[];
+  subject?: string;
+}
+
 export const ThreadOpSchema: z.ZodType<ThreadOp> = z
   .object({
     type: z.enum(["touch", "advance", "resolve", "abandon", "create"]),
@@ -76,11 +114,47 @@ export const EpisodeSummaryOpSchema: z.ZodType<EpisodeSummaryOp> = z.object({
   importance: z.enum(["major", "normal"]),
 });
 
+const EvidenceSeqsSchema = z
+  .array(z.number().int().positive())
+  .min(1)
+  .max(3);
+
+export const FactOpSchema: z.ZodType<FactOp> = z.object({
+  type: z.enum(["establish", "amend"]),
+  id: z.exactOptional(z.string().min(1)),
+  content: z.string().min(1).max(120),
+  evidenceEventSeqs: EvidenceSeqsSchema,
+  scope: z.exactOptional(
+    z.object({
+      characters: z.exactOptional(z.array(z.string().min(1))),
+      location: z.exactOptional(z.string().min(1)),
+    }),
+  ),
+  importance: z.exactOptional(z.enum(["major", "minor"])),
+});
+
+export const BeliefOpSchema: z.ZodType<BeliefOp> = z.object({
+  type: z.enum(["learn", "believe", "correct"]),
+  characterId: z.string().min(1),
+  content: z.string().min(1).max(80),
+  evidenceEventSeqs: EvidenceSeqsSchema,
+  replacesBeliefId: z.exactOptional(z.string().min(1)),
+});
+
+export const AuditFindingSchema: z.ZodType<AuditFinding> = z.object({
+  dimension: z.enum(["belief-violation", "fact-conflict", "character-consistency"]),
+  severity: z.enum(["critical", "major", "normal", "minor"]),
+  content: z.string().min(1).max(120),
+  evidenceEventSeqs: EvidenceSeqsSchema,
+  subject: z.exactOptional(z.string().min(1)),
+});
+
 /** A rejected narrative operation, recorded for diagnostics/feedback. */
 export interface RejectedOp {
   // plan = plan proposal rejected as a whole / field-level rejection,
-  // anchor = anchor op rejected.
-  kind: "thread" | "setup" | "episode" | "plan" | "anchor";
+  // anchor = anchor op rejected, finding = audit finding 留痕（§9.2），
+  // fact/belief = 对应 op 被拒（MA-B）。
+  kind: "thread" | "setup" | "episode" | "plan" | "anchor" | "finding" | "fact" | "belief";
   op: unknown;
   reason: string;
   /**
