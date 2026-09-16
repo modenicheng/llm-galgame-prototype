@@ -98,7 +98,12 @@ function appendEventModeGuidance(
   } else if (options?.endingPhase === "closing") {
     result += `\n\n剧情已进入最后收束阶段：不要再打开新的交互表单，直接收拢当前线索，用 @end ${nonce} ending 结束本段。`;
   } else if (options?.endingPhase === "wrapup") {
-    result += `\n\n剧情已进入收束阶段：请在接下来 1–2 次交互内把故事引向自然的结局，不要再开启新的支线；结局收束时用 @end ${nonce} ending 结束。`;
+    const { count, target } = options.interactionProgress ?? {};
+    if (count !== undefined && target !== undefined && count > target) {
+      result += `\n\n收束阶段的最后一个交互点已经用完（交互数 ${count} 已超过收束目标 ${target}）：不要再打开任何交互表单，直接收拢当前线索，用 @end ${nonce} ending 结束本段。`;
+    } else {
+      result += `\n\n剧情已进入收束阶段（本次游玩时长已经足够）：本段最多再打开 1 次交互表单，且这是本局的最后一个交互点——它应当面向收尾（例如让玩家决定如何结束、和谁道别），而不是新的情节转折；其后的下一段必须用 @end ${nonce} ending 收束结局。不要再引入新话题、新角色或新支线。`;
+    }
   }
   return result;
 }
