@@ -58,6 +58,119 @@ function fnv1a(input: string): number {
   return hash >>> 0;
 }
 
+/** v2 剧情图根目录缺省值（§9）；宿主（local-web 的 .last-game）共用同一常量。 */
+export const DEFAULT_GAMES_ROOT = "games";
+
+/**
+ * TTS provider wiring (§7.6): dashscope → real provider, mock → the
+ * streaming mock, disabled/absent → null. With null the catalog still
+ * receives descriptors but every synthesis request rejects with
+ * "audio_disabled".
+ */
+function selectTtsProvider(config: AppConfig, voices: Awaited<ReturnType<typeof loadVoices>>): TtsProviderPort | null {
+  const synthesis = config.media.audio.synthesis;
+  if (synthesis?.provider === "dashscope") {
+    const apiKey = process.env[synthesis.api_key_env] ?? "";
+    if (apiKey === "") {
+      throw new Error(`DashScope TTS API key missing: set ${synthesis.api_key_env} in .env`);
+    }
+    const missing = validateDashscopeEnv(voices, process.env);
+    if (missing.length > 0) {
+      throw new Error(`DashScope TTS env incomplete — missing: ${missing.join(", ")}`);
+    }
+    return new DashScopeCosyVoiceProvider({
+      apiKey,
+      ...(process.env.DASHSCOPE_TTS_BASE_URL !== undefined
+        ? { baseUrl: process.env.DASHSCOPE_TTS_BASE_URL }
+        : {}),
+      timeoutMs: config.api.timeout_ms,
+    });
+  }
+  if (synthesis?.provider === "mock") {
+    return new MockStreamingTtsProvider({ sampleRate: synthesis.sample_rate });
+  }
+  return null;
+}
+
+/**
+ * Audio app layer (§7.3–§7.5). Descriptors are built for every line even
+ * when synthesis is disabled so the planner/catalog contract holds.
+ * TaskStatusEvent fan-out: hosts subscribe via app.taskStatusSubscribe.
+ */
+function buildAudioStack(
+  config: AppConfig,
+  voices: Awaited<ReturnType<typeof loadVoices>>,
+  provider: TtsProviderPort | null,
+): {
+  catalog: AudioCatalogServiceImpl;
+  planner: AudioIntentPlanner;
+  ttsTasks: TtsTaskServiceImpl;
+  taskStatusListeners: Set<(event: TaskStatusEvent) => void>;
+} {
+  const synthesis = config.media.audio.synthesis;
+  const catalog = new AudioCatalogServiceImpl();
+  const factory = new AudioDescriptorFactory({
+    characters: config.characters,
+    voices,
+    // The factory needs a discriminator even when synthesis is disabled;
+    // "mock" yields stable mock bindings for every speaker.
+    provider: synthesis?.provider === "dashscope" ? "dashscope" : "mock",
+    modelProfile: synthesis?.model_profile ?? "cosyvoice_v3_flash",
+    sampleRate: synthesis?.sample_rate ?? 22050,
+    format: "pcm_s16le",
+    env: process.env,
+    compiler: new PerformanceCompilerImpl(),
+    seedFor: (lineId) => fnv1a(lineId),
+  });
+  const planner = new AudioIntentPlanner({
+    catalog,
+    factory,
+    candidatePrefetchLines: config.media.audio.planner?.candidate_prefetch_lines ?? 1,
+    maxActiveFutureLines: config.media.audio.planner?.max_active_future_lines ?? 4,
+  });
+  const taskStatusListeners = new Set<(event: TaskStatusEvent) => void>();
+  const ttsTasks = new TtsTaskServiceImpl({
+    catalog,
+    provider,
+    maxConcurrency: synthesis?.max_concurrency ?? 2,
+    onStatus: (event) => {
+      for (const listener of taskStatusListeners) listener(event);
+    },
+  });
+  return { catalog, planner, ttsTasks, taskStatusListeners };
+}
+
+/**
+ * v2 剧情图协调器（§9）：confluence.enabled 时给协调器挂 LLM 判定员（后台
+ * 比较，不阻塞播放）；判定失败只告警，运行时不受影响。confluence 段容忍
+ * 手拼 config 的缺省（options.config 可绕过 zod 默认值填充）。
+ */
+function buildGraphCoordinator(
+  config: AppConfig,
+  apiKey: string,
+  gamesRoot: string,
+  gameId: string,
+): RunGraphCoordinator {
+  const graphStore = new GameGraphStore(gamesRoot, gameId);
+  const confluenceEnabled =
+    config.narrative.confluence?.enabled ?? DEFAULT_NARRATIVE_CONFIG.confluence.enabled;
+  return new RunGraphCoordinator(
+    graphStore,
+    new SystemClock(),
+    (prefix) => `${prefix}${crypto.randomUUID()}`,
+    confluenceEnabled
+      ? {
+          judge: new ConfluenceJudgeAdapter({
+            apiKey,
+            api: config.api,
+            diagnostics: new ConsoleDiagnosticSink(),
+          }),
+          diagnostics: new ConsoleDiagnosticSink(),
+        }
+      : undefined,
+  );
+}
+
 export async function createRuntimeApplication(
   options: RuntimeApplicationOptions = {},
 ): Promise<RuntimeApplication> {
@@ -83,66 +196,12 @@ export async function createRuntimeApplication(
     assetCatalog,
   );
 
-  // TTS provider wiring (§7.6): dashscope → real provider, mock → the
-  // streaming mock, disabled/absent → null. With null the catalog still
-  // receives descriptors but every synthesis request rejects with
-  // "audio_disabled".
-  const synthesis = config.media.audio.synthesis;
-  let provider: TtsProviderPort | null;
-  if (synthesis?.provider === "dashscope") {
-    const apiKey = process.env[synthesis.api_key_env] ?? "";
-    if (apiKey === "") {
-      throw new Error(`DashScope TTS API key missing: set ${synthesis.api_key_env} in .env`);
-    }
-    const missing = validateDashscopeEnv(voices, process.env);
-    if (missing.length > 0) {
-      throw new Error(`DashScope TTS env incomplete — missing: ${missing.join(", ")}`);
-    }
-    provider = new DashScopeCosyVoiceProvider({
-      apiKey,
-      ...(process.env.DASHSCOPE_TTS_BASE_URL !== undefined
-        ? { baseUrl: process.env.DASHSCOPE_TTS_BASE_URL }
-        : {}),
-      timeoutMs: config.api.timeout_ms,
-    });
-  } else if (synthesis?.provider === "mock") {
-    provider = new MockStreamingTtsProvider({ sampleRate: synthesis.sample_rate });
-  } else {
-    provider = null;
-  }
-
-  // Audio app layer (§7.3–7.5). Descriptors are built for every line even
-  // when synthesis is disabled so the planner/catalog contract holds.
-  const catalog = new AudioCatalogServiceImpl();
-  const factory = new AudioDescriptorFactory({
-    characters: config.characters,
+  const provider = selectTtsProvider(config, voices);
+  const { catalog, planner, ttsTasks, taskStatusListeners } = buildAudioStack(
+    config,
     voices,
-    // The factory needs a discriminator even when synthesis is disabled;
-    // "mock" yields stable mock bindings for every speaker.
-    provider: synthesis?.provider === "dashscope" ? "dashscope" : "mock",
-    modelProfile: synthesis?.model_profile ?? "cosyvoice_v3_flash",
-    sampleRate: synthesis?.sample_rate ?? 22050,
-    format: "pcm_s16le",
-    env: process.env,
-    compiler: new PerformanceCompilerImpl(),
-    seedFor: (lineId) => fnv1a(lineId),
-  });
-  const planner = new AudioIntentPlanner({
-    catalog,
-    factory,
-    candidatePrefetchLines: config.media.audio.planner?.candidate_prefetch_lines ?? 1,
-    maxActiveFutureLines: config.media.audio.planner?.max_active_future_lines ?? 4,
-  });
-  // TaskStatusEvent fan-out: hosts subscribe via app.taskStatusSubscribe.
-  const taskStatusListeners = new Set<(event: TaskStatusEvent) => void>();
-  const ttsTasks = new TtsTaskServiceImpl({
-    catalog,
     provider,
-    maxConcurrency: synthesis?.max_concurrency ?? 2,
-    onStatus: (event) => {
-      for (const listener of taskStatusListeners) listener(event);
-    },
-  });
+  );
 
   const projection = new UiProjectionStoreImpl();
 
@@ -151,28 +210,8 @@ export async function createRuntimeApplication(
   // options.gameId 固定世界（「继续游戏」指向同一目录）；缺省每次启动
   // 生成新世界。
   const gameId = options.gameId ?? `game_${new Date().toISOString().replace(/[:.]/g, "-")}`;
-  const gamesRoot = options.gamesRoot ?? "games";
-  const graphStore = new GameGraphStore(gamesRoot, gameId);
-  // M2.2 场景内汇流：confluence.enabled 时给协调器挂 LLM 判定员（后台
-  // 比较，不阻塞播放）；判定失败只告警，运行时不受影响。confluence 段
-  // 容忍手拼 config 的缺省（options.config 可绕过 zod 默认值填充）。
-  const confluenceEnabled =
-    config.narrative.confluence?.enabled ?? DEFAULT_NARRATIVE_CONFIG.confluence.enabled;
-  const graphCoordinator = new RunGraphCoordinator(
-    graphStore,
-    new SystemClock(),
-    (prefix) => `${prefix}${crypto.randomUUID()}`,
-    confluenceEnabled
-      ? {
-          judge: new ConfluenceJudgeAdapter({
-            apiKey,
-            api: config.api,
-            diagnostics: new ConsoleDiagnosticSink(),
-          }),
-          diagnostics: new ConsoleDiagnosticSink(),
-        }
-      : undefined,
-  );
+  const gamesRoot = options.gamesRoot ?? DEFAULT_GAMES_ROOT;
+  const graphCoordinator = buildGraphCoordinator(config, apiKey, gamesRoot, gameId);
 
   /**
    * Assemble the per-session game: fresh session store + (longform)

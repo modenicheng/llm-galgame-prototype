@@ -63,8 +63,3 @@ export interface RuntimeApplicationOptions {
    * omitted, one is generated. Explicit ids make tests deterministic. */
   sessionId?: string;
 }
-
-
-export interface CreateRuntimeApplication {
-  (options?: RuntimeApplicationOptions): Promise<RuntimeApplication>;
-}

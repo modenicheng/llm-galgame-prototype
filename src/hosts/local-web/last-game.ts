@@ -31,8 +31,9 @@ export function writeLastGameId(gamesRoot: string, gameId: string): void {
   try {
     mkdirSync(gamesRoot, { recursive: true });
     writeFileSync(path.join(gamesRoot, LAST_GAME_FILE), `${gameId}\n`, "utf8");
-  } catch {
-    // best-effort：持久化失败不阻塞启动（代价是下次启动开新世界）。
+  } catch (error) {
+    // best-effort：持久化失败不阻塞启动，但要可观测（否则「没续上世界」无从排查）。
+    console.warn(`[last-game] 写入 ${path.join(gamesRoot, LAST_GAME_FILE)} 失败：`, error);
   }
 }
 

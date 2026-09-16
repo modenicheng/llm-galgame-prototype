@@ -4,7 +4,7 @@
  */
 import "dotenv/config";
 import { loadConfig } from "../config.js";
-import { createRuntimeApplication } from "../bootstrap/create-runtime-application.js";
+import { createRuntimeApplication, DEFAULT_GAMES_ROOT } from "../bootstrap/create-runtime-application.js";
 import { LocalWebHost } from "../hosts/local-web/local-web-host.js";
 import {
   readLastGameId,
@@ -42,14 +42,14 @@ async function main(): Promise<void> {
   const config = await loadConfig(configPath);
   // M5.0：世界身份解析顺序 显式参数 > 环境变量 > games/.last-game；都缺
   // 则开新世界。世界落定后写回 .last-game（best-effort），下次启动续玩。
-  const gamesRoot = "games";
-  const gameId = resolveExplicitGameId(game, process.env) ?? readLastGameId(gamesRoot);
+  const gameId =
+    resolveExplicitGameId(game, process.env) ?? readLastGameId(DEFAULT_GAMES_ROOT);
   const app = await createRuntimeApplication({
     config,
     configPath,
     ...(gameId !== undefined ? { gameId } : {}),
   });
-  writeLastGameId(gamesRoot, app.gameId);
+  writeLastGameId(DEFAULT_GAMES_ROOT, app.gameId);
   const host = new LocalWebHost({
     config,
     app,
