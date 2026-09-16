@@ -31,6 +31,11 @@ export interface ContextInput {
   authorConfig?: AuthorConfig;
   /** Per-turn narrative director brief (rendered as a director note). */
   directorBrief?: NarrativeBrief;
+  /**
+   * M4.2 剪报通道（actor-briefing 组装产物）。存在时取代 directorBrief 的
+   * 渲染位置（旧 NarrativeBrief 通道 M4.4 删）；D9 布局不变——历史区仍置前。
+   */
+  actorBriefing?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +250,9 @@ export function buildDslUserPrompt(
   sections.push("===== 当前故事状态 =====");
   sections.push(summarizeState(input.state));
 
-  if (input.directorBrief) {
+  if (input.actorBriefing !== undefined && input.actorBriefing !== "") {
+    sections.push(input.actorBriefing);
+  } else if (input.directorBrief) {
     sections.push(
       renderDirectorNote(input.directorBrief, input.recentEvents.length),
     );

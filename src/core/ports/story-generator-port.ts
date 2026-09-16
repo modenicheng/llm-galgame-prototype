@@ -15,7 +15,6 @@ import type {
 } from "../../schema.js";
 import type { EventGroupDraft } from "../protocol/gal-dsl/types.js";
 import type { GenerationEnvelope, StoryState } from "../../story/types.js";
-import type { NarrativeBrief } from "../narrative/narrative-brief.js";
 import type { VisualState } from "../presentation/types.js";
 import { AsyncEventQueue } from "../runtime/async-event-queue.js";
 
@@ -23,7 +22,8 @@ export interface OpeningRequest {
   turn: number;
   state: StoryState;
   signal?: AbortSignal;
-  brief?: NarrativeBrief;
+  /** 导演剪报文本（M4.2 剪报通道；buildDslUserPrompt 易变区渲染）。 */
+  briefing?: string;
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
 }
@@ -34,7 +34,8 @@ export interface ContinuationRequest {
   history: StoryContextEvent[];
   prefetchedEvents: StoryContextEvent[];
   signal?: AbortSignal;
-  brief?: NarrativeBrief;
+  /** 导演剪报文本（M4.2 剪报通道；buildDslUserPrompt 易变区渲染）。 */
+  briefing?: string;
   /** §8.5 修复原因：上一段失败的上下文，嵌入用户 prompt。 */
   repairReason?: string;
   /** Event mode：本段必须以 @end ending 收束（audit P2-10 强制结局）。 */
@@ -50,7 +51,8 @@ export interface BranchPrefetchRequest {
   choice: ChoiceEvent;
   option: ChoiceOption;
   signal?: AbortSignal;
-  brief?: NarrativeBrief;
+  /** 导演剪报文本（M4.2 剪报通道；buildDslUserPrompt 易变区渲染）。 */
+  briefing?: string;
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
 }
@@ -62,7 +64,8 @@ export interface InputResponseRequest {
   interaction: InteractionEvent;
   playerInput: string;
   signal?: AbortSignal;
-  brief?: NarrativeBrief;
+  /** 导演剪报文本（M4.2 剪报通道；buildDslUserPrompt 易变区渲染）。 */
+  briefing?: string;
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
 }
@@ -72,7 +75,8 @@ export interface InputBridgeRequest {
   state: StoryState;
   interaction: InteractionEvent;
   signal?: AbortSignal;
-  brief?: NarrativeBrief;
+  /** 导演剪报文本（M4.2 剪报通道；buildDslUserPrompt 易变区渲染）。 */
+  briefing?: string;
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
 }

@@ -937,15 +937,12 @@ describe("NarrativeDirector integration", () => {
       generator.generateOpening as ReturnType<typeof vi.fn>
     ).mock.calls[0] as unknown[];
     const request = callArgs[0] as OpeningRequest;
-    expect(request.brief).toBeDefined();
+    expect(request.briefing).toBeDefined();
 
-    const brief = request.brief as NarrativeBrief;
-    expect(brief.revision).toBe(7);
-    expect(brief.checkpointCount).toBe(3);
-    expect(brief.activeThreads).toHaveLength(1);
-    expect(brief.activeThreads[0]!.summary).toBe("寻找失踪的妹妹");
-    expect(brief.setupDirectives).toHaveLength(1);
-    expect(brief.setupDirectives[0]!.action).toBe("reinforce");
+    // 剪报是渲染后的文本：记忆投影的关键内容直接可见（M4.2 剪报通道）。
+    const briefing = request.briefing as string;
+    expect(briefing).toContain("寻找失踪的妹妹");
+    expect(briefing).toContain("REINFORCE");
   });
 
   it("has zero behavioural change when no narrativeDirector is provided", async () => {
@@ -977,6 +974,6 @@ describe("NarrativeDirector integration", () => {
       generator.generateOpening as ReturnType<typeof vi.fn>
     ).mock.calls[0] as unknown[];
     const request = callArgs[0] as OpeningRequest;
-    expect(request.brief).toBeUndefined();
+    expect(request.briefing).toBeUndefined();
   });
 });

@@ -164,7 +164,7 @@ describe("GeneratorPortFacade", () => {
       generateInputBridge: vi.fn(async () => ({ events: [], state_patch: {} })),
     };
     const facade = new GeneratorPortFacade(inner as unknown as StoryGenerator);
-    const brief = makeBrief();
+    const briefing = "剪报文本";
     facade.generateContinuation({
       turn: 2,
       state: makeState(),
@@ -172,13 +172,13 @@ describe("GeneratorPortFacade", () => {
       prefetchedEvents: [],
       repairReason: "修复原因",
       tailVisualState: { background: "clubroom", characters: {} },
-      brief,
+      briefing,
     });
     expect(inner.generateContinuation).toHaveBeenCalledWith(
       2, expect.anything(), [], [], expect.anything(), expect.objectContaining({
         repairReason: "修复原因",
         tailVisualState: { background: "clubroom", characters: {} },
-        brief,
+        briefing,
       }),
     );
     const bridge = facade.generateInputBridge({

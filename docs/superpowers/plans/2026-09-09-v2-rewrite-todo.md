@@ -146,7 +146,8 @@
   要点：① `src/core/ports/agent-runner-port.ts` + `src/adapters/llm/agent-runner-adapter.ts`：`run({system, messages, tools}) → {text, toolCalls}` 最小工具循环——不做通用框架；步数上限常量（默认 6，超限强制收束为最终文本输出）；② `src/application/director/director-service.ts`：场景边界/checkpoint 异步触发（fire-and-forget + 诊断告警）；首批确定性工具：`readSceneHistory(sceneId)`（边负载回放投影，复用 serialize*）、`queryCharacterState(characterId)`（入口快照）、`narrowFormModes(modes)`（相位门 → InteractionPolicy.allowed_modes）、汇流判定承接；③ 导演产出 `SceneDirective`（本场景目标/防守节拍/收束压力/表单收窄），会话内工作态，不入图契约；④ 汇流承接取低风险路径：ConfluenceJudgePort 的持有与装配移入导演（bootstrap 接线变化），协调器调度机制与既有测试零改动；⑤ **跨周目事实**（决议 D7）：导演/编剧输入可读全部已实现路径（含已弃周目——`readSceneHistory` 返回该场景全部已实现边，不分周目；NG+ 前世记忆的取材来源）；演员防火墙不变（M4.2 剪报仍是唯一通道）。
   验收：runner 循环单测（fake client：工具调用→执行→二轮文本；超步数收束）；导演服务单测（工具被调、directive 落缓存）；`run-graph-confluence.test.ts` 全绿不动。
 
-- [ ] **M4.2 剪报防火墙**
+- [x] **M4.2 剪报防火墙**
+  落地（2026-09-17）：`src/application/director/actor-briefing.ts`——剪报组装（记忆投影 renderDirectorNote 随迁不改 + MA-B 三段 + SceneDirective 段）；防火墙落为参数形状（ActorBriefingInput 无 outline 全量/结局候选/他周目字段）；D9 布局继承（历史区由 buildDslUserPrompt 置前，剪报只产中段，零截断）；通道切换：`StoryGeneratorPort` 请求字段 `brief: NarrativeBrief` → `briefing: string`，Game `makeBriefing` 组装并传入，`buildDslUserPrompt` 剪报优先、旧 directorBrief 通道留存（M4.4 删）。
   前置：M4.1、MA-B。关联：§5.2；反重复地图（context-builder serialize*）。
   目标：演员上下文组装迁至导演剪报，防剧透边界结构性成立。
   要点：① `src/application/director/actor-briefing.ts`：组装演员受限上下文 = canon 场景相关子集 + 当前路径已实现历史 + SceneDirective，**复用 `src/story/context-builder.ts` 的 serialize\*** 与 MA-B 三段渲染函数（随迁宿主，函数不改）；② 防火墙落为**参数形状**而非提示词：组装器输入类型上不含 outline 全量/结局候选/他周目数据；

@@ -88,6 +88,8 @@ import { InteractionPolicy } from "./story/interaction-policy.js";
 import type { InteractionMode, InputSpec } from "./story/types.js";
 import { reconcileStoryState } from "./story/reconcile.js";
 import { createInitialState } from "./story/state.js";
+import type { DirectorService } from "./application/director/director-service.js";
+import { buildActorBriefing } from "./application/director/actor-briefing.js";
 import type {
   GeneratedEvent,
   StoryState,
@@ -187,6 +189,8 @@ export interface GamePorts {
   sessionId?: string;
   diagnostics?: DiagnosticSink;
   narrativeDirector?: NarrativeDirectorPort;
+  /** M4.1 导演服务（SceneDirective 相位门/防守节拍；M4.2 剪报组装输入）。 */
+  director?: DirectorService;
   /**
    * run() 的图入口模式（M1.5）：resume = 有档续档/无档新局（默认）；
    * restart = 宿主 restart_session 重建后——弃局活跃周目并在游标节点
@@ -236,6 +240,7 @@ export class Game {
   private readonly metrics: Metrics;
   private choiceTimestamp: number | null = null;
   private readonly narrativeDirector: NarrativeDirectorPort | undefined;
+  private readonly director: DirectorService | undefined;
   private readonly runMode: "resume" | "restart";
   private readonly playbackBuffer = new PlaybackBuffer();
   private readonly generationScheduler = new GenerationScheduler();
@@ -304,6 +309,7 @@ export class Game {
     this.ids = ports.ids;
     this.diagnostics = ports.diagnostics ?? silentDiagnosticSink;
     this.narrativeDirector = ports.narrativeDirector;
+    this.director = ports.director;
     this.runMode = ports.runMode ?? "resume";
     this.sessionId = ports.sessionId ?? this.ids.nextSessionId();
     this.interactionPolicy = new InteractionPolicy(config.interaction);
@@ -764,7 +770,7 @@ export class Game {
 
     const jobId = kind === "opening" ? "opening" : `continuation:${turn}`;
     const label = kind === "opening" ? "初始剧情" : `第 ${turn} 回合后续`;
-    const brief = this.makeBrief(turn);
+    const brief = this.makeBriefing(turn);
     segment.done = this.runTrackedJob(jobId, label, async () => {
       const genHandle =
         kind === "opening"
@@ -772,7 +778,7 @@ export class Game {
               turn,
               state: this.storyState,
               signal: controller.signal,
-              ...(brief !== undefined ? { brief } : {}),
+              ...(brief !== undefined && brief !== "" ? { briefing: brief } : {}),
               tailVisualState: this.tailVisualState,
             })
           : this.generator.generateContinuation({
@@ -781,7 +787,7 @@ export class Game {
               history,
               prefetchedEvents,
               signal: controller.signal,
-              ...(brief !== undefined ? { brief } : {}),
+              ...(brief !== undefined && brief !== "" ? { briefing: brief } : {}),
               tailVisualState: this.tailVisualState,
               ...(repairReason !== undefined ? { repairReason } : {}),
               ...(endingRequired ? { endingRequired: true } : {}),
@@ -1340,13 +1346,13 @@ export class Game {
     const controller = new AbortController();
     this.bridgeControllers.set(interactionId, controller);
 
-    const bridgeBrief = this.makeBrief(turn + 1);
+    const bridgeBrief = this.makeBriefing(turn + 1);
     const handle = this.generator.generateInputBridge({
       turn: turn + 1,
       state: this.storyState,
       interaction,
       signal: controller.signal,
-      ...(bridgeBrief !== undefined ? { brief: bridgeBrief } : {}),
+      ...(bridgeBrief !== undefined && bridgeBrief !== "" ? { briefing: bridgeBrief } : {}),
       tailVisualState: this.tailVisualState,
     });
 
@@ -1456,14 +1462,14 @@ export class Game {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.status.setJob("selected-branch-retry", "已选分支重试", "running");
-      const retryBrief = this.makeBrief(turn + 1);
+      const retryBrief = this.makeBriefing(turn + 1);
       const handle = this.generator.generateBranchPrefetch({
         turn: turn + 1,
         state: this.storyState,
         history: prefetchContext,
         choice,
         option: selected,
-        ...(retryBrief !== undefined ? { brief: retryBrief } : {}),
+        ...(retryBrief !== undefined && retryBrief !== "" ? { briefing: retryBrief } : {}),
         tailVisualState: this.tailVisualState,
       });
       await handle.done;
@@ -1905,7 +1911,7 @@ export class Game {
         // state seeded from the current tail (docs §56). Unselected
         // branches never execute, so their states stay isolated here.
         let branchState = this.tailVisualState;
-        const prefetchBrief = this.makeBrief(turn + 1);
+        const prefetchBrief = this.makeBriefing(turn + 1);
         const handle = this.generator.generateBranchPrefetch({
           turn: turn + 1,
           state: this.storyState,
@@ -1913,7 +1919,7 @@ export class Game {
           choice,
           option,
           signal,
-          ...(prefetchBrief !== undefined ? { brief: prefetchBrief } : {}),
+          ...(prefetchBrief !== undefined && prefetchBrief !== "" ? { briefing: prefetchBrief } : {}),
           tailVisualState: this.tailVisualState,
         });
         // 泵：与旧 onGroup 直连语义等价——组到达即编译并喂给 onEvent
@@ -2230,7 +2236,7 @@ export class Game {
     // state seeded from the current tail (docs §79).
     let responseState = this.tailVisualState;
 
-    const brief = this.makeBrief(turn + 1);
+    const brief = this.makeBriefing(turn + 1);
     const handle = this.generator.generateInputResponse({
       turn: turn + 1,
       state: this.storyState,
@@ -2238,7 +2244,7 @@ export class Game {
       interaction,
       playerInput: text,
       signal: controller.signal,
-      ...(brief !== undefined ? { brief } : {}),
+      ...(brief !== undefined && brief !== "" ? { briefing: brief } : {}),
       tailVisualState: this.tailVisualState,
     });
 
@@ -2482,14 +2488,14 @@ export class Game {
             text: o.text,
           })),
         };
-        const onDemandBrief = this.makeBrief(turn + 1);
+        const onDemandBrief = this.makeBriefing(turn + 1);
         const handle = this.generator.generateBranchPrefetch({
           turn: turn + 1,
           state: this.storyState,
           history: prefetchContext,
           choice: syntheticChoice,
           option: { id: selected.id, text: selected.text },
-          ...(onDemandBrief !== undefined ? { brief: onDemandBrief } : {}),
+          ...(onDemandBrief !== undefined && onDemandBrief !== "" ? { briefing: onDemandBrief } : {}),
           tailVisualState: this.tailVisualState,
         });
         await handle.done;
@@ -2633,6 +2639,24 @@ export class Game {
       eventSeq: this.seq - 1,
       location: this.storyState.scene.location,
       characters: Object.keys(this.storyState.characters),
+    });
+  }
+
+  /**
+   * M4.2 剪报通道：NarrativeBrief（记忆投影）+ 导演 SceneDirective 组装成
+   * 演员剪报文本。输入类型上不含 outline 全量/结局候选/他周目数据——防火墙
+   * 落为参数形状（§5.2）。
+   */
+  private makeBriefing(turn: number): string | undefined {
+    const brief = this.makeBrief(turn);
+    console.log("MB_DEBUG:", typeof brief, brief === undefined ? "undef" : brief.length, !!this.director);
+    const directive = this.director?.getDirective(this.storyState.scene.id);
+    if (brief === undefined && directive === undefined) return undefined;
+    return buildActorBriefing({
+      ...(brief !== undefined
+        ? { memoryBrief: brief, rawEventCount: this.events.length }
+        : {}),
+      ...(directive !== undefined ? { directive } : {}),
     });
   }
 

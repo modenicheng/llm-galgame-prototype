@@ -309,6 +309,7 @@ export async function createRuntimeApplication(
       diagnostics,
       runMode,
       ...(narrativeDirector ? { narrativeDirector } : {}),
+      director,
     }, assetCatalog);
   };
 

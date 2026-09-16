@@ -30,7 +30,6 @@ import type {
   InteractionEvent,
   StoryContextEvent,
 } from "../../schema.js";
-import type { NarrativeBrief } from "../../core/narrative/narrative-brief.js";
 import type { GenerationEnvelope, StoryState } from "../../story/types.js";
 import {
   createGenerationHandle,
@@ -98,10 +97,10 @@ export interface GenerationStreamOptions {
    */
   tailVisualState?: VisualState;
   /**
-   * Per-turn narrative director brief injected as a director note section
+   * Per-turn director briefing (actor-briefing product) rendered in the
    * in the user prompt (docs narrative-director §Task-10).
    */
-  brief?: NarrativeBrief;
+  briefing?: string;
   /** Event mode：本段必须以 @end ending 收束（audit P2-10 强制结局）。 */
   endingRequired?: boolean;
 }
@@ -174,8 +173,8 @@ export class StoryGenerator {
     if (options?.tailVisualState) {
       ctx.tailVisualState = options.tailVisualState;
     }
-    if (options?.brief) {
-      ctx.directorBrief = options.brief;
+    if (options?.briefing !== undefined && options.briefing !== "") {
+      ctx.actorBriefing = options.briefing;
     }
     if (this.modelCatalog) {
       ctx.modelAssetCatalog = this.modelCatalog;
@@ -607,7 +606,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
     return createGenerationHandle(`opening:${request.turn}`, (signal, onGroup) =>
       this.inner.generateOpening(request.turn, request.state, signal, {
         onGroup,
-        ...(request.brief ? { brief: request.brief } : {}),
+        ...(request.briefing !== undefined && request.briefing !== "" ? { briefing: request.briefing } : {}),
         ...(request.tailVisualState
           ? { tailVisualState: request.tailVisualState }
           : {}),
@@ -625,7 +624,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         signal,
         {
           onGroup,
-          ...(request.brief ? { brief: request.brief } : {}),
+          ...(request.briefing !== undefined && request.briefing !== "" ? { briefing: request.briefing } : {}),
           ...(request.tailVisualState
             ? { tailVisualState: request.tailVisualState }
             : {}),
@@ -651,7 +650,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         signal,
         {
           onGroup,
-          ...(request.brief ? { brief: request.brief } : {}),
+          ...(request.briefing !== undefined && request.briefing !== "" ? { briefing: request.briefing } : {}),
           ...(request.tailVisualState
             ? { tailVisualState: request.tailVisualState }
             : {}),
@@ -671,7 +670,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         signal,
         {
           onGroup,
-          ...(request.brief ? { brief: request.brief } : {}),
+          ...(request.briefing !== undefined && request.briefing !== "" ? { briefing: request.briefing } : {}),
           ...(request.tailVisualState
             ? { tailVisualState: request.tailVisualState }
             : {}),
@@ -691,7 +690,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
           signal,
           {
             onGroup,
-            ...(request.brief ? { brief: request.brief } : {}),
+            ...(request.briefing !== undefined && request.briefing !== "" ? { briefing: request.briefing } : {}),
             ...(request.tailVisualState
               ? { tailVisualState: request.tailVisualState }
               : {}),
