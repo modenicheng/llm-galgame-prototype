@@ -55,6 +55,12 @@ interface DirectorServiceOptions {
   diagnostics?: DiagnosticSink;
 }
 
+/** Game 依赖的最小导演面（相位门/防守节拍/剪报输入），结构化便于注入。 */
+export type SceneDirectorPort = Pick<
+  DirectorService,
+  "getDirective" | "evaluateFreeInput" | "narrowFormModes"
+>;
+
 export class DirectorService {
   private readonly runner: AgentRunnerPort;
   private readonly store: GraphStorePort;
@@ -154,6 +160,57 @@ export class DirectorService {
     };
     directive.formModes = [...modes];
     this.directives.set(sceneId, directive);
+  }
+
+  /**
+   * M4.3 防守节拍评估：free_input 解决后异步评估玩家输入 vs 当前场景目标。
+   * 产出 DefenseBeat 追加进该场景 directive 的 defenseBeats——滞后一拍是
+   * 有意行为：本段按既有 directive 播出，引回作用于下一段（不阻塞生成）。
+   */
+  async evaluateFreeInput(input: {
+    sceneId: string;
+    scenePurpose: string;
+    playerInput: string;
+    recentSummary: string;
+  }): Promise<string> {
+    const directive = this.directives.get(input.sceneId);
+    const { text } = await this.runner.runLoop({
+      system:
+        "你是 GalGame 导演。玩家刚给出一段自由输入。评估它与当前场景目标的关系：" +
+        "若输入离题/离谱，给一条引回要点（一句话，不含台词）；若贴合场景，给一句顺势推进的要点。" +
+        '输出 JSON：{"beat":"..."}。',
+      user: [
+        "===== 场景目标 =====",
+        directive?.sceneGoal ?? input.scenePurpose,
+        "===== 玩家输入 =====",
+        input.playerInput,
+        "===== 最近剧情摘要 =====",
+        input.recentSummary === "" ? "（暂无）" : input.recentSummary,
+      ].join("\n\n"),
+      tools: this.buildTools(),
+      executeTool: (name, argsJson) => this.executeTool(name, argsJson),
+    });
+    const match = /\{[\s\S]*\}/.exec(text);
+    let beat = text.trim();
+    if (match !== null) {
+      try {
+        const parsed = JSON.parse(match[0]) as { beat?: unknown };
+        if (typeof parsed.beat === "string" && parsed.beat.length > 0) {
+          beat = parsed.beat;
+        }
+      } catch {
+        // 非 JSON → 原样取文本
+      }
+    }
+    beat = beat.slice(0, 120);
+    const current = this.directives.get(input.sceneId) ?? {
+      sceneId: input.sceneId,
+      defenseBeats: [],
+      endingPressure: false,
+    };
+    current.defenseBeats = [...current.defenseBeats, beat].slice(-3);
+    this.directives.set(input.sceneId, current);
+    return beat;
   }
 
   // -------------------------------------------------------------------------

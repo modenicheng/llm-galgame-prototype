@@ -196,7 +196,8 @@ export class FakeIdGenerator implements IdGeneratorPort {
  * needs a real adapter (e.g. `{ graph: new RunGraphCoordinator(...) }`).
  */
 export function makeTestPorts(
-  overrides?: Partial<Pick<GamePorts, "graph" | "clock" | "ids" | "diagnostics">>,
+  overrides?: Partial<Omit<GamePorts, "graph" | "clock" | "ids" | "diagnostics">> &
+    Partial<Pick<GamePorts, "graph" | "clock" | "ids" | "diagnostics">>,
 ): GamePorts {
   return {
     graph: new MemoryRunGraph(),

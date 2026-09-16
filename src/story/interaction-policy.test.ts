@@ -193,3 +193,29 @@ describe("InteractionPolicy", () => {
   });
 
 });
+
+
+// ---------------------------------------------------------------------------
+// M4.3 相位门：directive.formModes 收窄 allowed_modes
+// ---------------------------------------------------------------------------
+
+describe("InteractionPolicy 相位门（M4.3）", () => {
+  it("rejects a mode outside the director allow-list even if config allows it", () => {
+    const policy = new InteractionPolicy(makeConfig({ allowed_modes: ["choice", "input"] }));
+    const result = policy.validate(inputInteraction(), state([]), ["hybrid"]);
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toContain("当前场景允许的模式");
+  });
+
+  it("accepts a mode inside the intersection of config and allow-list", () => {
+    const policy = new InteractionPolicy(makeConfig({ allowed_modes: ["choice", "input"] }));
+    const result = policy.validate(choiceInteraction(OPTIONS_2), state([]), ["input", "choice"]);
+    expect(result.accepted).toBe(true);
+  });
+
+  it("ignores an empty allow-list (no narrowing)", () => {
+    const policy = new InteractionPolicy(makeConfig());
+    const result = policy.validate(choiceInteraction(OPTIONS_2), state([]), []);
+    expect(result.accepted).toBe(true);
+  });
+});

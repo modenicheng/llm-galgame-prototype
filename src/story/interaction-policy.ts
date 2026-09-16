@@ -50,10 +50,15 @@ function toCandidate(interaction: InteractionEvent): PolicyCandidate {
 export class InteractionPolicy {
   constructor(private readonly config: InteractionPolicyConfig) {}
 
-  /** Validate an interaction against the policy. Checks run in §8.3 order. */
+  /**
+   * Validate an interaction against the policy. Checks run in §8.3 order.
+   * `modeAllowList`（M4.3 相位门）：导演 directive.formModes 的收窄——提供时
+   * mode 还必须落在 allowList ∩ allowed_modes 内。
+   */
   validate(
     interaction: InteractionEvent,
     state: InteractionPolicyState,
+    modeAllowList?: readonly InteractionMode[],
   ): InteractionPolicyResult {
     const { config } = this;
     const candidate = toCandidate(interaction);
@@ -64,6 +69,16 @@ export class InteractionPolicy {
         accepted: false,
         reason: `mode "${candidate.mode}" 不在 allowed_modes 中。`,
       };
+    }
+
+    // 1b. M4.3 相位门：导演收窄（formModes）生效点
+    if (modeAllowList !== undefined && modeAllowList.length > 0) {
+      if (!modeAllowList.includes(candidate.mode)) {
+        return {
+          accepted: false,
+          reason: `mode "${candidate.mode}" 不在当前场景允许的模式 [${modeAllowList.join(", ")}] 中。`,
+        };
+      }
     }
 
     // 2. choice/hybrid 选项数符合配置范围

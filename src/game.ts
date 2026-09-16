@@ -88,7 +88,7 @@ import { InteractionPolicy } from "./story/interaction-policy.js";
 import type { InteractionMode, InputSpec } from "./story/types.js";
 import { reconcileStoryState } from "./story/reconcile.js";
 import { createInitialState } from "./story/state.js";
-import type { DirectorService } from "./application/director/director-service.js";
+import type { SceneDirectorPort } from "./application/director/director-service.js";
 import { buildActorBriefing } from "./application/director/actor-briefing.js";
 import type {
   GeneratedEvent,
@@ -190,7 +190,7 @@ export interface GamePorts {
   diagnostics?: DiagnosticSink;
   narrativeDirector?: NarrativeDirectorPort;
   /** M4.1 导演服务（SceneDirective 相位门/防守节拍；M4.2 剪报组装输入）。 */
-  director?: DirectorService;
+  director?: SceneDirectorPort;
   /**
    * run() 的图入口模式（M1.5）：resume = 有档续档/无档新局（默认）；
    * restart = 宿主 restart_session 重建后——弃局活跃周目并在游标节点
@@ -240,7 +240,7 @@ export class Game {
   private readonly metrics: Metrics;
   private choiceTimestamp: number | null = null;
   private readonly narrativeDirector: NarrativeDirectorPort | undefined;
-  private readonly director: DirectorService | undefined;
+  private readonly director: SceneDirectorPort | undefined;
   private readonly runMode: "resume" | "restart";
   private readonly playbackBuffer = new PlaybackBuffer();
   private readonly generationScheduler = new GenerationScheduler();
@@ -711,9 +711,13 @@ export class Game {
    * BranchManager, interaction_opened) is published for the illegal event.
    */
   private assertInteractionPolicy(event: InteractionEvent): void {
-    const result = this.interactionPolicy.validate(event, {
-      previousModes: this.recentInteractionModes,
-    });
+    // M4.3 相位门：当前场景 directive.formModes 收窄 allowed_modes。
+    const directive = this.director?.getDirective(this.storyState.scene.id);
+    const result = this.interactionPolicy.validate(
+      event,
+      { previousModes: this.recentInteractionModes },
+      directive?.formModes,
+    );
     if (!result.accepted) {
       throw new InteractionPolicyViolationError(result.reason ?? "策略校验失败。");
     }
@@ -2577,6 +2581,18 @@ export class Game {
       await this.graph.beginEdge({ kind: "option", text: event.text });
     } else if (event.type === "player_input") {
       await this.graph.beginEdge({ kind: "free_input", text: event.text });
+      // M4.3 防守节拍：评估与生成并行（滞后一拍——本段按既有 directive
+      // 播出，引回写入下一段 directive），绝不阻塞演出。
+      void this.director
+        ?.evaluateFreeInput({
+          sceneId: this.storyState.scene.id,
+          scenePurpose: this.storyState.scene.purpose,
+          playerInput: event.text,
+          recentSummary: this.storyState.recent_summary,
+        })
+        .catch((err: unknown) => {
+          this.diagnostics.warn("Game", `defense evaluation failed: ${String(err)}`);
+        });
     }
     await this.graph.appendEdgeEvents([event]);
     this.narrativeDirector?.observeCommitted([event]);
