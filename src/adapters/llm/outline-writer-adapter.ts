@@ -1,0 +1,144 @@
+/**
+ * OutlineWriter adapter（执行清单 M3.2，决议 D1）——单次 JSON 调用。
+ * prompt 约束：purpose ≤200 字禁台词、至少 2 act + 1 ending、id 唯一、
+ * location 为物理地点标签不写状态细节（决议 D8）。
+ */
+
+import OpenAI from "openai";
+import { z } from "zod";
+import type { AppConfig } from "../../config.js";
+import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
+import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
+import { OUTLINE_PURPOSE_MAX_LENGTH } from "../../core/outline/types.js";
+import type {
+  OutlineWriterPort,
+  OutlineWriterRequest,
+  WorldDraft,
+} from "../../application/outline/outline-writer.js";
+
+const SYSTEM_PROMPT =
+  "你是 GalGame 编剧。输入玩家的世界描述，输出开局前的世界设计 JSON：" +
+  "{worldSetting, characters:[{id,name,description,spriteBinding?}], outline:[{id,purpose,kind,status,location?}]}。" +
+  "worldSetting 是世界观设定（≤500 字）。characters 2~5 名角色，description ≤200 字。" +
+  "outline 是幕级大纲：至少 2 个 kind=act 的幕节点按剧情顺序排列，最后恰好 1~2 个 kind=ending 的结局节点；" +
+  "所有节点 status 固定为 planned；id 用 `ol_` 前缀且全局唯一（结局节点 id 以 `ol_end_` 开头）。" +
+  "每个 purpose 是节拍目的（不超过 " + OUTLINE_PURPOSE_MAX_LENGTH + " 字），禁止写任何台词。" +
+  "location 是物理地点标签（如「教室」「旧校舍」），不写状态细节；同一物理地点的不同幕共享同一 location。";
+
+const DraftCharacterSchema = z.object({
+  id: z.string().min(1).max(64),
+  name: z.string().min(1).max(64),
+  description: z.string().min(1).max(500),
+  spriteBinding: z.exactOptional(z.string().min(1).max(64)),
+});
+
+const RawOutlineNodeSchema = z.object({
+  id: z.string().min(1).max(64),
+  purpose: z.string().min(1).max(OUTLINE_PURPOSE_MAX_LENGTH),
+  kind: z.enum(["act", "ending"]),
+  status: z.literal("planned"),
+  location: z.exactOptional(z.string().min(1).max(64)),
+});
+
+const RawWorldDraftSchema = z.object({
+  worldSetting: z.string().min(1).max(2000),
+  characters: z.array(DraftCharacterSchema).min(1).max(8),
+  outline: z
+    .array(RawOutlineNodeSchema)
+    .min(3)
+    .max(12)
+    .refine(
+      (nodes) => nodes.some((n) => n.kind === "act"),
+      { message: "至少 1 个 act 节点" },
+    )
+    .refine(
+      (nodes) => {
+        const endings = nodes.filter((n) => n.kind === "ending");
+        return endings.length >= 1 && endings.length <= 2;
+      },
+      { message: "ending 节点须为 1~2 个" },
+    )
+    .refine(
+      (nodes) => new Set(nodes.map((n) => n.id)).size === nodes.length,
+      { message: "节点 id 必须唯一" },
+    )
+    .refine(
+      (nodes) => nodes.every((n) => (n.kind === "ending" ? n.id.startsWith("ol_end_") : true)),
+      { message: "结局节点 id 须以 ol_end_ 开头" },
+    ),
+});
+export class OutlineWriterAdapter implements OutlineWriterPort {
+  private readonly client: OpenAI;
+  private readonly model: string;
+  private readonly diagnostics: DiagnosticSink;
+
+  constructor(private readonly opts: {
+    apiKey: string;
+    api: AppConfig["api"];
+    diagnostics?: DiagnosticSink;
+    client?: OpenAI;
+  }) {
+    this.client =
+      opts.client ??
+      new OpenAI({
+        apiKey: opts.apiKey,
+        ...(opts.api.base_url ? { baseURL: opts.api.base_url } : {}),
+        timeout: opts.api.timeout_ms,
+      });
+    this.model = opts.api.model;
+    this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
+  }
+
+  async writeOutline(request: OutlineWriterRequest): Promise<WorldDraft> {
+    const userMessage = this.buildUserMessage(request);
+
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userMessage },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.7,
+    });
+
+    const rawContent = response.choices[0]?.message?.content ?? "";
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawContent);
+    } catch {
+      this.diagnostics.warn(
+        "OutlineWriter",
+        `JSON 解析失败：${rawContent.slice(0, 200)}`,
+      );
+      throw new Error("outline 输出解析失败");
+    }
+
+    const schemaResult = RawWorldDraftSchema.safeParse(parsed);
+    if (!schemaResult.success) {
+      this.diagnostics.warn(
+        "OutlineWriter",
+        `输出校验失败：${schemaResult.error.message}`,
+      );
+      throw new Error("outline 输出解析失败");
+    }
+
+    const data = schemaResult.data;
+    return {
+      worldSetting: data.worldSetting,
+      characters: data.characters,
+      // 契约类型与 raw schema 字段一致（status 恒 planned），直接投影。
+      outline: data.outline.map((node) => ({ ...node })),
+    };
+  }
+
+  private buildUserMessage(request: OutlineWriterRequest): string {
+    const parts: string[] = ["===== 世界描述 =====", request.userText];
+    if (request.seedStoryLine !== undefined && request.seedStoryLine !== "") {
+      parts.push("===== 故事主线种子（附加约束） =====");
+      parts.push(request.seedStoryLine);
+    }
+    return parts.join("\n\n");
+  }
+}

@@ -116,7 +116,8 @@
   要点：① `src/core/ports/outline-store-port.ts`：`getOutline(): {nodes, revision}` / `applyRevision(ops, reason): Promise<number>`；`OutlineOp` = 判别联合 add/prune/activate/realize，store 做状态机校验（非法 op 整批拒绝大声抛错）+ 落盘 + 日志；② `src/adapters/storage/outline-store.ts`：`outline.json`（当前全量 + revision，tmp+rename 原子写）+ `outline-log.jsonl`（append-only `{revision, ops, reason, at}`），读损坏大声抛错（真源纪律同快照）；③ 路径常量进 `GAME_STORAGE_LAYOUT`（§9 已冻结的条目）。
   验收：单测——非法迁移整批拒绝且不落盘；日志 append-only 与全量一致；原子写；损坏抛错。
 
-- [ ] **M3.2 编剧初版大纲（OutlineWriter）**
+- [x] **M3.2 编剧初版大纲（OutlineWriter）**
+  落地（2026-09-17）：`src/application/outline/outline-writer.ts`（port + WorldDraft/DraftCharacter/OutlineWriterRequest，schema 非冻结）；`outline-writer-adapter.ts` 单次 JSON 调用（json_object + zod refine：≥1 act、ending 1~2 且 id 以 ol_end_ 开头、id 唯一、purpose ≤200），解析/校验失败统一大声抛「outline 输出解析失败」；种子主线经 user message 附加段传入。
   前置：M3.1。关联：决议 D1；§4；`src/adapters/llm/plot-planner-adapter.ts`（模式样例）。
   目标：用户文本 → 世界设定 + 角色卡 + 初版大纲（一至两个结局）。
   要点：① `src/application/outline/outline-writer.ts`：port `writeOutline({userText, seedStoryLine?}) → WorldDraft`；`WorldDraft = {worldSetting, characters[{id,name,description,spriteBinding?}], outline: OutlineNode[]}`（act 链 + 1–2 个 ending，全部 planned；同地不同阶段的幕节点填同一 `location`，决议 D8）；schema 定义同文件（非冻结契约）；② `src/adapters/llm/outline-writer-adapter.ts`：单次 JSON 调用（json_object + zod + 明确报错「outline 输出解析失败」）；prompt 约束：purpose ≤200 字禁台词（用常量）、至少 2 act + 1 ending、id 唯一、location 为物理地点标签（如「教室」）不写状态细节。
