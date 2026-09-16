@@ -15,7 +15,8 @@
 | `docs/superpowers/specs/*` | NarrativeDirector、浏览器资源管线的专项设计 |
 | `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md` | 长期记忆强化与复核体系（facts/beliefs/lessons/audit）下一阶段设计，待实施 |
 | `docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md` | **v2 剧情图架构（实施中）**：回溯/存档/多周目三合一、编剧-导演-演员三角色、破坏性重构授权 |
-| `docs/superpowers/plans/2026-09-09-v2-rewrite-todo.md` | **v2 破坏性重构执行清单（活文档）**：M0–M5 逐项推进、反重复地图、偏差记录、卫生门 |
+| `docs/superpowers/plans/2026-09-09-v2-rewrite-todo.md` | **v2 执行清单（交付版，2026-09-16 重整）**：面向一次性自主实现——任务卡 P1–P6 + 卫生门、设计决议 D1–D6、反重复地图、历史与偏差附录 |
+| `docs/skills/repo-hygiene/SKILL.md` | 仓库卫生自检 skill（快速档/完整档 + subagent 评审模板）；配套 `npm run hygiene` 机械检查 |
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
 | `docs/agents/TTS-音色配置指南.md` | 音色创建与绑定操作指南 |
 | `DESIGN.md` | 已归档（model-jsonl 时代旧架构，仅历史参考） |
@@ -96,9 +97,10 @@
 - **v2 剧情图架构（实施中）**：M0 契约冻结、M1.1 记忆摘要映射、M1.2 图存储、
   M1.3 演员接图、M1.4 游标恢复、M1.5 新周目入口（root/retrace）、M1.6 sessions
   JSONL store 删除、M2.1 ConfluenceJudge port + LLM 判定 adapter、M2.2 场景内
-  汇流（后台判定 + 有界改绑 + promise 链互斥）均已完成；M2.3 汇流端到端验证、
-  M2.4 末态索引、M3 编剧+大纲+世界生成、M4 导演+剪报防火墙、M5 图 UI+结算
-  待做——逐项进度见执行清单。
+  汇流（后台判定 + 有界改绑 + promise 链互斥）均已完成；执行清单已于
+  2026-09-16 重整为**交付版**（任务卡 P1–P6：M5.0 宿主接线 → 记忆审计
+  Phase A/B → 编剧+大纲+世界生成 → 导演+剪报 → 收束+canon+汇流补完 →
+  图 UI+结算；M2.3 端到端验证归人工清单）。待做清单与卫生门见执行清单。
 - **event mode / forced ending / max_interactions**：过渡期保留（恢复后
   interactionCount 清零、不跨周目累计）；M3.5 由大纲结局驱动替代时整体删除。
 - **PlaybackBuffer 未迁 EventGroup**：采用 §63 展平方案（事件携带 `stage` 字段），
@@ -119,6 +121,8 @@
 
 ## 近期提交锚点
 
+- `fabed3a` M2.2 场景内汇流：后台判定 + 有界改绑 + 互斥链 + 场景节点世界稳定
+- `a6ad549` M2.1 ConfluenceJudge port + LLM adapter + 世界最大 seq 播种
 - `b9f3f8d` M1.5 新周目入口：restart 弃局 + retrace、origin 保留
 - `875b75f` M1.4 游标恢复：三态入口、全路径重放、isStoredEvent 守卫修复
 - `6131bea` M1.3 演员接图 + M0 契约审查修复

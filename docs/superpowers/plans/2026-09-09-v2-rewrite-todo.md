@@ -1,148 +1,223 @@
-# vibe-gal-v2 破坏性重构执行清单
+# v2 破坏性重构执行清单（交付版）
 
-日期：2026-09-09。设计依据：`docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md`（已批准）。
-本清单是**活文档**：完成即勾选；偏离设计处记入文末「偏差记录」；每阶段结束必须通过卫生门才能进入下一阶段。
+日期：2026-09-09 立项；**2026-09-16 重整为交付版**（面向一次性自主实现的执行文档）。
+设计依据：`docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md`（已批准，下称「设计」；§N 均指该文件）。
+本清单是**活文档**：完成即勾选；偏离处记入附录 B「偏差记录」；每阶段末过卫生门才能进入下一阶段。
 
-## 执行规则
+**交付版说明**：本文档交给一个自主执行的实现者（agent），按序完成第 4 节全部任务卡。
+附录 A 是历史实施记录（只读背景，源码注释仍引用其中的里程碑编号），附录 B 累积偏差。
 
-1. **动手前先查「反重复地图」**——任何需求先确认没有既有组件可复用。
-2. **卫生门强制**：GH-1（代码卫生）与 GH-2（文档卫生）未过，不开下一阶段。
-3. ⚠ 标记 = 高风险项：先做设计细化或 spike，再动代码。
-4. 破坏性重构：不留兼容层；被替换系统在所属阶段内**立即删除**（不留「暂时共存」）。
-5. 里程碑完成即 commit（main），不攒大包。
+---
 
-## M0 基线与契约冻结 ✅（2026-09-09）
+## 1. 执行协议（动手前必读）
 
-- [x] M0.1 基线验证：`backup/pre-v2-prototype` 存在；main 全量测试 + 双 typecheck 绿（基线 1330 测试 / 86 文件）
-- [x] M0.2 图契约代码化：`src/core/graph/types.ts`——SceneNode / DecisionNode / PlotEdge / EndingNode / RunRecord / ActiveCursor / StateSnapshot（zod schema + 类型），单测覆盖解析与拒绝
-- [x] M0.3 大纲契约代码化：`src/core/outline/types.ts`——OutlineNode / 状态机（planned→active→realized；pruned），单测
-- [x] M0.4 ID 规则与存储布局常量：`src/core/graph/ids.ts`（前缀 schema + GAME_STORAGE_LAYOUT + 边负载/快照路径函数）
-- [x] **GH-0 卫生门**：1380 测试全绿（+50）、双 typecheck ✓、build ✓；无被替换系统残留（本阶段纯新增）；architecture.test 随全量通过
+**工作循环**（每张任务卡）：
+1. 读卡：目标 / 前置 / 关联引用。把卡内引用的 spec 章节、既有文件读完再动手。
+2. 定落点：列出要新建/修改的文件清单（对照第 4 节反重复地图，先确认没有既有组件可复用）。
+3. 测试先行（能写时）：先写会失败的测试，再实现到绿。
+4. 验证：`npm test` 全绿 + `npm run typecheck` 通过；涉及构建产物时 `npm run build`；每 3–4 张卡加跑 `npm run hygiene`。
+5. 收尾：勾选本卡、必要时在附录 B 追加偏差记录、`git commit`（格式 `type(scope): 卡号 一句话`，如 `feat(graph): M3.1 outline store`）。不攒大包，main 直接提交。
 
+**测试与代码惯例**（照既有代码写，不要发明新风格）：
+- vitest，测试与源码同目录（`*.test.ts`）；LLM 依赖一律注入 fake OpenAI client（样例：`src/adapters/llm/plot-planner-adapter.test.ts`、`src/application/graph/run-graph-confluence.test.ts`）；存储用真 store + 临时目录；异步断言用 `vi.waitFor`。
+- zod 可选字段用 `z.exactOptional(...)` 而非 `.optional()`（tsconfig `exactOptionalPropertyTypes`）。
+- 实时性红线：**任何 LLM 调用不得进入生成/播放同步路径**——后台调用照汇流判定模式（fire-and-forget + 诊断告警，落盘入协调器互斥链、LLM 在链外）。
 
-## M1 图存储内核 + 演员接图（存档读档闭环）
+**纪律**：
+- 测试红 = 停止一切推进，先修复。禁止 skip 测试、禁止 `// TODO` 顶替实现。
+- **冻结契约**（§3 schema 字段集、§3.3 判定签名、§4 大纲 schema、§9 存储布局、§7 删除语义）：不得增删字段。实现中发现必须改 → 登记附录 B `[BLOCKED 卡号]` 后跳卡。唯一预授权修订：MA-B 的 `SNAPSHOT_VERSION` 1→2（决议 D4）。运行时端口（`src/core/ports/*.ts` 的方法签名）不是冻结契约，按卡内说明演进。
+- 对既有行为有疑问：先读测试与 spec 引用；仍含糊 → 取与既有测试一致的保守实现，并在附录 B 注明你的解释。
+- 不在卡内的文件不顺手重构；发现的卫生问题记入下一张门卡处理。
+- 阻塞（需要真实 LLM、需要作者决策、环境不具备）：登记 `[BLOCKED 卡号] 原因`，继续下一张无依赖卡。
 
-- [x] M1.1 ⚠ 设计细化：记忆子层 v2 持久化（细化决议见下方「M1.1 设计细化」节）
-- [ ] M1.2 GraphStore port + JSON/JSONL adapter（§9 布局：scenes/decisions/edges/endings/runs/payloads/snapshots/cursor/stats）
-- [ ] M1.3 演员接图：Game 提交路径改造——段事件 → 边负载；交互开启 → 决策节点 + 入口快照；交互解决 → 出边 + 末态快照
-- [x] M1.4 ✅ 游标与恢复：cursor.json；「继续游戏」= 载入节点入口快照重建运行时（Game 必须可从 StateSnapshot 完整重建——本阶段最高风险，先写恢复路径的集成测试再实现）。落地形态见下方「游标恢复的三态入口」；恢复集成测试：协调器 6 例 + Game 真存储跨重启 2 例 + 守卫回归 1 例。
-- [x] M1.5 ✅ 新周目入口：root 开局 / retrace（载入快照 → 重放表单 → 新选择产生新边）。落地：`restoreOrCreateRun({restart:true})`——弃局活跃周目（abandonedAt=游标位）→ 游标节点开 retrace 新周目（CurrentRun 携带 origin，结局回写不再覆盖来源）→ 表单重放；bootstrap `restart()`（restart_session 指令路径）以 runMode="restart" 重建。同选项快进**推迟到 M5.3**（见下方 M5.3 注记）。
-- [x] M1.6 ✅ 删除：sessions JSONL store（node-jsonl-session-store + 测试 + SessionStorePort 整文件）；`sessions_dir` 配置保留（narrative memory 会话文件仍用，非事件日志）。event mode / forced ending **暂留**（M3.5 由大纲结局驱动替代时删）
-- [x] **GH-1 + GH-2**（M1 收尾门，2026-09-14 过）：1408 测试 + 双 typecheck + build 绿；
-  死代码零残留（v1 恢复游标/会话存储 grep 清零）；单一真源成立（快照=运行时状态、
-  边负载=回放、runs.jsonl=周目流水）；architecture.test 递归覆盖 core/graph、
-  core/outline（无 node/adapter 依赖）；config 无死键（sessions_dir 由 narrative
-  memory 接续使用）；偏差已回写 spec §3（form prompt 字段）；status.md 同步至
-  2026-09-14；源码 §N 引用全量可解析。
+**卫生门**（每阶段末的门卡执行）：`docs/skills/repo-hygiene/SKILL.md` 完整档，即：
+机械检查（`npm run hygiene`）→ subagent 只读评审（SKILL §B 的 prompt 模板，必须派发）→ 当场修复 P1/P2 → 单一真源与依赖方向核对 → 文档卫生（本清单勾选、status.md 同步、§N 引用可解析）。快速档（仅 §A + 新文件过目）每 3–4 张卡跑一次。
 
-### M1.1 设计细化（2026-09-13 决议）
+## 2. 现状基线（2026-09-16，commit fabed3a）
 
-**真源层级**（恢复路径按此读取，不越级）：
+**验证基线**：1421 测试 / 96 文件全绿；node/web 双 typecheck、build 绿；`npm run hygiene` 通过。
 
-1. `graph/snapshots/<decisionId>.json` = 运行时状态**唯一真源**（story + visual + memoryDigest）。「继续游戏」只读这里。
-2. `graph/payloads/<edgeId>.jsonl` = 回放数据（UI/结算/审计），不是记忆真源。记录形状 = `StoredEvent` 直接逐行落盘（自带 seq/turn/source，零转换）。
-3. `world/canon.json`（M3.6 落地）= 跨周目世界真理。
-4. NarrativeMemoryStore 会话文件 = **工作缓存**（可丢弃可重建）：
-   - `narrative-state.json`：恢复路径**不读**；consolidator 照常低频写穿，恢复后被 digest 重建态自然覆盖；
-   - `episodes.jsonl`：恢复后从空重新积累（episodes 本就是 consolidator 的派生产物）；
-   - `director-plan.json`：维持现状，直到 M4.4 随 DirectorPlan 一起处理。
+已完成 M0–M2.2（历史细节见附录 A）。已落地组件：
 
-**digest ↔ NarrativeMemoryState 纯映射**（新模块 `src/core/graph/memory-digest.ts`，core→core 依赖）：
+| 组件 | 位置 | 要点 |
+|---|---|---|
+| 图契约（冻结） | `src/core/graph/types.ts`、`src/core/graph/ids.ts`、`src/core/outline/types.ts` | §3/§4 schema + ID 规则 + §9 布局常量 |
+| 图存储 | `src/adapters/storage/game-graph-store.ts` | JSONL latest-wins；快照/游标原子写；endState 内联 ⟺ 结局端点 ∨ 汇流边，普通决策端点派生 + 写入校验精确一致 |
+| 图协调器 | `src/application/graph/run-graph-coordinator.ts` | 恢复三态（fresh/active/ended）、restart=retrace、promise 链互斥、场景内汇流后台改绑、场景节点世界级稳定 |
+| 汇流判定 | `src/core/ports/confluence-judge-port.ts` + `src/adapters/llm/confluence-judge-adapter.ts` | §3.3 冻结签名；`narrative.confluence.enabled` 门控（默认关，CI 零网络） |
+| 演员管线 | `src/game.ts` + `src/runtime/*` + `src/core/protocol/*` | DSL 流式生成、低水位/预取、交互两阶段提交 |
+| 叙事记忆 | `src/application/narrative/*` + `src/adapters/llm/*consolidator*/plot-planner-adapter` | consolidator（threads/setups/anchors/episodes）、PlotPlanner/DirectorPlan、getBrief 同步零 await |
+| 组装根 | `src/bootstrap/create-runtime-application.ts` | gameId/gamesRoot 可注入；缺省每次启动新世界 |
+| 宿主 | `src/hosts/local-web/`、`src/apps/cli/`、`src/entrypoints/` | 均不传 gameId（M5.0 修） |
 
-- `memoryDigestFromState(state)`：丢 `recentEpisodeIds`（recent 指针属于 episodes 缓存，不入契约）；
-- `memoryStateFromDigest(digest)`：`recentEpisodeIds` 重建为 `[]`。
-- 引用制一句话：**周目内记忆随快照走，跨周目事实走引用**——Phase B facts/beliefs 进 digest 时只存 canon 事实 id 引用 + 摘要，内容唯一存放于 canon.json。
+**不可回归的行为不变量**（既有测试已锁定，改动前先读对应测试）：
+1. seq 播种 `nextSeq = max(世界最大 seq, 路径末事件 seq, digest 水位) + 1`（fresh 与 retrace 同式，跨周目单调）；
+2. 「同一次快照写两处」：普通决策端点边的 endState ≡ 后继入口快照（写入门禁）；
+3. 恢复 = 游标决策节点入口快照 + 全路径边负载经水位过滤重放进导演；
+4. 汇流判定永不阻塞播放；改绑守卫（换周目/已完结/apply 时祖先重验）；
+5. 场景节点按模型场景 id 世界级稳定（fresh 周目不重复建）。
 
-**NarrativeDirectorPort 扩展**（M1.3/M1.4 消费）：
+## 3. 设计决议（本次交付前定稿，实现时不再讨论）
 
-- `getMemoryDigest(): MemoryDigest`——交互打开瞬间取记忆态嵌入入口快照；
-- `restoreFromDigest(digest)`——恢复路径用它替代 `initialize()` 的 store.load() 分支。
+- **D1 pi 框架替代**（已回写 spec §5）：仓库无 pi 可用产物。编剧 = 现有 openai-compatible client 上的**单次 JSON 调用 adapter**（沿用 PlotPlanner adapter 模式）；导演 = 同 client 上的**工具循环**（`AgentRunner` port + adapter）。角色边界与红线不变；端口可替换。
+- **D2 M2.3 归人工验证**：「离谱输入→防守节拍引回→图上汇流」的端到端验证前置依赖 M4.3（防守节拍在位）且需真实 LLM；协调器层自动化等价物已由 `run-graph-confluence.test.ts` 7 例覆盖。移入第 6 节人工清单，不阻塞开发。
+- **D3 执行序重排**（对设计 §11 建议的偏离）：M5.0 宿主接线提前到最前（后续一切实测依赖它）；M3.5 收束与 M3.6 canon、M3.7 清理挪到 M4 之后——收束压力与 canon 读取必须走导演剪报通道（§5.2 防火墙），导演在位前实现即破防火墙。
+- **D4 SNAPSHOT_VERSION 1→2 预授权**：MA-B 在 `MemoryDigest` 增加 facts/beliefs 时执行；旧 v1 快照读取即拒（zod literal 不匹配走结构损坏路径），dev 存档废弃、不做迁移，登记附录 B。
+- **D5 场景→大纲绑定规则**：场景节点创建时 outlineRef = 当前前沿 act 节点（首个未 realized 的 act），创建后不改绑；错绑接受（act 粒度粗，影响限于完成度统计）。大纲维护只增/剪前沿节点（§4 冻结原则）。
+- **D6 digest 事实嵌入制**：digest 内嵌路径层 facts/beliefs **全文**（恢复不得依赖 canon 可用性）；canon 晋升不回改既有快照；读取侧 canon 优先去重。这是对附录 A「引用制」决议的落地细则。
 
-**恢复点语义**：恢复 = 回到游标所在决策节点入口（交互打开那一刻）。有 payload 文件但无 edges 记录的孤儿文件在恢复时删除，重新生成走新边 id。首个决策点之前的开局段崩溃 → 无恢复点，重开新周目（dev 接受）。
+## 4. 任务卡（执行序）
 
-**快照复用不变量**：下一个决策点的入口快照 = 前一条边的 endState（同一次快照写两处）；ending 收束时 endState 单独捕获。汇流比较因此天然对齐同一种货币（§3.3 不变量成立的结构保证）。
+**开工前**：先跑 `npm test`、`npm run typecheck`、`npm run hygiene`，确认与第 2 节基线一致；不一致即停止并登记 `[BLOCKED]`（基线损坏不是你的修复对象）。
 
-**恢复时的记忆追赶（2026-09-13 补充；2026-09-14 修正）**：快照 digest 的 `consolidatedThroughEventSeq` 之前的已整理、之后的未整理。恢复路径在 digest 重建后，把**根→游标全路径的边负载**重新喂给 `director.observeCommitted()`——其内部按 `seq > watermark` 过滤，恰好只把未整理窗口重新入队，零契约变更。~~只喂入边 payload~~（2026-09-14 修正：checkpoint 只在 interaction_completed 触发后台整理，水位可能滞后到开局面——只喂入边会丢祖先边的未整理窗口；全路径喂入在水位之下无害）。**已知洞（dev 接受）**：开局段事件不入图（M1.1 决议），其未整理残余在恢复时不可回收——与「首个决策点之前崩溃重开」同性质，M4 导演剪报接管上下文后影响趋零。
+### P1 快速见效
 
-**场景节点判定（M1 无编剧过渡）**：`StoryState.scene.id` 首次出现 → 建 SceneNode（status=active）；M1 bootstrap 单个 seed 大纲节点（`ol_` 前缀、active）作为全部场景的 outlineRef（修订 2026-09-13：种子大纲**文件** outline.json 随 M3.1 OutlineStore 落地，M1 只有引用目标 id）。realized 迁移不做（M5 结算细化）；M3.2 真实大纲落地后 dev 期不迁移旧 game。
+- [ ] **M5.0 宿主接线**（提前执行，原属 P6）
+  前置：无。关联：`create-runtime-application.ts` 的 `options.gameId`（已支持）。
+  目标：世界身份跨进程固定，「继续游戏」对真实用户可达。
+  要点：① web/cli 入口接受 gameId（启动参数 `--game <id>` 与环境变量 `VIBEGAL_GAME_ID`，参数优先）传入 `options.gameId`；② local-web 在未显式指定时持久化最近世界到 `games/.last-game`（best-effort 读写，损坏/缺失即开新世界，读写失败不阻塞启动）；③ 新世界的正式入口随 M3.3，本卡不做 UI。
+  验收：单测——同一 gameId 两次 `createRuntimeApplication`（tmpdir gamesRoot）得到同一图位置并恢复游标；显式指定优先于 `.last-game`；`.last-game` 损坏容错。
 
-**seq / turn 连续性（恢复后计数器播种；2026-09-14 精确化）**：契约不加字段。恢复时 `nextSeq = max(路径末事件 seq, digest.consolidatedThroughEventSeq) + 1`（**下一个分配槽位**——语义必须是新事件不与重放事件撞号；watermark ≤ 路径末 seq 恒成立）；turn 取路径末事件（即游标交互事件自身）的 turn，首决策（无入边）为 1。周目内 seq 严格单调递增，consolidator 的 `consolidatedThroughEventSeq` 语义保持成立。
+### P2 记忆审计（memory-audit Phase A/B）
 
-**游标恢复的三态入口（2026-09-14，M1.4 落地形态）**：`RunGraphPort.restoreOrCreateRun(): RunResume`——`fresh`（无存档，内部已 startRootRun）/ `active`（游标恢复点：decision 节点 + pathEvents + nextSeq/turnFloor；协调器同时水合 currentRun/lastDecisionId/sceneNodes 缓存并清理孤儿 payload）/ `ended`（最新周目已完结：补发 session_ended，结局文本从末边负载回收，开局直落结局则用占位文本）。多入边节点取 `payload.lastSeq` 最大者（最近走过；M1.4 单入边下唯一）。Game 侧删除 v1 遗留 `resumeInteraction` 字段（v2 恢复真源是图游标+表单快照，不再有内存态恢复游标）；恢复时 `interactionCount` 清零（event mode 的 max_interactions 计数跨恢复不累计——event mode 本身 M3.5 删除）。
+依据：`docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md`（下称「记忆 spec」，§N 均指该文件）。该 spec 已定稿且高度可执行，任务卡只做排期与冲突决议，细则以 spec 为准。
 
+- [ ] **MA-A 确定性规则与存储骨架**（记忆 spec §12 Phase A 条目 1–5）
+  前置：无。关联：§5–§8、§10 变更表、§14 测试矩阵。
+  要点：① depth 字段 + scheduler 门控 + RESOLVE_OR_DROP 第三档（§8.1/8.3）；② intendedPayoff 必填（runtime 拒绝 + author seed warning，§8.2）；③ 终局报告 ending-report.json（§8.4，确定性聚合，EndEvent 提交后异步）；④ lessons 存储 + rejection 自动晋升 + brief 规避清单（§7）；⑤ facts.jsonl/lessons.jsonl 存储通道（§5.3，B 阶段才有写入者）。新增配置键（facts/lessons/setups/beliefs 各上限）全部带 zod 默认值并被读取。
+  **卫生前置**：`src/application/narrative/narrative-director-service.test.ts`（2421 行）沿子系统缝拆分（consolidation / replan / brief / 生命周期；§14 矩阵即分缝参考），新测试进对应文件；完成后把它移出 `scripts/hygiene-check.mjs` 的 ALLOWLIST。
+  验收：记忆 spec §12 Phase A 验收的自动化等价（全量绿；RESOLVE_OR_DROP 进 brief 的单测；ending-report 数值单测）；getBrief 零新增 await 的断言（§11 红线）。
 
+- [ ] **MA-B consolidator 扩展 + digest v2**（记忆 spec §12 Phase B 条目 6–9）
+  前置：MA-A。关联：§5/§6/§9/§10/§14；决议 D4/D6。
+  要点：① FactOp/BeliefOp/AuditFinding 进 consolidator 输出 schema 与 prompt（`adapters/llm/narrative-consolidator-adapter.ts`）；② validator 扩展 + facts/beliefs 内存与持久化 + audit→lesson 晋升（§7.2 来源 1）；③ fact-retriever + brief 三段渲染（[相关既定事实][角色认知][规避清单]）+ dsl-protocol.txt 一行规则；④ **SNAPSHOT_VERSION 1→2**：`MemoryDigestSchema` 增 facts/beliefs，`src/core/graph/memory-digest.ts` 双向映射扩展（D6：digest 内嵌全文；recentEpisodeIds 仍不入）；⑤ 幂等/去重/预算全链路测试。
+  验收：恢复后 facts/beliefs 从 digest 完整重建的单测（新世界快照 v2 可往返）；spec §14 对应层全绿；spec §12 Phase B 的「跑一局」验收归人工清单。
 
-## M2 汇流
+### P3 编剧与大纲
 
-- [x] M2.1 ✅（2026-09-16）ConfluenceJudge port（`core/ports/confluence-judge-port.ts`：
-  `judge({endState, candidateEntry}) → {equivalent, confidence, rationale, judgedBy}`；
-  候选枚举（如同场景过滤）是调用方的确定性职责，不入签名——自本条起即 §3.3
-  冻结签名）+ 首个 adapter（`adapters/llm/confluence-judge-adapter.ts`，复用
-  openai-compatible client，json_object + zod 校验；确定性比较器不实现，可插拔
-  路径记于端口头注）。前置已落（2026-09-15）：存储层汇流边 endState 内联化修订
-  （见偏差记录）。A2 seq 决议：选「从世界最大 seq 播种」并升格为统一规则
-  （fresh 与 retrace 同式，理由与载体见偏差记录 2026-09-16 条）。
-- [x] M2.2 ✅（2026-09-16）场景内汇流：边收束（openDecision）后**后台**发起判定——
-  候选 = 同场景、有入边（排除孤儿与周目首节点）、不在当前路径上（防成环）的
-  既有决策节点，逐个交 ConfluenceJudge，取置信最高命中；改绑有界：入边改指
-  候选（凭据 + 真实末态内联）+ 出边改源 + 游标仍停新节点时前移，新节点孤儿化。
-  并发安全：协调器图变更加 promise 链互斥（判定在链外等待，只有落盘改绑入队，
-  实时性红线保持）。守卫：换周目/已完结即放弃改绑（判定窗口关闭）；apply 时
-  重验祖先（判定落地期间玩家推进造成的路径变化）。落地细则见偏差记录
-  2026-09-16 M2.2 条。
-- [ ] M2.3 端到端验证：离谱输入 → 防守节拍引回 → 与既有路径汇流（图上如实呈现）
-- [ ] M2.4 末态索引 + 场景间/滞后汇流（独立可勾，可后置到 M4 之后）
-- [ ] **GH-1 + GH-2**
+- [ ] **M3.1 OutlineStore port + adapter**
+  前置：无。关联：§4（冻结）、§9；`src/core/outline/types.ts` 状态机谓词（已冻结，复用不重写）。
+  目标：大纲图持久化，修订留痕。
+  要点：① `src/core/ports/outline-store-port.ts`：`getOutline(): {nodes, revision}` / `applyRevision(ops, reason): Promise<number>`；`OutlineOp` = 判别联合 add/prune/activate/realize，store 做状态机校验（非法 op 整批拒绝大声抛错）+ 落盘 + 日志；② `src/adapters/storage/outline-store.ts`：`outline.json`（当前全量 + revision，tmp+rename 原子写）+ `outline-log.jsonl`（append-only `{revision, ops, reason, at}`），读损坏大声抛错（真源纪律同快照）；③ 路径常量进 `GAME_STORAGE_LAYOUT`（§9 已冻结的条目）。
+  验收：单测——非法迁移整批拒绝且不落盘；日志 append-only 与全量一致；原子写；损坏抛错。
 
-## M3 编剧（pi）+ 大纲图 + 世界生成
+- [ ] **M3.2 编剧初版大纲（OutlineWriter）**
+  前置：M3.1。关联：决议 D1；§4；`src/adapters/llm/plot-planner-adapter.ts`（模式样例）。
+  目标：用户文本 → 世界设定 + 角色卡 + 初版大纲（一至两个结局）。
+  要点：① `src/application/outline/outline-writer.ts`：port `writeOutline({userText, seedStoryLine?}) → WorldDraft`；`WorldDraft = {worldSetting, characters[{id,name,description,spriteBinding?}], outline: OutlineNode[]}`（act 链 + 1–2 个 ending，全部 planned）；schema 定义同文件（非冻结契约）；② `src/adapters/llm/outline-writer-adapter.ts`：单次 JSON 调用（json_object + zod + 明确报错「outline 输出解析失败」）；prompt 约束：purpose ≤200 字禁台词（用常量）、至少 2 act + 1 ending、id 唯一。
+  验收：adapter 单测三例（合法解析 / 非 JSON / schema 拒绝），形态同 plot-planner-adapter.test.ts。
 
-- [ ] M3.0 ⚠ pi agent 框架 spike：能力与接入方式调研（`.pi-subagents/` 现状、与现有 LLM client 的关系），产出决策记录；不确定处向作者确认
-- [ ] M3.1 OutlineStore port + adapter（outline.json + append-only 修订日志：预测/剪枝/修订留痕）
-- [ ] M3.2 编剧 agent：初版大纲生成（一至两个结局）；输入 = 用户文本描述（过渡期附 story_line.txt 作种子）
-- [ ] M3.3 世界生成管线：world/canon 脚手架 + per-game assets catalog + 大纲落盘 → 直通开玩（无确认闸门）
-- [ ] M3.4 大纲动态维护：checkpoint 时预测未来节点 / 剪除错误预测；realized 冻结
-- [ ] M3.5 结局驱动收束：结局候选 → 收束压力；**删除** event mode / forced ending / max_interactions 配置（restart_session 一并回归图语义：回溯/新世界）
-- [ ] M3.6 canon 存储 + 晋升流程（跨路径一致自动候选 → 编剧拍板；例外登记附补偿限制）
-- [ ] M3.7 删除 story_line.txt 静态注入与 longform/event 配置开关
-- [ ] 〔并行轨道〕memory-audit spec Phase A/B（facts/beliefs/lessons）——晋升依赖 facts，建议在 M3.6 前落地；独立 spec 不阻塞主线
-- [ ] **GH-1 + GH-2**
+- [ ] **M3.3 世界生成管线 + 直通开玩**
+  前置：M3.2、M5.0。关联：§8；决议 D1/D5。
+  目标：用户文本 → 编剧 → 落盘 → 直通开玩（无确认闸门，防剧透）。
+  要点：① `src/application/world/world-generator.ts`：OutlineWriter → OutlineStore 写入 draft → `world/canon.json` 脚手架（worldSetting + characters，schema 与 M3.6 对齐）→ per-game prompt 文件 `world/prompts/characters.txt + story_line.txt`（由 WorldDraft 渲染）→ 返回 gameId；② prompts 装载优先级：`loadPrompts` 支持 per-game 覆盖（有 `world/prompts/` 对应文件则优先，否则回退全局 `prompts/`）；③ 入口：web `POST /api/worlds {text}` + 首屏最小改（无既有世界时显示描述输入框 + 开局按钮）；CLI `--new-world "<text>"`；gameId 复用 M5.0 通道；④ 生成失败大声报错，不静默回退全局 story_line。
+  验收：world-generator 单测（fake writer：落盘文件齐全、outline revision=1、prompts 覆盖生效）；web 路由测试（fake 依赖注入）；真实生成质量归人工清单。
 
-## M4 导演（pi + tools）
+- [ ] **M3.4 大纲动态维护 + realized 冻结**
+  前置：M3.3。关联：§4 冻结原则；决议 D5。
+  目标：编剧扩展/剪枝前沿；outlineRevision 进快照。
+  要点：① 确定性迁移（无 LLM，协调器 openDecision 时机）：场景首个决策节点落成 → 其 outlineRef 节点 activate；游玩进入不同 outlineRef 的场景 → 上一场景节点 realize（instantiatedBy=sceneId）；均走 `applyRevision`；② 后台维护（LLM）：openDecision 收束后 fire-and-forget（互斥链纪律：LLM 链外、落盘入队），outline-writer adapter 增 `maintainOutline({outline, recentSummary, memoryDigest}) → OutlineOp[]`（单次 JSON）；只允许 add(planned)/prune(planned 或未 instantiated 的 active)，store 校验兜底拒绝触碰 realized/pruned；③ `RuntimeMoment.outlineRevision` 接真值：`RunGraphPort` 增只读 `currentOutlineRevision()`（协调器缓存 store revision），Game 构造 moment 时取；④ 场景 outlineRef 绑定按 D5；⑤ outline.json 缺失时的旧单节点种子保留为 dev 回退（测试构造依赖它），记附录 B。
+  验收：确定性迁移单测（activate/realize 时机与日志留痕）；维护调用产 op 落盘且 realized 拒改（状态机测试已有，接线上层测试）；快照 outlineRevision > 0 的集成断言。
 
-- [ ] M4.1 导演 agent 骨架与工具集：读场景历史 / 查角色状态 / 收窄表单模式（相位门）/ 承接 M2.1 汇流判定
-- [ ] M4.2 剪报防火墙：演员上下文组装迁移至导演——**复用 context-builder 的 serialize\***；禁入：未实现大纲节点、结局候选、其他周目剧情
-- [ ] M4.3 防守节拍策划（偏题引回方案进演出指令）
-- [ ] M4.4 删除 DirectorPlan / PlotPlanner 独立 LLM 与 NarrativeBrief（战术规划并入导演编排，剪报取代便签）；confirmatory：NarrativeDirector 记忆子层保留（consolidator 等不动）
-- [ ] M4.5 演员运行时拆分（2026-09-15 挂项，game.ts 收窄）：M3.5/M4.4 两笔删除落地后执行——交互驱动（choice/input/hybrid + 两阶段提交，~520 行）抽至 `src/runtime/` 独立模块，game.ts 保留 run 循环 + 段生命周期 + 恢复 + 图提交（目标 ~1500 行）；game*.test.ts 沿同缝拆分。**前置已落（2026-09-15）**：game.test.ts 已按 describe 拆为 game-graph-restore / game-input / game-interactions + 共享 game-test-kit；公共契约词汇（RuntimeShutdownError 等三类）已迁 `core/runtime/errors.ts`，宿主不再为错误类型 import game.ts。过 GH 门
-- [ ] **GH-1 + GH-2**
+### P4 导演
 
-## M5 图 UI 与结算
+- [ ] **M4.1 AgentRunner + 导演骨架与工具集**
+  前置：M3.4。关联：决议 D1；§5（三角色表）、§5.3；spec（设计）§3.3 落地注记。
+  目标：导演 agent 骨架（工具循环）+ 首批工具；承接汇流判定。
+  要点：① `src/core/ports/agent-runner-port.ts` + `src/adapters/llm/agent-runner-adapter.ts`：`run({system, messages, tools}) → {text, toolCalls}` 最小工具循环——不做通用框架；步数上限常量（默认 6，超限强制收束为最终文本输出）；② `src/application/director/director-service.ts`：场景边界/checkpoint 异步触发（fire-and-forget + 诊断告警）；首批确定性工具：`readSceneHistory(sceneId)`（边负载回放投影，复用 serialize*）、`queryCharacterState(characterId)`（入口快照）、`narrowFormModes(modes)`（相位门 → InteractionPolicy.allowed_modes）、汇流判定承接；③ 导演产出 `SceneDirective`（本场景目标/防守节拍/收束压力/表单收窄），会话内工作态，不入图契约；④ 汇流承接取低风险路径：ConfluenceJudgePort 的持有与装配移入导演（bootstrap 接线变化），协调器调度机制与既有测试零改动。
+  验收：runner 循环单测（fake client：工具调用→执行→二轮文本；超步数收束）；导演服务单测（工具被调、directive 落缓存）；`run-graph-confluence.test.ts` 全绿不动。
 
-- [ ] M5.0 宿主接线：entrypoints（web/cli）传 gameId/gamesRoot——世界身份跨进程固定，「继续游戏」对真实用户可达。现状（2026-09-15 审查 C）：闭环只在运行时层成立（restoreOrCreateRun + options.gameId），两个入口均不传 gameId，进程重启后永远开新世界
-- [ ] M5.1 总览场景图（realized / active 渲染；大纲前沿对玩家不可见）
-- [ ] M5.2 决策子图展开（场景内决策节点）
-- [ ] M5.3 回溯入口（选节点 → 入口快照 → 新周目重放表单）。**含同选项快进**（2026-09-14 自 M1.5 推迟至此）：快进 = 玩家在回溯节点重选与某条既有出边完全一致的选项时沿旧边直接跳到后继表单。M1.5 不实现的原因：restart 只回溯到游标节点，而游标恒为最前沿（无出边），快进在该入口下不可达——只有 M5.3 的任意祖先节点回溯才会命中既有出边。beginEdge 届时返回 `{opened} | {fast_forward: RestorePoint}`，结局端点出边不参与快进（重选结局选项走新生成，如实留第二条边）。
-- [ ] M5.4 结算与图鉴：stats 计数器、结局页、伏笔回收率 / 大纲完成度
-- [ ] M5.5 通关打分 + 大纲回顾解锁（评价喂回编剧）
-- [ ] M5.6 节点删除 UI（DeleteBranch + 级联 GC；若 M1 已实现存储层 GC 则此处仅接 UI）
-- [ ] **GH 终检（全量）**
+- [ ] **M4.2 剪报防火墙**
+  前置：M4.1、MA-B。关联：§5.2；反重复地图（context-builder serialize*）。
+  目标：演员上下文组装迁至导演剪报，防剧透边界结构性成立。
+  要点：① `src/application/director/actor-briefing.ts`：组装演员受限上下文 = canon 场景相关子集 + 当前路径已实现历史 + SceneDirective，**复用 `src/story/context-builder.ts` 的 serialize\*** 与 MA-B 三段渲染函数（随迁宿主，函数不改）；② 防火墙落为**参数形状**而非提示词：组装器输入类型上不含 outline 全量/结局候选/他周目数据；③ Game→StoryGenerator 上下文供给切换到剪报（本卡建新通道并切换；旧 NarrativeBrief 通道 M4.4 删）。
+  验收：单测——生成请求 user prompt 不含未实现 outline purpose 与结局候选文本（负面断言）；有 directive 时含防守/收束段；无 directive 时与现行为等价（回归）。
 
-## 卫生门清单（每阶段末逐项过）
+- [ ] **M4.3 防守节拍**
+  前置：M4.2。关联：§5.3；设计 §3.3（拉回 = 汇流的常见情形）。
+  目标：离谱输入 → 防守节拍引回（进演出指令，演员执行）。
+  要点：① 触发：free_input 解决后（`beginEdge(choice.kind==="free_input")`）导演后台评估输入 vs 当前场景目标（工具：readSceneHistory + SceneDirective）→ 产出 DefenseBeat 写入下一段 directive；② 滞后一拍是有意行为：评估与生成并行，本段按既有 directive 播出，引回作用于下一段（不阻塞生成，红线）；③ 相位门接通：directive.formModes 实际作用到 InteractionPolicy（Game 侧消费点）。
+  验收：集成测试（fake LLM/导演）——free_input 后下一段 prompt 含引回指令；choice 不触发；allowed_modes 收窄生效（扩既有 policy 测试）。
 
-**GH-1 代码卫生**
-- 全量测试 + node/web 双 typecheck + build 绿
-- 死代码清扫：被替换系统零残留（对照「反重复地图」右列逐项 grep）
-- 单一真源核对：facts/canon/快照、大纲/setups 台账、边负载/周目流水，无第二存放处
-- `core/architecture.test.ts` 依赖方向覆盖新增目录（core/graph、core/outline 等）
-- config 无死配置项（删除的系统能力对应配置一并删）
+- [ ] **M4.4 删除 PlotPlanner / DirectorPlan / NarrativeBrief**
+  前置：M4.2、M4.3。关联：§10 映射表；执行规则「不留暂时共存」（阶段内删除）。
+  目标：战术规划并入导演编排，剪报取代便签。
+  要点：① 删除：`application/narrative/plot-planner.ts` + `plot-planner-adapter.ts`、DirectorPlan 存储通道（director-plan.json）、NarrativeBrief 类型与便签渲染链（facts/beliefs/lessons 三段渲染已在 M4.2 随迁，删的是便签宿主）；导演输入改为携带 anchors/setups 台账（记忆 digest 投影）；② 配置死键清扫：planner 相关键（horizon_checkpoints、replan 节流等）逐键定去留（并入导演节流或删除），记附录 B；③ NarrativeDirectorService 收窄为记忆子层（consolidator/checkpoint/记忆查询），planner 分支与对应测试拆分文件删改；④ story-plan.yaml 作者种子保留（种子的是记忆锚点，非 planner）。
+  验收：grep `PlotPlanner|DirectorPlan|NarrativeBrief|director-plan` 零残留；被删配置键有 config 负面断言；全量绿。
 
-**GH-2 文档卫生**
-- `docs/status.md` 与实际行为一致（本阶段改动已反映）
-- 设计偏离已记入本清单「偏差记录」；重大偏离回写设计 spec 并注明
-- 源码注释中的 `docs/llm-outputs-refactor.md §N` 引用仍可解析（章节未被删除）
-- 本清单勾选状态与实际一致
+- [ ] **M4.5 game.ts 拆分**
+  前置：M4.4。关联：附录 A「M4.5 挂项」。
+  目标：game.ts 2668 行 → ~1500 行。
+  要点：交互驱动（choice/input/hybrid + 两阶段提交）抽至 `src/runtime/`（动手前查 `src/core/interaction`、`src/interaction` 既有内容定归宿）；game.ts 保留 run 循环 + 段生命周期 + 恢复 + 图提交；game*.test.ts 沿同缝对齐（game-graph-restore / game-input / game-interactions + game-test-kit 已在缝上）。
+  验收：行为零变化（既有测试只许 import 路径变化）；`npm run hygiene` 后把 game.ts 移出 ALLOWLIST。
 
-## 反重复地图（动手前必查）
+### P5 收束与清理（原 M3 后半，按决议 D3 后置）
+
+- [ ] **M3.5 结局驱动收束 + event mode 删除**
+  前置：M4.2。关联：§4；决议 D3。
+  要点：① 收束压力：导演编排读大纲 ending 候选（导演可见、演员不可见）——当前沿 act 全部 realized 或维护调用判定进入终章时，SceneDirective 增收束指令（方向性指令，不含结局文本）；演员照指令收束 → 既有 reachEnding 链路；② 删除：`narrative.mode` event 分支与 `narrative.event.max_interactions`、forced ending 合成路径、恢复时 interactionCount 清零逻辑（event mode 专属）、event mode 测试；`narrative.mode` 键整体删除（longform 成唯一路径，分支条件消失，记附录 B）；宿主 restart 已是图语义（M1.5），无残留可删；③ config 死键负面断言。
+  验收：grep event mode 零残留；收束指令进 prompt 单测（导演在场时）；全量绿。
+
+- [ ] **M3.6 canon 存储 + 晋升流程**
+  前置：MA-B（facts）、M4.2（剪报读取方）。关联：§5.1；决议 D6。
+  要点：① `src/core/ports/canon-store-port.ts` + `src/adapters/storage/canon-store.ts`：`world/canon.json` + `world/canon-log.jsonl`（append-only 修订留痕）；记录形状：worldSetting / characters / promotedFacts{id, content, evidenceRuns, judgedBy, promotedAt} / exceptions{id, content, reason, compensatingLimit}；② 晋升（后台，周目完结触发）：收集各已完结周目末态 digest 的 major facts → 编剧调用变体 `adjudicateCanon(candidates) → CanonOps[]`（单次 JSON）裁决 → promote 写 canon+log，矛盾事实过不了门（§5.1），例外登记附补偿限制；③ 读取方：导演剪报与编剧维护输入；晋升不回改既有快照（D6）。
+  验收：store 单测（append-only/原子写/损坏拒绝）；晋升管线单测（fake 裁决：双周目同 fact 晋升、单周目不晋升、例外登记留痕）；canon 内容进导演输入断言。
+
+- [ ] **M3.7 删除 story_line 静态注入**
+  前置：M3.5、M3.6。
+  要点：`loadPrompts` 不再全局必读 `prompts/story_line.txt`（storyLine 只来自 per-game `world/prompts/`；缺失即大声报错——破坏性纪律，无静默回退）；`prompts/story_line.txt` 与相关 dev 注入路径删除；测试 fixture 改用 per-game 文件。
+  验收：grep story_line 全局注入零残留；全量绿。
+
+- [ ] **M2.4 末态索引 + 场景间/滞后汇流**
+  前置：M3.4（图形态稳定后扩候选）。关联：设计 §3.3 场景间/滞后汇流；附录 A M2.2 细则。
+  要点：① 协调器维护末态索引 `Map<sceneId, {decisionId, 摘要键}[]>`（内存，hydrate 从 listDecisions 单点重建——同 ensureSceneNode 模式）；② 候选过滤去掉同场景限制（保留：非路径祖先、非自身、有入边）；确定性预筛限流（location 等价 + 在场角色集合等价优先），预筛通过仍逐个交 judge，置信最高命中走既有 applyConfluenceMatch（守卫与互斥零新机制）；③ 滞后汇流天然获得：新边关闭时对索引全量预筛，旧节点即新边的候选。
+  验收：跨场景命中改绑单测；预筛排除不匹配（judge 调用次数断言）；既有 7 例汇流测试零回归。
+
+### P6 图 UI 与结算
+
+- [ ] **M5.1 总览场景图**
+  前置：M5.0。关联：§2 术语；可见性 §4（前沿不可见）。
+  要点：① web API `GET /api/graph`：场景节点 + 已实现边 + 当前游标 + run 统计；**脱敏**：只返回 realized/active 场景，不含 outline 未来信息；② 前端 `web/src/ui/graph-panel.ts`：最小可视化（场景块 + 连线 + 游标高亮；CSS/SVG 均可，不引入图库依赖）；③ 视图模型单测 + app 集成测试（fake 数据）。
+  验收：API 脱敏负面断言（响应无 planned/pruned outline 内容）；渲染测试。
+
+- [ ] **M5.2 决策子图展开**
+  前置：M5.1。
+  要点：点开场景 → 场景内决策节点 + 出边（选择文本）子图；数据复用 M5.1 API（决策粒度一并提供，前端按场景过滤）；交互测试。
+  验收：子图渲染测试；未实现前沿不出现。
+
+- [ ] **M5.3 回溯入口 + 同选项快进**
+  前置：M5.2。关联：§6；附录 A「M1.5 快进推迟」决议（含 beginEdge 返回形状）。
+  要点：① `RunGraphPort` 增 `retraceFrom(decisionId)`（= M1.5 restart 的任意节点版：弃局活跃周目 + 在该节点开 retrace 新周目）；② `beginEdge` 返回判别联合 `{opened} | {fast_forward: RestorePoint}`：选择与既有出边完全一致（kind+text 严格相等）时命中快进；**结局端点不参与**（重选结局选项走新生成，如实留第二条边）；③ Game 快进处理：跳过生成，直接恢复后继节点表单；④ UI：图节点点选 → 回溯确认（当前周目将弃局）。
+  验收：retraceFrom 任意祖先节点单测（弃局标记 + 新边产生）；快进命中/未命中/结局排除三例；快进时生成器零调用断言。
+
+- [ ] **M5.4 结算与图鉴**
+  前置：M5.1。关联：§6；MA-A ending-report（复用，反重复）。
+  要点：① `games/<gameId>/stats.json`：结局达成计数、边通过计数（新 run 首次通过时 +1，重放不重复计）；② 结算页：结局文本 + 伏笔回收率（ending-report 聚合）+ 大纲完成度（realized act / 总 act）；③ 图鉴页：结局列表（未达成显示 "???"，不剧透）；④ API + 页面 + 测试。
+  验收：stats 增量与幂等测试；结算聚合单测；图鉴不剧透断言。
+
+- [ ] **M5.5 通关打分 + 大纲回顾解锁**
+  前置：M5.4。关联：§4 可见性（通关后解锁）；§8（评价喂回编剧）。
+  要点：① 结局后评分：玩家星级 + 编剧评注（单次 LLM 调用：输入末态 digest + ending-report，输出评语与大纲贴合度）→ `games/<gameId>/reviews/<runId>.json`；② 评价喂回：编剧维护调用输入携带历史评注；③ 大纲回顾：通关后 `GET /api/graph` 增返该周目路径触及的 outline 节点与已达成结局；未通关不返回（负面断言）。
+  验收：评分落盘与喂回输入包含断言；未通关 outline 泄漏负面断言。
+
+- [ ] **M5.6 节点删除（DeleteBranch + 级联 GC）**
+  前置：M5.2。关联：§7（冻结语义）；附录 A「孤儿 decision」挂账（本卡清偿）。
+  要点：① 协调器 `deleteBranch(edgeId)`：守卫（不得位于活动游标祖先路径）→ 删边 → 引用计数级联（决策节点入边归零 → 删节点+快照+递归出边；结局节点同理）→ 释放负载文件；**不回滚项**：canon、stats、runs 流水（§7.5）；② 存储层：JSONL latest-wins tombstone 行（adapter 增 remove* 方法，磁盘记录加 deleted 标记；§3 契约 schema 不动，记附录 B）；③ 孤儿 decision（无入边且不在任何 run 路径）纳入 GC；④ UI：边上删除按钮 + 确认。
+  验收：级联单测（共享节点存活、独占链全回收、守卫拒绝、幂等删除）；孤儿清理；UI 测试。
+
+### 门（每阶段末，逐个勾选）
+
+每道门 = `npm test` + `npm run typecheck` + `npm run build` + `npm run hygiene` 四绿，再按第 1 节卫生门流程跑 SKILL 完整档（含 subagent 评审与 P1/P2 当场修复）。
+
+- [ ] **GH-P1**：无附加项。
+- [ ] **GH-P2**：narrative-director-service.test.ts 豁免移除；getBrief 零 await 断言在位。
+- [ ] **GH-P3**：世界生成无确认闸门行为核对；outline 冻结原则测试在位。
+- [ ] **GH-P4**：M4.4 grep 清单清零；game.ts 豁免移除；`src/application/director|world|outline` 新目录进依赖方向评审。
+- [ ] **GH-P5**：event mode / story_line grep 清零；config 死键负面断言齐。
+- [ ] **GH-P6**：`GET /api/graph` 脱敏负面断言齐；stats 幂等。
+- [ ] **GH 终检**：全部任务卡与门勾选或登记 BLOCKED；四命令全绿；`docs/status.md` 全面同步；第 6 节人工清单整理移交。
+
+## 5. 反重复地图（动手前必查）
 
 | 需求 | 不要新建 | 复用 |
 |---|---|---|
@@ -151,99 +226,103 @@
 | 状态摘要 | 新的状态机 | `story/reconcile` + VisualState + MemoryDigest |
 | 演员上下文 / 剪报 | 第二套序列化器 | context-builder 的 serialize\* |
 | 伏笔 / 线程台账 | 大纲内重复维护 | setups/threads 台账，大纲只引用 id + 回收窗口 |
-| 世界真理 | 各路径抄写事实 | canon + 引用制 |
-| 图鉴 / 统计 | run 实体数据库 | stats 计数器 |
+| 世界真理 | 各路径抄写事实 | canon + 引用制（D6 落地细则） |
+| 图鉴 / 统计 | run 实体数据库 | stats 计数器 + ending-report 聚合 |
 | 相位门 | 新 policy 系统 | InteractionPolicy.allowed_modes 收窄 |
 | 汇流 | 图重写逻辑 | 边→既有节点匹配不变量（§3.3） |
-| LLM 调用 | 多套 client | 演员 = 现有 openai-compatible client；编剧/导演 = pi |
-| 会话恢复 | 扩展 v1 restore（3743ba8） | v1 restore 冻结不再扩展，由 M1.4 节点快照取代 |
+| LLM 调用 | 多套 client | 演员/编剧/导演/判定 = 同一 openai-compatible client（D1） |
+| 伏笔回收率结算 | 第二套聚合 | MA-A ending-report |
+| 会话恢复 | 扩展 v1 restore | v1 restore 冻结，由节点快照取代（M1.4 已落地） |
 
-## 偏差记录（实施中追加）
+## 6. 人工验证清单（不在自主实现范围，不阻塞勾选）
 
-- 2026-09-09（M0）：tsconfig 开启 `exactOptionalPropertyTypes`，zod 可选字段必须用
-  `z.exactOptional(...)` 而非 `.optional()`（memory-types 既有惯用法）。M1 起所有
-  含可选字段的持久化 schema 一律遵循。另：`StateSnapshot.snapshotVersion` 为
-  `z.literal(1)`，测试构造非法版本需绕开类型层（`as Record<string, unknown>`）。
-- 2026-09-13（M1.3）：契约修订（M0 契约尚无任何落盘数据，SNAPSHOT_VERSION 仍为 1）——
-  `InteractionFormSnapshot` 增加 `prompt` 必填字段：恢复重放表单需要原样还原提示语，
-  仅 mode/options/placeholder 不足以重建表单。M1 收尾门时回写设计 spec §3。
-- 2026-09-14（M1.4）：修复 `isStoredEvent` 的 **v1 潜伏 bug**——存储行外层的
-  seq/turn/timestamp/source 信封使 `type:"interaction"` 事件永远无法通过
-  strictObject 的 `InteractionEventSchema`，v1 恢复走快照内 `resumeInteraction`
-  从不回读事件所以未暴露；v2 边负载回放使 interaction 事件成为承重数据
-  （游标节点的表单重放/turn 播种依赖它）。修复：校验前剥离信封字段。
-- 2026-09-14（M1.4）：`StoryStateSchema.scene.time` 与 `CharacterStateSchema`
-  的可选字段从 `.optional()` 迁移到 `z.exactOptional(...)`（即 M0 已记录的
-  zod 惯例的补齐）——否则快照解析产物无法赋回 `StoryState` 接口，恢复路径
-  编译不过。无运行时语义变化（JSON 落盘本就无显式 undefined 键）。
-- 2026-09-14（M1.4）：删除 v1 遗留的 `Game.resumeInteraction` 字段及其测试——
-  v2 恢复真源是图游标 + 契约表单快照，不再有内存态恢复游标；恢复时
-  `interactionCount` 清零（event mode 的 max_interactions 不跨恢复累计，
-  event mode 本身将随 M3.5 删除）。bootstrap 增加 `options.gameId`（世界
-  身份跨启动固定，宿主「继续游戏」传同一 id；缺省仍是每启动新世界）。
-- 2026-09-14（M1.5）：`GamePorts.runMode`（resume/restart）+ `restoreOrCreateRun({restart})`；
-  协调器 `restartFromCursor` 弃局 + retrace；`CurrentRun` 携带 origin（修复：
-  reachEnding 回写 run 记录时硬编码 root 会覆盖 retrace 来源——真 bug，测试捕获）。
-  `listRuns` 语义定为 latest-wins 折叠、按最后写入排序（弃局/结局更新行折叠，
-  末位 = 最近活动周目）。已知留痕缺口（dev 接受）：首个决策点之前 restart，
-  旧 root run 无 abandonedAt 可记（契约 abandonedAt 是 DecisionId），记录保持
-  无终态标记。
-- 2026-09-14（M1.5）：同选项快进自 M1.5 推迟到 M5.3——restart 只回溯游标节点，
-  游标恒无出边，快进不可达；实现它即死代码（详见 M5.3 注记）。
-- 2026-09-13（M1.3）：`SceneNode` 延迟到首个决策点才落盘（场景与决策 1:1 惰性创建）——
-  模型场景 id → SceneNode 的映射通过扫描决策节点入口快照的
-  `storyState.scene.id` 重建，契约无需增加字段；无任何决策的场景不留图记录（M1 接受）。
-- 2026-09-13（M0 契约审查，落地前复审）：发现并修复 3 处——
-  ① `PlotEdge` 补 refine：confluence 存在 ⟹ `to.kind==="decision"` 且
-  `to.id === confluence.matchedNode`（§3.3 的构造性保证升格为写入校验）；
-  ② `RunRecord` 补两个 refine：`ending ⟹ endedAt`、
-  `abandonedAt ⟹ 无 endedAt/ending`（字段组合语义编码进契约）；
-  ③ `OutlineNodeSchema.instantiatedBy` 由 `z.string()` 收紧为 `SceneIdSchema`
-  （schema/接口/spec §4 三方对齐）。审查同时确认的**保留项**（有意不改）：
-  `StoryState.open_threads` 与 `MemoryDigest.threads` 双台账（v1 双层遗产，
-  M4 上下文合并时统一归属）；payload 统计不设连续性不变量（回放完整性由
-  回放侧校验）；表单 options ≥1 宽于运行时 ≥2（契约宽松、运行时严格）；
-  `matchedNode` 与 `to.id` 冗余（凭据自含 + refine 交叉校验，冗余即哨兵）。
-- 2026-09-15（M2 前置修订，全量审查 A1）：存储适配器 endState 内联条件由
-  「仅结局端点」放宽为「结局端点 ∨ 汇流边」。原 exact-相等写入门禁与 §3.3
-  「末态 ≈ 入口态」的汇流定义正面矛盾——汇流边真实末态按定义不等于后继
-  入口（强行相等即伪造状态），且 EdgeRecord 的旧 refine 会在读取时把带
-  内联末态的汇流边当损坏行丢弃。修订后：汇流边内联真实末态、免相等门禁，
-  凭据（judgedBy/confidence/rationale）承担差异审计；普通决策端点的门禁
-  不变（「同一次快照写两处」不变量继续成立）。§3 冻结 schema 未动
-  （PlotEdge 本就同时携带 confluence 与 endState），仅 GraphStorePort
-  putEdge 语义与磁盘记录形状修订；无落盘数据，零迁移成本。
-- 2026-09-15（审查记档，不修）：孤儿 decision（putDecision 已落、putEdge 未落
-  的崩溃窗口产物，无入边不可达）暂不清理——快照真源无损、仅磁盘垃圾；M5.6
-  DeleteBranch 提供 GC 原语后随节点删除一并处理。孤儿 payload 已在恢复时清理
-  （M1.4），两者窗口同源、处置不同是有意的（payload 会被误当成真实边读回，
-  不可达节点不会）。
-- 2026-09-16（M2.1，A2 决议）：seq 播种统一为
-  `nextSeq = max(世界最大 seq, 路径末事件 seq, digest 水位) + 1`，fresh 与
-  retrace 同式。世界最大 seq 取各边 payload 统计 lastSeq 的最大值（开局段
-  事件不入图、孤儿 payload 恢复时删除 ⟹ recorded edges 即存活事件全集），
-  无需新增 store 查询。较清单原稿增强：原稿 A 仅提 fresh 播种，但 retrace 的
-  `max(路径, 水位)` 规则在 M5.3 任意祖先回溯下仍有撞号隐患（被弃分支的 seq
-  可大于回溯点的路径末 seq），统一按世界最大值对两者一并免疫。选 A 非 B 的
-  理由（正确性而非偏好）：M2.2 汇流使同节点多入边成真后，① seq 回绕会让
-  `pickLatestInEdge`（lastSeq 最大 = 最近走过）选错边；② M1.4 记忆追赶按
-  `seq > 水位` 过滤重放事件，混合路径上周目二的回绕 seq 全部 ≤ 周目一水位，
-  会被整段静默过滤——恢复后记忆丢失整个新分支，是正确性 bug。载体：
-  `RunResume` fresh 变体增加 `nextSeq` 字段（运行时端口类型，非 §3 冻结
-  schema），Game fresh 分支播种 `this.seq`；MemoryRunGraph 默认值同步。
-- 2026-09-16（M2.2）：**场景节点世界级稳定修订**——原实现只有恢复路径重建
-  「模型场景 id → 场景节点」缓存，fresh 新 root 周目会给同一模型场景再建一
-  个场景节点。M1 里只是场景图外观问题，M2.2 的同场景候选过滤按 sceneId 匹配，
-  跨周目汇流（本里程碑主用例）会整体失效。修复：`ensureSceneNode` 收口为
-  缓存 → 扫既有决策入口快照 → 惰性创建（hydrate 里的重建循环删除，单点负责）。
-- 2026-09-16（M2.2 落地细则记档）：① 改绑窗口守卫——判定落地时若创建该边
-  的周目已完结或已换周目（restart/retrace/结局后新 root），放弃改绑（被弃
-  周目的迟命中不追溯，M2.4 末态索引是滞后匹配的正牌机制）；② 候选排除
-  「无入边」节点——孤儿（崩溃窗口/汇流改绑产物）不该成为汇流目标，副作用是
-  周目首决策（开局面，结构性无入边）也不可命中，dev 接受；③ apply 时重验
-  祖先而非 schedule 时快照——判定悬置期间玩家可能已推进，路径集合以落地
-  时为准；④ 新增 `narrative.confluence.enabled` 配置（默认关，config.yaml 显
-  式开）：判定是真实 LLM 调用，测试配置（绕过 zod 的手拼 config）与 CI 保持
-  零网络；⑤ 图变更加 promise 链互斥（演员管线调用与后台改绑串行化），判定
-  LLM 调用在链外，互斥体只含快速落盘。
+1. **M2.3 汇流端到端**（前置 P4 完成）：真实 LLM 会话——离谱输入 → 防守节拍引回 → 图上呈现汇流（`games/<gameId>/graph/edges.jsonl` 出现 confluence 凭据）；检查 `narrative.confluence.enabled: true` 的实际效果与判定质量。
+2. **MA Phase A/B 验收**（记忆 spec §12「跑一局」项）：超期伏笔 RESOLVE_OR_DROP 出现；结局 ending-report.json 数值与体感一致；事实/认知边界端到端。
+3. **M3.3 世界生成质量**：真实描述 → 大纲/角色/开场可玩性、防剧透直通体验。
+4. **M5 图 UI 手测**：总览/子图/回溯/快进/删除/结算全流程。
+
+---
+
+## 附录 A. 历史实施记录（M0–M2.2，只读）
+
+> 以下为已完成的实施记录与设计细化决议，**仍然有效**（源码注释按编号引用本附录），不要据此改代码。
+
+### 执行规则（原版，2026-09-09；纪律部分已并入第 1 节执行协议）
+
+1. 动手前先查「反重复地图」（现第 5 节）。
+2. 卫生门强制：GH-1（代码卫生）与 GH-2（文档卫生）未过，不开下一阶段。
+3. ⚠ 标记 = 高风险项：先做设计细化或 spike，再动代码。
+4. 破坏性重构：不留兼容层；被替换系统在所属阶段内立即删除。
+5. 里程碑完成即 commit（main），不攒大包。
+
+### M0 基线与契约冻结 ✅（2026-09-09）
+
+- [x] M0.1 基线验证：`backup/pre-v2-prototype` 存在；main 全量测试 + 双 typecheck 绿（基线 1330 测试 / 86 文件）
+- [x] M0.2 图契约代码化：`src/core/graph/types.ts`——SceneNode / DecisionNode / PlotEdge / EndingNode / RunRecord / ActiveCursor / StateSnapshot（zod schema + 类型），单测覆盖解析与拒绝
+- [x] M0.3 大纲契约代码化：`src/core/outline/types.ts`——OutlineNode / 状态机（planned→active→realized；pruned），单测
+- [x] M0.4 ID 规则与存储布局常量：`src/core/graph/ids.ts`（前缀 schema + GAME_STORAGE_LAYOUT + 边负载/快照路径函数）
+- [x] **GH-0 卫生门**：1380 测试全绿（+50）、双 typecheck ✓、build ✓；无被替换系统残留；architecture.test 随全量通过
+
+### M1 图存储内核 + 演员接图（存档读档闭环）✅（2026-09-14 过门）
+
+- [x] M1.1 ⚠ 设计细化：记忆子层 v2 持久化（决议见下方「M1.1 设计细化」）
+- [x] M1.2 GraphStore port + JSON/JSONL adapter（§9 布局）
+- [x] M1.3 演员接图：段事件 → 边负载；交互开启 → 决策节点 + 入口快照；交互解决 → 出边 + 末态快照
+- [x] M1.4 ✅ 游标与恢复：cursor.json；「继续游戏」= 载入节点入口快照重建运行时；落地形态见「游标恢复的三态入口」；恢复集成测试：协调器 6 例 + Game 真存储跨重启 2 例 + 守卫回归 1 例
+- [x] M1.5 ✅ 新周目入口：root 开局 / retrace（弃局活跃周目 abandonedAt=游标位 → 游标节点开 retrace 新周目，CurrentRun 携带 origin，结局回写不覆盖来源 → 表单重放）；bootstrap `restart()`（restart_session 指令路径）以 runMode="restart" 重建。同选项快进推迟到 M5.3
+- [x] M1.6 ✅ 删除：sessions JSONL store；`sessions_dir` 配置保留（narrative memory 会话文件仍用）。event mode / forced ending 暂留（M3.5 删）
+- [x] **GH-1 + GH-2**（2026-09-14 过）：1408 测试 + 双 typecheck + build 绿；死代码零残留；单一真源成立；architecture.test 递归覆盖 core/graph、core/outline；config 无死键；偏差回写 spec §3；status.md 同步
+
+#### M1.1 设计细化（2026-09-13 决议）
+
+**真源层级**（恢复路径按此读取，不越级）：
+
+1. `graph/snapshots/<decisionId>.json` = 运行时状态**唯一真源**（story + visual + memoryDigest）。「继续游戏」只读这里。
+2. `graph/payloads/<edgeId>.jsonl` = 回放数据（UI/结算/审计），不是记忆真源。记录形状 = `StoredEvent` 直接逐行落盘。
+3. `world/canon.json`（M3.6 落地）= 跨周目世界真理。
+4. NarrativeMemoryStore 会话文件 = **工作缓存**（可丢弃可重建）：narrative-state.json 恢复路径不读；episodes.jsonl 恢复后从空积累；director-plan.json 维持现状到 M4.4。
+
+**digest ↔ NarrativeMemoryState 纯映射**（`src/core/graph/memory-digest.ts`）：`memoryDigestFromState` 丢 recentEpisodeIds；`memoryStateFromDigest` 重建为 []。周目内记忆随快照走，跨周目事实走引用（引用制落地细则见交付版决议 D6）。
+
+**NarrativeDirectorPort 扩展**：`getMemoryDigest()`（交互打开瞬间嵌入入口快照）；`restoreFromDigest(digest)`（恢复路径替代 initialize() 的 load 分支）。
+
+**恢复点语义**：恢复 = 回到游标决策节点入口。孤儿 payload 文件恢复时删除。首个决策点之前崩溃 → 无恢复点，重开新周目（dev 接受）。
+
+**快照复用不变量**：下一决策点入口快照 = 前一条边 endState（同一次快照写两处）；ending 收束时 endState 单独捕获。
+
+**恢复时的记忆追赶**：快照 digest 的 consolidatedThroughEventSeq 之前的已整理、之后的未整理。恢复路径把**根→游标全路径边负载**重喂 `director.observeCommitted()`——内部按 `seq > watermark` 过滤，只入队未整理窗口（2026-09-14 修正：只喂入边会丢祖先边未整理窗口；全路径喂入在水位之下无害）。已知洞（dev 接受）：开局段事件不入图，其未整理残余恢复时不可回收。
+
+**场景节点判定（M1 无编剧过渡）**：`StoryState.scene.id` 首次出现 → 建 SceneNode（active）；种子大纲单节点作 outlineRef。realized 迁移 M3.4 落地。
+
+**seq / turn 连续性**：契约不加字段。恢复 `nextSeq = max(路径末事件 seq, digest 水位) + 1`（2026-09-16 M2.1 升格为含世界最大 seq 的统一公式，见附录 B）；turn 取路径末事件 turn，首决策为 1。
+
+**游标恢复的三态入口（M1.4 落地形态）**：`RunGraphPort.restoreOrCreateRun(): RunResume`——fresh（无存档）/ active（游标恢复点：decision + pathEvents + nextSeq/turnFloor；协调器水合状态机、清孤儿 payload）/ ended（最新周目已完结：补发 session_ended，结局文本从末边负载回收）。多入边节点取 payload.lastSeq 最大者。Game 删除 v1 遗留 resumeInteraction 字段；恢复时 interactionCount 清零（event mode 计数，随 M3.5 删）。
+
+### M2 汇流（M2.1/M2.2 ✅ 2026-09-16）
+
+- [x] M2.1 ✅ ConfluenceJudge port（§3.3 冻结签名：`judge({endState, candidateEntry}) → {equivalent, confidence, rationale, judgedBy}`；候选枚举是调用方确定性职责）+ 首个 LLM adapter（json_object + zod）。A2 seq 决议：统一 `max(世界最大 seq, 路径末, 水位) + 1`（见附录 B 2026-09-16 条）
+- [x] M2.2 ✅ 场景内汇流：边收束后后台判定（候选 = 同场景、有入边、不在当前路径），置信最高命中改绑（入边改指候选 + 凭据 + 真实末态内联；出边改源；游标仍停新节点时前移）。promise 链互斥（判定在链外）。守卫：换周目/已完结放弃；apply 时重验祖先。落地细则见附录 B 2026-09-16 M2.2 条
+
+### 卫生门清单（原 GH-1/GH-2 定义；2026-09-16 起由 `docs/skills/repo-hygiene/SKILL.md` 承载并扩展）
+
+**GH-1 代码卫生**：全量测试 + 双 typecheck + build 绿；死代码清扫（对照反重复地图右列 grep）；单一真源核对；architecture.test 依赖方向覆盖新目录；config 无死键。
+**GH-2 文档卫生**：status.md 与实际一致；偏差入册、重大偏离回写 spec；§N 引用可解析；勾选状态与实际一致。
+
+## 附录 B. 偏差记录（实施中追加）
+
+- 2026-09-09（M0）：tsconfig 开启 `exactOptionalPropertyTypes`，zod 可选字段必须用 `z.exactOptional(...)`（memory-types 既有惯用法）。M1 起所有含可选字段的持久化 schema 一律遵循。`StateSnapshot.snapshotVersion` 为 `z.literal(1)`，测试构造非法版本需 `as Record<string, unknown>` 绕开类型层。
+- 2026-09-13（M1.3）：契约修订（M0 契约尚无落盘数据，SNAPSHOT_VERSION 仍为 1）——`InteractionFormSnapshot` 增加 `prompt` 必填字段：恢复重放表单需原样还原提示语。已回写 spec §3。
+- 2026-09-13（M1.3）：`SceneNode` 延迟到首个决策点才落盘（场景与决策 1:1 惰性创建）；模型场景 id → SceneNode 映射靠扫描决策入口快照重建；无决策的场景不留图记录（M1 接受）。
+- 2026-09-14（M1.4）：修复 `isStoredEvent` 的 v1 潜伏 bug——存储行外层信封使 `type:"interaction"` 事件永远无法通过 strictObject 校验；v2 边负载回放使其成为承重数据。修复：校验前剥离信封字段。
+- 2026-09-14（M1.4）：`StoryStateSchema.scene.time` 与 `CharacterStateSchema` 可选字段从 `.optional()` 迁移到 `z.exactOptional(...)`（zod 惯例补齐），无运行时语义变化。
+- 2026-09-14（M1.4）：删除 v1 遗留 `Game.resumeInteraction`；bootstrap 增加 `options.gameId`（世界身份跨启动固定，缺省每次新世界）。
+- 2026-09-14（M1.5）：`GamePorts.runMode` + `restoreOrCreateRun({restart})`；`CurrentRun` 携带 origin（修复 reachEnding 硬编码 root 覆盖 retrace 来源的真 bug）；`listRuns` = latest-wins 折叠按最后写入排序。已知留痕缺口（dev 接受）：首决策点之前 restart，旧 root run 无 abandonedAt 可记。
+- 2026-09-14（M1.5）：同选项快进推迟到 M5.3——restart 只回溯游标节点（恒无出边），快进不可达；实现即死代码。
+- 2026-09-13（M0 契约审查）：修复 3 处——① `PlotEdge` 补 refine（confluence ⟹ to 为 decision 且 id === matchedNode）；② `RunRecord` 补两个 refine（ending⟹endedAt；abandonedAt⟹无终态）；③ `instantiatedBy` 收紧为 SceneIdSchema。保留项（有意不改）：open_threads 与 digest.threads 双台账（M4 统一归属）；payload 统计不设连续性不变量；表单 options ≥1 宽于运行时 ≥2；matchedNode 与 to.id 冗余（凭据自含 + refine 交叉校验，冗余即哨兵）。
+- 2026-09-15（M2 前置修订 A1）：存储适配器 endState 内联条件由「仅结局端点」放宽为「结局端点 ∨ 汇流边」——原 exact-相等门禁与 §3.3「末态 ≈ 入口态」正面矛盾。修订后：汇流边内联真实末态、免相等门禁，凭据承担差异审计；普通决策端点门禁不变。
+- 2026-09-15（审查记档，不修）：孤儿 decision（putDecision 后 putEdge 前崩溃窗口产物）暂不清理；M5.6 DeleteBranch 提供原语后一并处理。
+- 2026-09-16（M2.1，A2 决议）：seq 播种统一 `nextSeq = max(世界最大 seq, 路径末事件 seq, digest 水位) + 1`，fresh 与 retrace 同式。世界最大 seq 取各边 payload.lastSeq 最大值。理由（正确性）：M2.2 多入边成真后，seq 回绕会让 pickLatestInEdge 选错边、让水位过滤静默丢弃整段新分支。载体：`RunResume` fresh 变体增 nextSeq 字段（运行时端口类型，非 §3 冻结 schema）。
+- 2026-09-16（M2.2）：**场景节点世界级稳定修订**——原实现仅恢复路径重建场景缓存，fresh 新 root 周目会为同一模型场景重复建节点，跨周目汇流的同场景候选过滤会整体失效。修复：`ensureSceneNode` 收口为缓存 → 扫既有决策入口快照 → 惰性创建。
+- 2026-09-16（M2.2 落地细则）：① 改绑窗口守卫（判定落地时创建周目已完结/已换周目即放弃）；② 候选排除无入边节点（孤儿与周目首节点，dev 接受）；③ apply 时重验祖先（悬置期间路径可能变化）；④ `narrative.confluence.enabled` 配置门控（默认关，测试/CI 零网络）；⑤ 图变更加 promise 链互斥（LLM 判定在链外）。
+- 2026-09-16（交付版重整）：清单重写为一次性自主执行的交付版。变更：任务卡按依赖重排（决议 D3：M5.0 提前；M3.5/M3.6/M3.7 后置到 M4 后）；pi 框架决议 D1（已回写 spec §5）；M2.3 归人工清单（D2）；SNAPSHOT_VERSION 1→2 预授权（D4）；场景→大纲绑定规则（D5）；digest 事实嵌入制（D6，M1.1 引用制的落地细则）。新增卫生体系：`docs/skills/repo-hygiene/SKILL.md`（快速档/完整档 + subagent 评审模板）+ `npm run hygiene`（`scripts/hygiene-check.mjs`，行数阈值 + 临时标记，豁免清单含清偿任务号）。历史记录整体迁入附录 A/B，编号不变。
 
