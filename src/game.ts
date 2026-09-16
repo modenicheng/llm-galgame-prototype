@@ -34,6 +34,16 @@ import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { NarrativeDirectorPort } from "./core/ports/narrative-director-port.js";
 import type { MemoryProjection } from "./core/narrative/memory-projection.js";
 import { BranchManager } from "./runtime/branch-manager.js";
+import { InteractionDriver, type InteractionHost } from "./runtime/interaction-driver.js";
+import type {
+  ActiveSegment,
+  ActiveSegmentKind,
+  SegmentOutcome,
+  InputCommitOutcome,
+  ChoiceOutcome,
+  ChoiceSelection,
+  LiveStreamLike,
+} from "./runtime/segment-types.js";
 import type { LiveBranchSelection } from "./runtime/prefetch.js";
 import { GenerationScheduler } from "./runtime/generation-scheduler.js";
 import { Metrics } from "./runtime/metrics.js";
@@ -96,84 +106,7 @@ import type {
 } from "./story/types.js";
 import type { RuntimeStatus } from "./runtime/status.js";
 
-interface ActiveSegment {
-  turn: number;
-  taskId: string;
-  events: RuntimeModelEvent[];
-  queue: AsyncEventQueue<RuntimeModelEvent>;
-  done: Promise<void>;
-  branchManager: BranchManager | null;
-  terminal: RuntimeModelEvent | null;
-  schedulerReleased: boolean;
-  /**
-   * DSL mode: set when the segment ends cleanly with `@end ... buffer`
-   * (docs §46/§76). A clean buffer end is NOT a failure.
-   */
-  endStatus: SegmentEndStatus | null;
-  /**
-   * Set when the segment's generation task settles with a rejection
-   * (segment.done rejected). The advance-trigger must not start a low-water
-   * refill while the current segment has failed — the repair path is about
-   * to take over the single-slot generation scheduler, and a concurrent
-   * refill would make startActivePath throw and kill run() (and waste a
-   * generation call).
-   */
-  failed: boolean;
-  /**
-   * Event mode（audit P2-10）：强制收束段。该段必须以 @end ending 收束；
-   * 以 buffer / interaction 收束时按 forcedEndingRetries 预算重试或由
-   * 运行时合成结局（防无限循环）。
-   */
-  endingRequired: boolean;
-}
-
-type ActiveSegmentKind = "opening" | "continuation";
-
-interface ChoiceOutcome {
-  type: "choice";
-  nextTurn: number;
-  preview: RuntimePlayableEvent[];
-  liveSelection?: LiveBranchSelection;
-  /** Response stream still running after input confirm (live promotion). */
-  liveResponse?: InputResponseSession;
-}
-
-type ChoiceSelection = Pick<ChoiceOutcome, "preview" | "liveSelection">;
-
-/**
- * Result of committing an input: the committed prefix plus optional live
- * stream, or — hybrid only — a preview-cancel sentinel that returns control
- * to the hybrid loop so the full form (options + input) stays armed (§11.7).
- */
-type InputCommitOutcome =
-  | {
-      type: "committed";
-      preview: RuntimePlayableEvent[];
-      liveResponse?: InputResponseSession;
-    }
-  | { type: "canceled" };
-
-/** Structural contract for live-consumable streams. */
-interface LiveStreamLike {
-  events: readonly RuntimePlayableEvent[];
-  done: Promise<unknown>;
-  subscribe(listener: (event: RuntimePlayableEvent) => void): () => void;
-}
-
-interface EndOutcome {
-  type: "end";
-}
-
-/**
- * DSL mode: the segment ended cleanly with `@end ... buffer` — no terminal
- * event, the story simply pauses for a low-water refill (docs §46, §76).
- */
-interface BufferOutcome {
-  type: "buffer";
-  nextTurn: number;
-}
-
-type SegmentOutcome = ChoiceOutcome | EndOutcome | BufferOutcome;
+// 段生命周期类型已迁至 ./runtime/segment-types.ts（M4.5 交互驱动拆分）。
 
 /**
  * Host-provided ports. The Game receives concrete adapters (Node CLI
@@ -209,40 +142,55 @@ const MAX_INTERACTION_MODE_HISTORY = 8;
 const FORCED_ENDING_REPAIR_REASON =
   "玩家已达成最大互动次数，故事必须收束结局；用 @end {nonce} ending 结束，不得打开新的交互表单。";
 
-export class Game {
-  private readonly events: StoredEvent[] = [];
+export class Game implements InteractionHost {
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly events: StoredEvent[] = [];
   /**
    * §81：已提交但尚未 reconcile 的事件（microtask 单飞排空）。
    */
   private pendingReconcile: StoredEvent[] = [];
   private reconcileScheduled = false;
-  private readonly buffered = new Map<string, RuntimePlayableEvent>();
-  private seq = 1;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly buffered = new Map<string, RuntimePlayableEvent>();
+  /** @internal 交互驱动接缝（M4.5）。 */
+  seq = 1;
   private readonly sessionId: string;
   private readonly graph: RunGraphPort;
-  private readonly clock: ClockPort;
-  private readonly ids: IdGeneratorPort;
-  private readonly diagnostics: DiagnosticSink;
-  private readonly inputEngine = new InputEngine();
-  private readonly bridgeBuffer = new InputBridgeBuffer();
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly clock: ClockPort;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly ids: IdGeneratorPort;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly diagnostics: DiagnosticSink;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly inputEngine = new InputEngine();
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly bridgeBuffer = new InputBridgeBuffer();
   /** line_ids of bridge narration currently staged for playback. */
-  private readonly bridgeLineIds = new Set<string>();
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly bridgeLineIds = new Set<string>();
   /** line_ids of staged input response events (for bridge-cover timing). */
-  private readonly responseLineIds = new Set<string>();
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly responseLineIds = new Set<string>();
   private readonly interactionPolicy: InteractionPolicy;
   /** §8.4: modes of formally opened interactions, newest last (cap 8). */
   private readonly recentInteractionModes: InteractionMode[] = [];
   /** Confirm timestamp awaiting the first response line (E3/G1 metric). */
-  private inputConfirmAtMs: number | null = null;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  inputConfirmAtMs: number | null = null;
   /** Bridge playback start awaiting the first response line play. */
   private bridgePlayStartedAtMs: number | null = null;
-  private storyState: StoryState;
-  private readonly metrics: Metrics;
-  private choiceTimestamp: number | null = null;
-  private readonly narrativeDirector: NarrativeDirectorPort | undefined;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  storyState: StoryState;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly metrics: Metrics;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  choiceTimestamp: number | null = null;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly narrativeDirector: NarrativeDirectorPort | undefined;
   private readonly director: SceneDirectorPort | undefined;
   private readonly runMode: "resume" | "restart";
-  private readonly playbackBuffer = new PlaybackBuffer();
+  readonly playbackBuffer = new PlaybackBuffer();
   private readonly generationScheduler = new GenerationScheduler();
   /**
    * §75：低水位触发时已启动、待 run loop 接管的续写段。
@@ -257,6 +205,8 @@ export class Game {
   /** 强制收束的重试次数（bounded：合计最多 1 次）。 */
   private forcedEndingRetries = 0;
   private readonly commands = new AsyncEventQueue<RuntimeCommand>();
+  /** M4.5：交互驱动（choice/input/hybrid + 两阶段提交 + 分支/桥接预取）。 */
+  private readonly interactionDriver: InteractionDriver;
   private readonly deferredCommands: RuntimeCommand[] = [];
 
   // ------------------------------------------------------------------
@@ -265,12 +215,14 @@ export class Game {
   private readonly catalog: AssetCatalog | undefined;
   private readonly registry: CharacterRegistry;
   private readonly defaults: PresentationDefaults;
-  private readonly reduce: (state: VisualState, cues: StageCue[]) => VisualState;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly reduce: (state: VisualState, cues: StageCue[]) => VisualState;
   /**
    * Predictive state after everything committed to the buffer — what the
    * next generation must see (docs §54–§55). Updated at group commit.
    */
-  private tailVisualState: VisualState = createInitialVisualState();
+  /** @internal 交互驱动接缝（M4.5）。 */
+  tailVisualState: VisualState = createInitialVisualState();
   /**
    * What the player actually sees. Updated when a group's cues play
    * (docs §54–§55). Never runs ahead of playback.
@@ -279,30 +231,35 @@ export class Game {
   /** Stage cues of interaction groups, applied when the form opens. */
   private readonly pendingInteractionStage = new Map<string, StageCue[]>();
   /** Per-branch tail state (docs §56): keyed by option id. */
-  private readonly branchTailStates = new Map<string, VisualState>();
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly branchTailStates = new Map<string, VisualState>();
   /** Input-bridge prefetch controllers, keyed by interaction id. */
-  private readonly bridgeControllers = new Map<string, AbortController>();
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly bridgeControllers = new Map<string, AbortController>();
   /**
    * §10.2: interaction currently open for commands, set on
    * `interaction_opened` and cleared when the interaction resolves.
    */
-  private activeInteractionId: string | null = null;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  activeInteractionId: string | null = null;
   /**
    * §10.2: input preview currently open for confirm/cancel, set on
    * `input_preview_opened` and cleared on cancel/confirm.
    */
-  private activePreviewId: string | null = null;
+  /** @internal 交互驱动接缝（M4.5）。 */
+  activePreviewId: string | null = null;
   private readonly listeners = new Set<(output: RuntimeOutput) => void>();
 
   constructor(
-    private readonly config: AppConfig,
-    private readonly generator: StoryGeneratorPort,
-    private readonly status: RuntimeStatus,
-    private readonly media: MediaPlannerPort,
+    readonly config: AppConfig,
+    readonly generator: StoryGeneratorPort,
+    readonly status: RuntimeStatus,
+    readonly media: MediaPlannerPort,
     metrics: Metrics | undefined,
     ports: GamePorts,
     catalog?: AssetCatalog,
   ) {
+    this.interactionDriver = new InteractionDriver(this);
     this.metrics = metrics ?? new Metrics();
     this.graph = ports.graph;
     this.clock = ports.clock;
@@ -524,19 +481,19 @@ export class Game {
       void continuationPromise.catch(() => undefined);
 
       if (currentOutcome.liveSelection) {
-        await this.consumeLiveSelection(
+        await this.interactionDriver.consumeLiveSelection(
           currentOutcome.preview,
           currentOutcome.liveSelection,
           currentOutcome.nextTurn,
         );
       } else if (currentOutcome.liveResponse) {
-        await this.consumeLiveInputResponse(
+        await this.interactionDriver.consumeLiveInputResponse(
           currentOutcome.preview,
           currentOutcome.liveResponse,
           currentOutcome.nextTurn,
         );
       } else {
-        await this.consumePlayableEvents(currentOutcome.preview, currentOutcome.nextTurn);
+        await this.interactionDriver.consumePlayableEvents(currentOutcome.preview, currentOutcome.nextTurn);
       }
       segment = await continuationPromise;
       const selectedContext = currentOutcome.liveSelection
@@ -578,7 +535,7 @@ export class Game {
       events: [interaction],
       queue: new AsyncEventQueue<RuntimeModelEvent>(),
       done: Promise.resolve(),
-      branchManager: this.createBranchManagerForTerminal(
+      branchManager: this.interactionDriver.createBranchManagerForTerminal(
         interaction,
         restore.turnFloor,
         [...this.events],
@@ -607,7 +564,7 @@ export class Game {
         prompt: interaction.prompt,
         options: interaction.options.map((option) => ({ id: option.id, text: option.text })),
       };
-      const result = await this.handleChoice(
+      const result = await this.interactionDriver.handleChoice(
         choice,
         turn,
         segment.branchManager,
@@ -617,9 +574,9 @@ export class Game {
       return { type: "choice", nextTurn: turn + 1, ...result };
     }
     if (interaction.mode === "hybrid") {
-      return this.handleHybridInteraction(interaction, turn, segment.branchManager, context);
+      return this.interactionDriver.handleHybridInteraction(interaction, turn, segment.branchManager, context);
     }
-    const result = await this.handleInteractionInput(interaction, turn, segment.branchManager);
+    const result = await this.interactionDriver.handleInteractionInput(interaction, turn, segment.branchManager);
     if (result.type !== "committed") throw new RuntimeShutdownError();
     return {
       type: "choice",
@@ -710,7 +667,7 @@ export class Game {
    * attempt and routes it into the repair loop; nothing (buffer, bridge,
    * BranchManager, interaction_opened) is published for the illegal event.
    */
-  private assertInteractionPolicy(event: InteractionEvent): void {
+  assertInteractionPolicy(event: InteractionEvent): void {
     // M4.3 相位门：当前场景 directive.formModes 收窄 allowed_modes。
     const directive = this.director?.getDirective(this.storyState.scene.id);
     const result = this.interactionPolicy.validate(
@@ -728,7 +685,7 @@ export class Game {
    * Only accepted terminals reach this point — unselected candidates,
    * failed-repair interactions, and input-response fragments never record.
    */
-  private recordInteractionMode(mode: InteractionMode): void {
+  recordInteractionMode(mode: InteractionMode): void {
     this.recentInteractionModes.push(mode);
     if (this.recentInteractionModes.length > MAX_INTERACTION_MODE_HISTORY) {
       this.recentInteractionModes.shift();
@@ -1039,15 +996,15 @@ export class Game {
           prompt: event.prompt,
           options: event.options.map((option) => ({ id: option.id, text: option.text })),
         };
-        const preview = await this.handleChoice(syntheticChoice, turn, segment.branchManager, context, event.interaction_id);
+        const preview = await this.interactionDriver.handleChoice(syntheticChoice, turn, segment.branchManager, context, event.interaction_id);
         return { type: "choice", nextTurn: turn + 1, ...preview };
       }
 
       if (event.mode === "hybrid") {
-        return this.handleHybridInteraction(event, turn, segment.branchManager, context);
+        return this.interactionDriver.handleHybridInteraction(event, turn, segment.branchManager, context);
       }
 
-      const committed = await this.handleInteractionInput(event, turn, segment.branchManager);
+      const committed = await this.interactionDriver.handleInteractionInput(event, turn, segment.branchManager);
       // A pure input never cancels back out of the commit loop; only the
       // hybrid path returns the canceled sentinel.
       if (committed.type !== "committed") throw new RuntimeShutdownError();
@@ -1060,7 +1017,7 @@ export class Game {
     }
   }
 
-  private emit(output: RuntimeOutput): void {
+  emit(output: RuntimeOutput): void {
     for (const listener of this.listeners) listener(output);
   }
 
@@ -1069,20 +1026,13 @@ export class Game {
    * can no longer be submitted from that moment on (§5.4). Callers release
    * the active interaction scope immediately after.
    */
-  private resolveInteraction(
-    interactionId: string,
-    resolution: "choice" | "input",
-  ): void {
-    this.emit({ type: "interaction_resolved", interactionId, resolution });
-  }
-
   /**
    * Await the next command matching `predicate`. Commands that do not
    * match are deferred and re-checked by later waiters — except §10.2
    * stale interaction commands, which are dropped so a resolved
    * interaction can never accumulate commands for later waiters.
    */
-  private async waitForCommand(
+  async waitForCommand(
     predicate: (command: RuntimeCommand) => boolean,
   ): Promise<RuntimeCommand> {
     // Scan the deferred list: take the first match, dropping any stale
@@ -1117,7 +1067,7 @@ export class Game {
    * interaction or a resolved interaction are dropped by waitForCommand;
    * unrelated commands (e.g. advance) are deferred as usual.
    */
-  private async waitForInteractionCommand(
+  async waitForInteractionCommand(
     interactionId: string,
     acceptedTypes: Readonly<Partial<Record<"select_choice" | "preview_input", true>>>,
   ): Promise<Extract<RuntimeCommand, { type: "select_choice" | "preview_input" }>> {
@@ -1139,7 +1089,7 @@ export class Game {
    * Assign stable line_ids to an interaction's bridge narration and buffer
    * it. Bridge events never enter the formal event log.
    */
-  private compileGroup(
+  compileGroup(
     draft: EventGroupDraft,
     baseState: VisualState,
     turn: number,
@@ -1183,7 +1133,7 @@ export class Game {
       return { playable: event, interaction: null, cues: compiled.group.prelude, tailState: compiled.tailState };
     }
     if (main.type === "interaction") {
-      const interaction = this.buildRuntimeInteraction(main.interaction, turn);
+      const interaction = this.interactionDriver.buildRuntimeInteraction(main.interaction, turn);
       return { playable: null, interaction, cues: compiled.group.prelude, tailState: compiled.tailState };
     }
     // beat — pure stage node, no main event.
@@ -1233,10 +1183,10 @@ export class Game {
       if (interaction.mode === "input" || interaction.mode === "hybrid") {
         // DSL interactions carry no inline bridge — prefetch it as a
         // separate task (docs §32–§34).
-        this.startBridgePrefetch(interaction, turn);
+        this.interactionDriver.startBridgePrefetch(interaction, turn);
       }
       const context = [...history, ...segment.events];
-      segment.branchManager = this.createBranchManagerForTerminal(interaction, turn, context);
+      segment.branchManager = this.interactionDriver.createBranchManagerForTerminal(interaction, turn, context);
       // The terminal group is the contract boundary of this segment.
       this.generationScheduler.cancelActivePath();
       return;
@@ -1250,23 +1200,6 @@ export class Game {
       presentation: { cues, visualState: tailState },
     });
   }
-
-  private createBranchManagerForTerminal(
-    terminal: InteractionEvent,
-    turn: number,
-    context: StoryContextEvent[],
-  ): BranchManager | null {
-    if (terminal.mode === "choice" || terminal.mode === "hybrid") {
-      const choice: ChoiceEvent = {
-        type: "choice",
-        prompt: terminal.prompt,
-        options: terminal.options.map((option) => ({ id: option.id, text: option.text })),
-      };
-      return this.createBranchManager(choice, turn, context, terminal.interaction_id, "choice");
-    }
-    return null;
-  }
-
   /**
    * Segment end sentinel handling (docs §44–§51, §76):
    * - `ending` → synthesize an internal EndEvent (docs §48);
@@ -1297,122 +1230,10 @@ export class Game {
   }
 
   /**
-   * Build the runtime InteractionEvent from a DSL interaction draft.
-   * All machine fields are runtime-generated (docs §30–§31):
-   * interaction_id, option ids, InputSpec kind/max_length.
-   */
-  private buildRuntimeInteraction(
-    draft: DslInteractionDraft,
-    turn: number,
-  ): InteractionEvent {
-    const interactionId = `interaction_${turn}`;
-    const base = {
-      type: "interaction" as const,
-      interaction_id: interactionId,
-      prompt: draft.prompt,
-    };
-    if (draft.mode === "input") {
-      const input: InputSpec = {
-        kind: "free_text",
-        placeholder: draft.inputPlaceholder?.trim() || "输入你的回答……",
-        max_length: this.config.interaction.input.max_length,
-      };
-      return { ...base, mode: "input", input };
-    }
-    const options = draft.optionTexts.map((text, index) => ({
-      id: `${interactionId}_opt_${index}`,
-      text,
-    }));
-    if (draft.mode === "choice") {
-      return { ...base, mode: "choice", options };
-    }
-    const input: InputSpec = {
-      kind: "free_text",
-      placeholder: draft.inputPlaceholder?.trim() || "输入你的回答……",
-      max_length: this.config.interaction.input.max_length,
-    };
-    return { ...base, mode: "hybrid", options, input };
-  }
-
-  /**
-   * Prefetch the input bridge as an independent task (docs §32–§34):
-   * 1–2 narration lines generated while the player reads/thinks/types.
-   * Stored into the bridge buffer keyed by interaction id; the existing
-   * confirm flow peeks it. Failure or slow arrival degrades to an empty
-   * bridge (player line → NPC response directly).
-   */
-  private startBridgePrefetch(
-    interaction: InputInteraction | HybridInteraction,
-    turn: number,
-  ): void {
-    if (!this.config.prefetch.input_bridge.enabled) return;
-    const interactionId = interaction.interaction_id;
-    const controller = new AbortController();
-    this.bridgeControllers.set(interactionId, controller);
-
-    const bridgeBrief = this.makeBriefing(turn + 1);
-    const handle = this.generator.generateInputBridge({
-      turn: turn + 1,
-      state: this.storyState,
-      interaction,
-      signal: controller.signal,
-      ...(bridgeBrief !== undefined && bridgeBrief !== "" ? { briefing: bridgeBrief } : {}),
-      tailVisualState: this.tailVisualState,
-    });
-
-    const promise = (async () => {
-      try {
-        const groups: EventGroupDraft[] = [];
-        for await (const group of handle.events) groups.push(group);
-        await handle.done;
-        if (controller.signal.aborted) return;
-        const events: RuntimeNarrationEvent[] = [];
-        for (const group of groups) {
-          if (group.main.type === "narration") {
-            events.push({
-              type: "narration",
-              text: group.main.text,
-              line_id: this.nextLineId(),
-            });
-          }
-        }
-        // Bridge contract: 1–2 narration lines (docs §34). Anything else
-        // is discarded — the confirm flow must never see a broken bridge.
-        if (events.length < 1 || events.length > 2) {
-          this.metrics.recordSchemaValidationFailure();
-          this.diagnostics.warn(
-            "Bridge",
-            `输入过渡旁白数量非法（${events.length}），已丢弃`,
-          );
-          return;
-        }
-        for (const event of events) this.bridgeLineIds.add(event.line_id);
-        this.bridgeBuffer.store(interactionId, events);
-      } catch (error: unknown) {
-        if (controller.signal.aborted) return;
-        const message = error instanceof Error ? error.message : String(error);
-        this.diagnostics.warn("Bridge", `输入过渡旁白生成失败：${message}`);
-      } finally {
-        this.bridgeControllers.delete(interactionId);
-      }
-    })();
-    void promise;
-  }
-
-  /** Abort the bridge prefetch task (choice path / input commit). */
-  private cancelBridgePrefetch(interactionId: string): void {
-    const controller = this.bridgeControllers.get(interactionId);
-    if (controller !== undefined) {
-      controller.abort();
-      this.bridgeControllers.delete(interactionId);
-    }
-  }
-
-  /**
    * Apply an interaction group's stage cues when the form opens and return
    * the presentation delta (docs §65). Idempotent per interaction id.
    */
-  private openInteractionStage(interactionId: string): StagePresentationDelta | undefined {
+  openInteractionStage(interactionId: string): StagePresentationDelta | undefined {
     const cues = this.pendingInteractionStage.get(interactionId);
     if (cues === undefined || cues.length === 0) return undefined;
     this.pendingInteractionStage.delete(interactionId);
@@ -1427,318 +1248,14 @@ export class Game {
     return { cues, visualState: this.renderedVisualState };
   }
 
-  /**
-   * Adopt the player-selected branch: take its buffered events (or adopt the
-   * live generation task), retry on demand if the prefetch failed, then
-   * activate the branch in the media scheduler and formal buffer.
-   */
-  private async adoptSelectedBranch(
-    selected: ChoiceOption,
-    choice: ChoiceEvent,
-    turn: number,
-    branchManager: BranchManager,
-    prefetchContext: StoryContextEvent[],
-  ): Promise<{ preview: RuntimePlayableEvent[]; liveSelection?: LiveBranchSelection }> {
-    this.status.setPhase("切换分支", "取消未选分支，装载已选预取片段");
-    const selectStart = this.clock.nowMs();
-    let preview: RuntimePlayableEvent[];
-    let liveSelection: LiveBranchSelection | undefined;
-    // Decide from the BranchCandidate semantic layer (source of truth);
-    // status.branches is only a display view of the prefetch group and may
-    // disagree with the candidate (e.g. after a live handoff).
-    const candidate = branchManager.getCandidate(selected.id);
-    const selectedState = candidate?.status;
-
-    try {
-      if (selectedState === "ready" || selectedState === "failed" || selectedState === "discarded") {
-        // A failed candidate must enter the existing retry path. Only a
-        // queued/generating candidate can be adopted as a live active task.
-        preview = await branchManager.selectCandidate(selected.id);
-      } else {
-        const live = branchManager.selectCandidateLive(selected.id);
-        preview = [...live.events];
-        liveSelection = live;
-      }
-      this.diagnostics.info(
-        "Prefetch",
-        `选择"${selected.text}" → 取回 ${preview.length} 条已到达事件，耗时 ${this.clock.nowMs() - selectStart}ms (预取状态=${selectedState})`,
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.status.setJob("selected-branch-retry", "已选分支重试", "running");
-      const retryBrief = this.makeBriefing(turn + 1);
-      const handle = this.generator.generateBranchPrefetch({
-        turn: turn + 1,
-        state: this.storyState,
-        history: prefetchContext,
-        choice,
-        option: selected,
-        ...(retryBrief !== undefined && retryBrief !== "" ? { briefing: retryBrief } : {}),
-        tailVisualState: this.tailVisualState,
-      });
-      await handle.done;
-      const groups: EventGroupDraft[] = [];
-      for await (const group of handle.events) groups.push(group);
-      const result = this.materializeDslGroups(groups, this.tailVisualState, turn);
-      this.branchTailStates.set(selected.id, result.tailState);
-      preview = result.events;
-      this.media.registerCandidate(selected.id, preview);
-      this.status.removeJob("selected-branch-retry");
-    }
-
-    // The selected branch's tail visual state becomes the new predictive
-    // tail (docs §56): the next generation continues from where the branch
-    // actually leaves the stage. For a live-selected branch whose request
-    // has not resolved yet, derive the tail from the committed prefix's
-    // stage cues.
-    const branchTail = this.branchTailStates.get(selected.id);
-    if (branchTail !== undefined) {
-      this.tailVisualState = branchTail;
-    } else {
-      const cues: StageCue[] = [];
-      for (const event of preview) {
-        const stage = (event as { stage?: StageCue[] }).stage;
-        if (stage !== undefined) cues.push(...stage);
-      }
-      if (cues.length > 0) {
-        this.tailVisualState = this.reduce(this.tailVisualState, cues);
-      }
-    }
-    this.branchTailStates.clear();
-
-    this.media.activateCandidate(selected.id);
-    this.media.registerActive(preview);
-    this.registerBuffered(preview);
-
-    return {
-      preview,
-      ...(liveSelection ? { liveSelection } : {}),
-    };
-  }
-
-  private async handleChoice(
-    choice: ChoiceEvent,
-    turn: number,
-    branchManager: BranchManager | null,
-    prefetchContext: StoryContextEvent[],
-    interactionId?: string,
-  ): Promise<ChoiceSelection> {
-    if (!branchManager) throw new Error("内部错误：choice 缺少分支预取组。 ");
-
-    this.status.setPhase("等待选择", "各分支正在并行预取；可随时选择");
-    // Legacy choice events have no interaction_id; DSL-compiled choice
-    // interactions carry the runtime-generated id (docs §30).
-    const scopeId = interactionId ?? `choice_${turn}`;
-    // §10.2 lifecycle: the interaction is the active command scope from
-    // `interaction_opened` until it resolves.
-    this.activeInteractionId = scopeId;
-    const presentation = this.openInteractionStage(scopeId);
-    this.emit({
-      type: "interaction_opened",
-      interactionId: scopeId,
-      interaction: choice,
-      ...(presentation !== undefined ? { presentation } : {}),
-    });
-    const command = await this.waitForInteractionCommand(
-      scopeId,
-      { select_choice: true },
-    );
-    if (command.type !== "select_choice") throw new RuntimeShutdownError();
-    const selected = choice.options.find((option) => option.id === command.optionId);
-    if (!selected) throw new Error(`未找到选项：${command.optionId}`);
-    // The option exists: the interaction is now resolved and can no longer
-    // be submitted; browsers close the form immediately.
-    this.resolveInteraction(scopeId, "choice");
-    // §10.2 lifecycle: choice accepted → the interaction scope is released.
-    this.activeInteractionId = null;
-    this.choiceTimestamp = this.clock.nowMs();
-    await this.recordPlayerChoice(selected, turn);
-    // The checkpoint fires only AFTER the player choice is formally
-    // committed: a consolidation triggered here must include the choice
-    // event (audit finding 5).
-    this.narrativeDirector?.checkpoint("interaction_completed");
-    this.diagnostics.info("player", `你选择了：${selected.text}`);
-
-    const { preview, liveSelection } = await this.adoptSelectedBranch(
-      selected,
-      choice,
-      turn,
-      branchManager,
-      prefetchContext,
-    );
-
-    for (const option of choice.options) {
-      this.status.removeJob(`branch:${option.id}`);
-    }
-    this.status.clearBranches();
-    return {
-      preview,
-      ...(liveSelection ? { liveSelection } : {}),
-    };
-  }
-
-  private async consumePlayableEvents(
-    events: RuntimePlayableEvent[],
-    turn: number,
-    segment?: ActiveSegment
-  ): Promise<void> {
-    for (const event of events) await this.consumePlayableEvent(event, turn, segment);
-  }
-
-  /**
-   * Consume a selected branch while retaining its original generation task.
-   * Events that arrive after selection are pushed into the formal buffer by
-   * this method before they are rendered. The task may fail after producing
-   * usable events; in that case the continuation path still takes over.
-   */
-  private async consumeLiveSelection(
-    initialEvents: RuntimePlayableEvent[],
-    selection: LiveBranchSelection,
-    turn: number,
-  ): Promise<void> {
-    const handoffIfReady = (): void => {
-      // Count all playable lines (dialogue + narration) so a branch that
-      // produced mostly narration can still hand over to the continuation
-      // request instead of running until the model stops on its own.
-      const playableCount = selection.events.filter(
-        (event) => event.type === "dialogue" || event.type === "narration",
-      ).length;
-      if (playableCount >= this.config.prefetch.branch_dialogue_lines) {
-        this.diagnostics.info(
-          "Prefetch",
-          `已选分支达到 ${playableCount} 条可播放行，立即交接正式续写`,
-        );
-        selection.handoff();
-      }
-    };
-
-    const failure = await this.consumeLiveStream(
-      initialEvents,
-      {
-        events: selection.events,
-        done: selection.done,
-        subscribe: selection.subscribe,
-      },
-      turn,
-      handoffIfReady,
-      handoffIfReady,
-    );
-
-    // The branch request has ended. Its already generated lines remain valid;
-    // the caller starts a normal continuation using that committed prefix.
-    if (failure) {
-      const message = failure instanceof Error ? failure.message : String(failure);
-      this.status.setPhase("后台续写", `已保留分支前缀，分支流失败：${message}`);
-    }
-  }
-
-  /**
-   * Consume a confirmed input response while its generation task is still
-   * running. Arrived events play in the committed order
-   * (player → bridge → response); late events are routed into the formal
-   * buffer directly (live promotion) and played as they arrive.
-   */
-  private async consumeLiveInputResponse(
-    initialEvents: RuntimePlayableEvent[],
-    live: InputResponseSession,
-    turn: number,
-  ): Promise<void> {
-    const failure = await this.consumeLiveStream(
-      initialEvents,
-      live,
-      turn,
-      undefined,
-      undefined,
-      () => this.metrics.recordInputResponseUnderrun(),
-    );
-
-    if (failure) {
-      const message = failure instanceof Error ? failure.message : String(failure);
-      this.status.setPhase("后台续写", `已保留输入回应前缀，回应流失败：${message}`);
-    }
-    this.status.removeJob("input-response");
-  }
-
-  /**
-   * Shared live-stream consumption: play the committed prefix, subscribe to
-   * later events, enqueue them into the formal buffer, and play them until
-   * the stream ends. Returns the stream failure, if any.
-   *
-   * `onEvent` fires for each newly enqueued event; `onSynced` fires once
-   * after the initial snapshot so callers can re-check conditions that
-   * depend on the full committed prefix. `onFirstWait` fires once when the
-   * prefix is exhausted and the next event has not arrived yet (underrun).
-   */
-  private async consumeLiveStream(
-    initialEvents: RuntimePlayableEvent[],
-    live: LiveStreamLike,
-    turn: number,
-    onEvent?: (event: RuntimePlayableEvent) => void,
-    onSynced?: () => void,
-    onFirstWait?: () => void,
-  ): Promise<unknown> {
-    const seen = new Set(initialEvents.map((event) => event.line_id));
-    const queue = new AsyncEventQueue<RuntimePlayableEvent>();
-    let failure: unknown;
-
-    const enqueueIfNew = (event: RuntimePlayableEvent): void => {
-      if (seen.has(event.line_id)) return;
-      seen.add(event.line_id);
-      // Publish late lines immediately. Playback may consume them later, but
-      // they must already count toward the formal low-water mark.
-      this.playbackBuffer.enqueue(event);
-      this.registerBuffered([event]);
-      this.media.registerActive([event]);
-      queue.push(event);
-      onEvent?.(event);
-    };
-    const unsubscribe = live.subscribe(enqueueIfNew);
-    // Catch events emitted between stream creation and subscribe(). JavaScript
-    // callbacks cannot interleave this synchronous snapshot, so this closes
-    // the only handoff gap without duplicating line IDs.
-    for (const event of live.events) enqueueIfNew(event);
-    onSynced?.();
-
-    void live.done
-      .catch((error: unknown) => {
-        failure = error;
-      })
-      .finally(() => {
-        unsubscribe();
-        queue.close();
-      });
-
-    await this.consumePlayableEvents(initialEvents, turn);
-
-    // Underrun: the committed prefix (player line + bridge) has been fully
-    // presented and the next response line has not arrived yet. The CLI
-    // keeps the current screen and waits silently; the metric counts it.
-    let recordedUnderrun = false;
-    while (true) {
-      if (!recordedUnderrun && queue.pendingCount() === 0) {
-        recordedUnderrun = true;
-        onFirstWait?.();
-      }
-      const next = await queue.next();
-      if (!next.done) {
-        const event = next.value;
-        await this.consumePlayableEvent(event, turn);
-        continue;
-      }
-      break;
-    }
-
-    return failure;
-  }
-
-  private advanceBufferedEvent(event: RuntimeBufferEvent): void {
+  advanceBufferedEvent(event: RuntimeBufferEvent): void {
     const bufferedEvent = this.playbackBuffer.advance();
     if (bufferedEvent && bufferedEvent !== event) {
       throw new Error("播放缓冲顺序与生成事件流不一致。");
     }
   }
 
-  private async consumePlayableEvent(
+  async consumePlayableEvent(
     event: RuntimePlayableEvent,
     turn: number,
     segment?: ActiveSegment
@@ -1759,7 +1276,7 @@ export class Game {
       this.bridgePlayStartedAtMs = this.clock.nowMs();
     }
     if (event.type === "player_dialogue") {
-      await this.recordPlayerDialogue(event, turn);
+      await this.interactionDriver.recordPlayerDialogue(event, turn);
     } else if (isModelPlayable && !isBridge) {
       await this.recordModelEvent(event, turn);
     }
@@ -1861,11 +1378,11 @@ export class Game {
     }
   }
 
-  private nextLineId(): string {
+  nextLineId(): string {
     return this.ids.nextLineId(this.sessionId);
   }
 
-  private registerBuffered(events: RuntimePlayableEvent[]): void {
+  registerBuffered(events: RuntimePlayableEvent[]): void {
     for (const event of events) this.buffered.set(event.line_id, event);
     this.updateBufferStatus();
   }
@@ -1887,84 +1404,12 @@ export class Game {
     this.seq += 1;
     await this.record(stored);
   }
-
-  private createBranchManager(
-    choice: ChoiceEvent,
-    turn: number,
-    prefetchContext: StoryContextEvent[],
-    interactionId?: string,
-    source: "choice" | "input_preview" = "choice"
-  ): BranchManager {
-    const manager = new BranchManager(this.metrics);
-
-    for (const option of choice.options) {
-      manager.createCandidate(
-        option.id,
-        interactionId ?? `choice_${turn}`,
-        source
-      );
-    }
-
-    manager.startPrefetch({
-      choice,
-      concurrency: this.config.prefetch.branch_concurrency,
-      status: this.status,
-      generate: async (option, signal, onEvent) => {
-        const materialized: RuntimePlayableEvent[] = [];
-        // DSL mode: branch groups compile against a branch-local visual
-        // state seeded from the current tail (docs §56). Unselected
-        // branches never execute, so their states stay isolated here.
-        let branchState = this.tailVisualState;
-        const prefetchBrief = this.makeBriefing(turn + 1);
-        const handle = this.generator.generateBranchPrefetch({
-          turn: turn + 1,
-          state: this.storyState,
-          history: prefetchContext,
-          choice,
-          option,
-          signal,
-          ...(prefetchBrief !== undefined && prefetchBrief !== "" ? { briefing: prefetchBrief } : {}),
-          tailVisualState: this.tailVisualState,
-        });
-        // 泵：与旧 onGroup 直连语义等价——组到达即编译并喂给 onEvent
-        // （branch-local visual state 逐组折叠）。
-        const pump = (async () => {
-          for await (const group of handle.events) {
-            const { playable, tailState } = this.compileGroup(group, branchState, turn);
-            branchState = tailState;
-            if (playable !== null) {
-              materialized.push(playable);
-              onEvent(playable);
-            }
-          }
-        })();
-        try {
-          await handle.done;
-        } catch (error) {
-          // C5: done 拒绝时泵仍在后台排空缓冲组；若某组让 compileGroup
-          // 抛错，泵的拒绝会成为未处理拒绝（Node unhandledRejection=throw
-          // 崩溃进程）。带拒绝处理排空后再抛原始错误（与 I1 相同模式）。
-          await pump.catch(() => undefined);
-          throw error;
-        }
-        await pump;
-        this.branchTailStates.set(option.id, branchState);
-        return materialized;
-      },
-      onReady: (option, branchEvents) => {
-        this.media.registerCandidate(option.id, branchEvents);
-      }
-    });
-
-    return manager;
-  }
-
   /**
    * Compile DSL groups into materialized playable events, chaining the
    * visual state across groups. Used by branch prefetch and input-response
    * paths (docs §56, §79).
    */
-  private materializeDslGroups(
+  materializeDslGroups(
     groups: EventGroupDraft[],
     baseState: VisualState,
     turn: number,
@@ -2002,578 +1447,14 @@ export class Game {
    * When `initialText` is provided (e.g. from a hybrid interaction) the
    * editor step is skipped and the flow goes directly to preview.
    */
-  private async handleInteractionInput(
-    interaction: InputInteraction | HybridInteraction,
-    turn: number,
-    branchManager: BranchManager | null,
-    initialText?: string,
-  ): Promise<InputCommitOutcome> {
-    branchManager?.discardAll();
-    this.status.clearBranches();
-    const interactionId = interaction.interaction_id;
-    // The bridge is shared across preview cancels; it is consumed only at
-    // confirm so a cancelled preview can retry with the same bridge.
-    let bridgeEvents = this.bridgeBuffer.peek(interactionId) ?? [];
-
-    while (true) {
-      let text: string;
-      if (initialText !== undefined && initialText.trim().length > 0) {
-        // Text already provided — skip editor, jump to preview
-        text = initialText.trim();
-        initialText = undefined;
-      } else {
-        this.status.setPhase("等待输入", "等待玩家自由输入");
-        this.status.setBuffer(this.buffered.size, this.countBufferedDialogues());
-        // §10.2 lifecycle: (re)opening the interaction re-arms the command
-        // scope; the id survives preview cancels.
-        this.activeInteractionId = interactionId;
-        const presentation = this.openInteractionStage(interactionId);
-        this.emit({
-          type: "interaction_opened",
-          interactionId,
-          interaction,
-          ...(presentation !== undefined ? { presentation } : {}),
-        });
-        const command = await this.waitForInteractionCommand(
-          interactionId,
-          { preview_input: true },
-        );
-        if (command.type !== "preview_input") throw new RuntimeShutdownError();
-        text = command.text.trim().slice(0, interaction.input.max_length);
-      }
-      // 空白输入不进提交路径：边契约要求 choice.text ≥ 1，空文本会在边收束时
-      // （远离错误现场）炸开——这里重开表单等待有效输入，与取消分支同构。
-      if (text.length === 0) continue;
-
-      // Freeze the text and enter preview.
-      const session = this.inputEngine.startEditing(interaction);
-      this.inputEngine.updateDraft(session, text);
-      this.inputEngine.requestPreview(session);
-
-      const previewId = this.ids.nextPreviewId(interactionId);
-      const responseSession = new InputResponseSession({
-        previewId,
-        interactionId,
-        generationId: this.ids.nextGenerationId(`input:${interactionId}`),
-        frozenText: text,
-        bridgeEvents,
-      });
-
-      this.status.setPhase("输入预览", `玩家输入：${text.slice(0, 50)}`);
-      const previewStartTime = this.clock.nowMs();
-      this.status.setJob(
-        "input-response",
-        `NPC 回应：${text.slice(0, 30)}`,
-        "running"
-      );
-
-      // Fire NPC response generation in background; every complete event is
-      // staged into the session immediately (never the formal log).
-      const { promise: responsePromise, controller: responseController } =
-        this.startInputResponseGeneration(interaction, turn, text, responseSession);
-
-      // Don't await — the driver shows the preview while generating.
-      void responsePromise.catch(() => undefined);
-
-      // Show preview and await confirmation.
-      // §10.2 lifecycle: the preview is the active confirm/cancel scope from
-      // `input_preview_opened` until it is cancelled or confirmed.
-      this.activePreviewId = previewId;
-      this.emit({ type: "input_preview_opened", previewId, text });
-      let previewCommand: RuntimeCommand;
-      if (this.config.input.require_preview_confirmation) {
-        previewCommand = await this.waitForCommand(
-          (c) =>
-            (c.type === "confirm_input" || c.type === "cancel_input") &&
-            c.previewId === previewId,
-        );
-      } else {
-        // Single-Enter flow: the preview is implicit, commit immediately.
-        previewCommand = { type: "confirm_input", previewId };
-      }
-      const previewDwellMs = this.clock.nowMs() - previewStartTime;
-      this.metrics.recordInputPreview(previewDwellMs);
-
-      // The bridge prefetch may still be landing when the interaction opens
-      // (its handle stream settles a microtask after the terminal group).
-      // Refresh at the commit point so a late but valid bridge is included;
-      // the buffer is consumed only at confirm, so this is idempotent.
-      bridgeEvents = this.bridgeBuffer.peek(interactionId) ?? [];
-
-      if (previewCommand.type === "cancel_input") {
-        // Return to editing — abort the stale response request so its events
-        // can never be buffered or rendered for the previous edit session.
-        responseController.abort();
-        responseSession.cancel();
-        this.metrics.recordInputResponseCanceled();
-        this.inputEngine.cancel(session);
-        this.status.removeJob("input-response");
-        this.status.clearBranches();
-        // §10.2 lifecycle: cancel releases the preview scope only; the
-        // interaction stays open for the next preview.
-        this.activePreviewId = null;
-        this.emit({ type: "input_preview_canceled", previewId });
-        this.media.discardCandidate(previewId);
-        if (interaction.mode === "hybrid") {
-          // §11.7: a hybrid cancel hands control back to the hybrid loop,
-          // which re-arms BOTH submission paths and re-prefetches the
-          // option branches (the interaction is still open).
-          return { type: "canceled" };
-        }
-        continue;
-      }
-
-      // Confirm — commit the session.
-      this.inputEngine.commit(session);
-      responseSession.commit();
-      // The input is now resolved and can no longer be submitted; browsers
-      // close the form. Emitted before input_committed so a reconnect never
-      // restores the resolved interaction.
-      this.resolveInteraction(interactionId, "input");
-      // §10.2 lifecycle: confirm releases both the preview and interaction
-      // scope — no further confirm/cancel may touch this preview.
-      this.activeInteractionId = null;
-      this.activePreviewId = null;
-      this.emit({ type: "input_committed", previewId });
-      this.bridgeBuffer.take(interactionId);
-      // The interaction is resolved: stop the bridge prefetch task so late
-      // narration can never be buffered for a dead interaction.
-      this.cancelBridgePrefetch(interactionId);
-
-      // Confirm → first response line measurement (E3/G1).
-      this.inputConfirmAtMs = this.clock.nowMs();
-      if (responseSession.responseEvents.length > 0) {
-        this.metrics.recordInputConfirmToFirstResponseLine(0);
-        this.inputConfirmAtMs = null;
-      }
-
-      const playerDialogue = this.makePlayerDialogue(interactionId, text);
-
-      // The handle rejection settles two microtask hops behind the runner
-      // failure (the port's queue-close finally + propagation). Drain the
-      // microtask queue so a failed stream is classified as a repair attempt
-      // below, not as a live promotion.
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-      // Failure with no usable events: one repair attempt, streamed live so
-      // the player line + bridge can play first (reading time hides it).
-      // `settled` tells whether the generation has ended; the failure is
-      // detected via the `failure` field because commit() already moved the
-      // session to "committed".
-      let liveSession: InputResponseSession | null = null;
-      if (
-        responseSession.settled &&
-        responseSession.failure !== null &&
-        responseSession.responseEvents.length === 0
-      ) {
-        liveSession = new InputResponseSession({
-          previewId,
-          interactionId,
-          generationId: this.ids.nextGenerationId(`input:${interactionId}:repair`),
-          frozenText: text,
-          bridgeEvents,
-        });
-        const repair = this.startInputResponseGeneration(interaction, turn, text, liveSession);
-        void repair.promise.catch(() => undefined);
-        this.status.setJob(
-          "input-response",
-          `NPC 回应：${text.slice(0, 30)}`,
-          "running"
-        );
-      } else if (!responseSession.settled) {
-        // Live promotion: the confirmed stream is still running; its later
-        // events enter the formal buffer directly. No abort, no new request.
-        liveSession = responseSession;
-        this.metrics.recordInputResponsePromotedLive();
-      }
-
-      await this.recordPlayerInput(interactionId, text, turn);
-      this.status.setPhase(
-        "输入已提交",
-        `玩家输入：${text.slice(0, 50)}`
-      );
-
-      if (!liveSession) {
-        // Response finished before/during confirm: return the fixed prefix.
-        await responseSession.done;
-        if (responseSession.failure) {
-          this.diagnostics.warn("input", `NPC 回应生成失败 — ${responseSession.failure.message}`);
-        }
-        this.media.registerActive(responseSession.responseEvents);
-        this.status.removeJob("input-response");
-        this.narrativeDirector?.checkpoint("interaction_completed");
-        return {
-          type: "committed",
-          preview: [playerDialogue, ...bridgeEvents, ...responseSession.responseEvents],
-        };
-      }
-
-      // Live path: the response prefix already staged plays first, late
-      // events flow to the formal buffer via consumeLiveInputResponse.
-      void liveSession.done.then(() => {
-        if (liveSession.failure) {
-          this.diagnostics.warn("input", `NPC 回应生成失败 — ${liveSession.failure.message}`);
-        }
-      });
-      this.media.registerActive(liveSession.responseEvents);
-      this.narrativeDirector?.checkpoint("interaction_completed");
-      return {
-        type: "committed",
-        preview: [playerDialogue, ...bridgeEvents, ...liveSession.responseEvents],
-        liveResponse: liveSession,
-      };
-    }
-  }
-
   /**
    * Start one input response generation that streams events into the
    * session. Returns the settled promise and the abort controller.
    */
-  private startInputResponseGeneration(
-    interaction: InputInteraction | HybridInteraction,
-    turn: number,
-    text: string,
-    responseSession: InputResponseSession,
-  ): { promise: Promise<void>; controller: AbortController } {
-    const controller = new AbortController();
-    // DSL mode: response groups compile against a response-local visual
-    // state seeded from the current tail (docs §79).
-    let responseState = this.tailVisualState;
-
-    const brief = this.makeBriefing(turn + 1);
-    const handle = this.generator.generateInputResponse({
-      turn: turn + 1,
-      state: this.storyState,
-      history: [...this.events],
-      interaction,
-      playerInput: text,
-      signal: controller.signal,
-      ...(brief !== undefined && brief !== "" ? { briefing: brief } : {}),
-      tailVisualState: this.tailVisualState,
-    });
-
-    // 泵：把 handle 的事件流喂进 staging 路径（与旧 onGroup 直连等价）。
-    // 中止后的迟到组照旧丢弃并计数。
-    const pump = (async () => {
-      for await (const group of handle.events) {
-        if (controller.signal.aborted) {
-          this.metrics.recordStaleInputEventDropped();
-          continue;
-        }
-        const { playable, tailState } = this.compileGroup(group, responseState, turn);
-        responseState = tailState;
-        if (playable !== null) {
-          this.stageResponseEvent(responseSession, playable);
-        }
-      }
-    })();
-    // C5: done 拒绝路径只标记失败、不排空泵；若某组让 compileGroup 抛错，
-    // 泵的拒绝会成为未处理拒绝（Node unhandledRejection=throw 崩溃进程）。
-    // 创建即挂上永不抛错的拒绝处理器（成功后 await pump 仍能看到拒绝，
-    // 由下方 ok 处理器标记失败）。
-    void pump.catch(() => undefined);
-
-    // 单一反应（非 .then().catch()）：确认命令处理时会话状态已落定——
-    // 修复决策在确认点不会与失败反应竞速。ok 处理器现在先排空泵（I2），
-    // 落定多出若干微任务，但确认点的 setTimeout(0) 排空覆盖同一轮
-    // macrotask，分类确定性保持不变。
-    const promise = handle.done
-      .then(
-        async () => {
-          if (controller.signal.aborted) return;
-          // I2：泵可能仍在处理最终一批组（final burst）——先排空泵再读取
-          // responseState，保证预测尾部（docs §79）包含全部组的 stage 贡献。
-          // 泵拒绝（组编译失败）与 done 拒绝同语义：标记失败，不得让会话
-          // 停留在 generating。
-          try {
-            await pump;
-          } catch (error) {
-            if (controller.signal.aborted) return;
-            const err = error instanceof Error ? error : new Error(String(error));
-            responseSession.markFailed(err);
-            this.status.setJob(
-              "input-response",
-              `NPC 回应：${text.slice(0, 30)}`,
-              "failed",
-              err.message
-            );
-            return;
-          }
-          // The confirmed response's tail state becomes the new predictive
-          // tail (docs §79): the next generation continues from where the
-          // response leaves the stage.
-          this.tailVisualState = responseState;
-          responseSession.markReady();
-          this.status.setJob(
-            "input-response",
-            `NPC 回应：${text.slice(0, 30)}`,
-            "ready"
-          );
-        },
-        (error) => {
-          if (controller.signal.aborted) return;
-          const err = error instanceof Error ? error : new Error(String(error));
-          responseSession.markFailed(err);
-          this.status.setJob(
-            "input-response",
-            `NPC 回应：${text.slice(0, 30)}`,
-            "failed",
-            err.message
-          );
-        },
-      )
-      .finally(() => void pump);
-
-    return { promise, controller };
-  }
-
   /**
    * Stage one response event, measuring the confirm → first-line window.
    */
-  private stageResponseEvent(
-    responseSession: InputResponseSession,
-    event: RuntimePlayableEvent,
-  ): void {
-    const confirmAt = this.inputConfirmAtMs;
-    const firstAfterConfirm =
-      confirmAt !== null && responseSession.responseEvents.length === 0;
-    responseSession.appendResponseEvent(event);
-    this.responseLineIds.add(event.line_id);
-    if (firstAfterConfirm) {
-      this.metrics.recordInputConfirmToFirstResponseLine(this.clock.nowMs() - confirmAt);
-      this.inputConfirmAtMs = null;
-    }
-  }
-
-  /**
-   * Hybrid interaction: player can select a preset option OR type free text.
-   */
-  private makePlayerDialogue(interactionId: string, text: string): PlayerDialogueEvent {
-    return {
-      type: "player_dialogue",
-      interaction_id: interactionId,
-      speaker: "你",
-      text,
-      line_id: this.nextLineId(),
-    };
-  }
-
-  /**
-   * Hybrid interaction: player can select a preset option OR type free text.
-   * The interaction scope opens once and accepts `select_choice` /
-   * `preview_input` until one path resolves. A preview cancel does NOT
-   * resolve it — the loop re-opens the full hybrid (§11.6) with both paths
-   * armed again (§11.7: 选项仍可点击) and re-prefetches the option branches
-   * so a later choice has live candidates.
-   *
-   * Choosing a preset option discards the buffered input bridge; choosing
-   * free text keeps it for the confirm → bridge → response playback.
-   */
-  private async handleHybridInteraction(
-    interaction: HybridInteraction,
-    turn: number,
-    branchManager: BranchManager | null,
-    prefetchContext: StoryContextEvent[]
-  ): Promise<SegmentOutcome> {
-    const interactionId = interaction.interaction_id;
-    // §10.2 lifecycle: hybrid opens one interaction scope shared by both
-    // submission paths; it is released as soon as either path resolves.
-    while (true) {
-      this.status.setPhase("等待选择", "可选择预设选项，或自由输入");
-      this.activeInteractionId = interactionId;
-      const presentation = this.openInteractionStage(interactionId);
-      this.emit({
-        type: "interaction_opened",
-        interactionId,
-        interaction,
-        ...(presentation !== undefined ? { presentation } : {}),
-      });
-      const command = await this.waitForInteractionCommand(
-        interactionId,
-        { select_choice: true, preview_input: true },
-      );
-
-      if (command.type === "preview_input") {
-        branchManager?.discardAll();
-        this.status.clearBranches();
-
-        const committed = await this.handleInteractionInput(
-          interaction,
-          turn,
-          null,
-          command.text,
-        );
-
-        if (committed.type === "canceled") {
-          // §11.7: cancel restores the FULL hybrid — options clickable
-          // again, input re-editable, bridge preserved. Re-prefetch the
-          // option branches so the choice path is live once more.
-          branchManager = this.createBranchManagerForTerminal(
-            interaction,
-            turn,
-            prefetchContext,
-          );
-          continue;
-        }
-
-        return {
-          type: "choice",
-          nextTurn: turn + 1,
-          preview: committed.preview,
-          ...(committed.liveResponse ? { liveResponse: committed.liveResponse } : {}),
-        };
-      }
-
-      if (command.type !== "select_choice") throw new RuntimeShutdownError();
-
-      const selected = interaction.options.find(
-        (o) => o.id === command.optionId
-      );
-      if (!selected) {
-        throw new Error(`未找到选项：${command.optionId}`);
-      }
-
-      // The preset option resolves the interaction through the branch flow;
-      // the input bridge belongs to the free-text path and is discarded.
-      this.resolveInteraction(interactionId, "choice");
-      // §10.2 lifecycle: choice accepted → the interaction scope is released.
-      this.activeInteractionId = null;
-      this.bridgeBuffer.discard(interactionId);
-      // The preset option resolves the interaction: the bridge belongs to
-      // the free-text path and is discarded (docs §35).
-      this.cancelBridgePrefetch(interactionId);
-
-      await this.recordPlayerChoice(
-        { id: selected.id, text: selected.text },
-        turn
-      );
-      // After the choice is formally committed (audit finding 5).
-      this.narrativeDirector?.checkpoint("interaction_completed");
-      this.choiceTimestamp = this.clock.nowMs();
-      this.diagnostics.info("player", `你选择了：${selected.text}`);
-
-      let preview: RuntimePlayableEvent[];
-      let liveSelection: LiveBranchSelection | undefined;
-
-      if (branchManager) {
-        const syntheticChoice: ChoiceEvent = {
-          type: "choice",
-          prompt: interaction.prompt,
-          options: interaction.options.map((o) => ({
-            id: o.id,
-            text: o.text,
-          })),
-        };
-        const adopted = await this.adoptSelectedBranch(
-          selected,
-          syntheticChoice,
-          turn,
-          branchManager,
-          prefetchContext,
-        );
-        preview = adopted.preview;
-        liveSelection = adopted.liveSelection;
-
-        for (const option of interaction.options) {
-          this.status.removeJob(`branch:${option.id}`);
-        }
-        this.status.clearBranches();
-      } else {
-        this.status.setJob(
-          "on-demand-branch",
-          `生成分支：${selected.text}`,
-          "running"
-        );
-        const syntheticChoice: ChoiceEvent = {
-          type: "choice",
-          prompt: interaction.prompt,
-          options: interaction.options.map((o) => ({
-            id: o.id,
-            text: o.text,
-          })),
-        };
-        const onDemandBrief = this.makeBriefing(turn + 1);
-        const handle = this.generator.generateBranchPrefetch({
-          turn: turn + 1,
-          state: this.storyState,
-          history: prefetchContext,
-          choice: syntheticChoice,
-          option: { id: selected.id, text: selected.text },
-          ...(onDemandBrief !== undefined && onDemandBrief !== "" ? { briefing: onDemandBrief } : {}),
-          tailVisualState: this.tailVisualState,
-        });
-        await handle.done;
-        const groups: EventGroupDraft[] = [];
-        for await (const group of handle.events) groups.push(group);
-        const result = this.materializeDslGroups(groups, this.tailVisualState, turn);
-        preview = result.events;
-        this.registerBuffered(preview);
-        this.status.removeJob("on-demand-branch");
-      }
-
-      return {
-        type: "choice",
-        nextTurn: turn + 1,
-        preview,
-        ...(liveSelection ? { liveSelection } : {}),
-      };
-    }
-  }
-
-  private countBufferedDialogues(): number {
-    return [...this.buffered.values()].filter(
-      (event) => event.type === "dialogue"
-    ).length;
-  }
-
-  private async recordPlayerChoice(option: ChoiceOption, turn: number): Promise<void> {
-    const stored: StoredPlayerChoiceEvent = {
-      type: "player_choice",
-      choice_id: option.id,
-      text: option.text,
-      seq: this.seq,
-      turn,
-      timestamp: this.clock.nowIso(),
-      source: "player"
-    };
-    this.seq += 1;
-    await this.record(stored);
-  }
-
-  private async recordPlayerInput(
-    interactionId: string,
-    text: string,
-    turn: number
-  ): Promise<void> {
-    const stored: StoredPlayerInputEvent = {
-      type: "player_input",
-      interaction_id: interactionId,
-      text,
-      seq: this.seq,
-      turn,
-      timestamp: this.clock.nowIso(),
-      source: "player"
-    };
-    this.seq += 1;
-    await this.record(stored);
-  }
-
-  private async recordPlayerDialogue(
-    event: PlayerDialogueEvent,
-    turn: number
-  ): Promise<void> {
-    const stored: StoredPlayerDialogueEvent = {
-      ...event,
-      seq: this.seq,
-      turn,
-      timestamp: this.clock.nowIso(),
-      source: "player"
-    };
-    this.seq += 1;
-    await this.record(stored);
-  }
-
-  private async record(event: StoredEvent): Promise<void> {
+  async record(event: StoredEvent): Promise<void> {
     this.events.push(event);
     // 玩家解决事件先行开边：解决事件本身成为新边首条负载（边负载完整
     // 覆盖「选择 → 后果」全程，回放语义成立）。
@@ -2663,7 +1544,7 @@ export class Game {
    * 演员剪报文本。输入类型上不含 outline 全量/结局候选/他周目数据——防火墙
    * 落为参数形状（§5.2）。
    */
-  private makeBriefing(turn: number): string | undefined {
+  makeBriefing(turn: number): string | undefined {
     const brief = this.makeBrief(turn);
     const directive = this.director?.getDirective(this.storyState.scene.id);
     if (brief === undefined && directive === undefined) return undefined;

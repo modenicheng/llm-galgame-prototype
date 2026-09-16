@@ -541,9 +541,9 @@ describe("Interaction policy enforcement", () => {
     );
     const g = game as any;
 
-    expect(g.createBranchManagerForTerminal(inputInteraction("interaction_1"), 1, [])).toBeNull();
-    expect(g.createBranchManagerForTerminal(hybridInteraction("interaction_2"), 1, [])).not.toBeNull();
-    expect(g.createBranchManagerForTerminal(choiceInteraction("int_3"), 1, [])).not.toBeNull();
+    expect(g.interactionDriver.createBranchManagerForTerminal(inputInteraction("interaction_1"), 1, [])).toBeNull();
+    expect(g.interactionDriver.createBranchManagerForTerminal(hybridInteraction("interaction_2"), 1, [])).not.toBeNull();
+    expect(g.interactionDriver.createBranchManagerForTerminal(choiceInteraction("int_3"), 1, [])).not.toBeNull();
   });
 
   it("never prefetches branches during a pure input run", async () => {

@@ -166,7 +166,7 @@ describe("internal state access", () => {
   it("should reflect events after a player choice is recorded", () => {
     const game = new Game(config, generator, status, media, undefined, makeTestPorts());
     const g = game as any;
-    g.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 1);
+    g.interactionDriver.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 1);
 
     const events = g.events;
     expect(events.length).toBe(1);
@@ -253,7 +253,7 @@ describe("recordPlayerChoice", () => {
 
   it("should record a StoredPlayerChoiceEvent with correct structure", async () => {
     const g = game as any;
-    await g.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 3);
+    await g.interactionDriver.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 3);
 
     const events = g.events;
     expect(events).toHaveLength(1);
@@ -274,7 +274,7 @@ describe("recordPlayerChoice", () => {
 
   it("should emit a valid ISO timestamp", async () => {
     const g = game as any;
-    await g.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 1);
+    await g.interactionDriver.recordPlayerChoice({ id: "opt_1", text: "Go left" }, 1);
     const events = (game as any).events as any[];
     const ts = events[0].timestamp as string;
     expect(() => new Date(ts)).not.toThrow();
@@ -302,7 +302,7 @@ describe("recordPlayerInput", () => {
 
   it("should record a StoredPlayerInputEvent with correct structure", async () => {
     const g = game as any;
-    await g.recordPlayerInput("int_42", "I open the door.", 2);
+    await g.interactionDriver.recordPlayerInput("int_42", "I open the door.", 2);
 
     const events = g.events;
     expect(events).toHaveLength(1);
@@ -319,7 +319,7 @@ describe("recordPlayerInput", () => {
 
   it("should handle empty text", async () => {
     const g = game as any;
-    await g.recordPlayerInput("interaction_1", "", 1);
+    await g.interactionDriver.recordPlayerInput("interaction_1", "", 1);
 
     const events = g.events;
     expect(events[0]).toMatchObject({
@@ -331,7 +331,7 @@ describe("recordPlayerInput", () => {
   it("should handle long text", async () => {
     const g = game as any;
     const longText = "A".repeat(1000);
-    await g.recordPlayerInput("interaction_1", longText, 1);
+    await g.interactionDriver.recordPlayerInput("interaction_1", longText, 1);
 
     const events = g.events;
     expect(events[0]).toMatchObject({
@@ -363,9 +363,9 @@ describe("Sequence numbering", () => {
 
     // Initial seq should be 1 (private field)
     // Record two player choices, then a player input
-    await g.recordPlayerChoice({ id: "a", text: "A" }, 1);
-    await g.recordPlayerInput("interaction_1", "text", 1);
-    await g.recordPlayerChoice({ id: "b", text: "B" }, 2);
+    await g.interactionDriver.recordPlayerChoice({ id: "a", text: "A" }, 1);
+    await g.interactionDriver.recordPlayerInput("interaction_1", "text", 1);
+    await g.interactionDriver.recordPlayerChoice({ id: "b", text: "B" }, 2);
 
     const events = (game as any).events;
     const seqs = events.map((e: any) => e.seq);
@@ -374,8 +374,8 @@ describe("Sequence numbering", () => {
 
   it("should assign seq independently of turn number", async () => {
     const g = game as any;
-    await g.recordPlayerChoice({ id: "a", text: "A" }, 10);
-    await g.recordPlayerChoice({ id: "b", text: "B" }, 5);
+    await g.interactionDriver.recordPlayerChoice({ id: "a", text: "A" }, 10);
+    await g.interactionDriver.recordPlayerChoice({ id: "b", text: "B" }, 5);
 
     const events = (game as any).events;
     const seqs = events.map((e: any) => e.seq);
@@ -391,7 +391,7 @@ describe("Sequence numbering", () => {
       line_id: "line_test_000001",
     };
     await g.recordModelEvent(modelEvent, 1);
-    await g.recordPlayerChoice({ id: "c", text: "C" }, 1);
+    await g.interactionDriver.recordPlayerChoice({ id: "c", text: "C" }, 1);
     await g.recordModelEvent({ ...modelEvent, line_id: "line_test_000002" }, 2);
 
     const events = (game as any).events;

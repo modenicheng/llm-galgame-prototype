@@ -1,0 +1,16 @@
+resolveInteraction 1071 1076
+createBranchManagerForTerminal 1252 1267
+startBridgePrefetch 1343 1399
+cancelBridgePrefetch 1402 1408
+adoptSelectedBranch 1434 1516
+handleChoice 1517 1577
+createBranchManager 1889 1959
+handleInteractionInput 2004 2225
+startInputResponseGeneration 2231 2327
+stageResponseEvent 2332 2345
+makePlayerDialogue 2346 2358
+handleHybridInteraction 2359 2520
+countBufferedDialogues 2521 2526
+recordPlayerChoice 2527 2540
+recordPlayerInput 2541 2558
+recordPlayerDialogue 2559 2573
