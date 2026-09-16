@@ -533,7 +533,11 @@ export class Game {
               this.emit({ type: "session_ended", ending });
               return;
             }
-            await this.saveCurrentStateSnapshot();
+            // 结局快照已在 consumeActiveSegment 内以 phase=ended 落盘；
+            // 结束后追加 active 快照会把它覆盖，恢复时已结束的局会复活续写。
+            if (outcome.type !== "end") {
+              await this.saveCurrentStateSnapshot();
+            }
             continue;
           }
           this.diagnostics.warn(
@@ -575,8 +579,9 @@ export class Game {
         );
         if (outcome.type !== "end") {
           this.status.removeJob(`continuation:${bufferTurn}`);
+          // end 已由 consumeActiveSegment 落盘为 ended 快照，勿再存 active 覆盖
+          await this.saveCurrentStateSnapshot();
         }
-        await this.saveCurrentStateSnapshot();
         continue;
       }
 
@@ -634,7 +639,10 @@ export class Game {
         selectedContext,
       );
       this.status.removeJob(`continuation:${currentOutcome.nextTurn}`);
-      await this.saveCurrentStateSnapshot();
+      // end 已由 consumeActiveSegment 落盘为 ended 快照，勿再存 active 覆盖
+      if (outcome.type !== "end") {
+        await this.saveCurrentStateSnapshot();
+      }
     }
   }
 

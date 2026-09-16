@@ -490,4 +490,62 @@ describe("Event mode ending pressure", () => {
         .open_threads)[0]!.status,
     ).toBe("ready");
   });
+
+  // 回归：自然/强制 @end 后，ended 快照必须是最后一次持久化——主循环
+  // 三个分支（choice、buffer refill、强制重试）的尾随 saveCurrentStateSnapshot
+  // 曾把它覆盖回 active，导致 --saves 显示"进行中"、restore 复活已结束的局。
+  const endedSnapshotCases = [
+    {
+      name: "choice 分支：交互后续写直接 @end",
+      scripts: [
+        [narrationEvent("收尾。"), endEvent("end_choice", "Fin.")],
+      ] as EnvelopeDraft[][],
+    },
+    {
+      name: "buffer 分支：refill 续写 @end",
+      scripts: [
+        [narrationEvent("过渡。")],
+        [narrationEvent("收尾。"), endEvent("end_buffer", "Fin.")],
+      ] as EnvelopeDraft[][],
+    },
+    {
+      name: "强制重试分支：endingRequired 重试段 @end",
+      config: { wrapup_interactions: 1, closing_push_interactions: 2, max_interactions: 3 },
+      scripts: [
+        [narrationEvent("其一。"), interactionDraft(2)],
+        [narrationEvent("其二。"), interactionDraft(3)],
+        [narrationEvent("强制段 buffer。")],
+        [narrationEvent("重试段收束。"), endEvent("end_forced_retry", "Fin.")],
+      ] as EnvelopeDraft[][],
+    },
+  ];
+
+  for (const { name, config, scripts } of endedSnapshotCases) {
+    it(`自然结束后 ended 快照不被 active 快照覆盖（${name}）`, async () => {
+      const generator = makeMockGenerator();
+      (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+        handleFromDrafts("opening", [narrationEvent("开场。"), interactionDraft(1)]),
+      );
+      scriptContinuations(generator, scripts);
+
+      const store = new MemorySessionStore();
+      const controller = autoSelectingController();
+      const game = new Game(
+        eventModeConfig(config ?? {}),
+        generator,
+        makeMockStatus(),
+        makeMockMedia(),
+        undefined,
+        makeTestPorts({ store }),
+      );
+      controller.attach(game);
+      await expect(game.run()).resolves.toBeUndefined();
+      expect(controller.ended()).toBe(true);
+
+      const last = store.snapshots.at(-1);
+      expect(last).toBeDefined();
+      expect(last!.phase).toBe("ended");
+      expect(last!.ending?.type).toBe("end");
+    });
+  }
 });
