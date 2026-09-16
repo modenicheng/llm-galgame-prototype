@@ -117,7 +117,7 @@
 - **舞台动画**：背景 crossfade / 角色 fade 为 CSS transition 基础版；无更复杂的
   转场/动画系统。
 - **BGM 转场**：直接切换，无淡入淡出；音量/静音有 API，无自动 ducking。
-- **CLI 音频**：`media.audio.enabled=false` 默认纯文本（CLI 不接 TTS 播放）。
+- **CLI 音频**：`media.audio.synthesis.provider=disabled` 默认纯文本（CLI 不接 TTS 播放；planner 就绪查询为过渡桩，恒立即就绪）。
 - **回溯只到游标（最前沿节点）**：任意祖先节点回溯 + 同选项快进随 M5.3 回溯
   入口 UI 落地（见执行清单 M5.3 注记）。
 - **seq 播种已按世界最大值统一（M2.1 决议，2026-09-16）**：`nextSeq =

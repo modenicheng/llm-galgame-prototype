@@ -243,11 +243,9 @@ describe("createRuntimeApplication", () => {
           "  runtime_status: false",
           "media:",
           "  audio:",
-          "    enabled: false",
-          "    provider: disabled",
           "    synthesis:",
-          "      # Explicit: the legacy flat provider field is not the V2",
-          "      # switch — synthesis.provider is. Audio stays off here.",
+          "      # Explicit: synthesis.provider is the V2 audio switch.",
+          "      # Audio stays off here.",
           "      provider: disabled",
           "      max_concurrency: 2",
           "      model_profile: cosyvoice_v3_flash",
@@ -275,7 +273,7 @@ describe("createRuntimeApplication", () => {
       const app = await createRuntimeApplication({ configPath });
       expect(app.config).toBeDefined();
       expect(app.config.game.show_line_ids).toBe(true);
-      expect(app.config.media.audio.provider).toBe("disabled");
+      expect(app.config.media.audio.synthesis?.provider).toBe("disabled");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -308,15 +306,6 @@ function dashscopeConfig(): AppConfig {
   return makeTestConfig({
     media: {
       audio: {
-        enabled: false,
-        provider: "disabled",
-        active_target_lines: 3,
-        refill_threshold_lines: 2,
-        branch_prefetch_lines: 2,
-        batch_size: 2,
-        max_concurrency: 2,
-        mock_latency_ms: 800,
-        output_dir: "assets/audio",
         synthesis: {
           provider: "dashscope",
           max_concurrency: 2,

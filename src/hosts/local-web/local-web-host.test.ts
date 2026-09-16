@@ -38,15 +38,6 @@ function makeConfig(overrides?: Parameters<typeof makeTestConfig>[0]) {
     characters: {},
     media: {
       audio: {
-        enabled: true,
-        provider: "mock",
-        active_target_lines: 3,
-        refill_threshold_lines: 2,
-        branch_prefetch_lines: 2,
-        batch_size: 2,
-        max_concurrency: 2,
-        mock_latency_ms: 0,
-        output_dir: "assets/audio",
         planner: { candidate_prefetch_lines: 1, max_active_future_lines: 4 },
         playback: {
           startup_buffer_ms: 350,

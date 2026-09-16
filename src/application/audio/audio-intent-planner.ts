@@ -145,8 +145,8 @@ export class AudioIntentPlanner implements MediaPlannerPort {
   }
 
   isReady(_lineId: string): boolean {
-    // CLI compat: the planner doesn't track synthesis completion, and the
-    // CLI never waits when legacy media.audio.enabled=false.
+    // Transitional port API: the planner doesn't track synthesis completion,
+    // so readiness is always immediate.
     return true;
   }
 

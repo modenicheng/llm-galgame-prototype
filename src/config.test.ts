@@ -55,7 +55,8 @@ describe("loadConfig defaults", () => {
         "  branch_dialogue_lines: 3",
         "media:",
         "  audio:",
-        "    enabled: false",
+        "    planner:",
+        "      candidate_prefetch_lines: 2",
         "game:",
         "  sessions_dir: sessions",
       ].join("\n"),
@@ -84,16 +85,13 @@ describe("loadConfig defaults", () => {
     expect(config.prefetch.branch_dialogue_lines).toBe(3); // explicit
     expect(config.prefetch.branch_concurrency).toBe(3); // default
 
-    // Media defaults
-    expect(config.media.audio.enabled).toBe(false);
-    expect(config.media.audio.provider).toBe("disabled");
-    expect(config.media.audio.active_target_lines).toBe(3);
-    expect(config.media.audio.refill_threshold_lines).toBe(2);
-    expect(config.media.audio.branch_prefetch_lines).toBe(2);
-    expect(config.media.audio.batch_size).toBe(2);
-    expect(config.media.audio.max_concurrency).toBe(2);
-    expect(config.media.audio.mock_latency_ms).toBe(800);
-    expect(config.media.audio.output_dir).toBe("assets/.tts-cache");
+    // Media defaults（嵌套段全默认；显式值覆盖、其余取 schema 默认）
+    expect(config.media.audio.planner?.candidate_prefetch_lines).toBe(2);
+    expect(config.media.audio.planner?.max_active_future_lines).toBe(4);
+    expect(config.media.audio.playback?.startup_buffer_ms).toBe(350);
+    expect(config.media.audio.playback?.voice_delay_ms).toBe(0);
+    expect(config.media.audio.synthesis?.provider).toBe("dashscope");
+    expect(config.media.audio.synthesis?.sample_rate).toBe(22050);
 
     // Game defaults
     expect(config.game.sessions_dir).toBe("sessions");
@@ -156,15 +154,15 @@ describe("loadConfig with all fields", () => {
       "",
       "media:",
       "  audio:",
-      "    enabled: true",
-      "    provider: mock",
-      "    active_target_lines: 5",
-      "    refill_threshold_lines: 3",
-      "    branch_prefetch_lines: 3",
-      "    batch_size: 4",
-      "    max_concurrency: 3",
-      "    mock_latency_ms: 1200",
-      "    output_dir: custom/assets",
+      "    planner:",
+      "      candidate_prefetch_lines: 2",
+      "      max_active_future_lines: 6",
+      "    playback:",
+      "      startup_buffer_ms: 400",
+      "    synthesis:",
+      "      provider: mock",
+      "      max_concurrency: 3",
+      "      sample_rate: 24000",
       "",
       "game:",
       "  sessions_dir: my_sessions",
@@ -222,15 +220,14 @@ describe("loadConfig with all fields", () => {
     expect(config.debug.runtime_status).toBe(true);
 
     // Media
-    expect(config.media.audio.enabled).toBe(true);
-    expect(config.media.audio.provider).toBe("mock");
-    expect(config.media.audio.active_target_lines).toBe(5);
-    expect(config.media.audio.refill_threshold_lines).toBe(3);
-    expect(config.media.audio.branch_prefetch_lines).toBe(3);
-    expect(config.media.audio.batch_size).toBe(4);
-    expect(config.media.audio.max_concurrency).toBe(3);
-    expect(config.media.audio.mock_latency_ms).toBe(1200);
-    expect(config.media.audio.output_dir).toBe("custom/assets");
+    expect(config.media.audio.planner).toEqual({
+      candidate_prefetch_lines: 2,
+      max_active_future_lines: 6,
+    });
+    expect(config.media.audio.playback?.startup_buffer_ms).toBe(400);
+    expect(config.media.audio.synthesis?.provider).toBe("mock");
+    expect(config.media.audio.synthesis?.max_concurrency).toBe(3);
+    expect(config.media.audio.synthesis?.sample_rate).toBe(24000);
 
     // Game
     expect(config.game.sessions_dir).toBe("my_sessions");
@@ -265,7 +262,8 @@ describe("loadConfig narrative section", () => {
         "  branch_dialogue_lines: 3",
         "media:",
         "  audio:",
-        "    enabled: false",
+        "    planner:",
+        "      candidate_prefetch_lines: 2",
         "game:",
         "  sessions_dir: sessions",
       ].join("\n"),
@@ -301,7 +299,8 @@ describe("loadConfig narrative section", () => {
         "  branch_dialogue_lines: 3",
         "media:",
         "  audio:",
-        "    enabled: false",
+        "    planner:",
+        "      candidate_prefetch_lines: 2",
         "game:",
         "  sessions_dir: sessions",
         "",
@@ -353,7 +352,8 @@ describe("loadConfig narrative section", () => {
         "  branch_dialogue_lines: 3",
         "media:",
         "  audio:",
-        "    enabled: false",
+        "    planner:",
+        "      candidate_prefetch_lines: 2",
         "game:",
         "  sessions_dir: sessions",
       ].join("\n"),
@@ -382,7 +382,8 @@ describe("loadConfig narrative section", () => {
         "  branch_dialogue_lines: 3",
         "media:",
         "  audio:",
-        "    enabled: false",
+        "    planner:",
+        "      candidate_prefetch_lines: 2",
         "game:",
         "  sessions_dir: sessions",
         "narrative:",
@@ -414,7 +415,8 @@ describe("loadConfig narrative section", () => {
         "  branch_dialogue_lines: 3",
         "media:",
         "  audio:",
-        "    enabled: false",
+        "    planner:",
+        "      candidate_prefetch_lines: 2",
         "game:",
         "  sessions_dir: sessions",
         "",
@@ -440,7 +442,8 @@ describe("loadConfig narrative section", () => {
         "  branch_dialogue_lines: 3",
         "media:",
         "  audio:",
-        "    enabled: false",
+        "    planner:",
+        "      candidate_prefetch_lines: 2",
         "game:",
         "  sessions_dir: sessions",
       ].join("\n"),
@@ -465,7 +468,8 @@ describe("loadConfig narrative section", () => {
         "  branch_dialogue_lines: 3",
         "media:",
         "  audio:",
-        "    enabled: false",
+        "    planner:",
+        "      candidate_prefetch_lines: 2",
         "game:",
         "  sessions_dir: sessions",
         "narrative:",
@@ -659,44 +663,6 @@ describe("loadConfig validation errors", () => {
         "  provider: openai_compatible",
         "  model: test",
         "  base_url: not-a-url",
-      ].join("\n"),
-    );
-
-    await expect(loadConfig(filePath)).rejects.toThrow();
-  });
-
-  it("should reject refill_threshold_lines >= active_target_lines", async () => {
-    const filePath = await writeTempYaml(
-      "bad-audio-threshold",
-      [
-        "api:",
-        "  provider: openai_compatible",
-        "  model: test",
-        "  base_url: https://api.example.com",
-        "",
-        "media:",
-        "  audio:",
-        "    active_target_lines: 3",
-        "    refill_threshold_lines: 5",
-      ].join("\n"),
-    );
-
-    await expect(loadConfig(filePath)).rejects.toThrow();
-  });
-
-  it("should reject audio enabled with disabled provider", async () => {
-    const filePath = await writeTempYaml(
-      "bad-audio-provider",
-      [
-        "api:",
-        "  provider: openai_compatible",
-        "  model: test",
-        "  base_url: https://api.example.com",
-        "",
-        "media:",
-        "  audio:",
-        "    enabled: true",
-        "    provider: disabled",
       ].join("\n"),
     );
 

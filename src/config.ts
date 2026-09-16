@@ -10,16 +10,6 @@ import { z } from "zod";
 export type ControlMode = "locked" | "preferred" | "free";
 
 export interface AudioConfig {
-  enabled: boolean;
-  provider: "disabled" | "mock";
-  active_target_lines: number;
-  refill_threshold_lines: number;
-  branch_prefetch_lines: number;
-  batch_size: number;
-  max_concurrency: number;
-  mock_latency_ms: number;
-  output_dir: string;
-  /** V2 sections (optional; legacy flat fields remain for CLI compat). */
   planner?: AudioPlannerConfig;
   playback?: AudioPlaybackConfig;
   synthesis?: AudioSynthesisConfig;
@@ -286,39 +276,12 @@ export interface AuthorConfig {
   rules: RulesConfig;
 }
 
-const AudioConfigSchema = z
-  .object({
-    enabled: z.boolean().default(false),
-    provider: z.enum(["disabled", "mock"]).default("disabled"),
-    active_target_lines: z.number().int().min(1).max(50).default(3),
-    refill_threshold_lines: z.number().int().min(0).max(49).default(2),
-    branch_prefetch_lines: z.number().int().min(0).max(20).default(2),
-    batch_size: z.number().int().min(1).max(20).default(2),
-    max_concurrency: z.number().int().min(1).max(10).default(2),
-    mock_latency_ms: z.number().int().min(0).max(60_000).default(800),
-    output_dir: z.string().min(1).default("assets/.tts-cache"),
-    // V2 nested sections (optional; legacy flat fields remain for CLI compat).
-    planner: AudioPlannerConfigSchema.optional(),
-    playback: AudioPlaybackConfigSchema.optional(),
-    synthesis: AudioSynthesisConfigSchema.optional(),
-    cache: AudioCacheConfigSchema.optional(),
-  })
-  .superRefine((value, context: RefinementContext) => {
-    if (value.refill_threshold_lines >= value.active_target_lines) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["refill_threshold_lines"],
-        message: "refill_threshold_lines 必须小于 active_target_lines。"
-      });
-    }
-    if (value.enabled && value.provider === "disabled") {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["provider"],
-        message: "启用音频预取时必须选择可用 provider；预研演示可使用 mock。"
-      });
-    }
-  });
+const AudioConfigSchema = z.object({
+  planner: AudioPlannerConfigSchema.optional(),
+  playback: AudioPlaybackConfigSchema.optional(),
+  synthesis: AudioSynthesisConfigSchema.optional(),
+  cache: AudioCacheConfigSchema.optional(),
+});
 
 /** Interaction-mode policy schema; validates like the other sections. */
 const InteractionPolicyConfigSchema = z

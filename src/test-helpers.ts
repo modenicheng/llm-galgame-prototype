@@ -68,17 +68,7 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
       runtime_status: false,
     },
     media: {
-      audio: {
-        enabled: false,
-        provider: "disabled",
-        active_target_lines: 3,
-        refill_threshold_lines: 2,
-        branch_prefetch_lines: 2,
-        batch_size: 2,
-        max_concurrency: 2,
-        mock_latency_ms: 800,
-        output_dir: "assets/audio",
-      },
+      audio: {},
     },
     game: {
       sessions_dir: "sessions",

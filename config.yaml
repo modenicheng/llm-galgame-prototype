@@ -65,10 +65,6 @@ interaction:
 
 media:
   audio:
-    # V1 遗留平面字段：保持默认，CLI 行为不变（enabled=false 不等待音频）。
-    enabled: false
-    provider: disabled
-
     planner:
       candidate_prefetch_lines: 1
       max_active_future_lines: 4
