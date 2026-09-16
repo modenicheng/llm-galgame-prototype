@@ -10,7 +10,7 @@
  * envelopes come from `generatorState`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { access, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -530,6 +530,14 @@ function dashscopeConfig(): AppConfig {
   // M5.0 宿主接线：世界身份跨进程固定
   // -------------------------------------------------------------------
 
+  // M3.7：storyLine 只来自 per-game world/prompts——显式 gameId 的测试须先
+  // 落一个最小世界提示词目录。
+  async function seedWorldPrompts(gamesRoot: string, gameId: string): Promise<void> {
+    const promptsDir = path.join(gamesRoot, gameId, "world", "prompts");
+    await mkdir(promptsDir, { recursive: true });
+    await writeFile(path.join(promptsDir, "story_line.txt"), "测试世界主线。", "utf8");
+  }
+
   it("exposes the explicit gameId and a generated one when omitted", async () => {
     const config = makeTestConfig({
       characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
@@ -542,10 +550,12 @@ function dashscopeConfig(): AppConfig {
       segmentEnd: { kind: "complete", nonce: "0000", reason: "ending" },
     };
     try {
+      const gamesRoot = path.join(root, "games");
+      await seedWorldPrompts(gamesRoot, "game_m50_explicit");
       const explicit = await createRuntimeApplication({
         config,
         sessionDir: root,
-        gamesRoot: path.join(root, "games"),
+        gamesRoot,
         gameId: "game_m50_explicit",
       });
       expect(explicit.gameId).toBe("game_m50_explicit");
@@ -553,7 +563,7 @@ function dashscopeConfig(): AppConfig {
       const generated = await createRuntimeApplication({
         config,
         sessionDir: root,
-        gamesRoot: path.join(root, "games"),
+        gamesRoot,
       });
       // 缺省 = 每次启动新世界：生成时间戳式 id。
       expect(generated.gameId).toMatch(/^game_/);
@@ -568,6 +578,7 @@ function dashscopeConfig(): AppConfig {
     });
     const root = await mkdtemp(path.join(tmpdir(), "galgame-m50-"));
     const gamesRoot = path.join(root, "games");
+    await seedWorldPrompts(gamesRoot, "game_m50");
     // 开局：旁白 + input 交互（停驻），让首个决策节点与游标落盘。
     generatorState.opening = {
       events: [],

@@ -43,24 +43,54 @@ describe("loadPrompts", () => {
     tempDirs.length = 0;
   });
 
-  it("successfully loads all four prompt files plus instructions from a directory", async () => {
+  it("loads the bundle without storyLine when no per-game dir is given (M3.7)", async () => {
     const dir = await createTempDir();
     await populateTempDir(dir, {
       "characters.txt": "Alice: 勇敢的少女\nBob: 神秘的旅人",
-      "story_line.txt": "这是一个关于冒险的故事。",
+      // story_line.txt 写进全局目录也不会被读——M3.7 已删除全局注入。
+      "story_line.txt": "全局残留（不应被读）",
       "guideline.txt": "保持角色设定一致性。",
     });
 
     const { bundle, instructions } = await loadPrompts(dir);
 
     expect(bundle.characters).toBe("Alice: 勇敢的少女\nBob: 神秘的旅人");
-    expect(bundle.storyLine).toBe("这是一个关于冒险的故事。");
+    expect(bundle.storyLine).toBeUndefined();
     expect(bundle.guideline).toBe("保持角色设定一致性。");
     expect(bundle.dslProtocol).toContain("行式 Gal DSL");
     expect(instructions.opening).toContain("开场");
     expect(instructions.input_bridge).toContain("narration");
     expect(instructions.recovery).toContain("repair_reason");
     expect(instructions.ending).toContain("ending");
+  });
+
+  it("reads story_line.txt only from the per-game dir when provided", async () => {
+    const globalDir = await createTempDir();
+    await populateTempDir(globalDir, {
+      "characters.txt": "GLOBAL_CHAR",
+      "story_line.txt": "GLOBAL_STORY（不应被读）",
+      "guideline.txt": "Guide",
+    });
+    const perGameDir = await createTempDir();
+    await writeFile(path.join(perGameDir, "story_line.txt"), "PER_GAME_STORY", "utf8");
+
+    const { bundle } = await loadPrompts(globalDir, perGameDir);
+
+    expect(bundle.storyLine).toBe("PER_GAME_STORY");
+    // characters 仍走「per-game 优先、全局回退」。
+    expect(bundle.characters).toBe("GLOBAL_CHAR");
+  });
+
+  it("throws loudly when the per-game dir lacks story_line.txt (no silent fallback)", async () => {
+    const globalDir = await createTempDir();
+    await populateTempDir(globalDir, {
+      "characters.txt": "Alice",
+      "story_line.txt": "GLOBAL_STORY（不能回退到它）",
+      "guideline.txt": "Guide",
+    });
+    const perGameDir = await createTempDir();
+
+    await expect(loadPrompts(globalDir, perGameDir)).rejects.toThrow(/story_line\.txt 缺失/);
   });
 
   it("throws when a file is missing (ENOENT)", async () => {
@@ -84,48 +114,35 @@ describe("loadPrompts", () => {
     await expect(loadPrompts(dir)).rejects.toThrow(/为空/);
   });
 
-  it("returns correct content for each prompt field", async () => {
-    const dir = await createTempDir();
-    const expectedChars = "角色A: 描述\n角色B: 描述";
-    const expectedStory = "主线剧情大纲";
-    const expectedGuide = "写作指导方针";
-
-    await populateTempDir(dir, {
-      "characters.txt": expectedChars,
-      "story_line.txt": expectedStory,
-      "guideline.txt": expectedGuide,
+  it("throws when the per-game story_line.txt is empty", async () => {
+    const globalDir = await createTempDir();
+    await populateTempDir(globalDir, {
+      "characters.txt": "Alice",
+      "guideline.txt": "Guide",
     });
+    const perGameDir = await createTempDir();
+    await writeFile(path.join(perGameDir, "story_line.txt"), "   \t  ", "utf8");
 
-    const { bundle, instructions } = await loadPrompts(dir);
-
-    expect(bundle).toEqual({
-      characters: expectedChars,
-      storyLine: expectedStory,
-      guideline: expectedGuide,
-      dslProtocol: "你是互动视觉小说的编剧。输出行式 Gal DSL。",
-    });
+    await expect(loadPrompts(globalDir, perGameDir)).rejects.toThrow(/为空/);
   });
 
-  it("handles files with surrounding whitespace (trimmed)", async () => {
-    const dir = await createTempDir();
-    await populateTempDir(dir, {
-      "characters.txt": "\n\n  Alice  \n\n",
-      "story_line.txt": "  \tA story with padding\t  ",
-      "guideline.txt": "\tguideline\t",
+  it("trims the per-game story_line.txt", async () => {
+    const globalDir = await createTempDir();
+    await populateTempDir(globalDir, {
+      "characters.txt": "Alice",
+      "guideline.txt": "Guide",
     });
+    const perGameDir = await createTempDir();
+    await writeFile(path.join(perGameDir, "story_line.txt"), "  \t主线剧情\t \n", "utf8");
 
-    const { bundle } = await loadPrompts(dir);
-
-    expect(bundle.characters).toBe("Alice");
-    expect(bundle.storyLine).toBe("A story with padding");
-    expect(bundle.guideline).toBe("guideline");
+    const { bundle } = await loadPrompts(globalDir, perGameDir);
+    expect(bundle.storyLine).toBe("主线剧情");
   });
 
   it("rejects instructions.yaml with missing required fields", async () => {
     const dir = await createTempDir();
     await populateTempDir(dir, {
       "characters.txt": "Alice",
-      "story_line.txt": "Story",
       "guideline.txt": "Guide",
     });
     // Overwrite with incomplete instructions
@@ -141,6 +158,9 @@ describe("loadPrompts", () => {
       "prompts",
     );
     const { bundle, instructions } = await loadPrompts(repoPrompts);
+
+    // M3.7：全局 story_line.txt 已删除——真实仓库目录装载时无 storyLine。
+    expect(bundle.storyLine).toBeUndefined();
 
     // The full DSL protocol spec lives in prompts/dsl-protocol.txt.
     expect(bundle.dslProtocol).toContain("行式 Gal DSL");

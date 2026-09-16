@@ -120,14 +120,13 @@ describe("per-game prompts override (loadPrompts)", () => {
     }
   });
 
-  it("falls back to global prompts when the per-game dir lacks files", async () => {
+  it("fails loudly when the per-game dir lacks story_line.txt (M3.7, no global fallback)", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "world-gen-prompts-empty-"));
     try {
       const emptyDir = path.join(root, "empty-prompts");
       const { mkdir: mkdirFs } = await import("node:fs/promises");
       await mkdirFs(emptyDir, { recursive: true });
-      const loaded = await loadPrompts("prompts", emptyDir);
-      expect(loaded.bundle.storyLine.length).toBeGreaterThan(0);
+      await expect(loadPrompts("prompts", emptyDir)).rejects.toThrow(/story_line\.txt 缺失/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

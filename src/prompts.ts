@@ -9,7 +9,12 @@ import { z } from "zod";
 
 export interface PromptBundle {
   characters: string;
-  storyLine: string;
+  /**
+   * M3.7：storyLine 只来自 per-game `world/prompts/story_line.txt`——全局
+   * `prompts/story_line.txt` 与 dev 注入路径已删除。无世界启动（宿主首屏
+   * 创建表单流程）时为 undefined；世界目录缺该文件 = 大声报错，无静默回退。
+   */
+  storyLine?: string;
   guideline: string;
   /**
    * Gal DSL output protocol system prompt (prompts/dsl-protocol.txt).
@@ -68,9 +73,9 @@ export interface LoadedPrompts {
 
 /**
  * 装载提示词。M3.3 ②：`perGamePromptDir`（`games/<gameId>/world/prompts`）
- * 里的 characters.txt / story_line.txt 优先，其余文件与未提供的段回退全局
- * `prompts/`——破坏性纪律：per-game 缺 story_line 且全局被 M3.7 删除后，
- * 缺失即大声报错，无静默回退。
+ * 里的 characters.txt 优先，其余文件回退全局 `prompts/`。M3.7 破坏性纪律：
+ * story_line.txt 只读 per-game（全局文件已删除，无回退）；世界目录缺它
+ * 即大声报错；未提供 perGamePromptDir（无世界启动）→ storyLine 缺省。
  */
 export async function loadPrompts(
   promptDir = "prompts",
@@ -95,9 +100,24 @@ export async function loadPrompts(
     return readRequiredFile(path.join(root, fileName));
   };
 
+  const readPerGameStoryLine = async (): Promise<string | undefined> => {
+    if (perGamePromptDir === undefined) return undefined;
+    const storyLinePath = path.join(path.resolve(perGamePromptDir), "story_line.txt");
+    try {
+      return await readRequiredFile(storyLinePath);
+    } catch (err) {
+      if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(
+          `story_line.txt 缺失：${storyLinePath}（M3.7：storyLine 只来自 per-game world/prompts，无全局回退）`,
+        );
+      }
+      throw err;
+    }
+  };
+
   const [characters, storyLine, guideline, dslProtocol, rawYaml] = await Promise.all([
     readWithPerGameOverride("characters.txt"),
-    readWithPerGameOverride("story_line.txt"),
+    readPerGameStoryLine(),
     readRequiredFile(path.join(root, "guideline.txt")),
     readRequiredFile(path.join(root, "dsl-protocol.txt")),
     readFile(path.join(root, "instructions.yaml"), "utf8"),
@@ -107,7 +127,12 @@ export async function loadPrompts(
   const instructions = InstructionSetSchema.parse(parsed) as InstructionSet;
 
   return {
-    bundle: { characters, storyLine, guideline, dslProtocol },
+    bundle: {
+      characters,
+      ...(storyLine !== undefined ? { storyLine } : {}),
+      guideline,
+      dslProtocol,
+    },
     instructions,
   };
 }

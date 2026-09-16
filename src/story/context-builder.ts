@@ -58,8 +58,11 @@ export function buildSystemContext(input: ContextInput): string {
   sections.push("===== 角色设定 =====");
   sections.push(input.prompts.characters);
 
-  sections.push("===== 故事大纲 =====");
-  sections.push(input.prompts.storyLine);
+  // M3.7：storyLine 只由 per-game 世界提供；无世界启动时省略该段。
+  if (input.prompts.storyLine !== undefined) {
+    sections.push("===== 故事大纲 =====");
+    sections.push(input.prompts.storyLine);
+  }
 
   sections.push("===== 写作限制 =====");
   sections.push(input.prompts.guideline);
