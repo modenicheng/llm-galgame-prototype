@@ -153,7 +153,9 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   bannerRoot.append(
     el("span", "banner__label", "出错了"),
     el("span", "banner__text", ""),
+    button("banner__action", "重开一局"),
   );
+  (bannerRoot.querySelector(".banner__action") as HTMLButtonElement).hidden = true;
 
   root.append(stage, hud, scene, controlsRoot, startRoot, endRoot, bannerRoot);
 

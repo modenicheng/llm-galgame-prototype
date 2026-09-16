@@ -449,6 +449,47 @@ describe("LocalWebHost", () => {
     await sleep(20);
   });
 
+  it("broadcasts run_loop_exited to controllers when the run loop dies", async () => {
+    // Simulate an API timeout killing the run loop before the game emitted
+    // anything: the browser must get a notice instead of waiting forever.
+    (game.game as unknown as { run: () => Promise<void> }).run = vi.fn(async () => {
+      throw new Error("Request timed out");
+    });
+    const messages: ServerMessage[] = [];
+    const { promise: open, resolve: resolveOpen } = Promise.withResolvers<void>();
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/runtime?token=${host.getToken()}`, {
+      origin: `http://127.0.0.1:${port}`,
+    });
+    ws.on("open", () => resolveOpen());
+    ws.on("message", (data) => messages.push(JSON.parse(String(data)) as ServerMessage));
+    ws.on("error", () => {});
+    await open;
+    const start = Date.now();
+    while (
+      !messages.some(
+        (m) =>
+          m.type === "runtime.output" &&
+          (m as { output?: { type?: string; code?: string } }).output?.type === "runtime_error",
+      )
+    ) {
+      if (Date.now() - start > 2000) throw new Error("no run_loop_exited broadcast");
+      await sleep(5);
+    }
+    const notice = messages.find(
+      (m) => m.type === "runtime.output",
+    ) as Extract<ServerMessage, { type: "runtime.output" }>;
+    const output = notice.output as { code: string; message: string };
+    expect(output.code).toBe("run_loop_exited");
+    expect(output.message).toContain("Request timed out");
+    // The projection flips to error so a reconnecting browser restores the
+    // ERROR picture instead of a silent waiting screen.
+    expect(projection.projection.applyOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "runtime_error", code: "run_loop_exited" }),
+    );
+    ws.terminate();
+    await sleep(20);
+  });
+
   it("shuts down in §15.3 order: stops commands, app shutdown, closes server", async () => {
     await host.shutdown();
     expect(app.shutdown).toHaveBeenCalledTimes(1);

@@ -21,6 +21,7 @@ import { ClientMessageSchema } from "../../shared/wire/schemas.js";
 import type { ServerMessage } from "../../shared/wire/server-message.js";
 import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
 import type { RuntimeCommand } from "../../core/runtime/runtime-command.js";
+import type { RuntimeOutput } from "../../core/runtime/runtime-output.js";
 
 export interface RuntimeWebSocketDeps {
   game: Game;
@@ -87,6 +88,23 @@ export class RuntimeWebSocket {
   /** Stop accepting runtime commands (shutdown step 1, §15.3). */
   stopAcceptingCommands(): void {
     this.acceptingCommands = false;
+  }
+
+  /**
+   * Broadcast a host-level runtime_error to every controller and the
+   * projection. Used when the run loop exits unexpectedly (e.g. the LLM
+   * API is unavailable): the game itself may have died before emitting
+   * anything, and without this notice the browser would sit in
+   * CONTENT_WAITING forever.
+   */
+  notifyError(code: string, message: string): void {
+    const output: RuntimeOutput = { type: "runtime_error", code, message };
+    this.projection.applyOutput(output);
+    for (const ws of this.controllers) {
+      const state = this.connectionState.get(ws);
+      if (state === undefined) continue;
+      this.send(ws, { type: "runtime.output", sequence: ++state.sequence, output });
+    }
   }
 
   /**

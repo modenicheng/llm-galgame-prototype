@@ -286,6 +286,28 @@ describe("RuntimeWebSocket", () => {
     });
   });
 
+  it("notifyError broadcasts a host-level runtime_error and feeds the projection", async () => {
+    const client = await connect();
+    await waitForMessage(client.messages, (m) => m.type === "projection.snapshot");
+    runtimeWs.notifyError("run_loop_exited", "Request timed out");
+    const message = await waitForMessage(
+      client.messages,
+      (m) =>
+        m.type === "runtime.output" &&
+        (m as { output?: { type?: string } }).output?.type === "runtime_error",
+    );
+    expect(message).toEqual({
+      type: "runtime.output",
+      sequence: 1,
+      output: { type: "runtime_error", code: "run_loop_exited", message: "Request timed out" },
+    });
+    expect(projection.projection.applyOutput).toHaveBeenCalledWith({
+      type: "runtime_error",
+      code: "run_loop_exited",
+      message: "Request timed out",
+    });
+  });
+
   it("uses an independent sequence per connection", async () => {
     const multi = await startMultiServer(2);
     const a = await connectClient(`ws://127.0.0.1:${multi.port}/ws/runtime?token=${TOKEN}`, `http://127.0.0.1:${multi.port}`);

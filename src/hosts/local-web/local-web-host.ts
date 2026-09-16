@@ -233,9 +233,14 @@ export class LocalWebHost {
         void this.handleRestart();
         return;
       }
-      this.logger(
-        `game run loop exited: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger(`game run loop exited: ${message}`);
+      // The loop is dead — nothing will drive the story again until a
+      // restart. Connected browsers must not wait in silence (API timeouts
+      // can kill the loop before/without a game-emitted runtime_error).
+      // The raw message travels as-is; the frontend maps the code to the
+      // player-facing notice.
+      this.runtimeWs.notifyError("run_loop_exited", message);
     });
   }
 

@@ -8,6 +8,7 @@ import type { UiProjection } from "@shared/wire/ui-projection.js";
 import {
   GameViewModel,
   MAX_RECENT_LINES,
+  describeRuntimeError,
   interactionModeToFrontendMode,
 } from "./game-view-model.js";
 
@@ -342,6 +343,36 @@ describe("GameViewModel", () => {
     state = vm.state();
     expect(state.mode).toBe("ERROR");
     expect(state.lastError).toBe("GENERATION_FAILED: timeout");
+  });
+
+  it("maps known runtime_error codes to player-facing notices with the raw detail", () => {
+    // Fatal segment failure (game) → 模型生成受阻, raw detail preserved.
+    const vm = new GameViewModel();
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 1,
+      output: { type: "runtime_error", code: "segment_failed", message: "Request timed out" },
+    });
+    expect(vm.state().mode).toBe("ERROR");
+    expect(vm.state().lastError).toContain("模型生成受阻");
+    expect(vm.state().lastError).toContain("Request timed out");
+
+    // Host-level run-loop death → 运行时已停止; a later notice replaces
+    // the first banner text (the run loop exits right after the segment
+    // failure is emitted).
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 2,
+      output: { type: "runtime_error", code: "run_loop_exited", message: "Request timed out" },
+    });
+    expect(vm.state().lastError).toContain("运行时已停止");
+    expect(vm.state().lastError).toContain("Request timed out");
+  });
+
+  it("describeRuntimeError keeps unknown codes verbatim and survives empty messages", () => {
+    expect(describeRuntimeError("GENERATION_FAILED", "boom")).toBe("GENERATION_FAILED: boom");
+    expect(describeRuntimeError("segment_failed", "")).toContain("模型生成受阻");
+    expect(describeRuntimeError("segment_failed", "")).not.toContain("：");
   });
 
   it("tracks session id and status", () => {

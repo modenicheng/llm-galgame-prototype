@@ -108,6 +108,33 @@ export function interactionModeToFrontendMode(interaction: unknown): FrontendMod
 
 export const MAX_RECENT_LINES = 8;
 
+/**
+ * Player-facing copy for known runtime_error codes. The raw provider error
+ * (e.g. an API timeout message) stays in the detail; the title + hint tell
+ * the player what happened and what to do — model availability is never
+ * guaranteed, so a blocked generation must surface as a notice, not silence.
+ */
+const RUNTIME_ERROR_COPY: Record<string, { title: string; hint: string }> = {
+  // Fatal segment failure emitted by the game right before the run dies.
+  segment_failed: {
+    title: "模型生成受阻",
+    hint: "模型服务可能暂时不可用，可重开一局或稍后再试",
+  },
+  // Host-level: the run loop exited without a game-emitted error.
+  run_loop_exited: {
+    title: "运行时已停止",
+    hint: "模型服务可能暂时不可用；可点击“重开一局”，或稍后重启服务",
+  },
+};
+
+/** Compose the banner text for one runtime_error output. */
+export function describeRuntimeError(code: string, message: string): string {
+  const copy = RUNTIME_ERROR_COPY[code];
+  if (copy === undefined) return `${code}: ${message}`;
+  const detail = message.length > 0 ? `：${message}` : "";
+  return `${copy.title}${detail}（${copy.hint}）`;
+}
+
 /** A runtime.output variant type, extracted without importing core. */
 type RuntimeOutputWire = Extract<
   ServerMessage,
@@ -273,7 +300,7 @@ export class GameViewModel {
         break;
       case "runtime_error":
         this.mode = "ERROR";
-        this.lastError = `${output.code}: ${output.message}`;
+        this.lastError = describeRuntimeError(output.code, output.message);
         break;
     }
     this.notify();

@@ -135,12 +135,14 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     }
     endScreen.setRestartPending(false);
     controls.setRestartPending(false);
+    errorBanner.setActionPending(false);
   };
   const beginRestart = (): void => {
     if (restartPending) return;
     restartPending = true;
     endScreen.setRestartPending(true);
     controls.setRestartPending(true);
+    errorBanner.setActionPending(true);
     app.restartSession();
     restartFailsafe = window.setTimeout(endRestartPending, 8000);
   };
@@ -170,6 +172,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   let lastMode: FrontendMode | null = null;
   let lastProjectionSeq = 0;
   let lastPreviewText: string | null = null;
+  let lastErrorText: string | null = null;
   // Draft per interaction: a preview stores its text under the interaction id
   // so cancel restores it, while a NEW interaction never reuses an old draft
   // (§11.7).
@@ -282,13 +285,19 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
       if (!endScreen.show(view.ending, view.sessionId)) {
         errorBanner.show("结局数据缺失");
       }
-    } else if (mode === "ERROR" && modeChanged) {
+    } else if (mode === "ERROR" && (modeChanged || view.lastError !== lastErrorText)) {
       // Booth ops: the session id travels with the banner so a problem
-      // report screenshot is self-contained.
+      // report screenshot is self-contained. Re-show on text change too: a
+      // fatal segment error is typically followed by the host-level
+      // "run loop exited" notice, which must replace the first banner.
+      lastErrorText = view.lastError ?? null;
       const base = view.lastError ?? "未知错误";
       const sessionId = view.sessionId;
       errorBanner.show(
         sessionId !== undefined ? `${base}（会话 ${sessionId.slice(0, 8)}）` : base,
+        // The run loop is dead (API timeout etc.) — same recovery posture
+        // as the end screen: nothing is left to lose, no confirm needed.
+        { label: "重开一局", onAction: () => beginRestart() },
       );
     }
 
