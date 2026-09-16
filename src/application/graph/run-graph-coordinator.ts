@@ -15,6 +15,12 @@ import type { StoredEvent } from "../../schema.js";
 import type { ClockPort } from "../../core/ports/clock-port.js";
 import type { GraphStorePort } from "../../core/ports/graph-store-port.js";
 import type {
+  ConfluenceJudgment,
+  ConfluenceJudgePort,
+} from "../../core/ports/confluence-judge-port.js";
+import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
+import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
+import type {
   EdgeChoice,
   RestorePoint,
   RunResume,
@@ -73,16 +79,37 @@ export class RunGraphCoordinator implements RunGraphPort {
   private openEdge: OpenEdge | null = null;
   /** 模型场景 id → 场景节点 id（会话内缓存；恢复路径 M1.4 重建）。 */
   private readonly sceneNodes = new Map<string, SceneId>();
+  /**
+   * 图变更互斥链：演员管线的生命周期调用与后台汇流改绑共用一条串行队列。
+   * 互斥体只做快速落盘/状态变更；LLM 判定在链外等待，绝不阻塞运行时。
+   */
+  private mutationChain: Promise<unknown> = Promise.resolve();
+  private readonly judge: ConfluenceJudgePort | undefined;
+  private readonly diagnostics: DiagnosticSink;
 
   constructor(
     private readonly store: GraphStorePort,
     private readonly clock: ClockPort,
     private readonly newId: (prefix: string) => string,
+    options?: { judge?: ConfluenceJudgePort; diagnostics?: DiagnosticSink },
   ) {
     this.location = store.location;
+    this.judge = options?.judge;
+    this.diagnostics = options?.diagnostics ?? silentDiagnosticSink;
+  }
+
+  /** 串行执行一次图变更（见 mutationChain）。 */
+  private enqueue<T>(op: () => Promise<T>): Promise<T> {
+    const next = this.mutationChain.then(op, op);
+    this.mutationChain = next.catch(() => undefined);
+    return next;
   }
 
   async startRootRun(): Promise<RunId> {
+    return this.enqueue(() => this.startRootRunUnsafe());
+  }
+
+  private async startRootRunUnsafe(): Promise<RunId> {
     await this.store.initialize();
     const run: CurrentRun = {
       id: this.newId(RUN_ID_PREFIX) as RunId,
@@ -102,6 +129,12 @@ export class RunGraphCoordinator implements RunGraphPort {
    * 已追加事件但边记录未落盘）在恢复时删除——重生成走新边 id（M1.1 决议）。
    */
   async restoreOrCreateRun(options?: { restart?: boolean }): Promise<RunResume> {
+    return this.enqueue(() => this.restoreOrCreateRunUnsafe(options));
+  }
+
+  private async restoreOrCreateRunUnsafe(
+    options?: { restart?: boolean },
+  ): Promise<RunResume> {
     await this.store.initialize();
     const cursor = await this.store.loadCursor();
     if (cursor === null) {
@@ -120,7 +153,7 @@ export class RunGraphCoordinator implements RunGraphPort {
       // seq 从世界最大值播种（M2.1 决议）：结局后重开的新 root 周目不得
       // 从 1 回绕——同世界边负载 seq 重叠会破坏跨周目单调性。
       const worldMax = worldMaxSeq(await this.store.listEdges());
-      await this.startRootRun();
+      await this.startRootRunUnsafe();
       return { kind: "fresh", nextSeq: worldMax + 1 };
     }
     if (options?.restart) {
@@ -169,11 +202,6 @@ export class RunGraphCoordinator implements RunGraphPort {
 
     const edges = await this.store.listEdges();
     await this.discardOrphanPayloads(edges);
-    // 场景节点缓存按模型场景 id 重建（决策入口快照携带 StoryState.scene.id），
-    // 否则恢复后的 openDecision 会为同一场景建出重复场景节点。
-    for (const node of await this.store.listDecisions()) {
-      this.sceneNodes.set(node.entryState.storyState.scene.id, node.sceneId);
-    }
 
     // 根 → 游标的路径回放：逐节点取「最近走过」的入边（payload.lastSeq
     // 最大者；M1.4 单入边下唯一，M1.5 retrace 后该规则仍指向当前周目）。
@@ -234,6 +262,10 @@ export class RunGraphCoordinator implements RunGraphPort {
   }
 
   async beginEdge(choice: EdgeChoice): Promise<void> {
+    return this.enqueue(() => this.beginEdgeUnsafe(choice));
+  }
+
+  private async beginEdgeUnsafe(choice: EdgeChoice): Promise<void> {
     if (this.currentRun === null) {
       throw new Error("beginEdge：无活动周目（startRootRun 未调用）");
     }
@@ -254,6 +286,10 @@ export class RunGraphCoordinator implements RunGraphPort {
   }
 
   async appendEdgeEvents(events: readonly StoredEvent[]): Promise<void> {
+    return this.enqueue(() => this.appendEdgeEventsUnsafe(events));
+  }
+
+  private async appendEdgeEventsUnsafe(events: readonly StoredEvent[]): Promise<void> {
     if (this.openEdge === null) return; // 开局段：无边可挂
     for (const event of events) {
       await this.store.appendPayload(this.openEdge.id, event);
@@ -268,6 +304,18 @@ export class RunGraphCoordinator implements RunGraphPort {
     form: InteractionFormSnapshot;
     moment: RuntimeMoment;
   }): Promise<DecisionId> {
+    return this.enqueue(async () => {
+      const opened = await this.openDecisionUnsafe(input);
+      this.scheduleConfluenceCheck(input, opened);
+      return opened.decisionId;
+    });
+  }
+
+  private async openDecisionUnsafe(input: {
+    modelSceneId: string;
+    form: InteractionFormSnapshot;
+    moment: RuntimeMoment;
+  }): Promise<{ decisionId: DecisionId; sceneId: SceneId; closedEdgeId: EdgeId | null }> {
     if (this.currentRun === null) {
       throw new Error("openDecision：无活动周目（startRootRun 未调用）");
     }
@@ -296,10 +344,21 @@ export class RunGraphCoordinator implements RunGraphPort {
 
     this.lastDecisionId = decisionId;
     await this.store.saveCursor({ runId: this.currentRun.id, position: decisionId });
-    return decisionId;
+    return {
+      decisionId,
+      sceneId,
+      closedEdgeId: edge !== null ? edge.id : null,
+    };
   }
 
   async reachEnding(input: { endingId: string; moment: RuntimeMoment }): Promise<EndingId> {
+    return this.enqueue(() => this.reachEndingUnsafe(input));
+  }
+
+  private async reachEndingUnsafe(input: {
+    endingId: string;
+    moment: RuntimeMoment;
+  }): Promise<EndingId> {
     if (this.currentRun === null) {
       throw new Error("reachEnding：无活动周目（startRootRun 未调用）");
     }
@@ -336,9 +395,22 @@ export class RunGraphCoordinator implements RunGraphPort {
     return endingId;
   }
 
+  /**
+   * 场景节点按模型场景 id 世界级稳定（M2.2 修订）：缓存 → 扫既有决策
+   * 入口快照 → 惰性创建。此前只有恢复路径重建缓存，fresh 新周目会给同一
+   * 模型场景再建一个场景节点——M2.2 的同场景候选过滤按 sceneId 匹配，
+   * 跨周目汇流因此失效（场景图 UI 亦会重复），故收口在此单点。
+   */
   private async ensureSceneNode(modelSceneId: string): Promise<SceneId> {
     const cached = this.sceneNodes.get(modelSceneId);
     if (cached !== undefined) return cached;
+    const existing = (await this.store.listDecisions()).find(
+      (node) => node.entryState.storyState.scene.id === modelSceneId,
+    );
+    if (existing !== undefined) {
+      this.sceneNodes.set(modelSceneId, existing.sceneId);
+      return existing.sceneId;
+    }
     const sceneId = this.newId(SCENE_ID_PREFIX) as SceneId;
     const scene: SceneNode = {
       id: sceneId,
@@ -348,6 +420,171 @@ export class RunGraphCoordinator implements RunGraphPort {
     await this.store.putScene(scene);
     this.sceneNodes.set(modelSceneId, sceneId);
     return sceneId;
+  }
+
+  // ----------------------------------------------------------------
+  // 场景内汇流（执行清单 M2.2，设计 §3.3）
+  //
+  // 边收束（openDecision）后，后台把新边末态与同场景既有决策节点入口态
+  // 交给 judge 比较；命中即改绑：边改指既有节点（判定凭据 + 真实末态
+  // 内联）、紧随其后的出边改从既有节点出发、游标仍在新节点时前移到既有
+  // 节点——新节点沦为孤儿（与崩溃孤儿同性质，恢复与路径行走均不理会）。
+  // 改绑窗口守卫：仅当创建该边的周目仍是活动周目时落地（换周目/已完结
+  // 即跳过）。判定是 LLM 调用，全程在互斥链之外；只有改绑本身入队。
+  // ----------------------------------------------------------------
+
+  /** fire-and-forget：判定失败只告警，绝不影响运行时（实时性红线）。 */
+  private scheduleConfluenceCheck(
+    input: { modelSceneId: string; moment: RuntimeMoment },
+    opened: { decisionId: DecisionId; sceneId: SceneId; closedEdgeId: EdgeId | null },
+  ): void {
+    if (this.judge === undefined || opened.closedEdgeId === null || this.currentRun === null) {
+      return;
+    }
+    const context = {
+      runId: this.currentRun.id,
+      edgeId: opened.closedEdgeId,
+      newNodeId: opened.decisionId,
+      sceneId: opened.sceneId,
+      endState: toStateSnapshot(input.moment),
+    };
+    void this.runConfluenceCheck(context).catch((error: unknown) => {
+      this.diagnostics.warn(
+        "RunGraphCoordinator",
+        `汇流判定失败（边 ${context.edgeId} 保持原指向）：${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
+
+  private async runConfluenceCheck(context: {
+    runId: RunId;
+    edgeId: EdgeId;
+    newNodeId: DecisionId;
+    sceneId: SceneId;
+    endState: StateSnapshot;
+  }): Promise<void> {
+    const judge = this.judge;
+    if (judge === undefined) return;
+
+    // 候选 = 同场景、有入边（孤儿/周目首节点排除）、不在当前路径上
+    //（防成环）的决策节点；自身按构造精确相等，亦排除。
+    const decisions = await this.store.listDecisions();
+    const edges = await this.store.listEdges();
+    const withInEdge = new Set(
+      edges.filter((edge) => edge.to.kind === "decision").map((edge) => edge.to.id),
+    );
+    const pathNodes = pathAncestors(edges, context.newNodeId);
+    const candidates = decisions.filter(
+      (node) =>
+        node.sceneId === context.sceneId &&
+        node.id !== context.newNodeId &&
+        !pathNodes.has(node.id) &&
+        withInEdge.has(node.id),
+    );
+    if (candidates.length === 0) return;
+
+    const judged = await Promise.allSettled(
+      candidates.map(async (candidate) => ({
+        candidate,
+        judgment: await judge.judge({
+          endState: context.endState,
+          candidateEntry: candidate.entryState,
+        }),
+      })),
+    );
+    let best: { candidate: (typeof candidates)[number]; judgment: ConfluenceJudgment } | null = null;
+    for (const result of judged) {
+      if (result.status === "rejected") {
+        const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        this.diagnostics.warn("RunGraphCoordinator", `汇流判定单项失败（跳过该候选）：${reason}`);
+        continue;
+      }
+      const { candidate, judgment } = result.value;
+      if (!judgment.equivalent) continue;
+      if (best === null || judgment.confidence > best.judgment.confidence) {
+        best = { candidate, judgment };
+      }
+    }
+    if (best === null) return;
+
+    await this.enqueue(() =>
+      this.applyConfluenceMatch(context, best.candidate.id, best.judgment),
+    );
+  }
+
+  /**
+   * 互斥链内的改绑落地。全量守卫后重写两条边（入边改指、出边改源），
+   * 并在游标仍停在新节点时前移。任一守卫不满足即静默放弃（世界已前进，
+   * 该次判定的窗口已关闭）。
+   */
+  private async applyConfluenceMatch(
+    context: {
+      runId: RunId;
+      edgeId: EdgeId;
+      newNodeId: DecisionId;
+      endState: StateSnapshot;
+    },
+    candidate: DecisionId,
+    judgment: ConfluenceJudgment,
+  ): Promise<void> {
+    if (this.currentRun?.id !== context.runId) return; // 换周目/已完结：窗口关闭
+    const edges = await this.store.listEdges();
+    const edge = edges.find((item) => item.id === context.edgeId);
+    if (
+      edge === undefined ||
+      edge.to.kind !== "decision" ||
+      edge.to.id !== context.newNodeId ||
+      edge.confluence !== undefined
+    ) {
+      return; // 已被改绑或世界已变化
+    }
+    const cursor = await this.store.loadCursor();
+    if (
+      candidate === context.newNodeId ||
+      (cursor !== null && pathAncestors(edges, cursor.position).has(candidate))
+    ) {
+      return; // 防成环：候选落在当前路径上
+    }
+
+    // ① 入边改指候选节点：confluence 边内联真实末态（≠ 候选入口，凭据
+    //   承担差异审计——2026-09-15 存储修订），免精确一致门禁。
+    await this.store.putEdge({
+      ...edge,
+      endState: edge.endState,
+      to: { kind: "decision", id: candidate },
+      confluence: {
+        matchedNode: candidate,
+        judgedBy: judgment.judgedBy,
+        confidence: judgment.confidence,
+        rationale: judgment.rationale,
+      },
+    });
+
+    // ② 新节点的出边改从候选出发（尚未收束的开放边只改内存）。此刻它必
+    //   是普通决策端点（终点为结局 = 周目已完结 = 上方守卫已拦），endState
+    //   不变、写入门禁照常通过。
+    if (this.openEdge?.from === context.newNodeId) {
+      this.openEdge = { ...this.openEdge, from: candidate };
+    } else {
+      const outEdge = edges.find(
+        (item) => item.id !== context.edgeId && item.from === context.newNodeId,
+      );
+      if (outEdge !== undefined) {
+        await this.store.putEdge({ ...outEdge, from: candidate });
+      }
+    }
+
+    // ③ 游标仍停在新节点 → 前移到候选（运行时继续用它解析交互）。
+    if (this.lastDecisionId === context.newNodeId) {
+      this.lastDecisionId = candidate;
+    }
+    if (cursor !== null && cursor.runId === context.runId && cursor.position === context.newNodeId) {
+      await this.store.saveCursor({ ...cursor, position: candidate });
+    }
+    this.diagnostics.info(
+      "RunGraphCoordinator",
+      `汇流成立：边 ${context.edgeId} 改指既有节点 ${candidate}（${judgment.judgedBy}，置信 ${judgment.confidence.toFixed(2)}）；节点 ${context.newNodeId} 沦为孤儿`,
+    );
   }
 }
 
@@ -377,6 +614,21 @@ function pickLatestInEdge(edges: readonly PlotEdge[], nodeId: DecisionId): PlotE
     if (best === undefined || edge.payload.lastSeq > best.payload.lastSeq) best = edge;
   }
   return best;
+}
+
+/**
+ * 根 → `start` 的当前路径节点集（含 start）：沿「最近走过」的入边回溯。
+ * 汇流候选排除该集合——把边指回自己正在走的路径即成环。
+ */
+function pathAncestors(edges: readonly PlotEdge[], start: DecisionId): Set<DecisionId> {
+  const visited = new Set<DecisionId>();
+  let nodeId: DecisionId | null = start;
+  while (nodeId !== null && !visited.has(nodeId)) {
+    visited.add(nodeId);
+    const inEdge = pickLatestInEdge(edges, nodeId);
+    nodeId = inEdge?.from ?? null;
+  }
+  return visited;
 }
 
 /** 运行时结局 id → 契约后缀字符集（[A-Za-z0-9._-]）。 */

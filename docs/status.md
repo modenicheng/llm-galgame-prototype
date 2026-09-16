@@ -78,6 +78,11 @@
   游标）。原子写（tmp+rename）；快照缺失而索引行存在 = 结构损坏大声抛错。
   边 endState 内联 ⟺ 结局端点 ∨ 汇流边（2026-09-15 修订，M2 前置）；普通
   决策端点由后继入口快照派生、写入校验精确一致。
+- **场景内汇流（M2.2）**：边收束后后台 LLM 判定（`narrative.confluence.enabled`，
+  默认关、config.yaml 开）新边末态 vs 同场景既有节点入口态，命中即改指既有
+  节点（凭据 + 真实末态内联），出边改源、游标前移、新节点孤儿化；候选排除
+  路径祖先（防成环）与无入边节点；换周目/已完结即放弃改绑。场景节点按模型
+  场景 id 世界级稳定（fresh 周目不再重复建场景节点）。
 - **「继续游戏」三态入口（M1.4/M1.5）**：`restoreOrCreateRun`——游标恢复
   （入口快照重建 story/visual/memory，全路径边负载经 seq 水位过滤重放进导演，
   seq/turn 播种保证单调）/ 周目已完结补发结局 / 全新开局；`restart` 模式弃局
@@ -90,9 +95,10 @@
 
 - **v2 剧情图架构（实施中）**：M0 契约冻结、M1.1 记忆摘要映射、M1.2 图存储、
   M1.3 演员接图、M1.4 游标恢复、M1.5 新周目入口（root/retrace）、M1.6 sessions
-  JSONL store 删除、M2.1 ConfluenceJudge port + LLM 判定 adapter 均已完成；
-  M2.2/M2.3 场景内汇流与端到端验证、M2.4 末态索引、M3 编剧+大纲+世界生成、
-  M4 导演+剪报防火墙、M5 图 UI+结算待做——逐项进度见执行清单。
+  JSONL store 删除、M2.1 ConfluenceJudge port + LLM 判定 adapter、M2.2 场景内
+  汇流（后台判定 + 有界改绑 + promise 链互斥）均已完成；M2.3 汇流端到端验证、
+  M2.4 末态索引、M3 编剧+大纲+世界生成、M4 导演+剪报防火墙、M5 图 UI+结算
+  待做——逐项进度见执行清单。
 - **event mode / forced ending / max_interactions**：过渡期保留（恢复后
   interactionCount 清零、不跨周目累计）；M3.5 由大纲结局驱动替代时整体删除。
 - **PlaybackBuffer 未迁 EventGroup**：采用 §63 展平方案（事件携带 `stage` 字段），

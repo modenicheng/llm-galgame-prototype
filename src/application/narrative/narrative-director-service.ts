@@ -113,6 +113,7 @@ function normalizeNarrativeConfig(raw: NarrativeConfig): NarrativeConfig {
     consolidation: { ...d.consolidation, ...raw.consolidation },
     brief: { ...d.brief, ...raw.brief },
     plan: { ...d.plan, ...raw.plan },
+    confluence: { ...d.confluence, ...raw.confluence },
   };
 }
 

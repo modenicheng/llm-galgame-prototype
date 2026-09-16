@@ -7,7 +7,7 @@
  * consume the returned `RuntimeApplication` and differ only in their
  * presentation layer.
  */
-import { loadApiKey, loadAuthorConfig, loadConfig } from "../config.js";
+import { DEFAULT_NARRATIVE_CONFIG, loadApiKey, loadAuthorConfig, loadConfig } from "../config.js";
 import type { AppConfig } from "../config.js";
 import { loadVoices, validateDashscopeEnv } from "../config/voices.js";
 import { Game } from "../game.js";
@@ -17,6 +17,7 @@ import { ConsoleDiagnosticSink } from "../adapters/platform/console-diagnostic-s
 import { SessionIdGenerator } from "../adapters/platform/session-id-generator.js";
 import { SystemClock } from "../adapters/platform/system-clock.js";
 import { RunGraphCoordinator } from "../application/graph/run-graph-coordinator.js";
+import { ConfluenceJudgeAdapter } from "../adapters/llm/confluence-judge-adapter.js";
 import { loadPrompts } from "../prompts.js";
 import { Metrics } from "../runtime/metrics.js";
 import { RuntimeStatus } from "../runtime/status.js";
@@ -152,10 +153,25 @@ export async function createRuntimeApplication(
   const gameId = options.gameId ?? `game_${new Date().toISOString().replace(/[:.]/g, "-")}`;
   const gamesRoot = options.gamesRoot ?? "games";
   const graphStore = new GameGraphStore(gamesRoot, gameId);
+  // M2.2 场景内汇流：confluence.enabled 时给协调器挂 LLM 判定员（后台
+  // 比较，不阻塞播放）；判定失败只告警，运行时不受影响。confluence 段
+  // 容忍手拼 config 的缺省（options.config 可绕过 zod 默认值填充）。
+  const confluenceEnabled =
+    config.narrative.confluence?.enabled ?? DEFAULT_NARRATIVE_CONFIG.confluence.enabled;
   const graphCoordinator = new RunGraphCoordinator(
     graphStore,
     new SystemClock(),
     (prefix) => `${prefix}${crypto.randomUUID()}`,
+    confluenceEnabled
+      ? {
+          judge: new ConfluenceJudgeAdapter({
+            apiKey,
+            api: config.api,
+            diagnostics: new ConsoleDiagnosticSink(),
+          }),
+          diagnostics: new ConsoleDiagnosticSink(),
+        }
+      : undefined,
   );
 
   /**

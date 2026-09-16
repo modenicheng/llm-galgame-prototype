@@ -100,6 +100,8 @@ export interface NarrativeConfig {
   };
   brief: { max_relevant_episodes: number };
   plan: { horizon_checkpoints: number; replan_ahead_checkpoints: number };
+  /** M2.2 场景内汇流：后台判定新边末态 ≈ 同场景既有节点入口态，命中即改指既有节点。 */
+  confluence: { enabled: boolean };
   story_plan_path: string;
 }
 
@@ -115,6 +117,7 @@ export const DEFAULT_NARRATIVE_CONFIG: NarrativeConfig = {
   },
   brief: { max_relevant_episodes: 6 },
   plan: { horizon_checkpoints: 3, replan_ahead_checkpoints: 1 },
+  confluence: { enabled: false },
   story_plan_path: "story-plan.yaml",
 };
 
@@ -406,6 +409,13 @@ const NarrativeConfigSchema = z
         replan_ahead_checkpoints: z.number().int().min(0).max(5),
       })
       .default({ horizon_checkpoints: 3, replan_ahead_checkpoints: 1 }),
+    confluence: z
+      .object({
+        // M2.2 场景内汇流：边收束后后台判定等价性，命中即改指既有节点；
+        // 判定是 LLM 调用，默认关闭（测试免网络），config.yaml 显式开启。
+        enabled: z.boolean().default(false),
+      })
+      .default({ enabled: false }),
     story_plan_path: z.string().min(1).default("story-plan.yaml"),
   })
   .superRefine((value, context: RefinementContext) => {

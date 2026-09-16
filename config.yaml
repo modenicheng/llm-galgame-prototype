@@ -146,6 +146,11 @@ narrative:
     # 一份导演计划的 horizon（未来几个 checkpoint 内有效）；到期前 replan_ahead 个 checkpoint 提前后台重规划
     horizon_checkpoints: 3
     replan_ahead_checkpoints: 1
+  confluence:
+    # M2.2 场景内汇流：边收束后由 LLM 判定员在后台比较新边末态与同场景既有
+    # 节点入口态（「从此分叉继续，故事是否会一样？」），命中即把边改指既有
+    # 节点并落盘判定凭据。异步执行，不阻塞生成/播放。
+    enabled: true
   story_plan_path: story-plan.yaml
 
 debug:
