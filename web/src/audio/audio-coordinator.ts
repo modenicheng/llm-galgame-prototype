@@ -99,7 +99,9 @@ export class AudioCoordinator {
     // The OS/browser can suspend the AudioContext mid-session (device switch,
     // exclusive mode, bluetooth takeover, power saving). While suspended the
     // worklet is not pulled, `drained` never fires and playback silently
-    // wedges — attempt an automatic resume whenever that happens.
+    // wedges — attempt an automatic resume whenever that happens. A rejected
+    // resume (rare, mostly mobile gesture requirements) simply waits for the
+    // next statechange event.
     this.context.addEventListener("statechange", () => {
       if (this.context.state === "suspended") {
         void this.context.resume().catch(() => {
@@ -171,6 +173,16 @@ export class AudioCoordinator {
    */
   notifyLineEof(lineId: string): void {
     if (lineId !== this.currentLineId) {
+      // Dropped lines (dropLine removed both the timeline segment and any
+      // pending chunks) must not re-enter the tracking set via a late EOF
+      // from an aborted downloader — the set is only cleaned for the
+      // current line.
+      if (
+        !this.timeline.hasSegment(lineId) &&
+        this.pendingByLine.get(lineId) === undefined
+      ) {
+        return;
+      }
       // Not the active line — recorded; switchToLine consults it later.
       this.producerEof.add(lineId);
       return;

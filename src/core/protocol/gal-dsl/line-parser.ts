@@ -247,25 +247,33 @@ export function parseDslLine(rawLine: string): DslLine {
   // punctuation-free speaker + optional [visual]/(name)), normalize it to
   // ASCII — otherwise the line silently degrades into narration and the
   // speaker/[visual] syntax leaks into player-visible text. Sentence
-  // punctuation in the "speaker" position means real narration and is left
-  // untouched.
+  // punctuation (incl. CJK quotes/brackets) in the "speaker" position means
+  // real narration and is left untouched; the replacement targets the
+  // colon AT the delimiter position only, so a ： inside [visual]/(name)
+  // neither tears the line nor blocks normalization.
   const fullwidthDelimiter =
-    /^([^，。！？；、…：:"'\[\]()]{1,24})(?:\[[^\]]*\])?(?:\([^)]*\))?：/;
-  const dialogueSource = fullwidthDelimiter.test(line)
-    ? line.replace("：", ":")
-    : line;
+    /^([^，。！？；、…："'‘’“”「」『』（）()[\]{},.]{1,24})(?:\[[^\]]*\])?(?:\([^)]*\))?：/;
+  const delimiterMatch = fullwidthDelimiter.exec(line);
+  const dialogueSource =
+    delimiterMatch !== null
+      ? `${delimiterMatch[0].slice(0, -1)}:${line.slice(delimiterMatch[0].length)}`
+      : line;
   const dialogueMatch = /^([^\[\]:]+?)(?:\[([^\]]*)\])?(?:\(([^)]*)\))?:\s*(.+)$/.exec(
     dialogueSource,
   );
   if (dialogueMatch !== null) {
     const speaker = dialogueMatch[1]!.trim();
     const text = dialogueMatch[4]!;
+    // A ： inside [visual]/(name) is the same LLM habit — normalize so
+    // `苏遥[suit：calm]：你好` keeps its spriteSet:variant split.
+    const visualSource = dialogueMatch[2]?.replace(/：/g, ":");
+    const nameSource = dialogueMatch[3]?.replace(/：/g, ":");
     return {
       kind: "dialogue",
       speaker,
       text,
-      visual: parseVisual(dialogueMatch[2]),
-      name: parseName(dialogueMatch[3]),
+      visual: parseVisual(visualSource),
+      name: parseName(nameSource),
     };
   }
 

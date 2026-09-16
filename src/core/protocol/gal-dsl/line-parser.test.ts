@@ -54,6 +54,39 @@ describe("parseDslLine", () => {
     });
   });
 
+  it("replaces only the delimiter-position full-width colon (bracket-internal colons survive)", () => {
+    // The ： inside [visual] must not block normalization nor tear the line;
+    // it is normalized separately so the spriteSet:variant split still works.
+    const line = parseDslLine("苏遥[suit：calm]：你好");
+    expect(line.kind).toBe("dialogue");
+    if (line.kind === "dialogue") {
+      expect(line.speaker).toBe("苏遥");
+      expect(line.text).toBe("你好");
+      expect(line.visual).toEqual({
+        hasVisual: true,
+        resetVisual: false,
+        spriteSet: "suit",
+        variant: "calm",
+      });
+    }
+    const paren = parseDslLine("苏遥(化名：小遥)：你好");
+    expect(paren.kind).toBe("dialogue");
+    if (paren.kind === "dialogue") {
+      expect(paren.speaker).toBe("苏遥");
+      expect(paren.text).toBe("你好");
+    }
+  });
+
+  it("keeps quote-wrapped lines as narration (quotes are not speaker material)", () => {
+    // CJK quotes in the prefix mean prose, not a speaker — leaving the line
+    // as narration is the safe degradation (no quote fragments in the
+    // speaker box).
+    expect(parseDslLine("他说“走吧”：然后转身。")).toEqual({
+      kind: "narration",
+      text: "他说“走吧”：然后转身。",
+    });
+  });
+
   // --- dialogue ---
 
   it("parses a plain dialogue line", () => {

@@ -2936,6 +2936,10 @@ export class Game {
           const groups: EventGroupDraft[] = [];
           for await (const group of handle.events) groups.push(group);
           const result = this.materializeDslGroups(groups, this.tailVisualState, turn);
+          // The branch's tail becomes the new predictive tail, matching
+          // adoptSelectedBranch — otherwise continuations generate from a
+          // stale visual state.
+          this.tailVisualState = result.tailState;
           preview = result.events;
           this.registerBuffered(preview);
           // 与 adoptSelectedBranch 一致：按需生成的行也要进入媒体时间线，

@@ -142,6 +142,35 @@ describe("PcmWorkletProcessor", () => {
     expect(drainedCalls).toHaveLength(2);
   });
 
+  it("re-arms drained on the eof marker when the batch already drained (starved-then-completed line)", () => {
+    // Sequence: samples drain (drained posted, coordinator had not yet
+    // armed producerEof so it was ignored) → eof arrives with an empty ring
+    // → the drain must fire again so the line can actually finish.
+    const { proc, port } = makeProcessor();
+    post(proc, { type: "line", lineId: "L9" });
+    post(proc, new Int16Array(4));
+    processBlock(proc, 4);
+    expect(port.postMessage).toHaveBeenCalledWith({ type: "drained", lineId: "L9" });
+    const drainedBefore = port.postMessage.mock.calls.filter(
+      (c) => (c[0] as { type: string }).type === "drained",
+    ).length;
+    const underrunsBefore = port.postMessage.mock.calls.filter(
+      (c) => (c[0] as { type: string }).type === "underrun",
+    ).length;
+
+    post(proc, { type: "eof", lineId: "L9" });
+    processBlock(proc, 4);
+    const drainedAfter = port.postMessage.mock.calls.filter(
+      (c) => (c[0] as { type: string }).type === "drained",
+    ).length;
+    const underrunsAfter = port.postMessage.mock.calls.filter(
+      (c) => (c[0] as { type: string }).type === "underrun",
+    ).length;
+    expect(drainedAfter).toBe(drainedBefore + 1);
+    // Post-eof quanta are completion silence: never an underrun.
+    expect(underrunsAfter).toBe(underrunsBefore);
+  });
+
   it("clear cancels the line and suppresses drained", () => {
     const { proc, port } = makeProcessor();
     post(proc, { type: "line", lineId: "L4" });

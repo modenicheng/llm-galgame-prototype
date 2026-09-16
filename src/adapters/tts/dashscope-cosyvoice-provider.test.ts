@@ -383,6 +383,23 @@ describe("DashScopeCosyVoiceProvider — qwen3-tts family", () => {
     await expect(session.completion).rejects.toMatchObject({ code: "sse_parse" });
   });
 
+  it("fails typed when the qwen3 WAV layout deviates from 24 kHz mono", async () => {
+    // A container layout change (e.g. 48 kHz stereo) would otherwise play
+    // as pitch-shifted noise with no error anywhere.
+    const pcm = Buffer.from([1, 2, 3, 4]);
+    const fetchImpl = (async () =>
+      sseResponse([audioEvent(wavBytes(pcm, 48000)), STOP_EVENT])) as unknown as typeof fetch;
+
+    const provider = new DashScopeCosyVoiceProvider({ apiKey: "k", fetchImpl });
+    const session = await provider.start(
+      makeRequest({ model: "qwen3-tts-flash", voiceId: "Cherry" }),
+      new AbortController().signal,
+    );
+    const iterator = session.chunks[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toMatchObject({ code: "sse_parse" });
+    await expect(session.completion).rejects.toMatchObject({ code: "sse_parse" });
+  });
+
   it("respects the qwen3BaseUrl override", async () => {
     const pcm = Buffer.from([1, 1]);
     let url = "";

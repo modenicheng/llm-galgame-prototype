@@ -504,6 +504,19 @@ export class GameApp {
       retries: 0,
     };
     entry.descriptor = descriptor; // keep the latest priority
+    // Promotion revives a dead candidate line: a candidate_first_line that
+    // failed while speculative (no retry budget there) becomes active when
+    // its branch is chosen — without this reset the line stays silent for
+    // the rest of the session even as `current`.
+    if (
+      existing !== undefined &&
+      existing.state === "failed" &&
+      existing.descriptor.scope.type === "candidate" &&
+      descriptor.scope.type === "active"
+    ) {
+      existing.state = "idle";
+      existing.retries = 0;
+    }
     this.descriptors.set(lineId, entry);
 
     const isCurrent = lineId === this.currentLineId;
@@ -559,7 +572,10 @@ export class GameApp {
           // could persist a truncated copy as `complete` (the task finishes
           // server-side before the browser consumes the tail bytes).
           entry.pendingFinish = true;
-        } else {
+        } else if (entry.state === "downloading") {
+          // Guard: a failed/canceled line must never be sealed complete by
+          // a late `finished` (e.g. download lost the race to a mid-stream
+          // error and already marked the asset failed).
           await this.finalizeComplete(entry);
         }
         break;

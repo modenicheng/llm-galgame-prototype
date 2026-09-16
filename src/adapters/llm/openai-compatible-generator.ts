@@ -83,7 +83,7 @@ export function generateNonce(): string {
  * endingPhase（L1/L2）。`{nonce}` 在此替换为请求的真实 nonce：此前该行
  * 在 fill() 之后以字面量 `{nonce}` 下发，模型回显后哨兵校验必然失败。
  */
-function appendEventModeGuidance(
+export function appendEventModeGuidance(
   extra: string,
   nonce: string,
   options?: GenerationStreamOptions,
@@ -440,7 +440,17 @@ export class StoryGenerator {
       );
       const repairInstruction = repairParts.length
         ? `\n${[
-            lastError ? `上一份输出出错：${lastError}。请修正该问题，重新完整输出本段全部内容（不要省略开头）。` : "",
+            lastError
+              ? // With a Game-level repairReason the user prompt serializes the
+                // failed segment's playable prefix, so continuing from the
+                // failure point is meaningful for BOTH reasons; without it the
+                // model never saw its previous output and must re-emit whole.
+                `上一份输出出错：${lastError}。请修正该问题${
+                  options?.repairReason
+                    ? "后从失败位置继续，不要重复已输出的内容。"
+                    : "，重新完整输出本段全部内容（不要省略开头）。"
+                }`
+              : "",
             options?.repairReason
               ? `上一份输出出错：${options.repairReason}。请修正该问题后从失败位置继续，不要重复已输出的内容。`
               : "",

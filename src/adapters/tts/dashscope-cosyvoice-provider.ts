@@ -236,6 +236,15 @@ class WavHeaderStripper {
         }
         this.channels = b.readUInt16LE(pos + 10);
         this.sampleRate = b.readUInt32LE(pos + 12);
+        // The downstream pipeline is pinned to 24 kHz s16le mono; a
+        // different container layout would play as pitch-shifted noise
+        // with no error anywhere — fail typed instead.
+        if (this.sampleRate !== QWEN3_TTS_SAMPLE_RATE || this.channels !== 1) {
+          throw new TtsProviderError(
+            "sse_parse",
+            `qwen3-tts WAV layout changed: ${this.sampleRate}Hz/${this.channels}ch (expected ${QWEN3_TTS_SAMPLE_RATE}Hz/1ch)`,
+          );
+        }
         pos += 8 + size + (size % 2);
         continue;
       }

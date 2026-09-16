@@ -139,7 +139,13 @@ export class AudioCacheWriter {
     if (!session || session.finished) return;
 
     const asset = await this.db.getAsset(cacheKey);
-    if (!asset || asset.status !== "streaming") return;
+    if (!asset || asset.status !== "streaming") {
+      // No persisted asset (no-cache degraded mode / already terminal) —
+      // nothing to seal, but the bookkeeping session must still be dropped
+      // or degraded sessions accumulate one entry per line.
+      this.sessions.delete(cacheKey);
+      return;
+    }
 
     const storedChunkCount = await this.db.countChunks(cacheKey);
     const contiguous = storedChunkCount === session.nextSequence;
@@ -221,7 +227,12 @@ export class AudioCacheWriter {
     if (!session || session.finished) return;
 
     const asset = await this.db.getAsset(cacheKey);
-    if (!asset || asset.status === "complete") return;
+    if (!asset || asset.status === "complete") {
+      // Same degraded-mode concern as finishComplete: drop the session even
+      // when there is nothing to persist.
+      this.sessions.delete(cacheKey);
+      return;
+    }
 
     session.finished = true;
     try {

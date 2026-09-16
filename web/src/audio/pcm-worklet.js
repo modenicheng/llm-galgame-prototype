@@ -91,6 +91,14 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
     }
     if ("type" in data && data.type === "eof") {
       this.eofLine = data.lineId ?? this.currentLineId;
+      // A starved-then-completed line may already have posted drained while
+      // the coordinator had not yet armed producerEof (that drained was
+      // ignored). The eof marker proves no more samples come, and message
+      // ordering guarantees the coordinator has armed by now — re-arm the
+      // drain so the finishing `drained` actually fires.
+      if (this.currentLineId !== null && this.queued === 0 && this.drainedSent) {
+        this.drainedSent = false;
+      }
       return;
     }
     if (ArrayBuffer.isView(data)) {
