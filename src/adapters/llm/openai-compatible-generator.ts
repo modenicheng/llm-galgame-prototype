@@ -446,6 +446,7 @@ export class StoryGenerator {
         `${userPrompt}${repairInstruction}`,
         signal,
         options,
+        lastError,
       );
       if (outcome.kind === "complete") return outcome.envelope;
       if (outcome.kind === "fail") throw outcome.error;
@@ -471,6 +472,8 @@ export class StoryGenerator {
     userPrompt: string,
     signal: AbortSignal | undefined,
     options: GenerationStreamOptions | undefined,
+    /** Failure reason of the PREVIOUS attempt — only for the err= log field. */
+    priorFailure: string,
   ): Promise<DslAttemptOutcome> {
     const maxTokens = this.config.generation.max_tokens;
     const callStart = Date.now();
@@ -550,6 +553,10 @@ export class StoryGenerator {
       // Shared handling for parse/validation rejections: with a forwarded
       // prefix the attempt FAILS (runtime repairs from the committed
       // boundary); without one it is repairable → retry with the reason.
+      // The framing strings reproduce the legacy messages byte-for-byte
+      // (they ride into the model's repair instruction): `第 N 行不是合法
+      // DSL：` has no space after 行, `第 N 行 DSL 校验失败：` has one —
+      // hence the load-bearing leading space below.
       const rejectLine = (framing: string, error: DslProtocolError): void => {
         streamAborted = true;
         if (options?.onGroup && allGroups.length > 0) {
@@ -584,7 +591,7 @@ export class StoryGenerator {
           emitted = parser.pushLine(parsed);
         } catch (error) {
           if (error instanceof DslProtocolError) {
-            rejectLine("DSL 校验失败", error);
+            rejectLine(" DSL 校验失败", error);
             break;
           }
           throw error;
@@ -633,8 +640,11 @@ export class StoryGenerator {
         // Provider didn't report usage: keep the legacy char-based estimate.
         usage = { input: 0, output: Math.ceil(streamChars / 4) };
       }
+      // err= mirrors the legacy cross-attempt semantics: the failure of the
+      // PREVIOUS attempt when this one succeeds — that is how operators
+      // identify a successful repair retry in the logs.
       console.log(
-        `[LLM] ${type}(${taskType}) ${latencyMs}ms lines=${lineIndex} in=${usage.input} out=${usage.output} cached=${usage.cachedInput ?? 0} src=${reported ? "api" : "est"} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${failureReason || "ok"}`,
+        `[LLM] ${type}(${taskType}) ${latencyMs}ms lines=${lineIndex} in=${usage.input} out=${usage.output} cached=${usage.cachedInput ?? 0} src=${reported ? "api" : "est"} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${failureReason || priorFailure || "ok"}`,
       );
 
       // Structurally invalid line with nothing forwarded yet → retry with

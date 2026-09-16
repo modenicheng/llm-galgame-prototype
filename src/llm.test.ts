@@ -537,7 +537,9 @@ describe("DSL mode generation", () => {
     const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
     expect(create).toHaveBeenCalledTimes(2);
     const retryUser = create.mock.calls[1]![0].messages[1].content as string;
-    expect(retryUser).toContain("DSL 校验失败");
+    // Byte-exact: this string rides into the model's repair instruction —
+    // the space between 行 and DSL is load-bearing (legacy parity).
+    expect(retryUser).toContain("第 1 行 DSL 校验失败：Sentinel nonce");
     expect(envelope.groups).toHaveLength(1);
     expect(envelope.segmentEnd).toEqual({
       kind: "complete",
