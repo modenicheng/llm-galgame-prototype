@@ -81,6 +81,45 @@ backgrounds:
       整体很暗。
       适合锁门前最后检查、夜深人静的场面。
 
+  campus_road_day:
+    src: backgrounds/campus_road_day.jpg
+    description: |
+      校园林荫道外景，左侧是教学楼与齐腰绿篱，右侧是茂密树丛，
+      梧桐树夹道，路面洒满斑驳树影。白天明亮。
+      适合路上同行、赶路、骑车路过的过场。
+
+  campus_road_evening:
+    src: backgrounds/campus_road_evening.jpg
+    description: |
+      同一校园林荫道，夕阳金光透过树叶洒在路面。
+      适合傍晚同路、活动散场后的交流。
+
+  campus_road_night:
+    src: backgrounds/campus_road_night.jpg
+    description: |
+      同一校园林荫道，夜色深蓝，路灯亮起，教学楼有零星亮灯的窗。
+      适合夜间同行、晚归的场景。
+
+  club_plaza_day:
+    src: backgrounds/club_plaza_day.jpg
+    description: |
+      学生社团文化广场：橙色外墙的社团用房、白色天桥与伞状顶棚，
+      前面是开阔的石板广场。白天晴朗。
+      适合招新、社团活动、广场碰头的场景。
+
+  club_plaza_evening:
+    src: backgrounds/club_plaza_evening.jpg
+    description: |
+      同一学生社团文化广场，晚霞橙红，广场被夕阳染成暖色。
+      适合傍晚活动收尾、广场闲谈。
+
+  club_plaza_night:
+    src: backgrounds/club_plaza_night.jpg
+    description: |
+      同一学生社团文化广场，夜色深蓝，建筑玻璃门透出暖光，
+      广场路灯亮起。
+      适合夜间活动、广场夜谈的场景。
+
 bgm:
   relax:
     src: audio/bgm/relax.mp3
