@@ -181,6 +181,62 @@ function buildGraphCoordinator(
   );
 }
 
+/**
+ * M4.1 导演装配（M3.5/M3.6 扩展）：runner + 图存储 + 汇流判定员 +
+ * 大纲/ canon 读取（导演可见、演员不可见——§5.2 防火墙）。
+ * confluence.enabled 门控保持（测试/CI 零网络）；判定失败只告警。
+ */
+function buildDirectorService(options: {
+  gamesRoot: string;
+  gameId: string;
+  apiKey: string;
+  api: AppConfig["api"];
+  confluenceEnabled: boolean;
+  outline?: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort } | undefined;
+  canon: CanonStorePort;
+}): DirectorService {
+  const { gamesRoot, gameId, apiKey, api } = options;
+  return new DirectorService({
+    runner: new AgentRunnerAdapter({ apiKey, api }),
+    store: new GameGraphStore(gamesRoot, gameId),
+    // M3.5 ①：导演读大纲 ending 候选；缺省新世界无大纲 → endingPressure
+    // 只能来自模型判定。
+    ...(options.outline !== undefined ? { outline: options.outline.store } : {}),
+    // M3.6 ③：canon 晋升事实进导演输入。
+    canon: options.canon,
+    ...(options.confluenceEnabled
+      ? {
+          judge: new ConfluenceJudgeAdapter({
+            apiKey,
+            api,
+            diagnostics: new ConsoleDiagnosticSink(),
+          }),
+        }
+      : {}),
+  });
+}
+
+/** M3.6 ②：晋升管线（后台，周目完结/弃局后触发；串行合批，失败只告警）。 */
+function buildCanonPromoter(options: {
+  gamesRoot: string;
+  gameId: string;
+  apiKey: string;
+  api: AppConfig["api"];
+  canon: CanonStorePort;
+}): CanonPromoter {
+  const { gamesRoot, gameId, apiKey, api } = options;
+  return new CanonPromoter({
+    graph: new GameGraphStore(gamesRoot, gameId),
+    canon: options.canon,
+    adjudicator: new CanonAdjudicatorAdapter({
+      apiKey,
+      api,
+      diagnostics: new ConsoleDiagnosticSink(),
+    }),
+    diagnostics: new ConsoleDiagnosticSink(),
+  });
+}
+
 export async function createRuntimeApplication(
   options: RuntimeApplicationOptions = {},
 ): Promise<RuntimeApplication> {
@@ -239,26 +295,17 @@ export async function createRuntimeApplication(
   // 晋升管线周目完结/弃局后 fire-and-forget。
   const canonStore = new CanonStore(gamesRoot, gameId);
   // M4.1 ④：汇流判定员的持有与装配移入导演；协调器只接收实例（调度机制
-  // 零改动）。判定失败只告警；confluence.enabled 门控不变（测试/CI 零网络）。
+  // 零改动）。confluence.enabled 门控不变（测试/CI 零网络）。
   const confluenceEnabled =
     config.narrative.confluence?.enabled ?? DEFAULT_NARRATIVE_CONFIG.confluence.enabled;
-  const director = new DirectorService({
-    runner: new AgentRunnerAdapter({ apiKey, api: config.api }),
-    store: new GameGraphStore(gamesRoot, gameId),
-    // M3.5 ①：导演读大纲 ending 候选（导演可见、演员不可见）；缺省新世界
-    // 无大纲 → endingPressure 只能来自模型判定。
-    ...(outline !== undefined ? { outline: outline.store } : {}),
-    // M3.6 ③：canon 晋升事实进导演输入（导演可见、演员不可见）。
+  const director = buildDirectorService({
+    gamesRoot,
+    gameId,
+    apiKey,
+    api: config.api,
+    confluenceEnabled,
+    outline,
     canon: canonStore,
-    ...(confluenceEnabled
-      ? {
-          judge: new ConfluenceJudgeAdapter({
-            apiKey,
-            api: config.api,
-            diagnostics: new ConsoleDiagnosticSink(),
-          }),
-        }
-      : {}),
   });
   const graphCoordinator = buildGraphCoordinator(
     gamesRoot,
@@ -267,16 +314,12 @@ export async function createRuntimeApplication(
     director.exposeConfluenceJudge(),
     canonStore,
   );
-  // M3.6 ②：晋升管线（后台，周目完结/弃局后触发；串行合批，失败只告警）。
-  const canonPromoter = new CanonPromoter({
-    graph: new GameGraphStore(gamesRoot, gameId),
+  const canonPromoter = buildCanonPromoter({
+    gamesRoot,
+    gameId,
+    apiKey,
+    api: config.api,
     canon: canonStore,
-    adjudicator: new CanonAdjudicatorAdapter({
-      apiKey,
-      api: config.api,
-      diagnostics: new ConsoleDiagnosticSink(),
-    }),
-    diagnostics: new ConsoleDiagnosticSink(),
   });
 
   /**

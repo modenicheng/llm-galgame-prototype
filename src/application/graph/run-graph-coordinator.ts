@@ -376,8 +376,8 @@ export class RunGraphCoordinator implements RunGraphPort {
     const sceneId = await this.ensureSceneNode(input.modelSceneId);
     const entryState = toStateSnapshot(input.moment);
     await this.store.putDecision({ id: decisionId, sceneId, entryState, form: input.form });
-    this.indexDecision(decisionId, sceneId, entryState);
     await this.migrateOutlineForScene(sceneId);
+    this.indexDecision(decisionId, sceneId, entryState);
 
     // 先收束前一条边（endState = 本次入口快照），再推进游标。
     const edge = this.openEdge;
@@ -460,6 +460,12 @@ export class RunGraphCoordinator implements RunGraphPort {
       // ② 前沿推进：首个未 realized 的 act；planned → activate。
       const ref = this.pickFrontierRef();
       this.sceneOutlineRefs.set(sceneId, ref);
+      // M2.4：outlineRef 回写场景节点（append-only latest-wins），末态索引
+      // 的 D8 物理地点键由此可达——否则场景恒指种子节点，键永不生效。
+      const sceneNode = (await this.store.listScenes()).find((s) => s.id === sceneId);
+      if (sceneNode !== undefined && sceneNode.outlineRef !== ref) {
+        await this.store.putScene({ ...sceneNode, outlineRef: ref });
+      }
       const node = this.outlineNodes.find((n) => n.id === ref);
       if (node?.status === "planned") {
         await this.applyOutlineQuietly([{ type: "activate", id: ref }], "M3.4：场景首个决策落成 → activate");
@@ -654,11 +660,6 @@ export class RunGraphCoordinator implements RunGraphPort {
   // （新边收束时对索引全量预筛，旧节点即候选）。
   // ----------------------------------------------------------------
 
-  /**
-   * 末态索引摘要键（M2.4 ①）：从决策入口快照提取的确定性等价键。
-   * outlineLocation 经 sceneId → 场景节点 outlineRef → OutlineNode.location
-   * 解析（D8：同物理场景不同状态的高优先候选信号）。
-   */
   /** 场景 id → 摘要键列表（内存；hydrate 单点重建，惰性一次）。 */
   private endStateIndex: Map<SceneId, EndStateKey[]> | null = null;
 
@@ -702,10 +703,15 @@ export class RunGraphCoordinator implements RunGraphPort {
     return index;
   }
 
-  /** 索引就绪后的增量维护：新决策节点入索引。 */
+  /** 索引就绪后的增量维护：新决策节点入索引（D8 键经内存映射解析，与 hydrate 同源）。 */
   private indexDecision(decisionId: DecisionId, sceneId: SceneId, entryState: StateSnapshot): void {
     if (this.endStateIndex === null) return; // 未 hydrate → 首次重建时自然包含
     const key = this.extractEndStateKey(decisionId, sceneId, entryState);
+    const ref = this.sceneOutlineRefs.get(sceneId);
+    const outlineLocation = ref !== undefined
+      ? this.outlineNodes.find((n) => n.id === ref)?.location
+      : undefined;
+    if (outlineLocation !== undefined) key.outlineLocation = outlineLocation;
     const bucket = this.endStateIndex.get(sceneId);
     if (bucket !== undefined) bucket.push(key);
     else this.endStateIndex.set(sceneId, [key]);

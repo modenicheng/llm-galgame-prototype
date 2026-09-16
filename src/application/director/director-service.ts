@@ -245,7 +245,8 @@ export class DirectorService {
   }
 
   /** 相位门工具：显式收窄某场景的 allowed_modes（M4.3 接 InteractionPolicy）。 */
-  narrowFormModes(sceneId: string, modes: FormMode[]): void {    const previous = this.directives.get(sceneId);
+  narrowFormModes(sceneId: string, modes: FormMode[]): void {
+    const previous = this.directives.get(sceneId);
     const directive: SceneDirective = previous ?? {
       sceneId,
       defenseBeats: [],
@@ -362,10 +363,8 @@ export class DirectorService {
         return this.queryCharacterState(characterId);
       }
       case "narrowFormModes": {
-        const modes = Array.isArray(args.modes) ? (args.modes as string[]) : [];
-        const allowed = modes.filter((m): m is FormMode =>
-          m === "choice" || m === "input" || m === "hybrid",
-        );
+        // 该工具由 refreshDirective 的闭包 executeTool 拦截处理（绑定场景）；
+        // 此分支只对非指令循环调用方（防御性）返回提示。
         return `narrowFormModes 需绑定场景（由 refreshDirective 闭包处理）`;
       }
       default:

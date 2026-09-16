@@ -135,10 +135,6 @@ export interface GamePorts {
 /** §8.4: keep only the most recent formally-opened interaction modes. */
 const MAX_INTERACTION_MODE_HISTORY = 8;
 
-/**
- * Event mode（audit P2-10）：强制收束重试段带的修复语义——模型必须用
- * `@end <nonce> ending` 收束，不得再打开新的交互表单。
- */
 export class Game implements InteractionHost {
   /** @internal 交互驱动接缝（M4.5）。 */
   readonly events: StoredEvent[] = [];

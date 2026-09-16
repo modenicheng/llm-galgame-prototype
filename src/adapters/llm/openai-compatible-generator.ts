@@ -101,7 +101,6 @@ export interface GenerationStreamOptions {
    * in the user prompt (docs narrative-director §Task-10).
    */
   briefing?: string;
-  /** Event mode：本段必须以 @end ending 收束（audit P2-10 强制结局）。 */
 }
 
 // ---------------------------------------------------------------------------
