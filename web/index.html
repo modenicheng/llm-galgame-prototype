@@ -6,12 +6,24 @@
     <meta name="color-scheme" content="dark" />
     <meta name="description" content="灯影夜话 —— 本地 AI 视觉小说。深夜灯下，一段由你与 AI 共同落笔的故事。" />
     <title>灯影夜话 · 本地 AI 视觉小说</title>
+    <!-- Web fonts load async (print→all swap): a booth machine without
+         internet must not block first paint on a blackholed DNS lookup —
+         the local fallback stacks (KaiTi/SimSun in styles.css) render
+         immediately and the web font swaps in whenever it arrives. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;500;600;700;900&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;500;600;700;900&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
   </head>
   <body>
     <div id="app"></div>

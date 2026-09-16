@@ -11,6 +11,7 @@ class FakeAudioContext {
   static last: FakeAudioContext | null = null;
   state: AudioContextState = "suspended";
   resume = vi.fn().mockResolvedValue(undefined);
+  addEventListener = vi.fn();
   audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
   destination = {};
   createAudioWorkletNode = vi.fn(() => ({

@@ -73,6 +73,7 @@ function makeFakeAudioContext(noWorklet = false): FakeAudioContextResult {
     createGain: vi.fn(() => gain),
     destination: {},
     resume: vi.fn().mockResolvedValue(undefined),
+    addEventListener: vi.fn(),
     state: "running",
     sampleRate: 22050,
     currentTime: 0,

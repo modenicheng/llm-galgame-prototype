@@ -266,6 +266,14 @@ export class LocalWebHost {
         await this.app.restart();
         this.runtimeWs.rebase(this.app.game);
         this.runPromise = this.startRunLoop();
+      } catch (error) {
+        // A failed restart (disk error, prompt catalog reload, …) must not
+        // become an unhandled rejection — Node's throw-on-unhandled policy
+        // would take the whole host process down. Surface it to browsers
+        // instead; `restarting` resets so the button stays usable.
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger(`restart failed: ${message}`);
+        this.runtimeWs.notifyError("restart_failed", message);
       } finally {
         this.restarting = false;
       }

@@ -11,6 +11,13 @@ export interface IdGeneratorPort {
   nextSessionId(): string;
   /** Unique, monotonically increasing line ID inside one session. */
   nextLineId(sessionId: string): string;
+  /**
+   * Optional resume support: push the line counter past every line id
+   * already committed for this session so restored and freshly generated
+   * ids never collide. Implementations may omit it (fresh sessions,
+   * deterministic test fakes).
+   */
+  seedLineCounter?(sessionId: string, events: readonly object[]): void;
   /** Unique identifier for a background generation task. */
   nextGenerationId(kind: string): string;
   /** Unique identifier for an input preview session. */

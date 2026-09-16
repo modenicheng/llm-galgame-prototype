@@ -14,6 +14,7 @@
 import type { AudioDescriptor } from "@shared/wire/audio-descriptor.js";
 import type { AudioCacheWriter } from "../storage/audio-cache-writer.js";
 import { PcmDecoder } from "./pcm-decoder.js";
+import { randomId } from "../random-id.js";
 
 export interface AudioDownloaderOptions {
   /** Local Session Token (§8.3), sent as the `X-Session-Token` header. */
@@ -97,7 +98,7 @@ export class AudioDownloader {
       slot.promise = this.run(
         slot.lineIds,
         cacheKey,
-        taskId ?? crypto.randomUUID(),
+        taskId ?? randomId(),
         descriptor,
         decoder,
         controller.signal,

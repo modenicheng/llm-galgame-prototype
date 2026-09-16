@@ -98,11 +98,14 @@ function appendEventModeGuidance(
   } else if (options?.endingPhase === "closing") {
     result += `\n\n剧情已进入最后收束阶段：不要再打开新的交互表单，直接收拢当前线索，用 @end ${nonce} ending 结束本段。`;
   } else if (options?.endingPhase === "wrapup") {
+    // L1 是软提示：只引导"开始收拢、面向收尾"，把"不得再开表单/必须
+    // ending"的硬措辞留给 L2（closing）——否则结局会固定落在 wrapup+1
+    // 次交互，分级收束形同虚设（audit 2026-09-17 #3）。
     const { count, target } = options.interactionProgress ?? {};
     if (count !== undefined && target !== undefined && count > target) {
-      result += `\n\n收束阶段的最后一个交互点已经用完（交互数 ${count} 已超过收束目标 ${target}）：不要再打开任何交互表单，直接收拢当前线索，用 @end ${nonce} ending 结束本段。`;
+      result += `\n\n收束阶段提示（交互数 ${count} 已超过收束目标 ${target}）：请加快节奏，把剧情收向本局结局；除非收尾确实需要，不要再打开新的交互表单，也不要引入新话题、新角色或新支线。`;
     } else {
-      result += `\n\n剧情已进入收束阶段（本次游玩时长已经足够）：本段最多再打开 1 次交互表单，且这是本局的最后一个交互点——它应当面向收尾（例如让玩家决定如何结束、和谁道别），而不是新的情节转折；其后的下一段必须用 @end ${nonce} ending 收束结局。不要再引入新话题、新角色或新支线。`;
+      result += `\n\n剧情已进入收束阶段（本次游玩时长已经足够）：请开始收拢当前线索，接下来的交互应面向收尾（例如让玩家决定如何结束、和谁道别），而不是新的情节转折；不要再引入新话题、新角色或新支线。`;
     }
   }
   return result;
@@ -426,15 +429,23 @@ export class StoryGenerator {
 
       // On retry: add repair instruction describing the previous failure
       // (provider-internal `lastError` and/or Game-level options.repairReason).
+      // Wording matters per path: this request carries no assistant replay,
+      // so for provider-internal retries the model cannot see its previous
+      // output — asking it to "continue from where it failed" would push it
+      // to start mid-segment. Only the Game-level path serializes the failed
+      // segment's playable events into the user prompt, where continuing
+      // from the failure point is meaningful.
       const repairParts = [lastError, options?.repairReason].filter(
         (reason): reason is string => Boolean(reason),
       );
       const repairInstruction = repairParts.length
-        ? `\n${repairParts
-            .map(
-              (reason) =>
-                `上一份输出出错：${reason}。请修正该问题后从失败位置继续，不要重复已输出的内容。`,
-            )
+        ? `\n${[
+            lastError ? `上一份输出出错：${lastError}。请修正该问题，重新完整输出本段全部内容（不要省略开头）。` : "",
+            options?.repairReason
+              ? `上一份输出出错：${options.repairReason}。请修正该问题后从失败位置继续，不要重复已输出的内容。`
+              : "",
+          ]
+            .filter(Boolean)
             .join("\n")}`
         : "";
 

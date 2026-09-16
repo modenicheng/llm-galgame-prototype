@@ -125,6 +125,13 @@ const RUNTIME_ERROR_COPY: Record<string, { title: string; hint: string }> = {
     title: "运行时已停止",
     hint: "模型服务可能暂时不可用；可点击“重开一局”，或稍后重启服务",
   },
+  // Host-level: restart_session was requested but rebuilding the runtime
+  // failed (disk error, prompt catalog reload, …). The old session is gone
+  // or stuck — the player can retry the restart button or reload the page.
+  restart_failed: {
+    title: "重开失败",
+    hint: "刚才这一局没能重开；可再点一次“重开一局”，或刷新页面",
+  },
 };
 
 /** Compose the banner text for one runtime_error output. */

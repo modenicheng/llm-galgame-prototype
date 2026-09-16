@@ -407,6 +407,11 @@ export class Game {
     await this.store.initialize({ sessionId: this.sessionId });
     const restored = await this.store.load();
     this.restoreSession(restored);
+    // Resume: the id generator's line counter restarts at 0 every boot while
+    // restored events keep their committed line ids — new lines would
+    // collide with restored ones (dedup/缓冲/TTS 配方全部按 line_id 关联）。
+    // Align the counter past the highest restored number (audit P2-3).
+    this.ids.seedLineCounter?.(this.sessionId, restored.events);
     this.narrativeDirector?.observeCommitted(restored.events);
     this.emit({
       type: "session_started",
@@ -544,14 +549,23 @@ export class Game {
             "Game",
             "强制收束失败：模型连续未以 @end ending 结束，运行时合成结局。",
           );
-          this.emit({
-            type: "session_ended",
-            ending: {
-              type: "end",
-              ending_id: this.ids.nextGenerationId("ending"),
-              text: "（故事在此落幕。）",
-            },
+          // 与上方两条合成结局路径一致：先落 ended 快照再广播，否则
+          // 进程重启后已结束的局会被恢复成"进行中"续写（audit P2-3）。
+          const ending: EndEvent = {
+            type: "end",
+            ending_id: this.ids.nextGenerationId("ending"),
+            text: "（故事在此落幕。）",
+          };
+          this.restoredEnding = ending;
+          await this.store.saveSnapshot({
+            state: this.storyState,
+            visualState: this.renderedVisualState,
+            phase: "ended",
+            nextTurn: outcome.nextTurn,
+            lastEventSeq: this.seq - 1,
+            ending,
           });
+          this.emit({ type: "session_ended", ending });
           return;
         }
         this.status.setPhase("后台续写", "缓冲段自然收束，启动续写");
@@ -1787,24 +1801,28 @@ export class Game {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.status.setJob("selected-branch-retry", "已选分支重试", "running");
-      const retryBrief = this.makeBrief(turn + 1);
-      const handle = this.generator.generateBranchPrefetch({
-        turn: turn + 1,
-        state: this.storyState,
-        history: prefetchContext,
-        choice,
-        option: selected,
-        ...(retryBrief !== undefined ? { brief: retryBrief } : {}),
-        tailVisualState: this.tailVisualState,
-      });
-      await handle.done;
-      const groups: EventGroupDraft[] = [];
-      for await (const group of handle.events) groups.push(group);
-      const result = this.materializeDslGroups(groups, this.tailVisualState, turn);
-      this.branchTailStates.set(selected.id, result.tailState);
-      preview = result.events;
-      this.media.registerCandidate(selected.id, preview);
-      this.status.removeJob("selected-branch-retry");
+      try {
+        const retryBrief = this.makeBrief(turn + 1);
+        const handle = this.generator.generateBranchPrefetch({
+          turn: turn + 1,
+          state: this.storyState,
+          history: prefetchContext,
+          choice,
+          option: selected,
+          ...(retryBrief !== undefined ? { brief: retryBrief } : {}),
+          tailVisualState: this.tailVisualState,
+        });
+        await handle.done;
+        const groups: EventGroupDraft[] = [];
+        for await (const group of handle.events) groups.push(group);
+        const result = this.materializeDslGroups(groups, this.tailVisualState, turn);
+        this.branchTailStates.set(selected.id, result.tailState);
+        preview = result.events;
+        this.media.registerCandidate(selected.id, preview);
+      } finally {
+        // 重试本身也可能失败（异常上抛）——状态任务必须随之解除。
+        this.status.removeJob("selected-branch-retry");
+      }
     }
 
     // The selected branch's tail visual state becomes the new predictive
@@ -2895,31 +2913,37 @@ export class Game {
           `生成分支：${selected.text}`,
           "running"
         );
-        const syntheticChoice: ChoiceEvent = {
-          type: "choice",
-          prompt: interaction.prompt,
-          options: interaction.options.map((o) => ({
-            id: o.id,
-            text: o.text,
-          })),
-        };
-        const onDemandBrief = this.makeBrief(turn + 1);
-        const handle = this.generator.generateBranchPrefetch({
-          turn: turn + 1,
-          state: this.storyState,
-          history: prefetchContext,
-          choice: syntheticChoice,
-          option: { id: selected.id, text: selected.text },
-          ...(onDemandBrief !== undefined ? { brief: onDemandBrief } : {}),
-          tailVisualState: this.tailVisualState,
-        });
-        await handle.done;
-        const groups: EventGroupDraft[] = [];
-        for await (const group of handle.events) groups.push(group);
-        const result = this.materializeDslGroups(groups, this.tailVisualState, turn);
-        preview = result.events;
-        this.registerBuffered(preview);
-        this.status.removeJob("on-demand-branch");
+        try {
+          const syntheticChoice: ChoiceEvent = {
+            type: "choice",
+            prompt: interaction.prompt,
+            options: interaction.options.map((o) => ({
+              id: o.id,
+              text: o.text,
+            })),
+          };
+          const onDemandBrief = this.makeBrief(turn + 1);
+          const handle = this.generator.generateBranchPrefetch({
+            turn: turn + 1,
+            state: this.storyState,
+            history: prefetchContext,
+            choice: syntheticChoice,
+            option: { id: selected.id, text: selected.text },
+            ...(onDemandBrief !== undefined ? { brief: onDemandBrief } : {}),
+            tailVisualState: this.tailVisualState,
+          });
+          await handle.done;
+          const groups: EventGroupDraft[] = [];
+          for await (const group of handle.events) groups.push(group);
+          const result = this.materializeDslGroups(groups, this.tailVisualState, turn);
+          preview = result.events;
+          this.registerBuffered(preview);
+          // 与 adoptSelectedBranch 一致：按需生成的行也要进入媒体时间线，
+          // 否则音频启用部署下这些行永远没有描述符、整段无声。
+          this.media.registerActive(preview);
+        } finally {
+          this.status.removeJob("on-demand-branch");
+        }
       }
 
       return {

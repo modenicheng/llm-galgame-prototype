@@ -172,8 +172,16 @@ export function validateSetupOp(
       if (existing === undefined) {
         return `伏笔 ${op.id} 不存在`;
       }
-      if (existing.status !== "reinforced" && existing.status !== "ready") {
-        return `伏笔 ${op.id} 状态为 ${existing.status}，只有 reinforced|ready 可以 payoff`;
+      // seeded→paid_off 在 VALID_SETUP_TRANSITIONS 本就合法（未强化直接
+      // 兑现）。此前只放行 reinforced|ready，与 classifySetup 的到期
+      // payoff 指令（seeded 也下令）互相矛盾：指令每回合重发、op 每次
+      // 被拒，伏笔永远停在 seeded（audit 2026-09-17 #1）。
+      if (
+        existing.status !== "seeded" &&
+        existing.status !== "reinforced" &&
+        existing.status !== "ready"
+      ) {
+        return `伏笔 ${op.id} 状态为 ${existing.status}，只有 seeded|reinforced|ready 可以 payoff`;
       }
       return null;
     }

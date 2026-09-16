@@ -47,4 +47,19 @@ describe("SessionIdGenerator", () => {
     expect(ids.nextGenerationId("opening")).not.toBe(ids.nextGenerationId("opening"));
     expect(ids.nextPreviewId("int_1")).not.toBe(ids.nextPreviewId("int_1"));
   });
+
+  it("seeds the line counter past restored ids so resumed lines never collide", () => {
+    const ids = new SessionIdGenerator();
+    const sid = "2026-09-17T00-00-00-000Z";
+    ids.seedLineCounter(sid, [
+      { line_id: `line_${sid}_000001` },
+      { line_id: `line_${sid}_000003` },
+      { line_id: "line_other-session_999999" }, // other session — ignored
+      { type: "choice" }, // events without line_id — ignored
+    ]);
+    expect(ids.nextLineId(sid)).toBe(`line_${sid}_000004`);
+    // Never lowers an already-higher counter.
+    ids.seedLineCounter(sid, [{ line_id: `line_${sid}_000002` }]);
+    expect(ids.nextLineId(sid)).toBe(`line_${sid}_000005`);
+  });
 });

@@ -69,6 +69,18 @@ export class AudioIntentPlanner implements MediaPlannerPort {
   }
 
   registerCandidate(branchId: string, lines: RuntimePlayableEvent[]): void {
+    // Re-registering the same branch (e.g. a failed take-back → retry with
+    // fresh content) replaces the map entry — the previous take's lines must
+    // be invalidated first, or their descriptors linger in the catalog
+    // forever (no branch owns them; activateCandidate never reaches them)
+    // and the browser may synthesize stale audio (audit P3-8).
+    const previous = this.branches.get(branchId);
+    if (previous !== undefined) {
+      for (const event of previous) {
+        if (lines.some((line) => line.line_id === event.line_id)) continue;
+        this.options.catalog.invalidate(event.line_id, "branch_discarded");
+      }
+    }
     this.branches.set(branchId, lines);
     for (let i = 0; i < lines.length; i += 1) {
       const event = lines[i];

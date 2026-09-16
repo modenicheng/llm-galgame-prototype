@@ -25,10 +25,32 @@ describe("parseDslLine", () => {
     });
   });
 
-  it("parses a narration containing a full-width colon", () => {
-    expect(parseDslLine("注意：请保持安静。")).toEqual({
+  it("parses a narration whose full-width colon is mid-sentence, not a delimiter", () => {
+    // Sentence punctuation before the colon ⇒ real narration; untouched.
+    expect(parseDslLine("远处传来钟声，一下、两下：夜里更静了。")).toEqual({
       kind: "narration",
-      text: "注意：请保持安静。",
+      text: "远处传来钟声，一下、两下：夜里更静了。",
+    });
+  });
+
+  it("normalizes a full-width colon in the delimiter position into dialogue", () => {
+    // Chinese LLM output frequently writes 「苏遥：台词」. A short
+    // punctuation-free speaker followed by ： is the dialogue delimiter —
+    // normalizing prevents silent degradation to narration (and the
+    // speaker/[visual] syntax leaking into player-visible text).
+    expect(parseDslLine("苏遥：你不该来这里。")).toEqual({
+      kind: "dialogue",
+      speaker: "苏遥",
+      text: "你不该来这里。",
+      visual: { hasVisual: false, resetVisual: false },
+      name: { hasName: false, resetName: false },
+    });
+    expect(parseDslLine("苏遥[anxious]：你好")).toEqual({
+      kind: "dialogue",
+      speaker: "苏遥",
+      text: "你好",
+      visual: { hasVisual: true, resetVisual: false, variant: "anxious" },
+      name: { hasName: false, resetName: false },
     });
   });
 

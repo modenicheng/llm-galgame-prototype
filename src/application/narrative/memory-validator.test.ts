@@ -484,14 +484,14 @@ describe("validateSetupOp", () => {
     }
   });
 
-  it("payoff accepts only reinforced|ready", () => {
-    for (const status of ["reinforced", "ready"] as const) {
+  it("payoff accepts seeded|reinforced|ready (seeded→paid_off is a legal transition)", () => {
+    for (const status of ["seeded", "reinforced", "ready"] as const) {
       const memory = makeMemory({ setups: { "setup-1": makeSetup({ status }) } });
       expectAccepted(
         validateSetupOp({ type: "payoff", id: "setup-1" }, memory, makeConfig()),
       );
     }
-    for (const status of ["planned", "seeded", "paid_off", "dropped"] as const) {
+    for (const status of ["planned", "paid_off", "dropped"] as const) {
       const memory = makeMemory({ setups: { "setup-1": makeSetup({ status }) } });
       expectRejected(
         validateSetupOp({ type: "payoff", id: "setup-1" }, memory, makeConfig()),

@@ -27,6 +27,7 @@ import { AudioDb } from "./storage/audio-db.js";
 import { AudioCacheWriter, type CacheWriteOptions } from "./storage/audio-cache-writer.js";
 import { AudioCacheReader } from "./storage/audio-cache-reader.js";
 import { AudioCacheCleaner, type CleanerOptions } from "./storage/audio-cache-cleaner.js";
+import { randomId } from "./random-id.js";
 
 /** §10.3 + §11.4 + §17.5 fallback values, used when GET /api/config is absent. */
 export const DEFAULT_PUBLIC_WEB_CONFIG: PublicWebConfig = {
@@ -105,6 +106,13 @@ interface DescriptorEntry {
   fed: boolean;
   taskId: string | null;
   abort: AbortController | null;
+  /** The in-flight startDownload promise; null once it settles. */
+  download: Promise<void> | null;
+  /** `task_status finished` arrived while the HTTP body was still draining —
+   * the cache asset is sealed complete only after the drain ends (P1 race). */
+  pendingFinish: boolean;
+  /** Client-side retry budget for transient synthesis failures. */
+  retries: number;
 }
 
 /** The portion of LinePerformance the browser is allowed to read. */
@@ -148,6 +156,12 @@ export class GameApp {
   private readonly enqueued = new Set<string>();
   private readonly cacheDecoders = new Map<string, PcmDecoder>();
   private currentLineId: string | null = null;
+  /** Consecutive cache lookup failures; ≥3 trips the unhealthy breaker. */
+  private cacheFailures = 0;
+  /** Once true, cache lookups are skipped (downloads serve directly). */
+  private cacheUnhealthy = false;
+  /** Last session id seen in the projection; a change means restart. */
+  private lastSessionId: string | null = null;
 
   private started = false;
   /** Start failure surfaced to the UI banner (P2 start-failure wedge). */
@@ -209,7 +223,15 @@ export class GameApp {
       if (this.coordinator !== null && !this.coordinator.available) {
         this.coordinator = null;
       }
-      await this.db.open();
+      // The cache is a performance cache, not story truth: a failed open
+      // (corruption, quota, private mode) degrades to a no-cache session —
+      // the db stays `available=false`, every writer/reader/cleaner call
+      // no-ops by design, and streaming playback continues without it.
+      try {
+        await this.db.open();
+      } catch (error) {
+        console.warn("[audio] IndexedDB open failed — continuing without cache", error);
+      }
       const writeOptions: CacheWriteOptions = {
         writeBatchBytes: this.config.audio.cache.write_batch_bytes,
         flushIntervalMs: this.config.audio.cache.write_flush_interval_ms,
@@ -415,6 +437,7 @@ export class GameApp {
 
   private handleViewNotify(): void {
     const view = this.viewModel.state();
+    this.observeSessionChange(view.sessionId);
     if (view.mode === "PLAYING" && view.currentLine !== undefined) {
       if (view.currentLine.line_id !== this.currentLineId) {
         this.onCurrentLine(view.currentLine.line_id, view.currentLine);
@@ -433,6 +456,28 @@ export class GameApp {
   // -------------------------------------------------------------------------
   // Audio lifecycle
   // -------------------------------------------------------------------------
+
+  /**
+   * A new projection session id means the host restarted the game. The old
+   * session's audio bookkeeping must not leak into the new one: descriptors
+   * would be re-fetched (or even re-synthesized after a cache cleanup) for
+   * dead lines whose priority still sorts them to the front.
+   */
+  private observeSessionChange(sessionId: string | undefined): void {
+    if (sessionId === undefined || sessionId === this.lastSessionId) return;
+    const previousSession = this.lastSessionId;
+    this.lastSessionId = sessionId;
+    if (previousSession === null) return; // first observation — nothing to drop
+    for (const lineId of [...this.descriptors.keys()]) {
+      const entry = this.descriptors.get(lineId);
+      entry?.abort?.abort();
+      this.coordinator?.dropLine(lineId);
+      this.descriptors.delete(lineId);
+      this.enqueued.delete(lineId);
+    }
+    this.cacheDecoders.clear();
+    this.currentLineId = null;
+  }
 
   private onCurrentLine(lineId: string, line: RuntimePlayableEventWire): void {
     this.currentLineId = lineId;
@@ -454,6 +499,9 @@ export class GameApp {
       fed: false,
       taskId: null,
       abort: null,
+      download: null,
+      pendingFinish: false,
+      retries: 0,
     };
     entry.descriptor = descriptor; // keep the latest priority
     this.descriptors.set(lineId, entry);
@@ -503,36 +551,36 @@ export class GameApp {
     _error?: string,
   ): Promise<void> {
     const entry = this.descriptors.get(lineId);
-    const cacheKey = entry?.descriptor.cacheKey;
     switch (status) {
       case "finished":
-        if (cacheKey !== undefined && this.writer !== null) {
-          await this.writer.finishComplete(cacheKey).catch(() => {});
-          // finishComplete is cache bookkeeping only. The downloader already
-          // fed every PCM chunk live via onPcm — re-reading the cache here
-          // would play the whole line a second time (§12.4/§12.2).
-          if (entry !== undefined && entry.state === "downloading") {
-            entry.state = "cached";
-            entry.abort = null;
-            entry.fed = true;
-          }
+        if (entry === undefined) break;
+        if (entry.download !== null) {
+          // The HTTP PCM stream is still draining; sealing the asset now
+          // could persist a truncated copy as `complete` (the task finishes
+          // server-side before the browser consumes the tail bytes).
+          entry.pendingFinish = true;
+        } else {
+          await this.finalizeComplete(entry);
         }
         break;
       case "failed":
-        if (cacheKey !== undefined && this.writer !== null) {
-          await this.writer.markFailed(cacheKey).catch(() => {});
+        if (entry?.descriptor.cacheKey !== undefined && this.writer !== null) {
+          await this.writer.markFailed(entry.descriptor.cacheKey).catch(() => {});
         }
         if (entry !== undefined && entry.state === "downloading") {
           entry.state = "failed";
           entry.abort?.abort();
           entry.abort = null;
+          this.scheduleAudioRetry(entry);
         }
         break;
       case "canceled":
-        if (cacheKey !== undefined && this.writer !== null) {
-          await this.writer.markPartial(cacheKey).catch(() => {});
+        if (entry?.descriptor.cacheKey !== undefined && this.writer !== null) {
+          await this.writer.markPartial(entry.descriptor.cacheKey).catch(() => {});
         }
         if (entry !== undefined && entry.state === "downloading") {
+          // Cancellation is intentional (line invalidated / branch discarded)
+          // — never retried.
           entry.state = "failed";
           entry.abort?.abort();
           entry.abort = null;
@@ -545,6 +593,40 @@ export class GameApp {
     this.scheduleReadingFallback();
     this.reconcileAudio();
     this.emitState();
+  }
+
+  /** Seal one line's cache asset as complete and flip it to `cached`. */
+  private async finalizeComplete(entry: DescriptorEntry): Promise<void> {
+    if (this.writer !== null) {
+      await this.writer.finishComplete(entry.descriptor.cacheKey).catch(() => {});
+    }
+    // finishComplete is cache bookkeeping only. The downloader already
+    // fed every PCM chunk live via onPcm — re-reading the cache here
+    // would play the whole line a second time (§12.4/§12.2).
+    if (entry.state === "downloading") {
+      entry.state = "cached";
+      entry.abort = null;
+      entry.fed = true;
+    }
+  }
+
+  /**
+   * One bounded retry for transient synthesis failures (mid-stream errors,
+   * HTTP 5xx). Cancellation is never retried; speculative lines (candidate
+   * backlog beyond active_future) stay dead to avoid resurrecting garbage.
+   */
+  private scheduleAudioRetry(entry: DescriptorEntry): void {
+    const MAX_AUDIO_RETRIES = 2;
+    if (entry.retries >= MAX_AUDIO_RETRIES) return;
+    if (PRIORITY_RANK[entry.descriptor.priority] > PRIORITY_RANK.active_future) return;
+    entry.retries += 1;
+    const delay = 800 * 2 ** (entry.retries - 1);
+    setTimeout(() => {
+      if (this.descriptors.get(entry.descriptor.lineId) !== entry) return;
+      if (entry.state !== "failed") return;
+      entry.state = "idle";
+      this.reconcileAudio();
+    }, delay);
   }
 
   private onPcm(lineId: string, samples: Int16Array): void {
@@ -597,10 +679,16 @@ export class GameApp {
     const { cacheKey } = entry.descriptor;
     void (async () => {
       try {
-        const lookup = await this.reader!.lookup(cacheKey);
+        // Circuit breaker: persistent lookup failures (corrupt db, closed
+        // connection) would otherwise loop idle→checking→fail with no
+        // backoff; after a few, skip the cache and go straight to download.
+        const lookup = this.cacheUnhealthy
+          ? { status: "miss" as const, asset: undefined }
+          : await this.reader!.lookup(cacheKey);
         // Invalidated meanwhile: the entry may be gone or a newer entry may
         // have replaced it — never continue a stale lookup (P3 race).
         if (entry.state !== "checking" || this.descriptors.get(lineId) !== entry) return;
+        this.cacheFailures = 0;
         if (lookup.status === "complete") {
           entry.state = "cached";
           this.sendCacheReport(lineId, cacheKey, "hit");
@@ -615,6 +703,8 @@ export class GameApp {
         this.emitState();
       } catch {
         // A cache error is non-fatal: the story continues without audio.
+        this.cacheFailures += 1;
+        if (this.cacheFailures >= 3) this.cacheUnhealthy = true;
         if (this.descriptors.get(lineId) === entry) {
           entry.state = "idle";
           this.reconcileAudio();
@@ -623,29 +713,49 @@ export class GameApp {
     })();
   }
 
-  private async startDownload(entry: DescriptorEntry): Promise<void> {
-    if (entry.state === "downloading" || entry.state === "cached") return;
+  private startDownload(entry: DescriptorEntry): Promise<void> {
+    if (entry.state === "downloading" || entry.state === "cached") return Promise.resolve();
     entry.state = "downloading";
     // One taskId for both the POST body and the bookkeeping (P3 dead field).
-    entry.taskId = crypto.randomUUID();
+    entry.taskId = randomId();
+    entry.pendingFinish = false;
     const controller = new AbortController();
     entry.abort = controller;
     const { lineId, cacheKey } = entry.descriptor;
-    try {
-      await this.downloader!.download(entry.descriptor, controller.signal, entry.taskId);
-      // Stream consumed; `complete` is decided by audio.task_status finished.
-    } catch {
-      if (entry.state !== "downloading") return; // task_status already settled it
-      entry.abort = null;
-      entry.state = "failed";
-      if (controller.signal.aborted) {
-        await this.writer!.markPartial(cacheKey).catch(() => {});
-      } else {
-        await this.writer!.markFailed(cacheKey).catch(() => {});
+    const taskId = entry.taskId;
+    const run = (async () => {
+      try {
+        await this.downloader!.download(entry.descriptor, controller.signal, taskId);
+        // Stream consumed; `complete` is decided by audio.task_status finished.
+      } catch {
+        if (entry.state !== "downloading") return; // task_status already settled it
+        entry.abort = null;
+        entry.state = "failed";
+        if (controller.signal.aborted) {
+          await this.writer!.markPartial(cacheKey).catch(() => {});
+        } else {
+          await this.writer!.markFailed(cacheKey).catch(() => {});
+          this.scheduleAudioRetry(entry);
+        }
+        this.scheduleReadingFallback();
+        this.emitState();
+      } finally {
+        entry.download = null;
+        // `finished` may have arrived while the HTTP body was still
+        // draining; only now has every byte reached the writer, so only
+        // now is the asset safe to seal as complete (P1 race).
+        if (entry.pendingFinish && entry.state === "downloading") {
+          entry.pendingFinish = false;
+          await this.finalizeComplete(entry);
+          this.scheduleReadingFallback();
+          this.reconcileAudio();
+          this.emitState();
+        }
       }
-      this.scheduleReadingFallback();
-      this.emitState();
-    }
+    })();
+    entry.download = run;
+    void lineId;
+    return run;
   }
 
   /** Feed a fully cached asset into the coordinator (cross-page hit). */
@@ -789,7 +899,7 @@ export class GameApp {
   // -------------------------------------------------------------------------
 
   private sendCommand(command: RuntimeCommandWire): void {
-    this.client?.sendCommand(crypto.randomUUID(), command);
+    this.client?.sendCommand(randomId(), command);
   }
 
   private sendCacheReport(lineId: string, cacheKey: string, result: "hit" | "miss" | "partial" | "corrupt"): void {

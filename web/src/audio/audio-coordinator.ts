@@ -96,6 +96,18 @@ export class AudioCoordinator {
     // — works identically in dev and in the production bundle.
     const blob = new Blob([workletSource], { type: "application/javascript" });
     const workletUrl = URL.createObjectURL(blob);
+    // The OS/browser can suspend the AudioContext mid-session (device switch,
+    // exclusive mode, bluetooth takeover, power saving). While suspended the
+    // worklet is not pulled, `drained` never fires and playback silently
+    // wedges — attempt an automatic resume whenever that happens.
+    this.context.addEventListener("statechange", () => {
+      if (this.context.state === "suspended") {
+        void this.context.resume().catch(() => {
+          // resume() can reject without a user gesture; the next statechange
+          // (or any click that reaches the page) retries.
+        });
+      }
+    });
     try {
       await this.context.audioWorklet.addModule(workletUrl);
       const options: AudioWorkletNodeOptions = {
@@ -181,6 +193,9 @@ export class AudioCoordinator {
       this.finishLine(lineId);
       return;
     }
+    // Tell the worklet no more samples will arrive: its final dry block is a
+    // normal completion, not a starvation underrun.
+    this.postWorkletMessage({ type: "eof", lineId });
     // playing with a worklet — finishLine fires on drained
   }
 
@@ -359,6 +374,11 @@ export class AudioCoordinator {
       this.postWorkletMessage(chunk);
     }
     this.pendingByLine.delete(lineId);
+    // Cache-fed lines may already be at EOF before playback reaches them —
+    // forward the marker so their completion is not misread as underrun.
+    if (this.producerEof.has(lineId)) {
+      this.postWorkletMessage({ type: "eof", lineId });
+    }
   }
 
   private linePendingCount(lineId: string): number {

@@ -29,7 +29,9 @@ import type {
 const SYSTEM_PROMPT =
   "你是剧情记忆整理器。输入一段已发生剧情，输出 JSON：" +
   "{episode:{summary,characters,locations,threads,setups,importance}, " +
-  "threadOps:[{type,id,progress?}], setupOps:[{type,id,evidenceEventIds?}]}。" +
+  "threadOps:[{type,id,progress?}], setupOps:[{type,id}]}。" +
+  // evidenceEventIds 故意不邀请：事件序列化不暴露 seq，模型不可能写对
+  // 该字段，带上只会让整条 op 被校验拒绝（audit 2026-09-17 #2）。
   "只整理事实，不要推测未来，不要写未来计划。" +
   "threads/setups 只能引用给定列表中的 id；唯一例外：threadOps 可用 " +
   "type=create 创建全新线程（id 自拟且不得与列表重复，必须携带 " +

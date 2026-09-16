@@ -43,8 +43,16 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
   outputRate = DEFAULT_SAMPLE_RATE;
   /** Line id set by the `line` marker; null when idle/cleared. */
   currentLineId = null;
+  /** Line id whose `eof` marker arrived — no more samples will come for it,
+   * so its final dry block is completion, not a starvation underrun. */
+  eofLine = null;
   /** True once drained(currentLineId) has been posted for the current batch. */
   drainedSent = false;
+  /** True when the previous quantum ended with samples queued. `underrun` is
+   * an edge signal (had audio → ran dry while a line is active); firing it
+   * on every idle quantum would flood the main thread at ~375 msgs/s and
+   * bury the metric. */
+  hadQueued = false;
 
   constructor(options = {}) {
     super(options);
@@ -69,6 +77,7 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
     if ("type" in data && data.type === "clear") {
       this.resetRing();
       this.currentLineId = null;
+      this.eofLine = null;
       this.drainedSent = false;
       return;
     }
@@ -76,7 +85,12 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
       // The coordinator marks the line before flushing its samples; the
       // worklet reports drained(lineId) once the batch is consumed.
       this.currentLineId = data.lineId ?? null;
+      this.eofLine = null;
       this.drainedSent = false;
+      return;
+    }
+    if ("type" in data && data.type === "eof") {
+      this.eofLine = data.lineId ?? this.currentLineId;
       return;
     }
     if (ArrayBuffer.isView(data)) {
@@ -89,12 +103,14 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
     if (!output) {
       return true;
     }
-    let underrun = false;
+    // Audio existed at this block's start (carried over or just queued)?
+    // Captured before the render loop — a ring that drains mid-block is
+    // still a starvation edge.
+    const hadAudio = this.hadQueued || this.queued > 0;
     const step = this.sourceRate / this.outputRate;
     for (let i = 0; i < output.length; i++) {
       if (this.queued === 0) {
         output[i] = 0;
-        underrun = true;
         continue;
       }
       const current = this.sampleAt(0);
@@ -107,9 +123,18 @@ export class PcmWorkletProcessor extends AudioWorkletProcessorBase {
         this.consume(consumed);
       }
     }
-    if (underrun) {
+    // Starvation edge: audio was playing and the ring just ran dry while a
+    // line is still marked and more samples were still expected (no eof).
+    // Idle silence is the vast majority of quanta and must not report.
+    if (
+      hadAudio &&
+      this.queued === 0 &&
+      this.currentLineId !== null &&
+      this.currentLineId !== this.eofLine
+    ) {
       this.port.postMessage({ type: "underrun" });
     }
+    this.hadQueued = this.queued > 0;
     if (
       this.currentLineId !== null &&
       !this.drainedSent &&

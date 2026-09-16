@@ -40,6 +40,8 @@ function makeFakeContext(): FakeContext {
     createGain: vi.fn().mockReturnValue(gain),
     destination: {},
     resume: vi.fn().mockResolvedValue(undefined),
+    addEventListener: vi.fn(),
+    state: "running" as string,
     sampleRate: 22050,
     currentTime: 0,
   } as unknown as AudioContext;

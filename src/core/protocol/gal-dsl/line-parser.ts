@@ -202,7 +202,7 @@ export function parseDslLine(rawLine: string): DslLine {
   }
 
   // 8. character cue: ch <id>:<variant> [position] | ch <id> hide|show
-  const chSetMatch = /^ch\s+(\S+):(\S+)(?:\s+(\S+))?\s*$/.exec(line);
+  const chSetMatch = /^ch\s+([^:\s]+):([^:\s]+)(?:\s+(\S+))?\s*$/.exec(line);
   if (chSetMatch !== null) {
     const characterId = chSetMatch[1]!;
     const variant = chSetMatch[2]!;
@@ -234,7 +234,7 @@ export function parseDslLine(rawLine: string): DslLine {
     const action: "hide" | "show" = actionToken === "hide" ? "hide" : "show";
     return { kind: "character_cue", characterId, action };
   }
-  if (line.startsWith("ch")) {
+  if (hasKeywordPrefix(line, "ch")) {
     throw new DslProtocolError(
       "INVALID_CH_CUE",
       `无效的 ch 指令 "${line}"：格式为 ch <id>:<variant> [position] 或 ch <id> hide|show|exit。`,
@@ -242,10 +242,23 @@ export function parseDslLine(rawLine: string): DslLine {
   }
 
   // 9. dialogue: <speaker>[<visual>](<name>): <text>
-  // Only an ASCII ":" is the delimiter; a full-width "：" line falls through.
-  const dialogueMatch = /^([^\[\]:]+?)(?:\[([^\]]*)\])?(?:\(([^)]*)\))?:\s?(.+)$/.exec(line);
+  // A full-width "：" as the delimiter is a high-frequency Chinese LLM
+  // output. When it sits exactly in the delimiter position (short
+  // punctuation-free speaker + optional [visual]/(name)), normalize it to
+  // ASCII — otherwise the line silently degrades into narration and the
+  // speaker/[visual] syntax leaks into player-visible text. Sentence
+  // punctuation in the "speaker" position means real narration and is left
+  // untouched.
+  const fullwidthDelimiter =
+    /^([^，。！？；、…：:"'\[\]()]{1,24})(?:\[[^\]]*\])?(?:\([^)]*\))?：/;
+  const dialogueSource = fullwidthDelimiter.test(line)
+    ? line.replace("：", ":")
+    : line;
+  const dialogueMatch = /^([^\[\]:]+?)(?:\[([^\]]*)\])?(?:\(([^)]*)\))?:\s*(.+)$/.exec(
+    dialogueSource,
+  );
   if (dialogueMatch !== null) {
-    const speaker = dialogueMatch[1]!;
+    const speaker = dialogueMatch[1]!.trim();
     const text = dialogueMatch[4]!;
     return {
       kind: "dialogue",

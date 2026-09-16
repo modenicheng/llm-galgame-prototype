@@ -275,6 +275,12 @@ export async function createRuntimeApplication(
       game.dispatch({ type: "shutdown" });
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       await game.flush();
+      // 旧会话的音频描述符全部失效：catalog 是跨重建共享的，残留的
+      // descriptor（priority 可能仍是 current）会在浏览器重连时被快照
+      // 重放，触发对死行的缓存重放甚至真实重合成。
+      for (const descriptor of catalog.listDescriptors()) {
+        catalog.invalidate(descriptor.lineId, "session_closed");
+      }
       const freshSessionId = new SessionIdGenerator().nextSessionId();
       game = await buildGameFor(config, freshSessionId, options);
       game.subscribe((output) => projection.applyOutput(output));

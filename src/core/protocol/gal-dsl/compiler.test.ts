@@ -507,6 +507,123 @@ describe("compileEventGroup — sprite-set binding (§15)", () => {
     expect(tailState.characters["suyao"]!.spriteSet).toBe("mysterious_woman");
     expect(tailState.characters["suyao"]!.variant).toBe("gentle_smile");
   });
+
+  it("validates prelude variants against the in-group intermediate set, not the group base state", () => {
+    // Head swaps to mysterious_woman (allowed by the registry), then a
+    // prelude ch sets a variant that exists only in the BASE suyao set.
+    // Validating against the base state would keep the cue and produce an
+    // unrenderable suit+variant terminal state; against the intermediate
+    // state it is correctly dropped (audit 2026-09-17 #P2-1).
+    const diagnostics: AssetDiagnostic[] = [];
+    const registry: CharacterRegistry = {
+      resolveByScriptName(name: string): CharacterRegistryEntry | undefined {
+        return name === "苏遥" ? DISGUISED_SUYAO : undefined;
+      },
+      resolveById(id: string): CharacterRegistryEntry | undefined {
+        return id === "suyao" || id === "苏遥" ? DISGUISED_SUYAO : undefined;
+      },
+      entries(): CharacterRegistryEntry[] {
+        return [DISGUISED_SUYAO];
+      },
+    };
+    const defaults = createDefaultsFromRegistry(registry);
+    const start = withCharacter("suyao", {
+      spriteSet: "suyao",
+      variant: "normal",
+      position: "left",
+      displayName: "苏遥",
+      visible: true,
+    });
+    const ctx = {
+      registry,
+      tailState: start,
+      reduce: createVisualStateReducer(defaults),
+      defaultsFor: defaults.defaultFor.bind(defaults),
+    };
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [
+          { type: "character_patch", character: "suyao", variant: { op: "set", value: "anxious" } },
+        ],
+        main: {
+          type: "dialogue",
+          speaker: "苏遥",
+          text: "（换了身衣服）",
+          visual: { hasVisual: true, resetVisual: false, spriteSet: "mysterious_woman" },
+          name: { hasName: false, resetName: false },
+        },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    // "anxious" exists in suyao but not in the swapped-in mysterious_woman
+    // set — the cue must be dropped, not silently carried into an invalid
+    // terminal state.
+    expect(diagnostics).toEqual([{ code: "UNKNOWN_SPRITE_VARIANT", id: "anxious" }]);
+    expect(
+      group.prelude.filter((cue) => cue.type === "character_patch"),
+    ).toHaveLength(1); // only the head's set swap
+    expect(tailState.characters["suyao"]).toMatchObject({
+      spriteSet: "mysterious_woman",
+      variant: "normal",
+    });
+  });
+
+  it("keeps a prelude variant that exists only in the swapped-in set (previously mis-dropped)", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const registry: CharacterRegistry = {
+      resolveByScriptName(name: string): CharacterRegistryEntry | undefined {
+        return name === "苏遥" ? DISGUISED_SUYAO : undefined;
+      },
+      resolveById(id: string): CharacterRegistryEntry | undefined {
+        return id === "suyao" || id === "苏遥" ? DISGUISED_SUYAO : undefined;
+      },
+      entries(): CharacterRegistryEntry[] {
+        return [DISGUISED_SUYAO];
+      },
+    };
+    const defaults = createDefaultsFromRegistry(registry);
+    const start = withCharacter("suyao", {
+      spriteSet: "suyao",
+      variant: "normal",
+      position: "left",
+      displayName: "苏遥",
+      visible: true,
+    });
+    const ctx = {
+      registry,
+      tailState: start,
+      reduce: createVisualStateReducer(defaults),
+      defaultsFor: defaults.defaultFor.bind(defaults),
+    };
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [
+          {
+            type: "character_patch",
+            character: "suyao",
+            variant: { op: "set", value: "gentle_smile" },
+          },
+        ],
+        main: {
+          type: "dialogue",
+          speaker: "苏遥",
+          text: "（换了身衣服）",
+          visual: { hasVisual: true, resetVisual: false, spriteSet: "mysterious_woman" },
+          name: { hasName: false, resetName: false },
+        },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    // gentle_smile exists only in mysterious_woman; after the head's swap it
+    // is legal — validating against the base suyao set would have dropped it.
+    expect(diagnostics).toEqual([]);
+    expect(tailState.characters["suyao"]).toMatchObject({
+      spriteSet: "mysterious_woman",
+      variant: "gentle_smile",
+    });
+  });
 });
 
 describe("compileEventGroup — asset semantic validation (spec §7)", () => {

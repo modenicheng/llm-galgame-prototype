@@ -61,14 +61,29 @@ describe("PcmWorkletProcessor", () => {
     expect(output[47999]).toBeCloseTo(0.5, 5);
   });
 
-  it("posts a single underrun message when the ring runs dry", () => {
+  it("posts underrun once on the starvation edge while a line is active", () => {
     const { proc, port } = makeProcessor();
+    post(proc, { type: "line", lineId: "L0" });
     post(proc, new Int16Array([1000]));
     const output = processBlock(proc, 8);
     expect(output[0]).toBeCloseTo(1000 / 32768, 5);
     expect(output[1]).toBe(0);
-    expect(port.postMessage).toHaveBeenCalledTimes(1);
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "underrun" });
+    const types = port.postMessage.mock.calls.map((c) => (c[0] as { type: string }).type);
+    // Starvation (no eof marker): one underrun + the drained for the batch.
+    expect(types).toContain("underrun");
+    expect(types.filter((t) => t === "underrun")).toHaveLength(1);
+    // Idle quanta afterwards stay silent — no flooding at ~375 msgs/s.
+    processBlock(proc, 128);
+    processBlock(proc, 128);
+    expect(port.postMessage.mock.calls.filter((c) => (c[0] as { type: string }).type === "underrun")).toHaveLength(1);
+  });
+
+  it("stays silent across idle quanta with no active line", () => {
+    const { proc, port } = makeProcessor();
+    for (let i = 0; i < 10; i++) {
+      processBlock(proc, 128);
+    }
+    expect(port.postMessage).not.toHaveBeenCalled();
   });
 
   it("does not post underrun when the output is exactly satisfied", () => {
@@ -85,21 +100,22 @@ describe("PcmWorkletProcessor", () => {
     const output = processBlock(proc, 2);
     expect(output[0]).toBe(0);
     expect(output[1]).toBe(0);
-    expect(port.postMessage).toHaveBeenCalledWith({ type: "underrun" });
+    // Cleared and no active line: idle silence reports nothing.
+    expect(port.postMessage).not.toHaveBeenCalled();
   });
 
   it("posts drained(lineId) once when the marked line's samples are consumed", () => {
     const { proc, port } = makeProcessor();
     post(proc, { type: "line", lineId: "L1" });
     post(proc, new Int16Array([1000, 2000, 3000, 4000]));
+    // EOF before the drain: the final dry block is completion, not underrun.
+    post(proc, { type: "eof", lineId: "L1" });
     processBlock(proc, 4);
     expect(port.postMessage).toHaveBeenCalledWith({ type: "drained", lineId: "L1" });
     expect(port.postMessage).toHaveBeenCalledTimes(1);
-    // A second empty block does not re-post drained.
+    // A second empty block posts nothing — not underrun, not drained again.
     processBlock(proc, 4);
-    expect(port.postMessage).toHaveBeenCalledTimes(2); // underrun for the empty block only
-    const types = port.postMessage.mock.calls.map((c) => (c[0] as { type: string }).type);
-    expect(types.filter((t) => t === "drained")).toHaveLength(1);
+    expect(port.postMessage).toHaveBeenCalledTimes(1);
   });
 
   it("drained waits for the whole batch, not the first empty frame", () => {
@@ -134,7 +150,7 @@ describe("PcmWorkletProcessor", () => {
     processBlock(proc, 4);
     const types = port.postMessage.mock.calls.map((c) => (c[0] as { type: string }).type);
     expect(types).not.toContain("drained");
-    expect(types).toContain("underrun");
+    expect(types).not.toContain("underrun");
   });
 
   it("a new line marker supersedes the previous line", () => {
