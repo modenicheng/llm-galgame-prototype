@@ -25,7 +25,7 @@
 
 **纪律**：
 - 测试红 = 停止一切推进，先修复。禁止 skip 测试、禁止 `// TODO` 顶替实现。
-- **冻结契约**（§3 schema 字段集、§3.3 判定签名、§4 大纲 schema、§9 存储布局、§7 节点维护语义〔2026-09-16 D7 修订版〕）：不得增删字段。实现中发现必须改 → 登记附录 B `[BLOCKED 卡号]` 后跳卡。唯一预授权修订：MA-B 的 `SNAPSHOT_VERSION` 1→2（决议 D4）。运行时端口（`src/core/ports/*.ts` 的方法签名）不是冻结契约，按卡内说明演进。
+- **冻结契约**（§3 schema 字段集、§3.3 判定签名、§4 大纲 schema、§9 存储布局、§7 节点维护语义〔2026-09-16 D7 修订版〕）：不得增删字段。实现中发现必须改 → 登记附录 B `[BLOCKED 卡号]` 后跳卡。唯一预授权修订：`SNAPSHOT_VERSION` 递增——MA-B 的 1→2（决议 D4）与 MA-A2 的再递增（决议 D10，实际版本号记附录 B）。运行时端口（`src/core/ports/*.ts` 的方法签名）不是冻结契约，按卡内说明演进。
 - 对既有行为有疑问：先读测试与 spec 引用；仍含糊 → 取与既有测试一致的保守实现，并在附录 B 注明你的解释。
 - 不在卡内的文件不顺手重构；发现的卫生问题记入下一张门卡处理。
 - 阻塞（需要真实 LLM、需要作者决策、环境不具备）：登记 `[BLOCKED 卡号] 原因`，继续下一张无依赖卡。
@@ -33,9 +33,9 @@
 **卫生门**（每阶段末的门卡执行）：触发 **`repo-hygiene`** skill执行完整档，即：
 机械检查（skill 自带脚本，读仓库根 `.hygiene.config.json` 的阈值与豁免）→ subagent 只读评审（SKILL §B 的 prompt 模板，必须派发）→ 当场修复 P1/P2 → 单一真源与依赖方向核对 → 文档卫生（本清单勾选、status.md 同步、§N 引用可解析）。快速档（仅 §A + 新文件过目）每 3–4 张卡跑一次。
 
-## 2. 现状基线（2026-09-16，commit fabed3a）
+## 2. 现状基线（2026-09-17，含 D9 落地）
 
-**验证基线**：1421 测试 / 96 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
+**验证基线**：1422 测试 / 96 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
 
 已完成 M0–M2.2（历史细节见附录 A）。已落地组件：
 
@@ -67,6 +67,8 @@
 - **D6 digest 事实嵌入制**：digest 内嵌路径层 facts/beliefs **全文**（恢复不得依赖 canon 可用性）；canon 晋升不回改既有快照；读取侧 canon 优先去重。这是对附录 A「引用制」决议的落地细则。
 - **D7 已演出内容不可删**（作者 2026-09-16 修订原 §7）：经历过的分支/节点/边是冻结的叙事事实，删除会使跨周目一致性失真。回溯只新增路径（`abandonedAt` 仅流水记账，不是内容作废）；「玩家删除决策」特性整体移除，§7 重写为不可达内容的内部 GC（孤儿/被汇流取代节点，无玩家入口）；导演/编剧输入始终包含全部已实现路径（**含已弃周目**，已回写 spec §5.1/§7）。
 - **D8 相同物理场景不同具体状态**：同幕内的状态漂移由各决策入口快照承载（既有设计，快照层天然分工）；跨幕的同地不同阶段 = 多个幕节点共享 `OutlineNode.location?`（物理地点标签，§4 演化区新增，契约代码已同步），场景总览与通关回顾按 location 并排分组展示。
+- **D9 演员上下文布局与不压缩立场**（作者 2026-09-17，已随基线落地）：`buildDslUserPrompt` 段落按「稳定 → 易变」排序——剧情历史（单调追加，回溯 = 恢复重放天然截尾）与素材目录（每世界静态）构成公共前缀，故事状态/便签/舞台居中，任务头（回合/nonce/指令）置尾；目标是 provider 前缀缓存命中。`game.history_events` 截断删除：截断/摘要移动公共前缀起点，破坏缓存局部性；单周目全量历史远小于现代上下文。极长流程逃生舱 = **场景锚定 compact**（对上一场景节点之前的内容做摘要替换，锚点 = 场景边界），不是事件数滑窗；规范见 `docs/llm-outputs-refactor.md` §70。M4.2 剪报组装必须继承该布局。
+- **D10 StoryState 瘦身预授权**（作者 2026-09-17）：MA-A2 执行时 `SNAPSHOT_VERSION` 递增（实际版本号以落地顺序为准，记附录 B），dev 存档废弃不做迁移。删除字段清单见卡；设计 §3.2 无需改——其对 storyState 的定义（reconcile 产物：location/characters/summary）本就是瘦身后的形态。物品/场景关键细节的语义记录归 MA-B facts 承载，不进 storyState 结构字段。
 
 ## 4. 任务卡（执行序）
 
@@ -94,6 +96,12 @@
   前置：MA-A。关联：§5/§6/§9/§10/§14；决议 D4/D6。
   要点：① FactOp/BeliefOp/AuditFinding 进 consolidator 输出 schema 与 prompt（`adapters/llm/narrative-consolidator-adapter.ts`）；② validator 扩展 + facts/beliefs 内存与持久化 + audit→lesson 晋升（§7.2 来源 1）；③ fact-retriever + brief 三段渲染（[相关既定事实][角色认知][规避清单]）+ dsl-protocol.txt 一行规则；④ **SNAPSHOT_VERSION 1→2**：`MemoryDigestSchema` 增 facts/beliefs，`src/core/graph/memory-digest.ts` 双向映射扩展（D6：digest 内嵌全文；recentEpisodeIds 仍不入）；⑤ 幂等/去重/预算全链路测试。
   验收：恢复后 facts/beliefs 从 digest 完整重建的单测（新世界快照 v2 可往返）；spec §14 对应层全绿；spec §12 Phase B 的「跑一局」验收归人工清单。
+
+- [ ] **MA-A2 StoryState 瘦身（死字段清除）**
+  前置：MA-B（仅为止 D4 版本号表述漂移，无技术依赖）。关联：设计 §3.2；决议 D10；附录 A「open_threads 双台账」挂账清偿。
+  背景（2026-09-17 审查）：主 DSL 的 state_patch 应用路径已删除（status.md §80–§81），StoryState 的 canon 记录（与世界层 `world/canon.json` 重名，术语污染）、open_threads（threads 台账已是 owner）、player_profile、characters 的 emotion/current_goal/relationship_to_player/known_facts 均无写入者、运行时恒为初值。设计 §3.2 对 storyState 的定义本就是「reconcile 产物（location/characters/summary）」，瘦身 = 契约代码对齐 spec。
+  要点：① `StoryStateSchema` 删 canon/open_threads/player_profile；`CharacterStateSchema` 只留 location；`scene` 不动；② `SNAPSHOT_VERSION` 递增（实际号记附录 B；dev 存档废弃不迁移）；③ 同批死代码清扫：`story/patch.ts`（mergePatches/validatePatch/StoryStatePatch）、`GenerationEnvelope.state_patch`（generator 恒产 `{}`）、BranchManager 的 statePatch 参数——动手前 grep 确认无运行时消费者；④ summarizeState / createInitialState / 测试 fixture（makeRichState 等）同步收缩；⑤ 物品/场景关键细节不加 storyState 结构字段：语义记录由 MA-B facts 承载（evidence 锚定 + scope 检索），汇流确定性等价键如需物品信息从 facts scope 派生。
+  验收：grep 死字段（canon/open_threads/player_profile/emotion/current_goal/relationship_to_player/known_facts/state_patch）零残留；快照往返测试更新；全量绿 + 双 typecheck。
 
 ### P3 编剧与大纲
 
@@ -132,7 +140,8 @@
 - [ ] **M4.2 剪报防火墙**
   前置：M4.1、MA-B。关联：§5.2；反重复地图（context-builder serialize*）。
   目标：演员上下文组装迁至导演剪报，防剧透边界结构性成立。
-  要点：① `src/application/director/actor-briefing.ts`：组装演员受限上下文 = canon 场景相关子集 + 当前路径已实现历史 + SceneDirective，**复用 `src/story/context-builder.ts` 的 serialize\*** 与 MA-B 三段渲染函数（随迁宿主，函数不改）；② 防火墙落为**参数形状**而非提示词：组装器输入类型上不含 outline 全量/结局候选/他周目数据；③ Game→StoryGenerator 上下文供给切换到剪报（本卡建新通道并切换；旧 NarrativeBrief 通道 M4.4 删）。
+  要点：① `src/application/director/actor-briefing.ts`：组装演员受限上下文 = canon 场景相关子集 + 当前路径已实现历史 + SceneDirective，**复用 `src/story/context-builder.ts` 的 serialize\*** 与 MA-B 三段渲染函数（随迁宿主，函数不改）；② 防火墙落为**参数形状**而非提示词：组装器输入类型上不含 outline 全量/结局候选/他周目数据；
+③ 剪报组装继承决议 D9 布局：历史区保持 append-only 置前、易变区置尾，不引入窗口截断；④ Game→StoryGenerator 上下文供给切换到剪报（本卡建新通道并切换；旧 NarrativeBrief 通道 M4.4 删）。
   验收：单测——生成请求 user prompt 不含未实现 outline purpose 与结局候选文本（负面断言）；有 directive 时含防守/收束段；无 directive 时与现行为等价（回归）。
 
 - [ ] **M4.3 防守节拍**
@@ -331,3 +340,8 @@
 - 2026-09-16（回溯与删除语义修订，作者发起，决议 D7）：原 §7「玩家删除决策 + 级联 GC」整体移除——已演出内容是冻结事实，删除致跨周目一致性失真；§7 重写为不可达内容内部 GC（无玩家入口），M5.6 改为「图维护」卡；回溯（M5.3/M1.5）语义澄清：`abandonedAt` 仅流水记账、图零删除；导演/编剧输入显式包含全部已实现路径（含已弃周目，spec §5.1 注记；M4.1 ⑤ / M3.6 晋升范围同步）。
 - 2026-09-16（相同物理场景不同具体状态，决议 D8）：§4 `OutlineNode` 增可选 `location`（物理地点标签，演化区字段，outline.json 尚无落盘数据、零迁移；`src/core/outline/types.ts` 已同步 + 测试）。建模分工：同幕内状态漂移由决策入口快照承载；跨幕同地不同阶段 = 多幕节点共享 location，总览（M5.1）与通关回顾（M5.5）按它并排分组；M2.4 汇流预筛将其列为高优先候选。
 
+- 2026-09-17（演员上下文布局修订，作者发起，决议 D9）：`buildDslUserPrompt` 段落重排为「稳定 → 易变」
+（历史/素材前置、任务头置尾），删除 `game.history_events`（schema、config.yaml、全部 fixture/断言）；
+目的 = provider 前缀缓存命中（相邻请求共享「系统提示 + 历史 + 素材」前缀，回溯 = 重放天然截尾）。
+基线由 1421 测试更新为 1422 测试（布局顺序断言重写）；规范回写 llm-outputs-refactor §70。
+- 2026-09-17（StoryState 瘦身立项，决议 D10）：审查确认 StoryState 富字段（canon/open_threads/player_profile/角色 emotion·current_goal·relationship_to_player·known_facts）自 state_patch 应用路径删除后无写入者（status.md §80–§81 记录）。立项 MA-A2 卡（P2，置于 MA-B 之后），`SNAPSHOT_VERSION` 再递增获预授权；同批清扫 patch.ts 与 GenerationEnvelope.state_patch 死代码。物品/场景关键细节的语义记录归 MA-B facts 承载，不进 storyState 结构字段。
