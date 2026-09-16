@@ -5,7 +5,8 @@
     "doc": { "warn": 600, "fail": 900 }
   },
   "allowlist": {
-    "src/game.ts": "M4.5 拆分卡（执行清单）已有拆分目标 ~1500 行",
+    "src/game.ts": "M4.5 已完成：交互驱动簇移出后 1588 行（运行循环/段生命周期/恢复/图提交为卡片保留项）",
+    "src/runtime/interaction-driver.ts": "M4.5 自 game.ts 迁入的交互驱动 1171 行，二分为 input/choice 两文件后移除豁免（清偿：下一迭代）",
     "src/application/narrative/narrative-director-service.ts": "M4.4 收窄为记忆子层时收缩（执行清单）",
     "docs/llm-outputs-refactor.md": "冻结的协议规范总档（按 § 追加，不拆分）",
     "docs/superpowers/plans/2026-08-08-asset-pipeline-browser.md": "已结项的历史执行记录",
