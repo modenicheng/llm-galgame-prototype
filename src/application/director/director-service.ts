@@ -58,7 +58,7 @@ interface DirectorServiceOptions {
 /** Game 依赖的最小导演面（相位门/防守节拍/剪报输入），结构化便于注入。 */
 export type SceneDirectorPort = Pick<
   DirectorService,
-  "getDirective" | "evaluateFreeInput" | "narrowFormModes"
+  "getDirective" | "evaluateFreeInput" | "narrowFormModes" | "triggerDirective"
 >;
 
 export class DirectorService {
@@ -96,7 +96,11 @@ export class DirectorService {
     recentSummary: string;
   }): Promise<SceneDirective> {
     const tools = this.buildTools();
-    this.currentDirectiveSceneId = input.sceneId;
+    // M4.3 相位门工具的 sceneId 经闭包绑定（修复共享可变字段的并发问题）。
+    const executeTool = (name: string, argsJson: string): Promise<string> =>
+      name === "narrowFormModes"
+        ? this.executeNarrowFormModes(input.sceneId, argsJson)
+        : this.executeTool(name, argsJson);
     const user = [
       "===== 场景 =====",
       `sceneId: ${input.sceneId}`,
@@ -114,7 +118,7 @@ export class DirectorService {
       system: DIRECTIVE_SYSTEM_PROMPT,
       user,
       tools,
-      executeTool: (name, argsJson) => this.executeTool(name, argsJson),
+      executeTool,
     });
     const parsed = this.parseDirective(text);
     if (parsed !== undefined) {
@@ -148,6 +152,22 @@ export class DirectorService {
       .finally(() => {
         this.directiveRunning = false;
       });
+  }
+
+  /** 相位门工具闭包：绑定场景 id 的 narrowFormModes（M4.3）。 */
+  private executeNarrowFormModes(sceneId: string, argsJson: string): Promise<string> {
+    let args: Record<string, unknown> = {};
+    try {
+      args = JSON.parse(argsJson) as Record<string, unknown>;
+    } catch {
+      return Promise.resolve("工具参数不是合法 JSON");
+    }
+    const modes = Array.isArray(args.modes) ? (args.modes as string[]) : [];
+    const allowed = modes.filter((m): m is FormMode =>
+      m === "choice" || m === "input" || m === "hybrid",
+    );
+    this.narrowFormModes(sceneId, allowed);
+    return Promise.resolve(`已收窄 ${sceneId} → [${allowed.join(", ")}]`);
   }
 
   /** 相位门工具：显式收窄某场景的 allowed_modes（M4.3 接 InteractionPolicy）。 */
@@ -273,9 +293,7 @@ export class DirectorService {
         const allowed = modes.filter((m): m is FormMode =>
           m === "choice" || m === "input" || m === "hybrid",
         );
-        const target = this.currentDirectiveSceneId ?? "";
-        this.narrowFormModes(target, allowed);
-        return `已收窄 ${target || "(当前场景)"} → [${allowed.join(", ")}]`;
+        return `narrowFormModes 需绑定场景（由 refreshDirective 闭包处理）`;
       }
       default:
         return `未知工具：${name}`;
@@ -320,8 +338,6 @@ export class DirectorService {
     }
     return JSON.stringify({ characterId, known: false });
   }
-
-  private currentDirectiveSceneId: string | undefined;
 
   private parseDirective(text: string):
     | { sceneGoal?: string; defenseBeats: string[]; endingPressure: boolean }

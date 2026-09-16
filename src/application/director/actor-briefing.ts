@@ -13,7 +13,6 @@
 
 import type { MemoryProjection } from "../../core/narrative/memory-projection.js";
 import { renderMemoryProjection } from "../../application/narrative/narrative-context-builder.js";
-import type { BeliefState, FactRecord, Lesson } from "../../core/narrative/memory-types.js";
 import type { SceneDirective } from "./director-service.js";
 
 export interface ActorBriefingInput {
@@ -24,9 +23,6 @@ export interface ActorBriefingInput {
   memoryBrief?: MemoryProjection;
   /** 原始已实现事件数（便签 revision 行引用）。 */
   rawEventCount?: number;
-  relatedFacts?: readonly FactRecord[];
-  characterBeliefs?: readonly BeliefState[];
-  avoidanceLessons?: readonly Lesson[];
   directive?: SceneDirective;
 }
 
@@ -38,32 +34,8 @@ export function buildActorBriefing(input: ActorBriefingInput): string {
     parts.push(renderMemoryProjection(input.memoryBrief, input.rawEventCount ?? 0));
   }
 
-  const lines: string[] = [];
-  if (input.relatedFacts !== undefined && input.relatedFacts.length > 0) {
-    lines.push("[相关既定事实]");
-    for (const fact of input.relatedFacts) {
-      lines.push(`- ${fact.content}`);
-    }
-  }
-
-  if (input.characterBeliefs !== undefined && input.characterBeliefs.length > 0) {
-    lines.push("[角色认知]");
-    for (const belief of input.characterBeliefs) {
-      lines.push(`- ${belief.characterId}：${belief.content}`);
-    }
-  }
-
-  if (input.avoidanceLessons !== undefined && input.avoidanceLessons.length > 0) {
-    lines.push("[规避清单]");
-    for (const lesson of input.avoidanceLessons) {
-      lines.push(`- ${lesson.content}（${lesson.tag}，×${lesson.occurrences}）`);
-    }
-  }
-
-  if (lines.length > 0) parts.push(lines.join("\n"));
-
   if (input.directive !== undefined) {
-    lines.length = 0;
+    const lines: string[] = [];
     lines.push("[场景指令]");
     const d = input.directive;
     if (d.sceneGoal !== undefined) lines.push(`- 目标：${d.sceneGoal}`);

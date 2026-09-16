@@ -51,6 +51,7 @@ function makeGameInputs() {
 
 
 interface DirectorStub {
+  triggerDirective: (input: { sceneId: string; scenePurpose: string; recentSummary: string }) => void;
   getDirective: (sceneId: string) => SceneDirective | undefined;
   narrowFormModes: (sceneId: string, modes: Array<"choice" | "input" | "hybrid">) => void;
   evaluateFreeInput: ReturnType<typeof vi.fn>;
@@ -60,6 +61,7 @@ interface DirectorStub {
 function makeDirectorStub(): DirectorStub {
   const directives = new Map<string, SceneDirective>();
   return {
+    triggerDirective: () => {},
     getDirective: (sceneId) => directives.get(sceneId),
     narrowFormModes: (sceneId, modes) => {
       directives.set(sceneId, {

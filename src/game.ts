@@ -189,6 +189,7 @@ export class Game implements InteractionHost {
   /** @internal 交互驱动接缝（M4.5）。 */
   readonly narrativeDirector: NarrativeDirectorPort | undefined;
   private readonly director: SceneDirectorPort | undefined;
+  private lastDirectiveSceneId: string | undefined;
   private readonly runMode: "resume" | "restart";
   readonly playbackBuffer = new PlaybackBuffer();
   private readonly generationScheduler = new GenerationScheduler();
@@ -1523,6 +1524,17 @@ export class Game implements InteractionHost {
       const batch = this.pendingReconcile;
       this.pendingReconcile = [];
       this.storyState = reconcileStoryState(this.storyState, batch);
+      // M4.1/M4.3 生产接线：场景边界（scene.id 变化）→ 导演后台刷新
+      // SceneDirective（fire-and-forget，滞后不影响本段播放）。
+      const sceneId = this.storyState.scene.id;
+      if (sceneId !== this.lastDirectiveSceneId) {
+        this.lastDirectiveSceneId = sceneId;
+        this.director?.triggerDirective({
+          sceneId,
+          scenePurpose: this.storyState.scene.purpose,
+          recentSummary: this.storyState.recent_summary,
+        });
+      }
     });
   }
 

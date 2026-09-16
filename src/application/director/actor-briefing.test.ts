@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from "vitest";
 import { buildActorBriefing } from "./actor-briefing.js";
+import type { MemoryProjection } from "../../core/narrative/memory-projection.js";
 import { buildDslUserPrompt } from "../../story/context-builder.js";
 import { createInitialState } from "../../story/state.js";
 import type { DslContextInput } from "../../story/context-builder.js";
@@ -34,6 +35,30 @@ function makeBriefingCtx(briefing?: string): DslContextInput {
   return ctx;
 }
 
+function makeBriefWithSections(): MemoryProjection {
+  return {
+    revision: 1,
+    consolidatedThroughEventSeq: 5,
+    currentEventSeq: 8,
+    checkpointCount: 2,
+    location: "旧校舍",
+    characters: ["苏遥"],
+    activeThreads: [],
+    setupDirectives: [],
+    relevantEpisodes: [],
+    anchors: [],
+    relatedFacts: [
+      { id: "fact_1", content: "终端会对苏遥的指纹反应", evidenceEventSeqs: [1], checkpoint: 1, superseded: false },
+    ],
+    characterBeliefs: [
+      { id: "belief_1", characterId: "苏遥", content: "苏遥相信终端是坏的", status: "active", createdAtCheckpoint: 1, origin: "believe" },
+    ],
+    avoidanceLessons: [
+      { id: "lesson_1", tag: "setup-flow", content: "没有回收计划的伏笔不许下场", source: "rejection", occurrences: 2, active: true, createdAtCheckpoint: 1 },
+    ],
+  };
+}
+
 describe("buildActorBriefing", () => {
   it("renders directive sections (defense beats + ending pressure + form modes)", () => {
     const text = buildActorBriefing({
@@ -52,19 +77,12 @@ describe("buildActorBriefing", () => {
     expect(text).toContain("表单模式收窄：choice");
   });
 
-  it("renders memory projection sections (facts/beliefs/lessons)", () => {
+  it("renders memory projection sections (facts/beliefs/lessons) via memoryBrief", () => {
     const text = buildActorBriefing({
-      relatedFacts: [
-        { id: "fact_1", content: "终端会对苏遥的指纹反应", evidenceEventSeqs: [1], checkpoint: 1, superseded: false },
-      ],
-      characterBeliefs: [
-        { id: "belief_1", characterId: "苏遥", content: "苏遥相信终端是坏的", status: "active", createdAtCheckpoint: 1, origin: "believe" },
-      ],
-      avoidanceLessons: [
-        { id: "lesson_1", tag: "setup-flow", content: "没有回收计划的伏笔不许下场", source: "rejection", occurrences: 2, active: true, createdAtCheckpoint: 1 },
-      ],
+      memoryBrief: makeBriefWithSections(),
     });
     expect(text).toContain("[相关既定事实]");
+    expect(text).toContain("终端会对苏遥的指纹反应");
     expect(text).toContain("[角色认知]");
     expect(text).toContain("[规避清单]");
   });
