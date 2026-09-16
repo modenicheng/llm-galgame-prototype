@@ -121,7 +121,6 @@ characters:
     voice_profile: linche_main
 
 game:
-  history_events: 80
   sessions_dir: sessions
   show_line_ids: true
 

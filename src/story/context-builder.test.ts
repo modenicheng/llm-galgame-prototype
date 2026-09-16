@@ -218,7 +218,7 @@ describe("buildSystemContext", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildDslUserPrompt", () => {
-  it("renders the director brief between history and stage state", () => {
+  it("orders sections stable-first for prefix-cache locality (D9)", () => {
     const ctx: DslContextInput = {
       ...makeDefaultContext(),
       taskType: "continuation",
@@ -226,17 +226,37 @@ describe("buildDslUserPrompt", () => {
       targetLines: 6,
       directorBrief: makeBrief(),
       tailVisualState: { background: "library", characters: {} },
+      modelAssetCatalog: {
+        guidance: "",
+        backgrounds: { library: { description: "旧图书馆" } },
+        bgm: {},
+        soundEffects: {},
+        spriteSets: {},
+        characters: {},
+      },
     };
 
     const prompt = buildDslUserPrompt(4, ctx);
     expect(prompt).toContain("导演便签");
 
-    const historyAt = prompt.indexOf("===== 剧情历史 =====");
-    const noteAt = prompt.indexOf("导演便签");
-    const stageAt = prompt.indexOf("===== 当前舞台状态 =====");
+    // 稳定区（历史→素材）在前，易变区（状态→便签→舞台）居中，任务头置尾。
+    const at = (marker: string) => prompt.indexOf(marker);
+    const historyAt = at("===== 剧情历史 =====");
+    const catalogAt = at("===== 可用素材 =====");
+    const stateAt = at("===== 当前故事状态 =====");
+    const noteAt = at("导演便签");
+    const stageAt = at("===== 当前舞台状态 =====");
+    const taskTypeAt = at("任务类型：");
+    const nonceAt = at("生成段 nonce：");
     expect(historyAt).toBeGreaterThanOrEqual(0);
-    expect(noteAt).toBeGreaterThan(historyAt);
+    expect(catalogAt).toBeGreaterThan(historyAt);
+    expect(stateAt).toBeGreaterThan(catalogAt);
+    expect(noteAt).toBeGreaterThan(stateAt);
     expect(stageAt).toBeGreaterThan(noteAt);
+    expect(taskTypeAt).toBeGreaterThan(stageAt);
+    expect(nonceAt).toBeGreaterThan(taskTypeAt);
+    // 任务头之后不再有历史区（历史只出现在前缀位置）。
+    expect(prompt.indexOf("===== 剧情历史 =====", historyAt + 1)).toBe(-1);
     expect(prompt).toContain("记忆已整理至事件 88（当前事件 92）");
     expect(prompt).toContain("[活跃剧情线]");
   });

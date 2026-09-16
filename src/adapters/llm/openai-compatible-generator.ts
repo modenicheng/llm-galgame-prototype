@@ -211,9 +211,8 @@ export class StoryGenerator {
     signal?: AbortSignal,
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
-    const recentHistory = history.slice(-this.config.game.history_events);
     const nonce = generateNonce();
-    const ctx = this.buildDslCtx(state, recentHistory, "branch_prefetch", nonce, options);
+    const ctx = this.buildDslCtx(state, history, "branch_prefetch", nonce, options);
     const extra = fill(this.instructions.branch_prefetch, {
       choice_prompt: choice.prompt,
       option_text: JSON.stringify(option),
@@ -250,9 +249,8 @@ export class StoryGenerator {
     signal?: AbortSignal,
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
-    const recentHistory = history.slice(-this.config.game.history_events);
     const nonce = generateNonce();
-    const ctx = this.buildDslCtx(state, recentHistory, "input_response", nonce, options);
+    const ctx = this.buildDslCtx(state, history, "input_response", nonce, options);
     const extra = fill(this.instructions.input_response, {
       interaction_prompt: interaction.prompt,
       player_input: playerInput,
@@ -314,9 +312,8 @@ export class StoryGenerator {
     signal?: AbortSignal,
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
-    const recentHistory = history.slice(-this.config.game.history_events);
     const nonce = generateNonce();
-    const ctx = this.buildDslCtx(state, recentHistory, "continuation", nonce, options);
+    const ctx = this.buildDslCtx(state, history, "continuation", nonce, options);
     let extra = fill(this.instructions.continuation, {
       nonce,
       target_lines: String(this.config.text_buffer.target_lines),

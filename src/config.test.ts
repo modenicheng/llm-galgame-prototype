@@ -57,7 +57,7 @@ describe("loadConfig defaults", () => {
         "  audio:",
         "    enabled: false",
         "game:",
-        "  history_events: 80",
+        "  sessions_dir: sessions",
       ].join("\n"),
     );
 
@@ -96,7 +96,6 @@ describe("loadConfig defaults", () => {
     expect(config.media.audio.output_dir).toBe("assets/.tts-cache");
 
     // Game defaults
-    expect(config.game.history_events).toBe(80);
     expect(config.game.sessions_dir).toBe("sessions");
     expect(config.game.show_line_ids).toBe(true);
 
@@ -168,7 +167,6 @@ describe("loadConfig with all fields", () => {
       "    output_dir: custom/assets",
       "",
       "game:",
-      "  history_events: 100",
       "  sessions_dir: my_sessions",
       "  show_line_ids: false",
       "",
@@ -235,7 +233,6 @@ describe("loadConfig with all fields", () => {
     expect(config.media.audio.output_dir).toBe("custom/assets");
 
     // Game
-    expect(config.game.history_events).toBe(100);
     expect(config.game.sessions_dir).toBe("my_sessions");
     expect(config.game.show_line_ids).toBe(false);
 
@@ -270,7 +267,7 @@ describe("loadConfig narrative section", () => {
         "  audio:",
         "    enabled: false",
         "game:",
-        "  history_events: 80",
+        "  sessions_dir: sessions",
       ].join("\n"),
     );
 
@@ -306,7 +303,7 @@ describe("loadConfig narrative section", () => {
         "  audio:",
         "    enabled: false",
         "game:",
-        "  history_events: 80",
+        "  sessions_dir: sessions",
         "",
         "narrative:",
         "  mode: event",
@@ -358,7 +355,7 @@ describe("loadConfig narrative section", () => {
         "  audio:",
         "    enabled: false",
         "game:",
-        "  history_events: 80",
+        "  sessions_dir: sessions",
       ].join("\n"),
     );
 
@@ -387,7 +384,7 @@ describe("loadConfig narrative section", () => {
         "  audio:",
         "    enabled: false",
         "game:",
-        "  history_events: 80",
+        "  sessions_dir: sessions",
         "narrative:",
         "  plan:",
         "    horizon_checkpoints: 5",
@@ -419,7 +416,7 @@ describe("loadConfig narrative section", () => {
         "  audio:",
         "    enabled: false",
         "game:",
-        "  history_events: 80",
+        "  sessions_dir: sessions",
         "",
         "narrative:",
         "  mode: other",
@@ -445,7 +442,7 @@ describe("loadConfig narrative section", () => {
         "  audio:",
         "    enabled: false",
         "game:",
-        "  history_events: 80",
+        "  sessions_dir: sessions",
       ].join("\n"),
     );
 
@@ -470,7 +467,7 @@ describe("loadConfig narrative section", () => {
         "  audio:",
         "    enabled: false",
         "game:",
-        "  history_events: 80",
+        "  sessions_dir: sessions",
         "narrative:",
         "  mode: event",
         "  event:",

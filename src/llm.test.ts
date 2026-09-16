@@ -168,14 +168,14 @@ describe("StoryGenerator ContextInput integration", () => {
   it("generator stores config and prompts correctly", () => {
     const baseConfig = makeTestConfig();
     const config = makeTestConfig({
-      game: { ...baseConfig.game, history_events: 120 },
+      game: { ...baseConfig.game, sessions_dir: "alt_sessions" },
     });
     const prompts = makeTestPrompts();
     const instructions = makeTestInstructions();
     const gen = new StoryGenerator(config, prompts, instructions, DUMMY_API_KEY);
 
     // Access private fields for verification
-    expect((gen as any).config.game.history_events).toBe(120);
+    expect((gen as any).config.game.sessions_dir).toBe("alt_sessions");
     expect((gen as any).prompts.characters).toBe(prompts.characters);
   });
 });

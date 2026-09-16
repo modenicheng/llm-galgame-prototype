@@ -215,9 +215,13 @@ export interface DslContextInput extends ContextInput {
 }
 
 /**
- * Build the per-request user prompt for DSL mode: task header, turn, story
- * state, plain-text history, tail visual state, asset catalog, then any
- * task-specific instructions (docs §70).
+ * Build the per-request user prompt for DSL mode (docs §70).
+ *
+ * 段落按「稳定 → 易变」排序，使相邻请求的公共前缀尽可能长（provider 前缀缓存友好）：
+ * 剧情历史单调追加（回溯 = 恢复重放天然截尾）、素材目录每世界静态，两者构成
+ * 公共前缀；故事状态 / 导演便签 / 舞台状态每回合变化；任务头（回合数、
+ * nonce）每请求更换，置于末尾。历史区不做窗口截断——截断或摘要会移动
+ * 公共前缀起点，反而破坏缓存局部性（执行清单决议 D9）。
  */
 export function buildDslUserPrompt(
   turn: number,
@@ -226,21 +230,20 @@ export function buildDslUserPrompt(
 ): string {
   const sections: string[] = [];
 
-  sections.push(`任务类型：${input.taskType}`);
-  sections.push(`生成段 nonce：${input.generationNonce}`);
-  sections.push(`本次续写目标行数：${input.targetLines}`);
-
-  sections.push(`当前回合：${turn}`);
-
-  sections.push("===== 当前故事状态 =====");
-  sections.push(summarizeState(input.state));
-
   sections.push("===== 剧情历史 =====");
   sections.push(
     input.recentEvents.length > 0
       ? serializeStoryContext(input.recentEvents)
       : "（当前没有历史事件。）",
   );
+
+  if (input.modelAssetCatalog) {
+    sections.push("===== 可用素材 =====");
+    sections.push(serializeModelAssetCatalog(input.modelAssetCatalog));
+  }
+
+  sections.push("===== 当前故事状态 =====");
+  sections.push(summarizeState(input.state));
 
   if (input.directorBrief) {
     sections.push(
@@ -253,10 +256,10 @@ export function buildDslUserPrompt(
     sections.push(serializeVisualContext(input.tailVisualState));
   }
 
-  if (input.modelAssetCatalog) {
-    sections.push("===== 可用素材 =====");
-    sections.push(serializeModelAssetCatalog(input.modelAssetCatalog));
-  }
+  sections.push(`任务类型：${input.taskType}`);
+  sections.push(`当前回合：${turn}`);
+  sections.push(`本次续写目标行数：${input.targetLines}`);
+  sections.push(`生成段 nonce：${input.generationNonce}`);
 
   if (extraInstructions) {
     sections.push(extraInstructions);

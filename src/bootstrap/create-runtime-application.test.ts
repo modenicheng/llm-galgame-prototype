@@ -255,7 +255,6 @@ describe("createRuntimeApplication", () => {
           "      format: pcm_s16le",
           "      sample_rate: 22050",
           "game:",
-          "  history_events: 80",
           "  sessions_dir: sessions",
           "  show_line_ids: true",
           "app:",

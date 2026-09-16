@@ -81,7 +81,6 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
       },
     },
     game: {
-      history_events: 80,
       sessions_dir: "sessions",
       show_line_ids: true,
     },

@@ -23,7 +23,7 @@ export function renderDirectorNote(
 
   lines.push("===== 导演便签 =====");
   lines.push(
-    `记忆已整理至事件 ${brief.consolidatedThroughEventSeq}（当前事件 ${brief.currentEventSeq}），最近 ${maxRecentRawEvents} 条原始事件见下方剧情历史。`,
+    `记忆已整理至事件 ${brief.consolidatedThroughEventSeq}（当前事件 ${brief.currentEventSeq}），最近 ${maxRecentRawEvents} 条原始事件见上方剧情历史。`,
   );
 
   if (brief.currentGoal !== undefined) {

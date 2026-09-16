@@ -35,6 +35,9 @@
   `@end buffer` 作为正常段边界（§73–§76）。
 - **StoryStateReconciler**：`src/story/reconcile.ts` 确定性投影，主 DSL 的
   state_patch 应用路径已删除（§80–§81）。
+- **生成上下文布局（D9，2026-09-17）**：user prompt 按「稳定 → 易变」排序（历史/
+  素材前置、任务头置尾），删除 `game.history_events` 窗口截断——历史区单调追加、
+  回溯 = 恢复重放天然截尾，保障 provider 前缀缓存命中（§70）。
 - **交互生命周期**：choice / input / hybrid 三模式（DSL 推导 mode）、preview →
   confirm/cancel 两阶段、bridge 独立预取任务、BranchManager 候选预生成与提升、
   hybrid cancel 后 option 仍有效（§106 硬回归）。

@@ -190,7 +190,6 @@ export interface AppConfig {
   /** Character → voice profile mapping (V2). */
   characters: Record<string, { name: string; voice_profile: string }>;
   game: {
-    history_events: number;
     sessions_dir: string;
     show_line_ids: boolean;
   };
@@ -539,7 +538,6 @@ const ConfigSchema = z.object({
     }),
   ).default({}),
   game: z.object({
-    history_events: z.number().int().positive().default(80),
     sessions_dir: z.string().min(1).default("sessions"),
     show_line_ids: z.boolean().default(true)
   })
