@@ -27,16 +27,16 @@ import { createViteDevMiddleware, type ViteDevMiddleware } from "./vite-middlewa
 import { openBrowser } from "./open-browser.js";
 import { DEFAULT_GAMES_ROOT } from "../../bootstrap/create-runtime-application.js";
 
-/**
- * Walk up from this module until a directory containing package.json is
- * found. Works in both layouts: dev (tsx: <repo>/src/hosts/local-web) and
- * prod (compiled: <repo>/dist/node/hosts/local-web).
- */
 /** 「继续游戏」探测根：与 entrypoint 的 cwd 约定一致（不引 Node 专属状态）。 */
 function gamesRootForWorldHint(): string {
   return process.cwd();
 }
 
+/**
+ * Walk up from this module until a directory containing package.json is
+ * found. Works in both layouts: dev (tsx: <repo>/src/hosts/local-web) and
+ * prod (compiled: <repo>/dist/node/hosts/local-web).
+ */
 function findProjectRoot(): string {
   let dir = path.dirname(fileURLToPath(import.meta.url));
   for (let depth = 0; depth < 10; depth++) {

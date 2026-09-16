@@ -230,7 +230,7 @@
 
 - [x] **GH-P1**：无附加项。（2026-09-17 过门：三绿 + 机械检查 + subagent 评审 16 条，P2 当场修复、P3 记附录 B）
 - [x] **GH-P2**：narrative-director-service.test.ts 豁免移除；getBrief 零 await 断言在位。（2026-09-17 过门：三绿 + 机械检查 + subagent 评审 17 条，P2 当场修复、P3 记附录 B）
-- [ ] **GH-P3**：世界生成无确认闸门行为核对；outline 冻结原则测试在位。
+- [x] **GH-P3**：世界生成无确认闸门行为核对（POST /api/worlds 直通换绑，无确认步骤）；outline 冻结原则测试在位（OutlineStore 状态机/原子写/日志/损坏抛错 9 例）。（2026-09-17 过门：三绿 + 机械检查 + subagent 评审 18 条，P2 当场修复、P3 记附录 B）
 - [ ] **GH-P4**：M4.4 grep 清单清零；game.ts 豁免移除；`src/application/director|world|outline` 新目录进依赖方向评审。
 - [ ] **GH-P5**：event mode / story_line grep 清零；config 死键负面断言齐。
 - [ ] **GH-P6**：`GET /api/graph` 脱敏负面断言齐；stats 幂等。
@@ -352,6 +352,7 @@
 （历史/素材前置、任务头置尾），删除 `game.history_events`（schema、config.yaml、全部 fixture/断言）；
 目的 = provider 前缀缓存命中（相邻请求共享「系统提示 + 历史 + 素材」前缀，回溯 = 重放天然截尾）。
 基线由 1421 测试更新为 1422 测试（布局顺序断言重写）；规范回写 llm-outputs-refactor §70。
+- 2026-09-17（GH-P3 卫生门）：subagent 只读评审 18 条（P2×2、P3×14、竞态/边界观察各 1，无 P1）。**P2 当场修复**：① web 首屏创建表单从 boot()（245 行）抽出 `mountWorldCreateForm`/`submitWorldCreation`（5 层嵌套→早返回压平）；② 大纲后台维护落盘入互斥链（applyOutlineQuietlyInner viaChain）——修复维护与确定性迁移交错重算 revision 的竞态。**顺手 P3**：json 记忆存储/世界生成 tmp+rename 复用统一；hasWorld 改用 GAME_STORAGE_LAYOUT 常量并把旧世界（无大纲）计入；cli/prompts/world-generator 的小型冗余清理；测试 rmSync 路径修正。**P3 记档（待后续卡清偿）**：跨 adapter 抽共享 `callJsonModel` 基础设施（5 处同构调用）；全仓 `isEnoent`/`writeFileAtomic` 公共谓词与工具抽取；outline-store applyRevision 三段迁移字面量合并；create-runtime-application 函数体仍 ~165 行（继续下沉 buildGameFor）；cli printMetrics 死参数。
 - 2026-09-17（GH-P2 卫生门）：subagent 只读评审 17 条（P2×5、P3×12，无 P1）。**P2 当场修复**：① `MemoryConsolidator.consolidate` 按 op 类别拆出 filterThreadOps/filterSetupOps/filterFactOps/filterBeliefOps/collectFindings 五个私有方法；② `runConsolidatePending` 的 shadow 应用段抽为 `applyOutcomeToShadow`；③ json 记忆存储三处 tmp+rename 原子写抽 `writeAtomic`，episodes/ops 旧读写并入泛化 jsonl 通道，`writeEndingReport` 接线 `EndingReportSchema` 校验；④ 死导出 `VALID_SETUP_TRANSITIONS` 删除（与 validator 规则漂移，validator 为唯一真源）；⑤ `state.ts` 的 serializeState/deserializeState/saveStateSnapshot 生产零引用，删除（序列化已由图存储接管）。**P3 记档**：getBrief/classifySetup/plot-planner.plan 函数长度与 directive 字面量重复；ACTIVE/TERMINAL 状态集合双声明（memory-validator 与 memory-consolidator）；service 的 MemoryConsolidatorPort 兼容 re-export；config 默认值三处派生；THREAD_CREATE_MISSING_FIELDS 与 zod superRefine 重复校验；hasConsolidator/hasPlanner 双层守卫；consolidationPromise 非空组合静默兜底；apply*OpToState 对无实体 op 静默 no-op；types.ts legacy ChoiceEvent 分支与半改残缺注释；testing.ts 硬编码版本号（应引 SNAPSHOT_VERSION）——除已随手修复的注释/孤儿项外，其余待后续卡顺带清偿。
 - 2026-09-17（MA-A2 落地，D10 执行）：`SNAPSHOT_VERSION` 2→3——StoryState 契约收缩为 reconcile 投影产物（scene/characters/recent_summary），canon/open_threads/player_profile/角色 emotion·current_goal·relationship_to_player·known_facts 死字段清除；StoryStatePatch/patch.ts/GenerationEnvelope.state_patch/BranchCandidate.state_patch/BranchManager statePatch 参数整体删除；物品/场景关键细节语义由 MA-B facts 承载（P2 要点 ⑤），汇流等价键如需从 facts scope 派生。dev 存档废弃不迁移。
 - 2026-09-17（MA-B 落地，D4 执行）：`SNAPSHOT_VERSION` 1→2——`MemoryDigest` 增 facts/beliefs 全文嵌入（决议 D6：恢复不依赖 canon 可用性）；旧 v1 快照读取即拒（zod literal 不匹配走结构损坏路径），dev 存档废弃不做迁移。facts.brief_max / beliefs.max_active_per_character 配置键随读取者同期就位（MA-A 偏差 ① 的清偿）。dsl-protocol.txt 增一行事实/认知边界规则。

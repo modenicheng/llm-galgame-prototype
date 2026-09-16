@@ -458,13 +458,34 @@ export class RunGraphCoordinator implements RunGraphPort {
     return (frontier?.id ?? SEED_OUTLINE_NODE_ID) as OutlineNodeId;
   }
 
-  private async applyOutlineQuietly(ops: OutlineOp[], reason: string): Promise<void> {
-    if (this.outline === undefined) return;
-    try {
-      this.outlineRevision = await this.outline.store.applyRevision(ops, reason);
-      this.outlineNodes = this.outline.store.getOutline().nodes;
-    } catch (err) {
-      this.diagnostics.warn("RunGraphCoordinator", `大纲修订被拒绝（${reason}）：${String(err)}`);
+  private applyOutlineQuietly(ops: OutlineOp[], reason: string): Promise<void> {
+    return this.applyOutlineQuietlyInner(ops, reason, false);
+  }
+
+  /**
+   * 大纲修订统一入口。确定性迁移已在互斥链内（viaChain=false 直呼）；后台
+   * 维护在链外（viaChain=true）——落盘必须入链串行，否则两个 await 点交错
+   * 会基于同一基线各算 revision+1，产生重复修订号/丢更新。
+   */
+  private async applyOutlineQuietlyInner(
+    ops: OutlineOp[],
+    reason: string,
+    viaChain: boolean,
+  ): Promise<void> {
+    const outline = this.outline;
+    if (outline === undefined) return;
+    const run = async (): Promise<void> => {
+      try {
+        this.outlineRevision = await outline.store.applyRevision(ops, reason);
+        this.outlineNodes = outline.store.getOutline().nodes;
+      } catch (err) {
+        this.diagnostics.warn("RunGraphCoordinator", `大纲修订被拒绝（${reason}）：${String(err)}`);
+      }
+    };
+    if (viaChain) {
+      await this.enqueue(run);
+    } else {
+      await run();
     }
   }
 
@@ -497,7 +518,7 @@ export class RunGraphCoordinator implements RunGraphPort {
         return false; // 维护不得 activate/realize（确定性迁移独占）
       });
       if (allowed.length > 0) {
-        await this.applyOutlineQuietly(allowed, "M3.4：后台维护（LLM）");
+        await this.applyOutlineQuietlyInner(allowed, "M3.4：后台维护（LLM）", true);
       }
     } catch (err) {
       this.diagnostics.warn("RunGraphCoordinator", `大纲后台维护失败（忽略）：${String(err)}`);

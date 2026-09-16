@@ -83,56 +83,10 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     startScreen.setWarning("未检测到会话令牌（?token=），本地服务可能拒绝连接");
   }
 
-  // M3.3 直通开玩：无既有世界时显示描述输入框 + 开局按钮。
-  // 提交 → POST /api/worlds（服务端换绑到新世界）→ 刷新进入正常开局流程。
-  void (async () => {
-    try {
-      const response = await fetch("/api/config");
-      const config = (await response.json()) as { has_world?: boolean };
-      if (config.has_world !== false) return;
-      const form = document.createElement("div");
-      form.className = "world-create";
-      form.innerHTML = [
-        '<h2>创建你的世界</h2>',
-        '<p>用一段话描述你想要的世界与故事，编剧将生成大纲并直接开局。</p>',
-        '<textarea id="world-create-text" rows="6" placeholder="例如：平行世界的学园都市，转学生苏遥带着一台会对指纹反应的旧终端……"></textarea>',
-        '<button id="world-create-button" type="button">生成世界并开局</button>',
-        '<p id="world-create-error" style="color:#c0392b"></p>',
-      ].join("");
-      appRoot.appendChild(form);
-      const button = form.querySelector<HTMLButtonElement>("#world-create-button")!;
-      const textarea = form.querySelector<HTMLTextAreaElement>("#world-create-text")!;
-      const error = form.querySelector<HTMLParagraphElement>("#world-create-error")!;
-      button.addEventListener("click", async () => {
-        const text = textarea.value.trim();
-        if (text.length === 0) {
-          error.textContent = "请先填写世界描述。";
-          return;
-        }
-        button.disabled = true;
-        error.textContent = "生成中……（约需数十秒）";
-        try {
-          const createResponse = await fetch("/api/worlds", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ text }),
-          });
-          if (!createResponse.ok) {
-            const body = (await createResponse.json().catch(() => ({}))) as { error?: string };
-            throw new Error(body.error ?? `HTTP ${createResponse.status}`);
-          }
-          window.location.reload();
-        } catch (err) {
-          error.textContent = err instanceof Error ? err.message : String(err);
-          button.disabled = false;
-        }
-      });
-    } catch {
-      // /api/config 不可得时按「已有世界」处理，不阻塞正常启动。
-    }
-  })();
+  // M3.3 直通开玩：无既有世界时显示描述输入框 + 开局按钮（见下挂载函数）。
+  void mountWorldCreateForm(appRoot);
 
-  const dialogueBox = new DialogueBox(refs.dialogueRoot, {
+    const dialogueBox = new DialogueBox(refs.dialogueRoot, {
     onAdvance: () => app.advance(),
   });
   const interactionPanel = new InteractionPanel(refs.interactionRoot, {
@@ -295,4 +249,64 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
 if (typeof document !== "undefined" && document.getElementById("app") !== null) {
   void boot();
+}
+
+/**
+ * M3.3 直通开玩：无既有世界时在首屏挂载「创建世界」表单。
+ * 提交 → POST /api/worlds（服务端换绑到新世界）→ 刷新进入正常开局流程。
+ * /api/config 不可得时按「已有世界」处理，不阻塞正常启动。
+ */
+async function mountWorldCreateForm(appRoot: HTMLElement): Promise<void> {
+  try {
+    const response = await fetch("/api/config");
+    const config = (await response.json()) as { has_world?: boolean };
+    if (config.has_world !== false) return;
+    const form = document.createElement("div");
+    form.className = "world-create";
+    form.innerHTML = [
+      "<h2>创建你的世界</h2>",
+      "<p>用一段话描述你想要的世界与故事，编剧将生成大纲并直接开局。</p>",
+      '<textarea id="world-create-text" rows="6" placeholder="例如：平行世界的学园都市，转学生苏遥带着一台会对指纹反应的旧终端……"></textarea>',
+      '<button id="world-create-button" type="button">生成世界并开局</button>',
+      '<p id="world-create-error" style="color:#c0392b"></p>',
+    ].join("");
+    appRoot.appendChild(form);
+    const button = form.querySelector<HTMLButtonElement>("#world-create-button")!;
+    const textarea = form.querySelector<HTMLTextAreaElement>("#world-create-text")!;
+    const error = form.querySelector<HTMLParagraphElement>("#world-create-error")!;
+    button.addEventListener("click", () => {
+      void submitWorldCreation(textarea.value, button, error);
+    });
+  } catch {
+    // ignore — treat as "world exists"
+  }
+}
+
+async function submitWorldCreation(
+  text: string,
+  button: HTMLButtonElement,
+  error: HTMLParagraphElement,
+): Promise<void> {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    error.textContent = "请先填写世界描述。";
+    return;
+  }
+  button.disabled = true;
+  error.textContent = "生成中……（约需数十秒）";
+  try {
+    const createResponse = await fetch("/api/worlds", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: trimmed }),
+    });
+    if (!createResponse.ok) {
+      const body = (await createResponse.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `HTTP ${createResponse.status}`);
+    }
+    window.location.reload();
+  } catch (err) {
+    error.textContent = err instanceof Error ? err.message : String(err);
+    button.disabled = false;
+  }
 }
