@@ -109,7 +109,8 @@
 
 ### P3 编剧与大纲
 
-- [ ] **M3.1 OutlineStore port + adapter**
+- [x] **M3.1 OutlineStore port + adapter**
+  落地（2026-09-17）：`OutlineOp` 判别联合（add/activate/realize/prune，add 只接受 planned，D5）+ `OutlineStorePort`（getOutline/applyRevision/load）；`OutlineStore` adapter——整批校验（复用冻结谓词 transitionOutlineNode）非法即整批拒绝不落盘、outline.json tmp+rename 原子写、outline.log.jsonl append-only `{revision,ops,reason,at}`、损坏/结构错大声抛错（缺文件=空大纲 rev0）。
   前置：无。关联：§4（冻结）、§9；`src/core/outline/types.ts` 状态机谓词（已冻结，复用不重写）。
   目标：大纲图持久化，修订留痕。
   要点：① `src/core/ports/outline-store-port.ts`：`getOutline(): {nodes, revision}` / `applyRevision(ops, reason): Promise<number>`；`OutlineOp` = 判别联合 add/prune/activate/realize，store 做状态机校验（非法 op 整批拒绝大声抛错）+ 落盘 + 日志；② `src/adapters/storage/outline-store.ts`：`outline.json`（当前全量 + revision，tmp+rename 原子写）+ `outline-log.jsonl`（append-only `{revision, ops, reason, at}`），读损坏大声抛错（真源纪律同快照）；③ 路径常量进 `GAME_STORAGE_LAYOUT`（§9 已冻结的条目）。
