@@ -452,7 +452,7 @@ describe("Input response streaming", () => {
     makeManualInputResponse(generator, async (_signal, onGroup) => {
       return new Promise((resolve) => {
         emitGroup = onGroup;
-        completeResponse = () => resolve(envelope([], {}));
+        completeResponse = () => resolve(envelope([]));
       });
     });
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
@@ -504,7 +504,7 @@ describe("Input response streaming", () => {
     makeManualInputResponse(generator, async (_signal, onGroup) => {
       return new Promise((resolve) => {
         emitGroup = onGroup;
-        completeResponse = () => resolve(envelope([], {}));
+        completeResponse = () => resolve(envelope([]));
       });
     });
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
@@ -569,7 +569,7 @@ describe("Input response streaming", () => {
         createGenerationHandle("input", async (_signal, onGroup) => {
           return new Promise<GenerationEnvelope>((resolve) => {
             emitGroup = onGroup;
-            completeResponse = () => resolve(envelope([], {}));
+            completeResponse = () => resolve(envelope([]));
           });
         }),
       )
@@ -652,18 +652,7 @@ describe("Input response streaming", () => {
           // be dropped and its state patch must never reach the story state
           // (§17.14 / §17.15).
           emitGroup(groupFromEvent({ type: "narration", text: "迟到事件。" }));
-          completeStale(
-            envelope([], {
-              open_threads: [
-                {
-                  id: "stale_thread",
-                  summary: "来自取消流的线程",
-                  status: "new",
-                  last_touched_turn: 0,
-                },
-              ],
-            }),
-          );
+          completeStale(envelope([]));
           controller.confirm(output.previewId);
         }
         previewIndex += 1;
@@ -678,8 +667,8 @@ describe("Input response streaming", () => {
     const texts = played.map((e) => e.text);
     expect(texts).not.toContain("暂存行。");
     expect(texts).not.toContain("迟到事件。");
-    const storyState = (game as any).storyState as { open_threads: Array<{ id: string }> };
-    expect(storyState.open_threads.map((t) => t.id)).not.toContain("stale_thread");
+    const storyState = (game as any).storyState as { characters: Record<string, unknown> };
+    expect(storyState.characters["stale_thread"]).toBeUndefined();
     expect(game.getMetrics().input.stale_input_event_dropped_count).toBe(1);
   });
 
@@ -725,7 +714,7 @@ describe("Input response streaming", () => {
     expect(played[3]!.text).toBe("回应。");
   });
 
-  it("ignores envelope state_patch; storyState reconciles from committed events", async () => {
+  it("storyState reconciles from committed events only", async () => {
     const config = makeGameConfig();
     const status = makeMockStatus();
     const media = makeMockMedia();
@@ -749,11 +738,10 @@ describe("Input response streaming", () => {
       onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
       onInputPreviewOpened: (output) => {
         controller.confirm(output.previewId);
-        // The envelope arrives AFTER the confirm, but its state_patch is
-        // legacy protocol (removed 2026-08-09, docs/changelog.md §115):
-        // never applied. Only committed events project StoryState.
+        // The envelope arrives AFTER the confirm; only committed events
+        // project StoryState (state_patch protocol fully removed).
         resolveResponse(
-          envelope([narrationEvent("回应。")], { recent_summary: "玩家说了你好" }),
+          envelope([narrationEvent("回应。")]),
         );
       },
     });
@@ -773,7 +761,7 @@ describe("Input response streaming", () => {
       handleFromDrafts("opening", [narrationEvent("开场。"), inputInteractionFixture()]),
     );
     makeManualInputResponse(generator, async () =>
-      envelope([narrationEvent("回应。")], { recent_summary: "未确认的摘要" }),
+      envelope([narrationEvent("回应。")]),
     );
     (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
       handleFromDrafts("continuation", [narrationEvent("结尾。"), endEvent("end_1", "Fin.")]),
@@ -951,7 +939,7 @@ describe("Input response streaming", () => {
         createGenerationHandle("input", async (_signal, onGroup) => {
           return new Promise<GenerationEnvelope>((resolve) => {
             emitStale = onGroup;
-            completeStale = () => resolve(envelope([], {}));
+            completeStale = () => resolve(envelope([]));
           });
         }),
       )
@@ -959,7 +947,7 @@ describe("Input response streaming", () => {
         createGenerationHandle("input", async (_signal, onGroup) => {
           return new Promise<GenerationEnvelope>((resolve) => {
             emitLive = onGroup;
-            completeLive = () => resolve(envelope([], {}));
+            completeLive = () => resolve(envelope([]));
           });
         }),
       );

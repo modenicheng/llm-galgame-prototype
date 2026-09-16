@@ -4,10 +4,8 @@ import {
   DialogueDraftEventSchema,
   NarrationDraftEventSchema,
   PortraitSchema,
-  StoryStatePatchSchema,
   LinePerformanceSchema,
   type InteractionEvent,
-  type StoryStatePatch,
   type LinePerformance,
 } from "./story/types.js";
 // Re-export for convenience

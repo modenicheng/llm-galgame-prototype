@@ -28,8 +28,9 @@ import {
 
 /** 快照契约版本。字段集变更时递增，读取方按版本拒绝不认识的快照。
  * v2（决议 D4，MA-B）：MemoryDigest 增 facts/beliefs 全文嵌入（D6）；
- * 旧 v1 快照读取即拒（dev 存档废弃不做迁移）。 */
-export const SNAPSHOT_VERSION = 2;
+ * v3（决议 D10，MA-A2）：StoryState 瘦身（删 canon/open_threads/
+ * player_profile/角色富字段）。旧版本快照读取即拒（dev 存档废弃不做迁移）。 */
+export const SNAPSHOT_VERSION = 3;
 
 // ---------------------------------------------------------------------------
 // 交互表单快照 — 决策节点上"当时呈现给玩家的表单"

@@ -25,7 +25,7 @@ const hybridForm = {
 describe("StateSnapshot", () => {
   it("accepts a minimal valid snapshot", () => {
     const parsed = StateSnapshotSchema.parse(makeSnapshot());
-    expect(parsed.snapshotVersion).toBe(2);
+    expect(parsed.snapshotVersion).toBe(3);
   });
 
   it("rejects an unknown snapshotVersion", () => {

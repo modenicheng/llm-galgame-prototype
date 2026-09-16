@@ -118,7 +118,7 @@ describe("RunGraphCoordinator", () => {
       expect(edges[0]?.choice).toEqual({ kind: "option", text: "追问" });
       expect(edges[0]?.payload).toEqual({ eventCount: 2, firstSeq: 4, lastSeq: 5 });
       // endState 复用后继入口快照（同一次快照写两处）
-      expect(edges[0]?.endState).toEqual({ snapshotVersion: 2, ...entry2 });
+      expect(edges[0]?.endState).toEqual({ snapshotVersion: 3, ...entry2 });
 
       expect(await store.listDecisions()).toHaveLength(2);
       expect((await store.loadCursor())?.position).toBe(d2);
@@ -222,7 +222,7 @@ describe("RunGraphCoordinator restore (M1.4)", () => {
 
       expect(resume.restore.decision.id).toBe(built.d2);
       expect(resume.restore.decision.form).toEqual(makeForm({ prompt: "第二个决策" }));
-      expect(resume.restore.decision.entryState).toEqual({ snapshotVersion: 2, ...built.entry2 });
+      expect(resume.restore.decision.entryState).toEqual({ snapshotVersion: 3, ...built.entry2 });
       expect(resume.restore.pathEvents).toEqual(built.e1Events);
       // nextSeq = max(世界最大 seq 5, 路径末 seq 5, digest 水位 3) + 1；turn = 路径末事件 turn
       expect(resume.restore.nextSeq).toBe(6);

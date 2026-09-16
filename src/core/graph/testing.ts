@@ -11,14 +11,11 @@ import type {
 
 export function makeSnapshot(overrides?: Partial<StateSnapshot>): StateSnapshot {
   return {
-    snapshotVersion: 2,
+    snapshotVersion: 3,
     storyState: {
       scene: { id: "scene_1", location: "地下室", purpose: "发现旧终端" },
-      canon: {},
       characters: {},
-      open_threads: [],
       recent_summary: "林澈在废弃校舍发现了仍在运行的旧终端。",
-      player_profile: { recent_tendencies: [] },
     },
     visualState: { characters: {} },
     memoryDigest: {

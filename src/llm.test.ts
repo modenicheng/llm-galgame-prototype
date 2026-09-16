@@ -74,10 +74,9 @@ function makeTestState(): StoryState {
       time: "黄昏",
       purpose: "收集情报",
     },
-    canon: { weather: "rainy" },
     characters: {
-      hero: { location: "酒馆", emotion: "警惕" },
-      innkeeper: { location: "酒馆", emotion: "友善", relationship_to_player: "neutral" },
+      hero: { location: "酒馆" },
+      innkeeper: { location: "酒馆" },
     },
     recent_summary: "冒险者走进酒馆，雨还在下。",
   });
@@ -494,7 +493,6 @@ describe("DSL mode generation", () => {
       { kind: "complete", nonce: expect.any(String), reason: "interaction" },
     ]);
     expect(envelope.events).toEqual([]);
-    expect(envelope.state_patch).toEqual({});
     expect(envelope.groups).toHaveLength(2);
     expect(envelope.segmentEnd).toEqual({
       kind: "complete",

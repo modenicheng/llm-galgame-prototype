@@ -537,7 +537,6 @@ export class StoryGenerator {
           options?.onSegmentEnd?.(result.status);
           return {
             events: [],
-            state_patch: {},
             groups: allGroups,
             segmentEnd: result.status,
           };

@@ -61,7 +61,7 @@ export function makeMockGenerator(): StoryGeneratorPort {
     // Default: an empty branch (candidates resolve with no events). Hybrid
     // free-text tests never set this; the prefetch group still starts.
     generateBranchPrefetch: vi.fn(() =>
-      createGenerationHandle("branch", async () => ({ events: [], state_patch: {}, groups: [] })),
+      createGenerationHandle("branch", async () => ({ events: [], groups: [] })),
     ),
     generateInputResponse: vi.fn(),
     generateContinuation: vi.fn(),
@@ -167,10 +167,7 @@ export function groupFromEvent(draft: EnvelopeDraft): EventGroupDraft {
  * events are converted into DSL groups, a trailing `end` event maps to the
  * `@end ... ending` sentinel.
  */
-export function envelope(
-  drafts: EnvelopeDraft[],
-  state_patch: GenerationEnvelope["state_patch"] = {},
-): GenerationEnvelope {
+export function envelope(drafts: EnvelopeDraft[]): GenerationEnvelope {
   let reason: "buffer" | "interaction" | "ending" = "buffer";
   const groups: EventGroupDraft[] = [];
   for (const draft of drafts) {
@@ -183,7 +180,6 @@ export function envelope(
   }
   return {
     events: [],
-    state_patch,
     groups,
     segmentEnd: { kind: "complete", nonce: "0000", reason },
   };
@@ -198,14 +194,13 @@ export function envelope(
 export function handleFromDrafts(
   id: string,
   drafts: EnvelopeDraft[],
-  state_patch: GenerationEnvelope["state_patch"] = {},
 ): GenerationHandle {
   return createGenerationHandle(id, async (_signal, onGroup) => {
     for (const draft of drafts) {
       if (draft.type === "end") continue;
       onGroup(groupFromEvent(draft));
     }
-    return envelope(drafts, state_patch);
+    return envelope(drafts);
   });
 }
 

@@ -4,7 +4,7 @@
  * 决策节点快照中的 memoryDigest 是恢复路径的唯一真源；NarrativeMemoryStore
  * 的会话文件只是工作缓存。`recentEpisodeIds` 属于 episodes 缓存的 recency
  * 指针，不入契约：摘要化时丢弃，重建时置空（episodes 随新 checkpoint 重新
- * 积累）。周目内记忆随快照走，跨周目事实走 canon 引用（Phase B 落地时）。
+ * 积累）。周目内记忆随快照走（v2 起 facts/beliefs 全文嵌入，决议 D6）；
  * 纯函数，无 IO。
  */
 import type { NarrativeMemoryState } from "../narrative/memory-types.js";

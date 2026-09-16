@@ -18,7 +18,6 @@ import type {
   BranchSource,
   BranchStatus,
   GeneratedEvent,
-  StoryStatePatch,
 } from "../story/types.js";
 import type { Metrics } from "./metrics.js";
 
@@ -95,19 +94,17 @@ export class BranchManager {
 
   /**
    * Transition a candidate to a new lifecycle status, optionally attaching
-   * generated events and a state patch.
+   * generated events.
    */
   updateCandidateStatus(
     id: string,
     status: BranchStatus,
     events?: GeneratedEvent[],
-    statePatch?: StoryStatePatch,
   ): void {
     const candidate = this.candidates.get(id);
     if (!candidate) return;
     candidate.status = status;
     if (events !== undefined) candidate.events = events;
-    if (statePatch !== undefined) candidate.state_patch = statePatch;
   }
 
   /**

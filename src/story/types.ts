@@ -139,49 +139,14 @@ export type GeneratedEvent =
  * A state patch that the model returns alongside events. All fields are
  * optional; the runtime merges only the keys the model explicitly provides.
  */
-export interface StoryStatePatch {
-  scene?: Partial<{
-    id: string;
-    location: string;
-    time?: string;
-    purpose: string;
-  }>;
-  /** Key-value metadata about the world state. */
-  canon?: Record<string, unknown>;
-  /** Per-character updates. Keys are character identifiers. */
-  characters?: Record<
-    string,
-    Partial<{
-      location?: string;
-      emotion?: string;
-      current_goal?: string;
-      relationship_to_player?: string;
-      known_facts?: string[];
-    }>
-  >;
-  /** New or updated narrative threads. Merged by `id`. */
-  open_threads?: Array<{
-    id: string;
-    summary: string;
-    status: "new" | "active" | "ready" | "resolved" | "abandoned";
-    last_touched_turn: number;
-  }>;
-  /** A concise 1–3 sentence summary of recent events. */
-  recent_summary?: string;
-  player_profile?: Partial<{
-    recent_tendencies: string[];
-  }>;
-}
-
 /**
  * The top-level result of a generation request: ordered events plus the
- * merged state updates collected from in-band state_patch lines.
+ * DSL segment end status. state_patch 已随 §80–§81 删除（StoryState 由
+ * reconcile 确定性投影，MA-A2 清除残留契约）。
  */
 export interface GenerationEnvelope {
   /** Ordered narrative events for this segment. */
   events: GeneratedEvent[];
-  /** Partial state updates the runtime applies after loading events. */
-  state_patch: StoryStatePatch;
   /** DSL mode: fully committed groups, in order (docs §36). */
   groups?: EventGroupDraft[];
   /** DSL mode: segment end status (docs §44–§51). */
@@ -192,27 +157,16 @@ export interface GenerationEnvelope {
 // StoryState — simplified in-memory story memory
 // ---------------------------------------------------------------------------
 
-/** A single narrative thread tracked across turns. */
-export interface StoryThread {
-  id: string;
-  summary: string;
-  status: "new" | "active" | "ready" | "resolved" | "abandoned";
-  last_touched_turn: number;
-}
-
 /** Per-character mutable state. */
 export interface CharacterState {
   location?: string;
-  emotion?: string;
-  current_goal?: string;
-  relationship_to_player?: string;
-  known_facts?: string[];
 }
 
 /**
- * Compressed story memory that supplements the sliding window of recent
- * events. The model reads and writes this via `StoryStatePatch` in each
- * `GenerationEnvelope`.
+ * 确定性投影产物（设计 §3.2）：location ← background cue，characters ←
+ * 台词/character_patch cue，recent_summary ← 最近 ≤3 条文本。rich 字段
+ * （canon/open_threads/player_profile/角色 emotion 等）自 state_patch 应用
+ * 路径删除后无写入者，已随 MA-A2 清除；语义记录由记忆子层 facts 承载。
  */
 export interface StoryState {
   scene: {
@@ -221,18 +175,10 @@ export interface StoryState {
     time?: string;
     purpose: string;
   };
-  /** Arbitrary world facts (inventory, flags, relationships, etc.). */
-  canon: Record<string, unknown>;
   /** Mutable character state keyed by character identifier. */
   characters: Record<string, CharacterState>;
-  /** Narrative threads currently tracked. */
-  open_threads: StoryThread[];
   /** 1–3 sentence summary of the most recent events. */
   recent_summary: string;
-  /** Lightweight player behaviour profile. */
-  player_profile: {
-    recent_tendencies: string[];
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -267,8 +213,6 @@ export interface BranchCandidate {
   status: BranchStatus;
   /** Ordered narrative events for this branch. */
   events: GeneratedEvent[];
-  /** Optional state patch produced by the branch generation. */
-  state_patch?: StoryStatePatch;
 }
 
 // ---------------------------------------------------------------------------
@@ -424,21 +368,10 @@ export const InteractionEventSchema = z.discriminatedUnion("mode", [
   HybridInteractionSchema,
 ]);
 
-const StoryThreadSchema = z.object({
-  id: z.string().min(1),
-  summary: z.string().min(1),
-  status: z.enum(["new", "active", "ready", "resolved", "abandoned"]),
-  last_touched_turn: z.number().int().nonnegative(),
-});
-
 // exactOptional：接口可选字段在 exactOptionalPropertyTypes 下不含 undefined
 // （M0 契约审查确立的 zod 惯例；此 schema 嵌入 v2 图契约的入口快照）。
 const CharacterStateSchema = z.object({
   location: z.exactOptional(z.string()),
-  emotion: z.exactOptional(z.string()),
-  current_goal: z.exactOptional(z.string()),
-  relationship_to_player: z.exactOptional(z.string()),
-  known_facts: z.exactOptional(z.array(z.string())),
 });
 
 export const StoryStateSchema = z.object({
@@ -450,35 +383,8 @@ export const StoryStateSchema = z.object({
     time: z.exactOptional(z.string()),
     purpose: z.string().min(1),
   }),
-  canon: z.record(z.string(), z.unknown()),
   characters: z.record(z.string(), CharacterStateSchema),
-  open_threads: z.array(StoryThreadSchema),
   recent_summary: z.string(),
-  player_profile: z.object({
-    recent_tendencies: z.array(z.string()),
-  }),
-});
-
-export const StoryStatePatchSchema = z.object({
-  scene: z
-    .object({
-      id: z.string().min(1).optional(),
-      location: z.string().min(1).optional(),
-      time: z.string().optional(),
-      purpose: z.string().min(1).optional(),
-    })
-    .optional(),
-  canon: z.record(z.string(), z.unknown()).optional(),
-  characters: z
-    .record(z.string(), CharacterStateSchema.partial())
-    .optional(),
-  open_threads: z.array(StoryThreadSchema).optional(),
-  recent_summary: z.string().optional(),
-  player_profile: z
-    .object({
-      recent_tendencies: z.array(z.string()).optional(),
-    })
-    .optional(),
 });
 
 export const BranchCandidateSchema = z.object({
@@ -516,5 +422,4 @@ export const BranchCandidateSchema = z.object({
       }),
     ])
   ),
-  state_patch: StoryStatePatchSchema.optional(),
 });

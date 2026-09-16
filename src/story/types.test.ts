@@ -9,7 +9,6 @@ import { describe, it, expect } from "vitest";
 import {
   InteractionEventSchema,
   StoryStateSchema,
-  StoryStatePatchSchema,
   BranchCandidateSchema,
 } from "./types.js";
 
@@ -19,10 +18,8 @@ import type {
   InputSpec,
   GeneratedEvent,
   GenerationEnvelope,
-  StoryThread,
   CharacterState,
   StoryState,
-  StoryStatePatch,
   BranchSource,
   BranchStatus,
   BranchCandidate,
@@ -100,39 +97,13 @@ describe("type exports", () => {
     expect("input_bridge" in event).toBe(false);
   });
 
-  it("StoryThread should accept all five status values", () => {
-    const thread: StoryThread = {
-      id: "t1",
-      summary: "Investigate the strange noise",
-      status: "active",
-      last_touched_turn: 3,
-    };
-    const statuses: StoryThread["status"][] = [
-      "new",
-      "active",
-      "ready",
-      "resolved",
-      "abandoned",
-    ];
-    expect(statuses).toContain(thread.status);
-  });
-
   it("CharacterState should accept partial field sets", () => {
     const minimal: CharacterState = {};
     const partial: CharacterState = {
       location: "library",
-      emotion: "curious",
-    };
-    const full: CharacterState = {
-      location: "hallway",
-      emotion: "nervous",
-      current_goal: "escape the building",
-      relationship_to_player: "ally",
-      known_facts: ["the door is locked", "there is a key in the drawer"],
     };
     expect(minimal).toBeDefined();
-    expect(partial.emotion).toBe("curious");
-    expect(full.known_facts).toHaveLength(2);
+    expect(partial.location).toBe("library");
   });
 
   it("StoryState should be fully constructible with defaults-like values", () => {
@@ -143,21 +114,15 @@ describe("type exports", () => {
         time: "evening",
         purpose: "introduce the mysterious stranger",
       },
-      canon: { weather: "rainy", gold: 50 },
       characters: {
-        hero: { location: "tavern", emotion: "determined" },
+        hero: { location: "tavern" },
       },
-      open_threads: [],
       recent_summary: "The hero enters the tavern.",
-      player_profile: {
-        recent_tendencies: ["exploration", "dialogue"],
-      },
     };
     expect(state.scene.id).toBe("prologue");
-    expect(state.canon["gold"]).toBe(50);
   });
 
-  it("GenerationEnvelope should require events and state_patch", () => {
+  it("GenerationEnvelope should require events", () => {
     const envelope: GenerationEnvelope = {
       events: [
         {
@@ -175,9 +140,6 @@ describe("type exports", () => {
           ],
         },
       ],
-      state_patch: {
-        recent_summary: "The player opened the door.",
-      },
     };
     expect(envelope.events).toHaveLength(2);
   });
@@ -423,16 +385,13 @@ describe("StoryStateSchema", () => {
   it("should parse a minimal valid state", () => {
     const result = StoryStateSchema.safeParse({
       scene: { id: "s1", location: "room", purpose: "explore" },
-      canon: {},
       characters: {},
-      open_threads: [],
       recent_summary: "Nothing yet.",
-      player_profile: { recent_tendencies: [] },
     });
     expect(result.success).toBe(true);
   });
 
-  it("should parse a rich state with all fields populated", () => {
+  it("should parse a state with characters and time", () => {
     const result = StoryStateSchema.safeParse({
       scene: {
         id: "s2",
@@ -440,31 +399,10 @@ describe("StoryStateSchema", () => {
         time: "midnight",
         purpose: "find the witch's hut",
       },
-      canon: { weather: "foggy", danger_level: 7 },
       characters: {
-        player: {
-          location: "forest",
-          emotion: "tense",
-          known_facts: ["the witch lives deep in the woods"],
-        },
-        witch: {
-          location: "hut",
-          emotion: "mysterious",
-          relationship_to_player: "neutral",
-        },
+        player: { location: "forest" },
       },
-      open_threads: [
-        {
-          id: "t1",
-          summary: "Make contact with the witch",
-          status: "active",
-          last_touched_turn: 2,
-        },
-      ],
       recent_summary: "The player ventured into the dark forest.",
-      player_profile: {
-        recent_tendencies: ["risk-taking", "exploration"],
-      },
     });
     expect(result.success).toBe(true);
   });
@@ -472,49 +410,10 @@ describe("StoryStateSchema", () => {
   it("should fail when scene is missing a required field", () => {
     const result = StoryStateSchema.safeParse({
       scene: { id: "s3", location: "room" },
-      canon: {},
       characters: {},
-      open_threads: [],
       recent_summary: "Test.",
-      player_profile: { recent_tendencies: [] },
     });
     expect(result.success).toBe(false);
-  });
-});
-
-describe("StoryStatePatchSchema", () => {
-  it("should accept an empty patch", () => {
-    const result = StoryStatePatchSchema.safeParse({});
-    expect(result.success).toBe(true);
-  });
-
-  it("should parse a patch with partial scene override", () => {
-    const result = StoryStatePatchSchema.safeParse({
-      scene: { location: "cave" },
-      recent_summary: "The adventurer went deeper underground.",
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("should fail when scene.location is empty string", () => {
-    const result = StoryStatePatchSchema.safeParse({
-      scene: { location: "" },
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("should parse a patch with new open threads", () => {
-    const result = StoryStatePatchSchema.safeParse({
-      open_threads: [
-        {
-          id: "new-thread",
-          summary: "Discover the ancient treasure",
-          status: "new",
-          last_touched_turn: 5,
-        },
-      ],
-    });
-    expect(result.success).toBe(true);
   });
 });
 
@@ -539,9 +438,6 @@ describe("BranchCandidateSchema", () => {
       events: [
         { type: "narration", text: "The chest creaks open to reveal..." },
       ],
-      state_patch: {
-        recent_summary: "The player opened the treasure chest.",
-      },
     });
     expect(result.success).toBe(true);
   });

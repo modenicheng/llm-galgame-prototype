@@ -44,39 +44,11 @@ function makeRichState(): StoryState {
       time: "深夜",
       purpose: "找到隐藏的圣物线索",
     },
-    canon: { weather: "foggy", danger_level: 7, torches: 2 },
     characters: {
-      hero: {
-        location: "森林",
-        emotion: "紧张",
-        current_goal: "寻找圣物",
-        relationship_to_player: "self",
-        known_facts: ["圣物在森林深处", "夜晚有狼出没"],
-      },
-      guide: {
-        location: "森林",
-        emotion: "神秘",
-        relationship_to_player: "ally",
-      },
+      hero: { location: "森林" },
+      guide: { location: "森林" },
     },
-    open_threads: [
-      {
-        id: "main_quest",
-        summary: "找到失落的圣物",
-        status: "active",
-        last_touched_turn: 5,
-      },
-      {
-        id: "wolf_howl",
-        summary: "调查远处的狼嚎声",
-        status: "new",
-        last_touched_turn: 5,
-      },
-    ],
-    recent_summary: "冒险者和向导深入迷雾森林，听到了远处的狼嚎。",
-    player_profile: {
-      recent_tendencies: ["探索", "谨慎"],
-    },
+    recent_summary: "夜幕降临，冒险者在林中点起火把。",
   });
 }
 

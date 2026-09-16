@@ -135,11 +135,8 @@ function makeBrief(): NarrativeBrief {
 function makeState(): StoryState {
   return {
     scene: { id: "scene-1", location: "教室", purpose: "日常" },
-    canon: {},
     characters: {},
-    open_threads: [],
     recent_summary: "",
-    player_profile: { recent_tendencies: [] },
   };
 }
 

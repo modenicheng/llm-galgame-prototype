@@ -11,8 +11,8 @@
  * - characters ← 台词 characterId 与 character_patch cue 的并集（值为空对象，
  *   情绪/目标等字段没有确定性来源，留给未来波）；
  * - recent_summary ← 批次内最后 ≤3 条 narration/dialogue 文本拼接（≤300 字）。
- * canon / open_threads / player_profile 无确定性投影来源，保持原样
- * （剧情线语义已由 NarrativeDirector memory 承担）。
+ * MA-A2：StoryState 已收缩为本投影产物（设计 §3.2）；剧情线/事实语义由
+ * NarrativeDirector memory（threads/facts）承担，不在 storyState 中。
  */
 import type { StoredEvent } from "../schema.js";
 import type { StoryState } from "./types.js";

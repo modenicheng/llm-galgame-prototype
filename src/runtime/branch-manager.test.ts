@@ -154,15 +154,6 @@ describe("BranchManager updateCandidateStatus", () => {
     expect(candidate.events).toEqual(events);
   });
 
-  it("should attach state_patch when provided", () => {
-    const patch = {
-      scene: { id: "new_scene", location: "hallway", purpose: "explore" },
-    };
-    manager.updateCandidateStatus("br1", "ready", undefined, patch);
-    const candidate = manager.getCandidate("br1")!;
-    expect(candidate.state_patch).toEqual(patch);
-  });
-
   it("should be a no-op for unknown candidate IDs", () => {
     expect(() =>
       manager.updateCandidateStatus("no_such", "ready"),

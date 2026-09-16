@@ -48,11 +48,11 @@ function makeSnapshot(overrides?: {
     ...(overrides?.location ? { scene: { ...createInitialState().scene, location: overrides.location } } : {}),
     ...(overrides?.recentSummary ? { recent_summary: overrides.recentSummary } : {}),
     ...(overrides?.goal
-      ? { characters: { su_yao: { current_goal: overrides.goal } } }
+      ? { characters: { su_yao: { location: "教室" } } }
       : {}),
   });
   return {
-    snapshotVersion: 2,
+    snapshotVersion: 3,
     storyState,
     visualState: { characters: {} },
     memoryDigest: EMPTY_MEMORY_DIGEST,
@@ -76,7 +76,7 @@ describe("ConfluenceJudgeAdapter", () => {
     const adapter = new ConfluenceJudgeAdapter({ apiKey: "k", api: makeApiConfig(), client });
     await adapter.judge({
       endState: makeSnapshot({ location: "旧校舍", recentSummary: "玩家在旧校舍发现了日记。" }),
-      candidateEntry: makeSnapshot({ location: "旧校舍", goal: "查明日记的主人" }),
+      candidateEntry: makeSnapshot({ location: "旧校舍", recentSummary: "候选节点从日记的发现开始。" }),
     });
 
     const call = (client.chat.completions.create as ReturnType<typeof vi.fn>).mock.calls[0]![0];
@@ -90,7 +90,7 @@ describe("ConfluenceJudgeAdapter", () => {
     expect(user).toContain("状态乙（候选后继节点入口态）");
     expect(user).toContain("旧校舍");
     expect(user).toContain("玩家在旧校舍发现了日记。");
-    expect(user).toContain("查明日记的主人");
+    expect(user).toContain("候选节点从日记的发现开始。");
   });
 
   it("parses a valid judgment and stamps judgedBy with the model name", async () => {
