@@ -32,6 +32,7 @@ import {
   validateEpisodeOp,
   applyThreadOpToState,
   applySetupOpToState,
+  rejectionRule,
 } from "./memory-validator.js";
 
 // ---------------------------------------------------------------------------
@@ -203,7 +204,12 @@ export class MemoryConsolidator {
         importance: result.episode.importance,
       };
     } else {
-      rejected.push({ kind: "episode", op: result.episode, reason: epReason });
+      rejected.push({
+        kind: "episode",
+        op: result.episode,
+        reason: epReason,
+        rule: rejectionRule(epReason),
+      });
     }
 
     for (const op of result.threadOps) {
@@ -212,7 +218,7 @@ export class MemoryConsolidator {
         threadOps.push(op);
         applyThreadOpToState(shadow, op, 0); // checkpoint irrelevant for validation
       } else {
-        rejected.push({ kind: "thread", op, reason });
+        rejected.push({ kind: "thread", op, reason, rule: rejectionRule(reason) });
       }
     }
 
@@ -222,7 +228,7 @@ export class MemoryConsolidator {
         setupOps.push(op);
         applySetupOpToState(shadow, op, 0); // checkpoint irrelevant for validation
       } else {
-        rejected.push({ kind: "setup", op, reason });
+        rejected.push({ kind: "setup", op, reason, rule: rejectionRule(reason) });
       }
     }
 

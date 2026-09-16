@@ -5,7 +5,7 @@ import { computeCurrentAnchorId, scheduleSetups } from "./setup-scheduler.js";
 function makeSetup(overrides: Partial<SetupPayoff> = {}): SetupPayoff {
   return {
     id: "s1", kind: "foreshadow", setup: "终端对苏遥异常响应",
-    status: "seeded", reinforcementCount: 0, prerequisites: [],
+    intendedPayoff: "揭示终端的秘密", status: "seeded", reinforcementCount: 0, prerequisites: [],
     source: "author", ...overrides,
   };
 }
@@ -37,9 +37,10 @@ describe("scheduleSetups", () => {
       10,
       "a2",
       () => true,
+      50,
     );
     expect(directives[0]).toEqual({
-      id: "s1", action: "payoff", urgency: "now", premise: "终端对苏遥异常响应",
+      id: "s1", action: "payoff", urgency: "now", premise: "终端对苏遥异常响应", payoff: "揭示终端的秘密",
     });
   });
 

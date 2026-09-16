@@ -60,6 +60,12 @@ export function renderDirectorNote(
       if (setup.payoff !== undefined) {
         line += `；目标：${setup.payoff}`;
       }
+      if (setup.action === "resolve_or_drop") {
+        line += "；该伏笔已超期，本段必须推进回收或显式放弃，不得继续悬置";
+      }
+      if (setup.payoffMissing === true) {
+        line += "；未定回收计划";
+      }
       lines.push(line);
     }
   }
@@ -84,6 +90,13 @@ export function renderDirectorNote(
     lines.push("[禁止透露]");
     for (const lock of brief.revealLocks) {
       lines.push(`- ${lock}`);
+    }
+  }
+
+  if (brief.avoidanceLessons.length > 0) {
+    lines.push("[规避清单]");
+    for (const lesson of brief.avoidanceLessons) {
+      lines.push(`- ${lesson.content}（${lesson.tag}，×${lesson.occurrences}）`);
     }
   }
 

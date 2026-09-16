@@ -50,16 +50,26 @@ export function computeCurrentAnchorId(
  * Classify every non-terminal setup into a directive, dropping setups the
  * validator does not want scheduled (paid_off/dropped). `satisfied` decides
  * whether a setup's prerequisites are met (fed to classifySetup's gate).
- * Input order is preserved.
+ * `maxUntouchedCheckpoints` drives the RESOLVE_OR_DROP third tier (记忆 spec
+ * §8.3). Input order is preserved.
  */
 export function scheduleSetups(
   setups: readonly SetupPayoff[],
   checkpoint: number,
   currentAnchorId: string | undefined,
   satisfied: (id: string) => boolean,
+  maxUntouchedCheckpoints = 6,
 ): SetupDirective[] {
   return setups
     .filter((s) => NON_TERMINAL_SETUP_STATUSES.has(s.status))
-    .map((s) => classifySetup(s, checkpoint, currentAnchorId, satisfied(s.id)))
+    .map((s) =>
+      classifySetup(
+        s,
+        checkpoint,
+        currentAnchorId,
+        satisfied(s.id),
+        maxUntouchedCheckpoints,
+      ),
+    )
     .filter((d): d is SetupDirective => d !== undefined);
 }

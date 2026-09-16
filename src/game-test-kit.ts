@@ -303,6 +303,7 @@ export function makeDirectorFake(
     relevantEpisodes: [],
     anchors: [],
     revealLocks: [],
+    avoidanceLessons: [],
     ...briefOverrides,
   };
   return {

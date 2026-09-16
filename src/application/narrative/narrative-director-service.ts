@@ -26,6 +26,7 @@ import type {
   SetupPayoff,
   StoryAnchorState,
   EpisodeMemory,
+  Lesson,
 } from "../../core/narrative/memory-types.js";
 import {
   VALID_THREAD_TRANSITIONS,
@@ -52,6 +53,8 @@ import {
   scheduleSetups,
 } from "./setup-scheduler.js";
 import { retrieveEpisodes } from "./episode-retriever.js";
+import { LessonService } from "./lesson-service.js";
+import { buildEndingReport } from "./ending-report.js";
 import {
   MemoryConsolidator,
   ACTIVE_THREAD_STATUSES,
@@ -110,6 +113,7 @@ function normalizeNarrativeConfig(raw: NarrativeConfig): NarrativeConfig {
     event: { ...d.event, ...raw.event },
     threads: { ...d.threads, ...raw.threads },
     setups: { ...d.setups, ...raw.setups },
+    lessons: { ...d.lessons, ...raw.lessons },
     consolidation: { ...d.consolidation, ...raw.consolidation },
     brief: { ...d.brief, ...raw.brief },
     plan: { ...d.plan, ...raw.plan },
@@ -134,6 +138,12 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   // In-memory consolidated state
   private memory!: NarrativeMemoryState;
   private episodes: EpisodeMemory[] = [];
+
+  // 教训库（记忆 spec §7，MA-A）：rejection 晋升 + brief 规避清单来源。
+  private readonly lessonService: LessonService;
+
+  // 终局报告单飞（§8.4）：EndEvent 可能经重放多次到达，幂等覆盖写。
+  private endingReportRunning = false;
 
   // Pending events not yet consolidated
   private pendingEvents: StoredEvent[] = [];
@@ -171,6 +181,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     diagnostics?: DiagnosticSink;
   }) {
     this.config = normalizeNarrativeConfig(opts.config);
+    this.lessonService = new LessonService(this.config);
     this.store = opts.store;
     this.storyPlan = opts.plan;
     this.seedAnchorOrder = new Map(
@@ -241,6 +252,17 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
     this.episodes = [...loadedEpisodes];
 
+    // 教训库：载入既有 lessons（MA-A §7.3；晋升序号在其之上继续）。
+    // 载入失败降级为空——lessons 是诊断数据，不得阻塞会话启动。
+    try {
+      this.lessonService.load(await this.store.loadLessons());
+    } catch (err) {
+      this.diagnostics.warn(
+        "NarrativeDirector",
+        `loadLessons failed (degraded to empty): ${String(err)}`,
+      );
+    }
+
     // Resume the director plan (if any) from the store; a fresh session
     // starts without one and the first checkpoint creates it. The store
     // contract is `DirectorPlan | null` — normalize to undefined so every
@@ -295,6 +317,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       this.memory.checkpointCount,
       currentAnchorId,
       (id) => satisfiedSetupIds.has(id),
+      this.config.setups.max_untouched_checkpoints,
     );
 
     // Relevant episodes via retriever: active threads only (resolved/
@@ -343,6 +366,8 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       relevantEpisodes,
       anchors,
       revealLocks: planInEffect?.revealLocks ?? [],
+      // 规避清单（§7.3）：纯内存切片，零 await（§11 红线）。
+      avoidanceLessons: this.lessonService.briefLessons(),
     };
     // exactOptionalPropertyTypes: an explicit `undefined` is not assignable
     // to an optional property — assign conditionally instead.
@@ -379,7 +404,20 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   observeCommitted(events: readonly StoredEvent[]): void {
     const watermark = this.memory.consolidatedThroughEventSeq;
     const freshEvents = events.filter((event) => event.seq > watermark);
-    if (freshEvents.length === 0) return;
+    if (freshEvents.length === 0) {
+      // 恢复重放会把水位之下的事件再喂一遍——即便全部过期，终局事件也
+      // 已在首次提交时触发过报告；此处无需补发。
+      return;
+    }
+    // 终局报告（§8.4）：EndEvent 正式提交后异步聚合，不阻塞播放（红线）。
+    if (freshEvents.some((event) => event.type === "end")) {
+      void this.writeEndingReport().catch((err: unknown) => {
+        this.diagnostics.warn(
+          "NarrativeDirector",
+          `ending report failed: ${String(err)}`,
+        );
+      });
+    }
     this.pendingEvents.push(...freshEvents);
     // Rolling window of recently committed events for the planner.
     this.recentCommittedEvents.push(...freshEvents);
@@ -389,6 +427,26 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       );
     }
     this.maybeSchedule();
+  }
+
+  /**
+   * 终局报告（§8.4，MA-A）：确定性聚合当前 memory + lessons，写
+   * `ending-report.json`。fire-and-forget（调用方 catch）；单飞防抖，
+   * 幂等覆盖写——重放/多周目重复触发安全。
+   */
+  async writeEndingReport(): Promise<void> {
+    if (this.endingReportRunning) return;
+    this.endingReportRunning = true;
+    try {
+      const report = buildEndingReport(
+        this.memory,
+        this.lessonService.all(),
+        new Date().toISOString(),
+      );
+      await this.store.writeEndingReport(report);
+    } finally {
+      this.endingReportRunning = false;
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -742,6 +800,8 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   /**
    * Debug-log rejected ops to the store; failures are warn-only and never
    * part of the memory commit (shared by consolidatePending and replan).
+   * MA-A：被拒 op 同时喂教训库（§7.2 来源 2，同规则 ≥ 阈值自动晋升），
+   * 新晋升/累加的 lessons 同通道落盘（失败仅告警，不回滚内存）。
    */
   private async recordRejectedOps(ops: RejectedOp[]): Promise<void> {
     try {
@@ -750,6 +810,20 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       this.diagnostics.warn(
         "NarrativeDirector",
         `appendOps failed (debug log only): ${String(err)}`,
+      );
+    }
+    try {
+      const promoted = this.lessonService.observeRejections(
+        ops,
+        this.memory.checkpointCount,
+      );
+      if (promoted.length > 0) {
+        await this.store.appendLessons(promoted);
+      }
+    } catch (err) {
+      this.diagnostics.warn(
+        "NarrativeDirector",
+        `lesson promotion failed: ${String(err)}`,
       );
     }
   }

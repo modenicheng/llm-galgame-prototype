@@ -24,6 +24,7 @@ function makeBrief(overrides: Partial<NarrativeBrief> = {}): NarrativeBrief {
     relevantEpisodes: [],
     anchors: [],
     revealLocks: [],
+    avoidanceLessons: [],
     ...overrides,
   };
 }
@@ -170,5 +171,56 @@ describe("renderDirectorNote", () => {
   it("omits the director goal section when no plan is in effect", () => {
     const note = renderDirectorNote(makeBrief(), 40);
     expect(note).not.toContain("[导演目标]");
+  });
+});
+
+
+describe("renderDirectorNote MA-A sections", () => {
+  it("renders the avoidance lessons list", () => {
+    const brief = makeBrief({
+      avoidanceLessons: [
+        {
+          id: "lesson_1",
+          tag: "setup-flow",
+          content: "没有回收计划的伏笔不许下场",
+          source: "rejection",
+          occurrences: 2,
+          active: true,
+          createdAtCheckpoint: 1,
+        },
+      ],
+    });
+    const note = renderDirectorNote(brief, 40);
+    expect(note).toContain("[规避清单]");
+    expect(note).toContain("没有回收计划的伏笔不许下场（setup-flow，×2）");
+  });
+
+  it("omits the avoidance section when there are no lessons", () => {
+    expect(renderDirectorNote(makeBrief(), 40)).not.toContain("[规避清单]");
+  });
+
+  it("appends the overdue ultimatum for resolve_or_drop directives", () => {
+    const brief = makeBrief({
+      setupDirectives: [
+        {
+          id: "s1",
+          action: "resolve_or_drop",
+          urgency: "overdue",
+          premise: "终端对苏遥异常响应",
+        },
+      ],
+    });
+    const note = renderDirectorNote(brief, 40);
+    expect(note).toContain("RESOLVE_OR_DROP s1（overdue）");
+    expect(note).toContain("本段必须推进回收或显式放弃，不得继续悬置");
+  });
+
+  it("marks setups without an intended payoff as 未定回收计划", () => {
+    const brief = makeBrief({
+      setupDirectives: [
+        { id: "s1", action: "hold", urgency: "normal", premise: "p", payoffMissing: true },
+      ],
+    });
+    expect(renderDirectorNote(brief, 40)).toContain("未定回收计划");
   });
 });

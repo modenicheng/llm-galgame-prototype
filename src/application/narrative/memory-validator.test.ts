@@ -16,6 +16,7 @@ import {
   classifySetup,
   setupPrerequisitesSatisfied,
   applyThreadOpToState,
+  rejectionRule,
 } from "./memory-validator.js";
 
 import type { NarrativeConfig } from "../../config.js";
@@ -55,6 +56,7 @@ function makeSetup(overrides: Partial<SetupPayoff> = {}): SetupPayoff {
     id: "setup-1",
     kind: "object",
     setup: "The brass key under the floorboard",
+    intendedPayoff: "The key opens the hidden drawer",
     status: "seeded",
     reinforcementCount: 0,
     prerequisites: [],
@@ -643,11 +645,12 @@ describe("classifySetup", () => {
       payoffBeforeAnchor: "anchor-x",
       lastTouchedAtCheckpoint: 0,
     });
-    expect(classifySetup(item, 10, "anchor-x", true)).toEqual({
+    expect(classifySetup(item, 10, "anchor-x", true, 50)).toEqual({
       id: "setup-1",
       action: "payoff",
       urgency: "now",
       premise: "The brass key under the floorboard",
+      payoff: "The key opens the hidden drawer",
     });
   });
 
@@ -658,11 +661,12 @@ describe("classifySetup", () => {
         payoffBeforeAnchor: "anchor-x",
         lastTouchedAtCheckpoint: 0,
       });
-      expect(classifySetup(item, 10, "anchor-x", true)).toEqual({
+      expect(classifySetup(item, 10, "anchor-x", true, 50)).toEqual({
         id: "setup-1",
         action: "payoff",
         urgency: "now",
         premise: "The brass key under the floorboard",
+        payoff: "The key opens the hidden drawer",
       });
     }
   });
@@ -675,11 +679,12 @@ describe("classifySetup", () => {
       seededAtCheckpoint: 0,
     });
     // checkpoint - lastTouchedAtCheckpoint = 10 >= 2, but the anchor match wins.
-    expect(classifySetup(item, 10, "anchor-x", true)).toEqual({
+    expect(classifySetup(item, 10, "anchor-x", true, 50)).toEqual({
       id: "setup-1",
       action: "payoff",
       urgency: "now",
       premise: "The brass key under the floorboard",
+      payoff: "The key opens the hidden drawer",
     });
   });
 
@@ -767,7 +772,7 @@ describe("classifySetup", () => {
   it("returns hold/normal for non-seeded active statuses even when stale", () => {
     for (const status of ["reinforced", "ready"] as const) {
       const item = makeSetup({ status, lastTouchedAtCheckpoint: 0 });
-      expect(classifySetup(item, 10, undefined, true)).toEqual({
+      expect(classifySetup(item, 10, undefined, true, 50)).toEqual({
         id: "setup-1",
         action: "hold",
         urgency: "normal",
@@ -852,5 +857,132 @@ describe("classifySetup with prerequisites", () => {
     const reinforced = classifySetup(seeded, 10, undefined, true);
     expect(reinforced).toMatchObject({ id: "s2", action: "reinforce", urgency: "soon", premise: seeded.setup });
     expect("payoff" in reinforced!).toBe(false);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// MA-A 确定性规则（记忆 spec §8.1/§8.2/§8.3）
+// ---------------------------------------------------------------------------
+
+describe("MA-A deterministic rules", () => {
+  describe("intendedPayoff 必填（§8.2）", () => {
+    it("rejects seed on a setup without intendedPayoff with a stable rule code", () => {
+      const item = makeSetup({ status: "planned" });
+      delete (item as { intendedPayoff?: string }).intendedPayoff;
+      const memory = makeMemory({ setups: { "setup-1": item } });
+      const reason = validateSetupOp({ type: "seed", id: "setup-1" }, memory, makeConfig());
+      expect(reason).toContain("intendedPayoff");
+      expect(rejectionRule(reason!)).toBe("SETUP_SEED_WITHOUT_INTENDED_PAYOFF");
+    });
+
+    it("accepts seed when intendedPayoff is declared", () => {
+      const memory = makeMemory({
+        setups: { "setup-1": makeSetup({ status: "planned" }) },
+      });
+      expect(validateSetupOp({ type: "seed", id: "setup-1" }, memory, makeConfig())).toBeNull();
+    });
+  });
+
+  describe("RESOLVE_OR_DROP 第三档（§8.3）", () => {
+    it("fires the overdue tier when age reaches maxUntouchedCheckpoints", () => {
+      const item = makeSetup({ status: "seeded", lastTouchedAtCheckpoint: 0 });
+      expect(classifySetup(item, 6, undefined, true, 6)).toEqual({
+        id: "setup-1",
+        action: "resolve_or_drop",
+        urgency: "overdue",
+        premise: item.setup,
+      });
+    });
+
+    it("takes precedence over the prerequisite gate and stale reinforce", () => {
+      const item = makeSetup({
+        status: "seeded",
+        lastTouchedAtCheckpoint: 0,
+        prerequisites: ["unmet"],
+      });
+      // 前置未满足也不得不断了：超期伏笔必须推进回收或显式放弃。
+      expect(classifySetup(item, 6, undefined, false, 6)).toMatchObject({
+        action: "resolve_or_drop",
+        urgency: "overdue",
+      });
+      const stale = makeSetup({ status: "seeded", lastTouchedAtCheckpoint: 0 });
+      expect(classifySetup(stale, 6, undefined, true, 6)).toMatchObject({
+        action: "resolve_or_drop",
+      });
+    });
+
+    it("does not fire below the threshold (age < maxUntouchedCheckpoints)", () => {
+      const item = makeSetup({ status: "seeded", lastTouchedAtCheckpoint: 0 });
+      expect(classifySetup(item, 5, undefined, true, 6)).toMatchObject({
+        action: "reinforce",
+        urgency: "soon",
+      });
+    });
+  });
+
+  describe("depth 门控（§8.1）", () => {
+    const base = {
+      status: "seeded" as const,
+      payoffBeforeAnchor: "anchor-x",
+      lastTouchedAtCheckpoint: 0,
+    };
+
+    it("redirects a heavy payoff to reinforce while reinforcementCount < 2", () => {
+      const item = makeSetup({ ...base, depth: "heavy", reinforcementCount: 1 });
+      expect(classifySetup(item, 1, "anchor-x", true, 50)).toMatchObject({
+        action: "reinforce",
+        urgency: "now",
+      });
+    });
+
+    it("allows the payoff once a heavy setup accumulated >= 2 reinforcements", () => {
+      const item = makeSetup({ ...base, depth: "heavy", reinforcementCount: 2 });
+      expect(classifySetup(item, 1, "anchor-x", true, 50)).toMatchObject({
+        action: "payoff",
+        urgency: "now",
+      });
+    });
+
+    it("holds a heavy+ready setup instead of issuing a rejected reinforce", () => {
+      const item = makeSetup({
+        ...base,
+        status: "ready",
+        depth: "heavy",
+        reinforcementCount: 0,
+      });
+      expect(classifySetup(item, 1, "anchor-x", true, 50)).toMatchObject({
+        action: "hold",
+        urgency: "normal",
+      });
+    });
+
+    it("ignores depth gating for shallow/mid setups", () => {
+      for (const depth of ["shallow", "mid"] as const) {
+        const item = makeSetup({ ...base, depth, reinforcementCount: 0 });
+        expect(classifySetup(item, 1, "anchor-x", true, 50)).toMatchObject({
+          action: "payoff",
+        });
+      }
+      // depth 缺省（= mid）同样不受门控
+      const noDepth = makeSetup({ ...base, reinforcementCount: 0 });
+      delete (noDepth as { depth?: "shallow" | "mid" | "heavy" }).depth;
+      expect(classifySetup(noDepth, 1, "anchor-x", true, 50)).toMatchObject({
+        action: "payoff",
+      });
+    });
+  });
+
+  it("flags payoffMissing on directives when intendedPayoff is undeclared", () => {
+    const item = makeSetup({ status: "seeded", lastTouchedAtCheckpoint: 0 });
+    delete (item as { intendedPayoff?: string }).intendedPayoff;
+    expect(classifySetup(item, 1, undefined, true, 50)).toMatchObject({
+      action: "hold",
+      payoffMissing: true,
+    });
+    const declared = makeSetup({ status: "seeded", lastTouchedAtCheckpoint: 0 });
+    expect(
+      "payoffMissing" in classifySetup(declared, 1, undefined, true, 50)!,
+    ).toBe(false);
   });
 });

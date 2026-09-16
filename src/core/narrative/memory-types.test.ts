@@ -189,6 +189,7 @@ const validBrief: NarrativeBrief = {
   relevantEpisodes: [validEpisode],
   anchors: [validAnchor],
   revealLocks: [],
+  avoidanceLessons: [],
 };
 
 // ---------------------------------------------------------------------------

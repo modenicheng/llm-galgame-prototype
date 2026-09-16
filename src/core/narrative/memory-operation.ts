@@ -83,4 +83,9 @@ export interface RejectedOp {
   kind: "thread" | "setup" | "episode" | "plan" | "anchor";
   op: unknown;
   reason: string;
+  /**
+   * 稳定拒绝规则码（如 SETUP_SEED_WITHOUT_INTENDED_PAYOFF，MA-A §7.2 来源 2
+   * 的 lesson 自动晋升计数键）。由 `[CODE] reason` 前缀解析，无码为 undefined。
+   */
+  rule?: string;
 }

@@ -82,7 +82,9 @@ export interface NarrativeConfig {
   /** 活动模式策略（audit P2-10 最小集）。 */
   event: { max_interactions: number };
   threads: { max_major_active: number; max_minor_active: number };
-  setups: { max_active: number };
+  setups: { max_active: number; max_untouched_checkpoints: number };
+  /** 教训库（记忆 spec §7）：rejection 自动晋升阈值 + brief 规避清单上限。 */
+  lessons: { auto_from_rejections: number; brief_max: number };
   consolidation: {
     batch_min_events: number;
     max_events_per_call: number;
@@ -99,7 +101,8 @@ export const DEFAULT_NARRATIVE_CONFIG: NarrativeConfig = {
   mode: "longform",
   event: { max_interactions: 0 },
   threads: { max_major_active: 2, max_minor_active: 3 },
-  setups: { max_active: 6 },
+  setups: { max_active: 6, max_untouched_checkpoints: 6 },
+  lessons: { auto_from_rejections: 2, brief_max: 8 },
   consolidation: {
     batch_min_events: 4,
     max_events_per_call: 80,
@@ -347,8 +350,18 @@ const NarrativeConfigSchema = z
     setups: z
       .object({
         max_active: z.number().int().min(0).max(20).default(6),
+        // 超过这么多 checkpoint 未触碰 → RESOLVE_OR_DROP（记忆 spec §8.3）。
+        max_untouched_checkpoints: z.number().int().min(1).max(50).default(6),
       })
-      .default({ max_active: 6 }),
+      .default({ max_active: 6, max_untouched_checkpoints: 6 }),
+    lessons: z
+      .object({
+        // 同一拒绝规则累计出现 ≥ 此值 → 自动晋升为 lesson（§7.2 来源 2）。
+        auto_from_rejections: z.number().int().min(1).max(10).default(2),
+        // brief 规避清单上限（§7.3）。
+        brief_max: z.number().int().min(1).max(50).default(8),
+      })
+      .default({ auto_from_rejections: 2, brief_max: 8 }),
     consolidation: z
       .object({
         batch_min_events: z.number().int().min(1).max(100).default(4),

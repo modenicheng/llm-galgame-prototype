@@ -69,6 +69,8 @@ export interface SetupPayoff {
   kind: SetupKind;
   setup: string;
   intendedPayoff?: string;
+  /** 计划出现次数档位（记忆 spec §8.1）：shallow=1、mid=2–3、heavy=3+；缺省 mid。 */
+  depth?: "shallow" | "mid" | "heavy";
   status: SetupStatus;
   threadId?: string;
   reinforcementCount: number;
@@ -111,6 +113,76 @@ export interface NarrativeMemoryState {
 }
 
 // ---------------------------------------------------------------------------
+// Lessons（教训库，记忆 spec §7）与 Facts 存储通道（§5.3）
+// ---------------------------------------------------------------------------
+
+export type LessonTag =
+  | "fact-conflict"
+  | "belief-violation"
+  | "character-consistency"
+  | "setup-flow"
+  | "style"
+  | "interaction"
+  | "other";
+
+/**
+ * 教训记录（规避清单条目）。append-only：同一 tag+content 再现时 occurrences+1，
+ * 不新增行；窗口管理（超出上限置 inactive）由 LessonService 承担。
+ */
+export interface Lesson {
+  id: string;
+  tag: LessonTag;
+  /** 规避指令式描述（≤100 字），如「旁白不得挂主角名下」。 */
+  content: string;
+  source: "audit" | "rejection" | "manual";
+  /** finding id / 被拒 op 的稳定规则码。 */
+  sourceRef?: string;
+  occurrences: number;
+  active: boolean;
+  /** 首次登记时的 checkpoint（recency 排序用）。 */
+  createdAtCheckpoint: number;
+}
+
+/**
+ * FactRecord（既定事实库，记忆 spec §5）。Phase A 仅建存储通道
+ * （facts.jsonl 读写），写入者随 Phase B 的 consolidator 扩展落地。
+ */
+export interface FactRecord {
+  id: string;
+  content: string;
+  evidenceEventSeqs: number[];
+  /** 应用该事实时的 checkpoint（检索按 checkpoint 倒序）。 */
+  checkpoint: number;
+  /** 被 amend 取代后置 true（不删除，保留历史）。 */
+  superseded: boolean;
+  /** amend 关系：本记录取代的旧 fact id。 */
+  amends?: string;
+  scope?: { characters?: string[]; location?: string };
+  importance?: "major" | "minor";
+}
+
+/** 终局报告（记忆 spec §8.4）：确定性聚合，无 LLM。 */
+export interface EndingReport {
+  generatedAt: string;
+  setups: {
+    paidOff: number;
+    dropped: number;
+    /** 结算时仍 active（含 planned）的伏笔数。 */
+    active: number;
+    /** paid_off / (paid_off + dropped + active)；分母为 0 时为 0。 */
+    payoffRate: number;
+  };
+  threads: {
+    resolved: number;
+    abandoned: number;
+    /** 仍开放（open/developing/ready_to_resolve）的线程数。 */
+    active: number;
+  };
+  /** active lessons 摘要附后。 */
+  lessons: Array<Pick<Lesson, "id" | "tag" | "content" | "occurrences">>;
+}
+
+// ---------------------------------------------------------------------------
 // Zod schemas (mirror the interfaces: required fields required, optional
 // fields optional, strings non-empty; `z.exactOptional` keeps the inferred
 // output assignable to the interfaces under exactOptionalPropertyTypes).
@@ -148,6 +220,7 @@ export const SetupPayoffSchema: z.ZodType<SetupPayoff> = z.object({
   ]),
   setup: z.string().min(1),
   intendedPayoff: z.exactOptional(z.string().min(1)),
+  depth: z.exactOptional(z.enum(["shallow", "mid", "heavy"])),
   status: z.enum([
     "planned",
     "seeded",
@@ -196,6 +269,66 @@ export const NarrativeMemoryStateSchema: z.ZodType<NarrativeMemoryState> =
     anchors: z.record(z.string().min(1), StoryAnchorStateSchema),
     recentEpisodeIds: z.array(z.string().min(1)),
   });
+
+const LessonTagSchema = z.enum([
+  "fact-conflict",
+  "belief-violation",
+  "character-consistency",
+  "setup-flow",
+  "style",
+  "interaction",
+  "other",
+]);
+
+export const LessonSchema: z.ZodType<Lesson> = z.object({
+  id: z.string().min(1),
+  tag: LessonTagSchema,
+  content: z.string().min(1).max(100),
+  source: z.enum(["audit", "rejection", "manual"]),
+  sourceRef: z.exactOptional(z.string().min(1)),
+  occurrences: z.number().int().positive(),
+  active: z.boolean(),
+  createdAtCheckpoint: z.number().int().nonnegative(),
+});
+
+export const FactRecordSchema: z.ZodType<FactRecord> = z.object({
+  id: z.string().min(1),
+  content: z.string().min(1),
+  evidenceEventSeqs: z.array(z.number().int().positive()),
+  checkpoint: z.number().int().nonnegative(),
+  superseded: z.boolean(),
+  amends: z.exactOptional(z.string().min(1)),
+  scope: z.exactOptional(
+    z.object({
+      characters: z.exactOptional(z.array(z.string().min(1))),
+      location: z.exactOptional(z.string().min(1)),
+    }),
+  ),
+  importance: z.exactOptional(z.enum(["major", "minor"])),
+});
+
+export const EndingReportSchema: z.ZodType<EndingReport> = z.object({
+  generatedAt: z.string().min(1),
+  setups: z.object({
+    paidOff: z.number().int().nonnegative(),
+    dropped: z.number().int().nonnegative(),
+    active: z.number().int().nonnegative(),
+    payoffRate: z.number().min(0).max(1),
+  }),
+  threads: z.object({
+    resolved: z.number().int().nonnegative(),
+    abandoned: z.number().int().nonnegative(),
+    active: z.number().int().nonnegative(),
+  }),
+  lessons: z.array(
+    z.object({
+      id: z.string().min(1),
+      tag: LessonTagSchema,
+      content: z.string().min(1),
+      occurrences: z.number().int().positive(),
+    }),
+  ),
+});
 
 // ---------------------------------------------------------------------------
 // Valid status transitions

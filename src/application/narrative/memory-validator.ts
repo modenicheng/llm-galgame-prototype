@@ -29,6 +29,21 @@ const ACTIVE_THREAD_STATUSES: ReadonlySet<PlotThread["status"]> = new Set([
   "ready_to_resolve",
 ]);
 
+/**
+ * 稳定拒绝规则码（记忆 spec §7.2 来源 2）：拒绝 reason 以 `[CODE] ` 前缀
+ * 编码规则身份，`rejectionRule()` 解析——lesson 自动晋升按码计数，
+ * 「同一规则第二次出现算流程违规」。人话部分与既有 reason 保持一致。
+ */
+function fail(rule: string, reason: string): string {
+  return `[${rule}] ${reason}`;
+}
+
+/** 从拒绝 reason 解析稳定规则码；无码返回 "unknown"。 */
+export function rejectionRule(reason: string): string {
+  const m = /^\[([A-Z_]+)\]/.exec(reason);
+  return m ? m[1]! : "unknown";
+}
+
 /** Setup statuses that count as "active" for the setup budget. */
 const ACTIVE_SETUP_STATUSES: ReadonlySet<SetupPayoff["status"]> = new Set([
   "seeded",
@@ -56,10 +71,10 @@ export function validateThreadOp(
   switch (op.type) {
     case "create": {
       if (existing !== undefined) {
-        return `线程 ${op.id} 已存在，不能重复创建`;
+        return fail("THREAD_ALREADY_EXISTS", `线程 ${op.id} 已存在，不能重复创建`);
       }
       if (op.kind === undefined || op.importance === undefined) {
-        return `线程 ${op.id} create 缺少 kind/importance`;
+        return fail("THREAD_CREATE_MISSING_FIELDS", `线程 ${op.id} create 缺少 kind/importance`);
       }
       // 预算按自身 importance 口径（audit P1-8）：创建 minor 只查 minor 预算，
       // 不能被占满的 major 预算误伤。
@@ -77,40 +92,43 @@ export function validateThreadOp(
         }
       }
       if (active >= budget) {
-        return `活跃 ${op.importance} 线程数 ${active} 已达上限 ${budget}`;
+        return fail(
+          "THREAD_BUDGET_EXCEEDED",
+          `活跃 ${op.importance} 线程数 ${active} 已达上限 ${budget}`,
+        );
       }
       return null;
     }
     case "touch": {
       if (existing === undefined) {
-        return `线程 ${op.id} 不存在`;
+        return fail("THREAD_MISSING", `线程 ${op.id} 不存在`);
       }
       return null;
     }
     case "advance": {
       if (existing === undefined) {
-        return `线程 ${op.id} 不存在`;
+        return fail("THREAD_MISSING", `线程 ${op.id} 不存在`);
       }
       if (VALID_THREAD_TRANSITIONS[existing.status].length === 0) {
-        return `线程 ${op.id} 当前状态 ${existing.status} 为终态，无法 advance`;
+        return fail("THREAD_TERMINAL", `线程 ${op.id} 当前状态 ${existing.status} 为终态，无法 advance`);
       }
       return null;
     }
     case "resolve": {
       if (existing === undefined) {
-        return `线程 ${op.id} 不存在`;
+        return fail("THREAD_MISSING", `线程 ${op.id} 不存在`);
       }
       if (existing.status === "resolved" || existing.status === "abandoned") {
-        return `线程 ${op.id} 当前状态 ${existing.status} 为终态，无法 resolve`;
+        return fail("THREAD_TERMINAL", `线程 ${op.id} 当前状态 ${existing.status} 为终态，无法 resolve`);
       }
       return null;
     }
     case "abandon": {
       if (existing === undefined) {
-        return `线程 ${op.id} 不存在`;
+        return fail("THREAD_MISSING", `线程 ${op.id} 不存在`);
       }
       if (existing.status === "resolved" || existing.status === "abandoned") {
-        return `线程 ${op.id} 当前状态 ${existing.status} 为终态，无法 abandon`;
+        return fail("THREAD_TERMINAL", `线程 ${op.id} 当前状态 ${existing.status} 为终态，无法 abandon`);
       }
       return null;
     }
@@ -135,7 +153,7 @@ export function validateSetupOp(
     for (const id of op.evidenceEventIds) {
       const seq = Number(id);
       if (!Number.isInteger(seq) || seq < 1 || seq > maxEvidenceSeq) {
-        return `证据事件 ${id} 不在已提交范围（≤ ${maxEvidenceSeq}）`;
+        return fail("SETUP_EVIDENCE_OUT_OF_RANGE", `证据事件 ${id} 不在已提交范围（≤ ${maxEvidenceSeq}）`);
       }
     }
   }
@@ -143,10 +161,18 @@ export function validateSetupOp(
   switch (op.type) {
     case "seed": {
       if (existing === undefined) {
-        return `伏笔 ${op.id} 不存在`;
+        return fail("SETUP_MISSING", `伏笔 ${op.id} 不存在`);
       }
       if (existing.status !== "planned") {
-        return `伏笔 ${op.id} 状态为 ${existing.status}，只有 planned 可以 seed`;
+        return fail("SETUP_NOT_PLANNED", `伏笔 ${op.id} 状态为 ${existing.status}，只有 planned 可以 seed`);
+      }
+      // 「没有回收计划的伏笔不许下场」（记忆 spec §8.2）：seed 前必须声明
+      // intendedPayoff；author seed 缺省由 loader 记 warning，运行时硬拒。
+      if (existing.intendedPayoff === undefined) {
+        return fail(
+          "SETUP_SEED_WITHOUT_INTENDED_PAYOFF",
+          `伏笔 ${op.id} 未声明 intendedPayoff，没有回收计划的伏笔不许下场`,
+        );
       }
       let active = 0;
       for (const setup of Object.values(memory.setups)) {
@@ -155,40 +181,40 @@ export function validateSetupOp(
         }
       }
       if (active >= config.setups.max_active) {
-        return `活跃伏笔数 ${active} 已达上限 ${config.setups.max_active}`;
+        return fail("SETUP_BUDGET_EXCEEDED", `活跃伏笔数 ${active} 已达上限 ${config.setups.max_active}`);
       }
       return null;
     }
     case "reinforce": {
       if (existing === undefined) {
-        return `伏笔 ${op.id} 不存在`;
+        return fail("SETUP_MISSING", `伏笔 ${op.id} 不存在`);
       }
       if (existing.status !== "seeded" && existing.status !== "reinforced") {
-        return `伏笔 ${op.id} 状态为 ${existing.status}，只有 seeded|reinforced 可以 reinforce`;
+        return fail("SETUP_BAD_STATUS", `伏笔 ${op.id} 状态为 ${existing.status}，只有 seeded|reinforced 可以 reinforce`);
       }
       return null;
     }
     case "payoff": {
       if (existing === undefined) {
-        return `伏笔 ${op.id} 不存在`;
+        return fail("SETUP_MISSING", `伏笔 ${op.id} 不存在`);
       }
       if (existing.status !== "reinforced" && existing.status !== "ready") {
-        return `伏笔 ${op.id} 状态为 ${existing.status}，只有 reinforced|ready 可以 payoff`;
+        return fail("SETUP_BAD_STATUS", `伏笔 ${op.id} 状态为 ${existing.status}，只有 reinforced|ready 可以 payoff`);
       }
       return null;
     }
     case "drop": {
       if (existing === undefined) {
-        return `伏笔 ${op.id} 不存在`;
+        return fail("SETUP_MISSING", `伏笔 ${op.id} 不存在`);
       }
       if (existing.status === "paid_off" || existing.status === "dropped") {
-        return `伏笔 ${op.id} 当前状态 ${existing.status} 为终态，无法 drop`;
+        return fail("SETUP_TERMINAL", `伏笔 ${op.id} 当前状态 ${existing.status} 为终态，无法 drop`);
       }
       return null;
     }
     case "hold": {
       if (existing === undefined) {
-        return `伏笔 ${op.id} 不存在`;
+        return fail("SETUP_MISSING", `伏笔 ${op.id} 不存在`);
       }
       return null;
     }
@@ -323,18 +349,18 @@ const EPISODE_ARRAY_FIELDS = [
  */
 export function validateEpisodeOp(op: EpisodeSummaryOp): string | null {
   if (op.summary.length === 0) {
-    return "episode summary 不能为空";
+    return fail("EPISODE_EMPTY_SUMMARY", "episode summary 不能为空");
   }
   if (op.summary.length > 200) {
-    return `episode summary 长度 ${op.summary.length} 超过上限 200`;
+    return fail("EPISODE_SUMMARY_TOO_LONG", `episode summary 长度 ${op.summary.length} 超过上限 200`);
   }
   for (const field of EPISODE_ARRAY_FIELDS) {
     const values = op[field];
     if (values.some((value) => value.length === 0)) {
-      return `episode ${field} 含空字符串元素`;
+      return fail("EPISODE_EMPTY_TAG", `episode ${field} 含空字符串元素`);
     }
     if (new Set(values).size > 20) {
-      return `episode ${field} 去重后元素数 ${new Set(values).size} 超过上限 20`;
+      return fail("EPISODE_ARRAY_TOO_LONG", `episode ${field} 去重后元素数 ${new Set(values).size} 超过上限 20`);
     }
   }
   return null;
@@ -368,27 +394,55 @@ export function setupPrerequisitesSatisfied(
 /**
  * Decide the directive for one setup at a checkpoint.
  * - paid_off/dropped → undefined (no directive)
+ * - 超期（age ≥ maxUntouchedCheckpoints）→ resolve_or_drop 第三档（记忆 spec
+ *   §8.3，MA-A）：先于前置门——超期伏笔必须推进回收或显式放弃，不得继续悬置
  * - prerequisites unsatisfied → hold (audit P1-4: must not reinforce/payoff
  *   before the player has triggered the prerequisite)
  * - payoffBeforeAnchor matches the current anchor → payoff now (only for
  *   states the validator accepts a payoff from: seeded|reinforced|ready —
  *   otherwise the director would issue an instruction the validator
- *   rejects, audit finding 3)
+ *   rejects, audit finding 3)；depth=heavy 且 reinforcementCount<2 → 积累
+ *   不足不回收，改发 reinforce（ready 无法 reinforce → hold 观望）（§8.1）
  * - seeded and untouched for ≥ 2 checkpoints → reinforce soon
  * - otherwise → hold (normal urgency)
+ *
+ * 所有非终态 directive：intendedPayoff 未声明时携带 payoffMissing（§8.2，
+ * brief 标注「未定回收计划」）。
  */
 export function classifySetup(
   item: SetupPayoff,
   checkpoint: number,
   currentAnchorId: string | undefined,
   prerequisitesSatisfied: boolean,
+  maxUntouchedCheckpoints = 6,
 ): SetupDirective | undefined {
   if (item.status === "paid_off" || item.status === "dropped") {
     return undefined;
   }
+  const payoffMissing = item.intendedPayoff === undefined;
+  const lastTouched =
+    item.lastTouchedAtCheckpoint ?? item.seededAtCheckpoint ?? checkpoint;
+  // Timeline fields are checkpoint units (narrative beats), so the age
+  // math below is unit-consistent (audit finding 3).
+  const age = checkpoint - lastTouched;
+  if (age >= maxUntouchedCheckpoints) {
+    return {
+      id: item.id,
+      action: "resolve_or_drop",
+      urgency: "overdue",
+      premise: item.setup,
+      ...(payoffMissing ? { payoffMissing: true } : {}),
+    };
+  }
   // 前置未满足：只能 hold——不得在玩家尚未触发前置前强化/兑现（audit P1-4）。
   if (!prerequisitesSatisfied) {
-    return { id: item.id, action: "hold", urgency: "normal", premise: item.setup };
+    return {
+      id: item.id,
+      action: "hold",
+      urgency: "normal",
+      premise: item.setup,
+      ...(payoffMissing ? { payoffMissing: true } : {}),
+    };
   }
   if (
     item.payoffBeforeAnchor !== undefined &&
@@ -397,25 +451,58 @@ export function classifySetup(
       item.status === "reinforced" ||
       item.status === "ready")
   ) {
-    const directive: SetupDirective = {
-      id: item.id,
-      action: "payoff",
-      urgency: "now",
-      premise: item.setup,
-    };
-    if (item.intendedPayoff !== undefined) {
-      directive.payoff = item.intendedPayoff;
+    // depth 门控（§8.1）：heavy 且 reinforcementCount < 2 → 积累不足不回收。
+    const underAccumulated = item.depth === "heavy" && item.reinforcementCount < 2;
+    if (!underAccumulated) {
+      const directive: SetupDirective = {
+        id: item.id,
+        action: "payoff",
+        urgency: "now",
+        premise: item.setup,
+      };
+      if (item.intendedPayoff !== undefined) {
+        directive.payoff = item.intendedPayoff;
+      }
+      if (payoffMissing) {
+        directive.payoffMissing = true;
+      }
+      return directive;
     }
-    return directive;
+    // 改发 reinforce（validator 只接受 seeded|reinforced）；ready 无法 reinforce
+    // → hold 观望，宁可不指令也不发会被拒的指令。
+    if (item.status === "seeded" || item.status === "reinforced") {
+      return {
+        id: item.id,
+        action: "reinforce",
+        urgency: "now",
+        premise: item.setup,
+        ...(payoffMissing ? { payoffMissing: true } : {}),
+      };
+    }
+    return {
+      id: item.id,
+      action: "hold",
+      urgency: "normal",
+      premise: item.setup,
+      ...(payoffMissing ? { payoffMissing: true } : {}),
+    };
   }
   if (item.status === "seeded") {
-    // Timeline fields are checkpoint units (narrative beats), so the age
-    // math below is unit-consistent (audit finding 3).
-    const lastTouched =
-      item.lastTouchedAtCheckpoint ?? item.seededAtCheckpoint ?? checkpoint;
-    if (checkpoint - lastTouched >= 2) {
-      return { id: item.id, action: "reinforce", urgency: "soon", premise: item.setup };
+    if (age >= 2) {
+      return {
+        id: item.id,
+        action: "reinforce",
+        urgency: "soon",
+        premise: item.setup,
+        ...(payoffMissing ? { payoffMissing: true } : {}),
+      };
     }
   }
-  return { id: item.id, action: "hold", urgency: "normal", premise: item.setup };
+  return {
+    id: item.id,
+    action: "hold",
+    urgency: "normal",
+    premise: item.setup,
+    ...(payoffMissing ? { payoffMissing: true } : {}),
+  };
 }

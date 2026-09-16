@@ -22,11 +22,16 @@ import { DirectorPlanSchema } from "../../core/narrative/director-plan.js";
 import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import {
   EpisodeMemorySchema,
+  FactRecordSchema,
+  LessonSchema,
   NarrativeMemoryStateSchema,
 } from "../../core/narrative/memory-types.js";
 import type {
   EpisodeMemory,
+  FactRecord,
+  Lesson,
   NarrativeMemoryState,
+  EndingReport,
 } from "../../core/narrative/memory-types.js";
 import type { RejectedOp } from "../../core/narrative/memory-operation.js";
 
@@ -34,6 +39,9 @@ const STATE_FILE = "narrative-state.json";
 const EPISODES_FILE = "episodes.jsonl";
 const OPS_FILE = "narrative-ops.jsonl";
 const PLAN_FILE = "director-plan.json";
+const FACTS_FILE = "facts.jsonl";
+const LESSONS_FILE = "lessons.jsonl";
+const ENDING_REPORT_FILE = "ending-report.json";
 
 const EMPTY_STATE: NarrativeMemoryState = {
   revision: 0,
@@ -169,5 +177,88 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
     const tmpPath = `${this.planPath}.tmp-${process.pid}-${Date.now()}`;
     await writeFile(tmpPath, JSON.stringify(plan), "utf8");
     await rename(tmpPath, this.planPath);
+  }
+
+  // ---------------------------------------------------------------------
+  // MA-A 通道（facts.jsonl / lessons.jsonl / ending-report.json）。
+  // jsonl 与 episodes 同模式：append-only、损坏行跳过、去重按 id。
+  // ---------------------------------------------------------------------
+
+  private get factsPath(): string {
+    return path.join(this.dir, FACTS_FILE);
+  }
+
+  private get lessonsPath(): string {
+    return path.join(this.dir, LESSONS_FILE);
+  }
+
+  private get endingReportPath(): string {
+    return path.join(this.dir, ENDING_REPORT_FILE);
+  }
+
+  /** 泛化的 jsonl 追加（episodes/ops/facts/lessons 共用形状）。 */
+  private async appendJsonl(
+    filePath: string,
+    rows: readonly unknown[],
+  ): Promise<void> {
+    if (rows.length === 0) return;
+    await mkdir(this.dir, { recursive: true });
+    const lines = rows.map((row) => JSON.stringify(row)).join("\n");
+    await appendFile(filePath, `${lines}\n`, "utf8");
+  }
+
+  /** 泛化的 jsonl 读取：损坏行跳过、按 id 去重、缺文件降级为空。 */
+  private async loadJsonl<T>(
+    filePath: string,
+    schema: { safeParse(value: unknown): { success: boolean; data?: T } },
+  ): Promise<T[]> {
+    const out: T[] = [];
+    const seenIds = new Set<string>();
+    try {
+      const raw = await readFile(filePath, "utf8");
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+        try {
+          const parsed: unknown = JSON.parse(trimmed);
+          const checked = schema.safeParse(parsed);
+          if (checked.success && checked.data !== undefined) {
+            const id = (checked.data as { id?: string }).id;
+            if (typeof id !== "string" || !seenIds.has(id)) {
+              if (typeof id === "string") seenIds.add(id);
+              out.push(checked.data);
+            }
+          }
+        } catch {
+          // Corrupt single line → skip it, keep the rest.
+        }
+      }
+    } catch {
+      // Missing file → empty list.
+    }
+    return out;
+  }
+
+  async appendFacts(records: FactRecord[]): Promise<void> {
+    await this.appendJsonl(this.factsPath, records);
+  }
+
+  async loadFacts(): Promise<FactRecord[]> {
+    return this.loadJsonl(this.factsPath, FactRecordSchema);
+  }
+
+  async appendLessons(lessons: Lesson[]): Promise<void> {
+    await this.appendJsonl(this.lessonsPath, lessons);
+  }
+
+  async loadLessons(): Promise<Lesson[]> {
+    return this.loadJsonl(this.lessonsPath, LessonSchema);
+  }
+
+  async writeEndingReport(report: EndingReport): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    const tmpPath = `${this.endingReportPath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tmpPath, JSON.stringify(report, null, 2), "utf8");
+    await rename(tmpPath, this.endingReportPath);
   }
 }

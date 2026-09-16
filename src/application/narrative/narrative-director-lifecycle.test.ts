@@ -7,7 +7,7 @@
  * narrative-director-test-kit.ts.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 import type { NarrativeMemoryState, PlotThread, SetupPayoff, StoryAnchorState, EpisodeMemory } from "../../core/narrative/memory-types.js";
 import type { RejectedOp } from "../../core/narrative/memory-operation.js";
@@ -264,3 +264,61 @@ describe("NarrativeDirectorService lifecycle", () => {
     });
   });
 });
+
+
+  describe("ending report trigger (MA-A §8.4)", () => {
+    it("writes ending-report.json asynchronously when the EndEvent is observed", async () => {
+      const store = new FakeStore();
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: undefined,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+      svc.observeCommitted([makeEvent(1)]);
+      const endEvent = {
+        seq: 2,
+        turn: 1,
+        timestamp: new Date().toISOString(),
+        source: "model" as const,
+        type: "end" as const,
+        ending_id: "ending_1",
+        text: "（落幕。）",
+      };
+      svc.observeCommitted([endEvent]);
+      // fire-and-forget：报告在后台聚合落盘，等待其出现
+      await vi.waitFor(() => {
+        expect(store.endingReports).toHaveLength(1);
+      });
+      expect(store.endingReports[0]!.generatedAt).toBeDefined();
+    });
+
+    it("does not write a report for ordinary narration events", async () => {
+      const store = new FakeStore();
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: undefined,
+        plan: makePlan(),
+      });
+      await svc.initialize();
+      svc.observeCommitted([makeEvent(1), makeEvent(2)]);
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      expect(store.endingReports).toHaveLength(0);
+    });
+  });
+
+  it("getBrief is synchronous (zero-await red line, spec §11)", async () => {
+    const store = new FakeStore();
+    const svc = new NarrativeDirectorService({
+      config: makeConfig(),
+      store,
+      consolidator: undefined,
+      plan: makePlan(),
+    });
+    await svc.initialize();
+    const brief = svc.getBrief({ turn: 1, eventSeq: 1, location: "", characters: [] });
+    expect(brief).not.toBeInstanceOf(Promise);
+    expect(brief.avoidanceLessons).toEqual([]);
+  });

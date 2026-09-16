@@ -12,10 +12,12 @@ import { z } from "zod";
 
 import {
   EpisodeMemorySchema,
+  LessonSchema,
   StoryAnchorStateSchema,
 } from "./memory-types.js";
 import type {
   EpisodeMemory,
+  Lesson,
   PlotThread,
   StoryAnchorState,
 } from "./memory-types.js";
@@ -60,6 +62,8 @@ export interface NarrativeBrief {
   anchors: StoryAnchorState[];
   /** From the active director plan; empty when no plan is in effect. */
   revealLocks: string[];
+  /** 规避清单（记忆 spec §7.3，MA-A）：active lessons，occurrences 降序。 */
+  avoidanceLessons: Lesson[];
   // 第 3 步新增（可选；无有效计划时为 undefined → 渲染省略 [导演目标]）
   phase?: DirectorPhase;
   currentGoal?: string;
@@ -94,6 +98,7 @@ export const NarrativeBriefSchema: z.ZodType<NarrativeBrief> = z.object({
   relevantEpisodes: z.array(EpisodeMemorySchema),
   anchors: z.array(StoryAnchorStateSchema),
   revealLocks: z.array(z.string().min(1)),
+  avoidanceLessons: z.array(LessonSchema),
   phase: z.exactOptional(DirectorPhaseSchema),
   currentGoal: z.exactOptional(z.string().min(1).max(200)),
   beats: z.exactOptional(z.array(PlannedBeatSchema).min(1).max(6)),

@@ -247,10 +247,12 @@ describe("loadStoryPlan", () => {
       expect(plan.setups.map((s) => s.id)).toEqual(["good_setup"]);
       expect(plan.anchors.map((a) => a.id)).toEqual(["good_anchor"]);
 
-      expect(diagnostics.warns).toHaveLength(3);
+      // broken_setup 跳过 + good_setup 缺 intended_payoff 的 §8.2 warning
+      expect(diagnostics.warns).toHaveLength(4);
       expect(diagnostics.warns.some((w) => w.startsWith("thread 条目跳过: broken_thread"))).toBe(true);
       expect(diagnostics.warns.some((w) => w.startsWith("setup 条目跳过: broken_setup"))).toBe(true);
       expect(diagnostics.warns.some((w) => w.startsWith("anchor 条目跳过: broken_anchor"))).toBe(true);
+      expect(diagnostics.warns.some((w) => w.includes("good_setup") && w.includes("intended_payoff"))).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -97,6 +97,7 @@ function makeSetup(overrides: Partial<SetupPayoff> & { id: string }): SetupPayof
   return {
     kind: "object",
     setup: `${overrides.id} setup`,
+    intendedPayoff: `${overrides.id} payoff`,
     status: "planned",
     reinforcementCount: 0,
     prerequisites: [],

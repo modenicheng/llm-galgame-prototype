@@ -106,13 +106,23 @@ function parseSetup(
   const id = typeof fields.id === "string" ? fields.id : `<entry ${index}>`;
   try {
     // Setups are always authored as "planned"; the runtime seeds them later.
-    return SetupPayoffSchema.parse({
+    const setup = SetupPayoffSchema.parse({
       ...fields,
       source: "author",
       status: "planned",
       reinforcementCount: fields.reinforcementCount ?? 0,
       prerequisites: fields.prerequisites ?? [],
     });
+    // 「没有回收计划的伏笔不许下场」（记忆 spec §8.2）：author seed 缺
+    // intended_payoff 只记 warning（brief 标注「未定回收计划」、planner 输入
+    // 高亮）；运行时 seed 该伏笔会被 validator 硬拒。
+    if (setup.intendedPayoff === undefined) {
+      diagnostics.warn(
+        WARN_SCOPE,
+        `setup ${id} 未声明 intended_payoff：brief 将标注「未定回收计划」，seed 时将被拒绝`,
+      );
+    }
+    return setup;
   } catch (error) {
     if (error instanceof z.ZodError) {
       diagnostics.warn(WARN_SCOPE, `setup 条目跳过: ${id} ${formatZodError(error)}`);

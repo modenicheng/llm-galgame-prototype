@@ -273,7 +273,14 @@ describe("loadConfig narrative section", () => {
 
     expect(config.narrative.mode).toBe("longform");
     expect(config.narrative.threads).toEqual({ max_major_active: 2, max_minor_active: 3 });
-    expect(config.narrative.setups).toEqual({ max_active: 6 });
+    expect(config.narrative.setups).toEqual({
+      max_active: 6,
+      max_untouched_checkpoints: 6,
+    });
+    expect(config.narrative.lessons).toEqual({
+      auto_from_rejections: 2,
+      brief_max: 8,
+    });
     expect(config.narrative.consolidation).toEqual({
       batch_min_events: 4,
       max_events_per_call: 80,
@@ -325,7 +332,14 @@ describe("loadConfig narrative section", () => {
 
     expect(config.narrative.mode).toBe("event");
     expect(config.narrative.threads).toEqual({ max_major_active: 5, max_minor_active: 8 });
-    expect(config.narrative.setups).toEqual({ max_active: 10 });
+    expect(config.narrative.setups).toEqual({
+      max_active: 10,
+      max_untouched_checkpoints: 6,
+    });
+    expect(config.narrative.lessons).toEqual({
+      auto_from_rejections: 2,
+      brief_max: 8,
+    });
     expect(config.narrative.consolidation).toEqual({
       batch_min_events: 6,
       max_events_per_call: 120,

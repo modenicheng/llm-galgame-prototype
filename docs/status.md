@@ -54,6 +54,16 @@
   硬过期非阻塞 barrier、锚点推进与 consolidation 走内存写互斥。
 - 三条硬约束（只记 committed / 计划不入事实记忆 / planner 不写台词）全部落实。
 - `story-plan.yaml` 作者种子（threads / setups / anchors），加载容错。
+- **记忆审计 Phase A（MA-A，2026-09-17）**：伏笔台账增强——`depth` 三档 +
+  heavy 积累门控 + RESOLVE_OR_DROP 强制了断第三档（超期先于前置门）；
+  intendedPayoff 必填（author seed 缺省记 warning，运行时 seed 硬拒，稳定规则
+  码 `SETUP_SEED_WITHOUT_INTENDED_PAYOFF`）；**终局报告** `ending-report.json`
+  （EndEvent 经 observeCommitted 触发、fire-and-forget、确定性聚合回收率/
+  threads 终态/lessons 摘要）；**教训库 lessons**（`lesson-service.ts`：被拒 op
+  按稳定规则码计数 ≥ `lessons.auto_from_rejections` 自动晋升、滚动窗口、
+  brief [规避清单] 渲染）；facts.jsonl / lessons.jsonl 存储通道（facts 写入者
+  随 Phase B）。validator 拒绝 reason 统一带 `[CODE] ` 稳定规则码前缀。
+  `narrative-director-service.test.ts` 沿子系统缝拆分为 4 文件 + test-kit。
 
 ### 资源与舞台（浏览器）
 - **资源目录**：`assets/resources.yaml` → `AssetCatalog`（Runtime/Model 双投影）→

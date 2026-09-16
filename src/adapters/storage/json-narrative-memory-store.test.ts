@@ -11,6 +11,9 @@ import path from "node:path";
 import { JsonNarrativeMemoryStore } from "./json-narrative-memory-store.js";
 import type {
   EpisodeMemory,
+  FactRecord,
+  EndingReport,
+  Lesson,
   NarrativeMemoryState,
 } from "../../core/narrative/memory-types.js";
 import type { RejectedOp } from "../../core/narrative/memory-operation.js";
@@ -229,5 +232,87 @@ describe("JsonNarrativeMemoryStore", () => {
     await mkdir(path.join(dir, "test-session"), { recursive: true });
     await writeFile(path.join(dir, "test-session", "director-plan.json"), "{corrupt", "utf8");
     expect(await store.loadPlan()).toBeNull();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// MA-A 存储通道：facts.jsonl / lessons.jsonl / ending-report.json
+// ---------------------------------------------------------------------------
+
+describe("JsonNarrativeMemoryStore MA-A channels", () => {
+  let dir: string;
+  let store: JsonNarrativeMemoryStore;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "nar-mem-maa-"));
+    store = new JsonNarrativeMemoryStore(dir, "test-session");
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("round-trips lessons and dedupes by id", async () => {
+    const lesson: Lesson = {
+      id: "lesson_1",
+      tag: "setup-flow",
+      content: "没有回收计划的伏笔不许下场",
+      source: "rejection",
+      sourceRef: "SETUP_SEED_WITHOUT_INTENDED_PAYOFF",
+      occurrences: 2,
+      active: true,
+      createdAtCheckpoint: 3,
+    };
+    await store.appendLessons([lesson]);
+    await store.appendLessons([{ ...lesson, occurrences: 3 }]); // 重试重复同 id
+    const loaded = await store.loadLessons();
+    // 与 episodes 同模式：按 id 去重、保留首条（spec §5.3）
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]!.occurrences).toBe(2);
+  });
+
+  it("round-trips facts and skips corrupt or invalid lines", async () => {
+    const fact: FactRecord = {
+      id: "fact_1",
+      content: "地下室第 4 号门已焊死",
+      evidenceEventSeqs: [3, 4],
+      checkpoint: 2,
+      superseded: false,
+    };
+    await store.appendFacts([fact]);
+    const sessionDir = path.join(dir, "test-session");
+    await appendFile(
+      path.join(sessionDir, "facts.jsonl"),
+      "{corrupt\n",
+      "utf8",
+    );
+    const loaded = await store.loadFacts();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]!.content).toBe("地下室第 4 号门已焊死");
+  });
+
+  it("loadLessons/loadFacts return empty arrays when files are missing", async () => {
+    expect(await store.loadLessons()).toEqual([]);
+    expect(await store.loadFacts()).toEqual([]);
+  });
+
+  it("writes the ending report atomically and overwrites on re-trigger", async () => {
+    const report: EndingReport = {
+      generatedAt: "2026-09-17T00:00:00Z",
+      setups: { paidOff: 1, dropped: 0, active: 1, payoffRate: 0.5 },
+      threads: { resolved: 1, abandoned: 0, active: 1 },
+      lessons: [],
+    };
+    await store.writeEndingReport(report);
+    const second = { ...report, setups: { ...report.setups, paidOff: 2 } };
+    await store.writeEndingReport(second);
+    const raw = await readFile(
+      path.join(dir, "test-session", "ending-report.json"),
+      "utf8",
+    );
+    const parsed = JSON.parse(raw) as EndingReport;
+    expect(parsed.setups.paidOff).toBe(2);
+    expect(parsed.setups.payoffRate).toBe(0.5);
   });
 });

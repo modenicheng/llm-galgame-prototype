@@ -7,10 +7,13 @@ import type { NarrativeConfig } from "../../config.js";
 import type { StoredEvent } from "../../schema.js";
 import type {
   EpisodeMemory,
+  FactRecord,
+  Lesson,
   NarrativeMemoryState,
   PlotThread,
   SetupPayoff,
   StoryAnchorState,
+  EndingReport,
 } from "../../core/narrative/memory-types.js";
 import type { RejectedOp } from "../../core/narrative/memory-operation.js";
 import type { DirectorPlan } from "../../core/narrative/director-plan.js";
@@ -111,6 +114,31 @@ export class FakeStore implements NarrativeMemoryStorePort {
   seedPlan(plan: DirectorPlan): void {
     this.plan = plan;
   }
+
+  // MA-A 通道（lessons/facts/ending-report）
+  lessons: Lesson[] = [];
+  facts: FactRecord[] = [];
+  endingReports: EndingReport[] = [];
+
+  async appendLessons(lessons: Lesson[]): Promise<void> {
+    this.lessons.push(...lessons);
+  }
+
+  async loadLessons(): Promise<Lesson[]> {
+    return [...this.lessons];
+  }
+
+  async appendFacts(records: FactRecord[]): Promise<void> {
+    this.facts.push(...records);
+  }
+
+  async loadFacts(): Promise<FactRecord[]> {
+    return [...this.facts];
+  }
+
+  async writeEndingReport(report: EndingReport): Promise<void> {
+    this.endingReports.push(report);
+  }
 }
 
 /** Empty state factory (returns a fresh object every time). */
@@ -160,6 +188,7 @@ export function makeSetup(overrides: Partial<SetupPayoff> & { id: string }): Set
   return {
     kind: "object",
     setup: `${overrides.id} setup`,
+    intendedPayoff: `${overrides.id} payoff`,
     status: "planned",
     reinforcementCount: 0,
     prerequisites: [],

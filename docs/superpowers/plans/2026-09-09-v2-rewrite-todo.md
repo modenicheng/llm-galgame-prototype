@@ -35,7 +35,7 @@
 
 ## 2. 现状基线（2026-09-17，含 D9 落地）
 
-**验证基线**：1434 测试 / 97 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
+**验证基线**：1466 测试 / 102 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
 
 已完成 M0–M2.2（历史细节见附录 A）。已落地组件：
 
@@ -87,11 +87,12 @@
 
 依据：`docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md`（下称「记忆 spec」，§N 均指该文件）。该 spec 已定稿且高度可执行，任务卡只做排期与冲突决议，细则以 spec 为准。
 
-- [ ] **MA-A 确定性规则与存储骨架**（记忆 spec §12 Phase A 条目 1–5）
+- [x] **MA-A 确定性规则与存储骨架**（记忆 spec §12 Phase A 条目 1–5）
   前置：无。关联：§5–§8、§10 变更表、§14 测试矩阵。
   要点：① depth 字段 + scheduler 门控 + RESOLVE_OR_DROP 第三档（§8.1/8.3）；② intendedPayoff 必填（runtime 拒绝 + author seed warning，§8.2）；③ 终局报告 ending-report.json（§8.4，确定性聚合，EndEvent 提交后异步）；④ lessons 存储 + rejection 自动晋升 + brief 规避清单（§7）；⑤ facts.jsonl/lessons.jsonl 存储通道（§5.3，B 阶段才有写入者）。新增配置键（facts/lessons/setups/beliefs 各上限）全部带 zod 默认值并被读取。
   **卫生前置**：`src/application/narrative/narrative-director-service.test.ts`（2421 行）沿子系统缝拆分（consolidation / replan / brief / 生命周期；§14 矩阵即分缝参考），新测试进对应文件；完成后把它移出仓库根 `.hygiene.config.json` 的 allowlist。
   验收：记忆 spec §12 Phase A 验收的自动化等价（全量绿；RESOLVE_OR_DROP 进 brief 的单测；ending-report 数值单测）；getBrief 零新增 await 的断言（§11 红线）。
+  落地（2026-09-17）：①–⑤ 全部落地——`memory-types` 增 depth/Lesson/FactRecord/EndingReport（含 schema）；`memory-validator` 拒绝 reason 带稳定规则码前缀（`[CODE] `，`rejectionRule()` 解析）+ SETUP_SEED_WITHOUT_INTENDED_PAYOFF 规则；`classifySetup` 增超期第三档（先于前置门）与 heavy 积累门控（ready 无法 reinforce 时 hold 观望）；`lesson-service.ts`（新）拒绝码计数晋升 + 滚动窗口 + brief 排序；`ending-report.ts`（新）确定性聚合，service 在 observeCommitted 检测 `type:"end"` 后 fire-and-forget 写 `ending-report.json`（零 game.ts 改动）；store 增 facts/lessons jsonl 通道与 ending-report 原子写；brief 增 `avoidanceLessons` + [规避清单]/超期语气/「未定回收计划」渲染；story-plan loader 缺 intended_payoff 记 warning。测试拆分完成（4 文件 + test-kit，2421 行原文件删除，allowlist 移除）。偏差：facts/beliefs 配置键（facts.brief_max / beliefs.max_active_per_character）随 MA-B 与其读取者同期加入，避免当前成为死键（记附录 B）。
 
 - [ ] **MA-B consolidator 扩展 + digest v2**（记忆 spec §12 Phase B 条目 6–9）
   前置：MA-A。关联：§5/§6/§9/§10/§14；决议 D4/D6。
@@ -345,5 +346,6 @@
 （历史/素材前置、任务头置尾），删除 `game.history_events`（schema、config.yaml、全部 fixture/断言）；
 目的 = provider 前缀缓存命中（相邻请求共享「系统提示 + 历史 + 素材」前缀，回溯 = 重放天然截尾）。
 基线由 1421 测试更新为 1422 测试（布局顺序断言重写）；规范回写 llm-outputs-refactor §70。
+- 2026-09-17（MA-A 落地）：记忆 spec Phase A 五项全部落地（depth/RESOLVE_OR_DROP、intendedPayoff 硬拒 + author warning、ending-report 异步聚合、lessons 拒绝码计数自动晋升 + brief 规避清单、facts/lessons jsonl 通道）。偏差两条：① 拒绝 reason 引入 `[CODE] ` 稳定规则码前缀（§7.2 来源 2 的计数键；人话部分未变）；② facts.brief_max / beliefs.max_active_per_character 配置键随 MA-B 与其读取者同期加入（避免阶段内成为死键）。`narrative-director-service.test.ts` 沿子系统缝拆分为 lifecycle/consolidation/brief/replan 四文件 + `narrative-director-test-kit.ts`，allowlist 移除。
 - 2026-09-17（StoryState 瘦身立项，决议 D10）：审查确认 StoryState 富字段（canon/open_threads/player_profile/角色 emotion·current_goal·relationship_to_player·known_facts）自 state_patch 应用路径删除后无写入者（status.md §80–§81 记录）。立项 MA-A2 卡（P2，置于 MA-B 之后），`SNAPSHOT_VERSION` 再递增获预授权；同批清扫 patch.ts 与 GenerationEnvelope.state_patch 死代码。物品/场景关键细节的语义记录归 MA-B facts 承载，不进 storyState 结构字段。
 - 2026-09-17（GH-P1 卫生门）：subagent 只读评审 16 条（P2×5、P3×11，无 P1）。**P2 当场修复**：① `create-runtime-application.ts` 主函数拆出 `selectTtsProvider`/`buildAudioStack`/`buildGraphCoordinator`，导出 `DEFAULT_GAMES_ROOT`（web.ts 不再硬编码 "games"）；② `requestDslEnvelope` 拆出 `buildStreamRequest`/`buildRepairInstruction` 方法与 processDslLine/flushTruncatedTail/finalizeAttempt 具名闭包（尾冲嵌套 5 层→早返回）；③ `media.audio` V1 平面字段全删（enabled/provider/active_target_lines/refill_threshold_lines/branch_prefetch_lines/batch_size/max_concurrency/mock_latency_ms/output_dir——生产零读取的死键，config 无死键纪律），同批清 `mergePatchesList` 死代码与 `CreateRuntimeApplication` 死导出。**P3 记档（待后续卡顺带清偿，不阻塞）**：cli.ts `printMetrics` 死参数 game 与 reduce 求均值 ×3；web/cli `parseArgs` 近重复；last-game.test 临时目录模板 ×6；config 默认值在 zod `.default` 与代码 `??` 多处派生（含 bootstrap 兜底 cosyvoice_v3_flash/22050/2）；`interaction.default_mode` 校验但运行时不消费的死键；`makeCtx(null as unknown as StoryState)` 类型欺骗（buildSystemContext 入参应收窄）；GeneratorPortFacade 5 处条件展开；`confluence?.enabled` 可选链与类型矛盾；MediaPlannerPort `isReady`/`waitUntilReady` 过渡桩。基线 1434 测试 / 97 文件。
