@@ -646,87 +646,78 @@ export class Game {
     }
   }
 
-  private prepareContinuationAfterSelection(
+  private async prepareContinuationAfterSelection(
     previousSegment: ActiveSegment,
     outcome: ChoiceOutcome,
     history: StoryContextEvent[],
   ): Promise<ActiveSegment> {
     const live = outcome.liveSelection;
     const liveResponse = outcome.liveResponse;
-    const waitForPrevious = previousSegment.done.catch(() => undefined);
+    // 旧的活动请求在发出 terminal 后可能仍在收尾；等它释放调度器再续写。
+    await previousSegment.done.catch(() => undefined);
 
     if (liveResponse) {
       // The confirmed response stream is still running. Its remaining events
       // join the committed prefix: player line + bridge + full response. No
       // new LLM request is created until the response task completes.
-      return waitForPrevious
-        .then(() => liveResponse.done.catch(() => undefined))
-        .then(async () => {
-          // A low-water refill may have started while the response was being
-          // consumed (the response lane holds no scheduler slot); reclaim it
-          // so the new segment owns the slot and the buffer stays consistent.
-          await this.reclaimPendingRefill();
-          const committed = [...outcome.preview];
-          for (const event of liveResponse.responseEvents) {
-            if (!committed.some((existing) => existing.line_id === event.line_id)) {
-              committed.push(event);
-            }
-          }
-          return this.startActiveSegment(
-            "continuation",
-            outcome.nextTurn,
-            history,
-            committed,
-            undefined,
-            this.forceEnding,
-          );
-        });
+      await liveResponse.done.catch(() => undefined);
+      // A low-water refill may have started while the response was being
+      // consumed (the response lane holds no scheduler slot); reclaim it
+      // so the new segment owns the slot and the buffer stays consistent.
+      await this.reclaimPendingRefill();
+      const committed = [...outcome.preview];
+      for (const event of liveResponse.responseEvents) {
+        if (!committed.some((existing) => existing.line_id === event.line_id)) {
+          committed.push(event);
+        }
+      }
+      return this.startActiveSegment(
+        "continuation",
+        outcome.nextTurn,
+        history,
+        committed,
+        undefined,
+        this.forceEnding,
+      );
     }
 
     if (!live) {
-      return waitForPrevious.then(async () => {
-        await this.reclaimPendingRefill();
-        return this.startActiveSegment(
-          "continuation",
-          outcome.nextTurn,
-          history,
-          outcome.preview,
-          undefined,
-          this.forceEnding,
-        );
-      });
+      await this.reclaimPendingRefill();
+      return this.startActiveSegment(
+        "continuation",
+        outcome.nextTurn,
+        history,
+        outcome.preview,
+        undefined,
+        this.forceEnding,
+      );
     }
 
     // The old active request may still be closing after emitting its terminal
     // event. Once it releases the scheduler, promote the existing branch
     // controller. The branch request itself is never restarted.
-    return waitForPrevious
-      .then(() => {
-        this.generationScheduler.adoptCandidateBranch(
-          live.taskId,
-          live.branchId,
-          live.controller,
-        );
-        void live.done.then(
-          () => this.generationScheduler.completeActivePath(live.taskId),
-          () => this.generationScheduler.completeActivePath(live.taskId),
-        );
-      })
-      .then(() => live.done.catch(() => undefined))
-      .then(async () => {
-        // Reclaim before taking the slot: the branch lane released it when
-        // the branch task settled, so a refill may have slipped in.
-        await this.reclaimPendingRefill();
-        const selectedEvents = [...live.events];
-        return this.startActiveSegment(
-          "continuation",
-          outcome.nextTurn,
-          history,
-          selectedEvents,
-          undefined,
-          this.forceEnding,
-        );
-      });
+    this.generationScheduler.adoptCandidateBranch(
+      live.taskId,
+      live.branchId,
+      live.controller,
+    );
+    void live.done.then(
+      () => this.generationScheduler.completeActivePath(live.taskId),
+      () => this.generationScheduler.completeActivePath(live.taskId),
+    );
+    await live.done.catch(() => undefined);
+    // Reclaim before taking the slot: the branch lane released it when
+    // the branch task settled, so a refill may have slipped in.
+    await this.reclaimPendingRefill();
+    const selectedEvents = [...live.events];
+    return this.startActiveSegment(
+      "continuation",
+      outcome.nextTurn,
+      history,
+      selectedEvents,
+      undefined,
+      this.forceEnding,
+    );
   }
 
   /**
@@ -1545,7 +1536,6 @@ export class Game {
       this.media.registerActive([playable]);
       this.playbackBuffer.enqueue(playable);
       segment.queue.push(playable);
-      void cues;
       return;
     }
 
@@ -2260,9 +2250,13 @@ export class Game {
     if (threshold <= 1) return;
     // §74：段 done 一旦 settled（无论成败）即放行。失败段 endStatus 恒空
     // （handleSegmentEnd 只在干净 @end 时触发），只等 endStatus 会在
-    // “前缀不足 threshold 且已失败”时热旋转（race 立即返回的忙循环）。
+    // “前缀不足 threshold 且已失败”时卡死。
+    //
+    // 等待是事件驱动的：缓冲水位只会在变更时升高，PlaybackBuffer.changed()
+    // 在每次入队/推进/清理时唤醒本循环；段结束由 done 的 settled 影子
+    // promise 唤醒。无轮询、无忙等。
     let settled = false;
-    void segment.done.then(
+    const settledOrDone = segment.done.then(
       () => {
         settled = true;
       },
@@ -2272,13 +2266,7 @@ export class Game {
     );
     while (this.playbackBuffer.countTextLinesAhead() < threshold) {
       if (segment.endStatus !== null || settled) return;
-      await Promise.race([
-        segment.done.then(
-          () => undefined,
-          () => undefined,
-        ),
-        new Promise<void>((resolve) => setTimeout(resolve, 50)),
-      ]);
+      await Promise.race([settledOrDone, this.playbackBuffer.changed()]);
     }
   }
 

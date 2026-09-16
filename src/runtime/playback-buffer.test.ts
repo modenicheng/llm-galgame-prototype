@@ -138,4 +138,65 @@ describe("PlaybackBuffer", () => {
     expect(buffer.totalCount()).toBe(0);
     expect(buffer.pendingCount()).toBe(0);
   });
+
+  describe("changed()", () => {
+    it("resolves a waiter on the next mutation and not before", async () => {
+      const buffer = new PlaybackBuffer();
+      let mutated = false;
+      const waiting = buffer.changed().then(() => {
+        mutated = true;
+      });
+      await Promise.resolve();
+      expect(mutated).toBe(false); // no spurious resolution while idle
+      buffer.enqueue(narration("A"));
+      await waiting;
+      expect(mutated).toBe(true);
+    });
+
+    it("shares one signal across concurrent waiters, then re-arms", async () => {
+      const buffer = new PlaybackBuffer();
+      let hits = 0;
+      const bump = (): void => {
+        hits += 1;
+      };
+      const first = Promise.all([buffer.changed().then(bump), buffer.changed().then(bump)]);
+      buffer.enqueue(narration("A")); // one mutation wakes both waiters
+      await first;
+      expect(hits).toBe(2);
+
+      let secondRound = false;
+      const second = buffer.changed().then(() => {
+        secondRound = true;
+      });
+      buffer.advance(); // the NEXT mutation wakes the re-armed signal
+      await second;
+      expect(secondRound).toBe(true);
+    });
+
+    it("a waiter created after a mutation waits for the NEXT one", async () => {
+      const buffer = new PlaybackBuffer();
+      buffer.enqueue(narration("A"));
+      let resolved = false;
+      const wait = buffer.changed().then(() => {
+        resolved = true;
+      });
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+      buffer.clear();
+      await wait;
+      expect(resolved).toBe(true);
+    });
+
+    it("fires on enqueueMany and removeLineIds", async () => {
+      const buffer = new PlaybackBuffer();
+      const onMany = buffer.changed();
+      buffer.enqueueMany([narration("A"), narration("B")]);
+      await onMany;
+
+      const onRemove = buffer.changed();
+      buffer.removeLineIds(new Set(["line_test_A"]));
+      await onRemove;
+      expect(buffer.pendingCount()).toBe(1);
+    });
+  });
 });
