@@ -17,8 +17,9 @@ guidance: |
   按台词情绪用 `ch raspberry:<变体>` 切换表情，
   悬念/身份未揭示场面可用剪影。
 
-  通用配角男生A/男生B/女生A/女生B（male_A/male_B/female_A/female_B）
-  可用于来访者、同学、路人等群像场面，
+  通用配角同学甲/同学乙（女生立绘）与同学丙/同学丁（男生立绘）可用于
+  来访者、同学、路人等群像场面；群像角色一律用这四个名字登台，
+  不要发明"同学戊/学长/路人甲"等新登台名（未注册的名字无法配立绘）。
   用 `ch <角色>:<变体>` 在 base/smile/surprised/embarrassed/joyful/angry/
   thinking/smug 间切换表情（平静/微笑/惊讶/害羞/开怀/生气/思考/得意）；
   他们默认站在左右侧，不要抢占树莓娘的中央位。
@@ -350,29 +351,32 @@ characters:
     default_variant: base
     default_position: center
 
+  # 群像配角：script_name 即戏剧名（模型在台词行头最自然写出的名字），
+  # 不要再改回"女生A/男生A"式的抽象代号——模型会改用显示名写行头，
+  # 注册表查不到导致所有立绘 cue 被静默丢弃（UNKNOWN_SPRITE_VARIANT）。
   female_A:
-    script_name: 女生A
+    script_name: 同学甲
     display_name: 同学甲
     sprite_set: female_A
     default_variant: base
     default_position: right
 
   female_B:
-    script_name: 女生B
+    script_name: 同学乙
     display_name: 同学乙
     sprite_set: female_B
     default_variant: base
     default_position: left
 
   male_A:
-    script_name: 男生A
+    script_name: 同学丙
     display_name: 同学丙
     sprite_set: male_A
     default_variant: base
     default_position: left
 
   male_B:
-    script_name: 男生B
+    script_name: 同学丁
     display_name: 同学丁
     sprite_set: male_B
     default_variant: base
