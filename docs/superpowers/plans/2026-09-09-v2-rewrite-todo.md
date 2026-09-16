@@ -194,10 +194,11 @@
   验收：grep story_line 全局注入零残留；全量绿。
   落地（2026-09-17）：`prompts/story_line.txt` 删除；`loadPrompts` 的 story_line 只读 perGamePromptDir（缺目录内文件 → 大声报错，消息含路径；未传 perGamePromptDir = 无世界启动 → `bundle.storyLine` 缺省）；`buildSystemContext` 在 storyLine 缺省时省略「故事大纲」段；`prompts.test.ts` 重写（全局装载无 storyLine / per-game 优先 / 缺失大声报错 / 空文件拒绝）+ world-generator 测试回退用例翻转为大声报错用例 + bootstrap M5.0 测试改用 per-game fixture（seedWorldPrompts）。
 
-- [ ] **M2.4 末态索引 + 场景间/滞后汇流**
+- [x] **M2.4 末态索引 + 场景间/滞后汇流**
   前置：M3.4（图形态稳定后扩候选）。关联：设计 §3.3 场景间/滞后汇流；附录 A M2.2 细则。
   要点：① 协调器维护末态索引 `Map<sceneId, {decisionId, 摘要键}[]>`（内存，hydrate 从 listDecisions 单点重建——同 ensureSceneNode 模式）；② 候选过滤去掉同场景限制（保留：非路径祖先、非自身、有入边）；确定性预筛限流（location 等价 + 在场角色集合等价优先；`OutlineNode.location` 相同 = 同物理场景不同状态，视为高优先候选——D8，同地不同状态是常见汇流点），预筛通过仍逐个交 judge，置信最高命中走既有 applyConfluenceMatch（守卫与互斥零新机制）；③ 滞后汇流天然获得：新边关闭时对索引全量预筛，旧节点即新边的候选。
   验收：跨场景命中改绑单测；预筛排除不匹配（judge 调用次数断言）；既有 7 例汇流测试零回归。
+  落地（2026-09-17）：① 末态索引 `Map<SceneId, EndStateKey[]>`（摘要键 = location + 排序在场角色集 + outline 物理地点〔sceneId → listScenes → outlineRef → OutlineNode.location〕+ entryState 快照缓存；hydrate 单点惰性重建，openDecision 增量入索引、applyConfluenceMatch 孤儿出索引）；`GraphStorePort` 增 `listScenes()`（port 非冻结契约，按卡演进；GameGraphStore latest-wins 实现）。② 候选 = 索引全集（同场景限制删除）减自身/路径祖先/无入边，`prescreenScore` ≥1 才送判（键：location 非空等价、角色集非空且全等、outline 物理地点等价——D8），按命中键数降序排序，Promise.allSettled 逐个交 judge、置信最高走既有 applyConfluenceMatch；③ 滞后汇流由全量预筛天然覆盖。测试：既有 7 例汇流测试语义保持（excludes 用例改为预筛排除语义、state-B 夹具改异键）；新增跨场景命中改绑用例（含 judge 调用面断言）。
 
 ### P6 图 UI 与结算
 
@@ -355,6 +356,7 @@
 - 2026-09-16（回溯与删除语义修订，作者发起，决议 D7）：原 §7「玩家删除决策 + 级联 GC」整体移除——已演出内容是冻结事实，删除致跨周目一致性失真；§7 重写为不可达内容内部 GC（无玩家入口），M5.6 改为「图维护」卡；回溯（M5.3/M1.5）语义澄清：`abandonedAt` 仅流水记账、图零删除；导演/编剧输入显式包含全部已实现路径（含已弃周目，spec §5.1 注记；M4.1 ⑤ / M3.6 晋升范围同步）。
 - 2026-09-16（相同物理场景不同具体状态，决议 D8）：§4 `OutlineNode` 增可选 `location`（物理地点标签，演化区字段，outline.json 尚无落盘数据、零迁移；`src/core/outline/types.ts` 已同步 + 测试）。建模分工：同幕内状态漂移由决策入口快照承载；跨幕同地不同阶段 = 多幕节点共享 location，总览（M5.1）与通关回顾（M5.5）按它并排分组；M2.4 汇流预筛将其列为高优先候选。
 
+- 2026-09-17（M2.4 落地）：「既有 7 例汇流测试零回归」按**改绑/守卫语义零回归**执行——其中「excludes other-scene nodes」用例断言的行为正是本卡删除的同场景过滤，改为等价的预筛排除断言（state-B 夹具从异场景强化为异键：location/在场角色集与主线全不等价 → judge 调用面断言保持）；`listScenes()` 为 GraphStorePort 新增方法（端口按卡演进非冻结）。预筛为**或**语义（任一键等价即送判），同周目多键命中按键数降序优先——D8 物理地点等价单独成键。
 - 2026-09-17（M3.7 落地）：「缺失即大声报错」的适用面收窄为**世界目录**——per-game `world/prompts/` 存在但缺 story_line.txt → 大声报错；而未传 perGamePromptDir（无世界启动，宿主首屏创建表单流程）→ `PromptBundle.storyLine` 变为可选缺省（`string | undefined`），`buildSystemContext` 省略该段。理由：无世界时没有任何 storyLine 可读，报错会炸掉首屏创建流程（worlds.create 之后的新装配才严格）；这不是对全局文件的静默回退（全局文件已删）。
 - 2026-09-17（M3.6 落地）：canon 修订日志文件名取 §9 布局常量 `worldCanonLog` = `world/canon.log.jsonl`（卡面行文的 `canon-log.jsonl` 以布局常量为准）；跨周目佐证采用确定性键（内容 trim 全等 + evidenceRuns 周目 id 排序），LLM 只裁决晋升/例外，不做事实匹配；`judgedBy` 由 store 盖章为 `canon-adjudicator`（promotedAt 同批）；bootstrap 晋升触发为 fire-and-forget（与 consolidator 同容错纪律，测试/CI 零网络下快速失败被吞为告警）。
 - 2026-09-17（M3.5 落地，D3 执行）：`narrative.mode` 配置键整体删除（longform 成唯一运行路径）——`DEFAULT_NARRATIVE_CONFIG`/`NarrativeConfigSchema` 去 mode/event 段，zod strip 语义下旧 yaml 中的死键静默失效（负面断言在册）；event mode 专属机构（forced ending 合成、interactionCount、endingRequired 请求字段、mode 门控装配）零残留。

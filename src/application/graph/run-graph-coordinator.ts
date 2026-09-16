@@ -63,6 +63,21 @@ import type { OutlineNode } from "../../core/outline/types.js";
 /** M1 种子大纲节点 id（编剧 M3.2 接入后由真实大纲取代；不迁移旧 game）。 */
 export const SEED_OUTLINE_NODE_ID = "ol_seed";
 
+/**
+ * 末态索引摘要键（M2.4 ①）：从决策入口快照提取的确定性等价键。
+ * outlineLocation 经 sceneId → 场景节点 outlineRef → OutlineNode.location
+ * 解析（D8：同物理场景不同状态的高优先候选信号）；entryState 随键缓存，
+ * 候选判定零额外快照读取。
+ */
+interface EndStateKey {
+  decisionId: DecisionId;
+  sceneId: SceneId;
+  location: string;
+  characters: string[];
+  outlineLocation?: string;
+  entryState: StateSnapshot;
+}
+
 interface OpenEdge {
   id: EdgeId;
   from: DecisionId;
@@ -361,6 +376,7 @@ export class RunGraphCoordinator implements RunGraphPort {
     const sceneId = await this.ensureSceneNode(input.modelSceneId);
     const entryState = toStateSnapshot(input.moment);
     await this.store.putDecision({ id: decisionId, sceneId, entryState, form: input.form });
+    this.indexDecision(decisionId, sceneId, entryState);
     await this.migrateOutlineForScene(sceneId);
 
     // 先收束前一条边（endState = 本次入口快照），再推进游标。
@@ -625,13 +641,105 @@ export class RunGraphCoordinator implements RunGraphPort {
   // ----------------------------------------------------------------
   // 场景内汇流（执行清单 M2.2，设计 §3.3）
   //
-  // 边收束（openDecision）后，后台把新边末态与同场景既有决策节点入口态
-  // 交给 judge 比较；命中即改绑：边改指既有节点（判定凭据 + 真实末态
-  // 内联）、紧随其后的出边改从既有节点出发、游标仍在新节点时前移到既有
-  // 节点——新节点沦为孤儿（与崩溃孤儿同性质，恢复与路径行走均不理会）。
+  // 边收束（openDecision）后，后台把新边末态与既有决策节点入口态交给
+  // judge 比较；命中即改绑：边改指既有节点（判定凭据 + 真实末态内联）、
+  // 紧随其后的出边改从既有节点出发、游标仍在新节点时前移到既有节点——
+  // 新节点沦为孤儿（与崩溃孤儿同性质，恢复与路径行走均不理会）。
   // 改绑窗口守卫：仅当创建该边的周目仍是活动周目时落地（换周目/已完结
   // 即跳过）。判定是 LLM 调用，全程在互斥链之外；只有改绑本身入队。
+  //
+  // M2.4：候选不再限同场景（场景间汇流，§3.3）——末态索引 + 确定性预筛
+  // 限流 judge 调用（location 等价 / 在场角色集合等价 / outline 物理地点
+  // 等价（D8）至少一项才送判，按命中键数降序优先）；滞后汇流天然获得
+  // （新边收束时对索引全量预筛，旧节点即候选）。
   // ----------------------------------------------------------------
+
+  /**
+   * 末态索引摘要键（M2.4 ①）：从决策入口快照提取的确定性等价键。
+   * outlineLocation 经 sceneId → 场景节点 outlineRef → OutlineNode.location
+   * 解析（D8：同物理场景不同状态的高优先候选信号）。
+   */
+  /** 场景 id → 摘要键列表（内存；hydrate 单点重建，惰性一次）。 */
+  private endStateIndex: Map<SceneId, EndStateKey[]> | null = null;
+
+  /** 从快照提取摘要键。 */
+  private extractEndStateKey(
+    decisionId: DecisionId,
+    sceneId: SceneId,
+    snapshot: StateSnapshot,
+  ): EndStateKey {
+    return {
+      decisionId,
+      sceneId,
+      location: snapshot.storyState.scene.location,
+      characters: Object.keys(snapshot.storyState.characters).sort(),
+      entryState: snapshot,
+    };
+  }
+
+  /** 惰性重建末态索引（单点：listDecisions + listScenes + outline 位置解析）。 */
+  private async hydrateEndStateIndex(): Promise<Map<SceneId, EndStateKey[]>> {
+    if (this.endStateIndex !== null) return this.endStateIndex;
+    const decisions = await this.store.listDecisions();
+    const scenes = await this.store.listScenes();
+    if (this.outline !== undefined) await this.ensureOutlineLoaded();
+    const outlineLocationByRef = new Map<OutlineNodeId, string | undefined>(
+      this.outlineNodes.map((n) => [n.id, n.location]),
+    );
+    const outlineRefBySceneId = new Map(scenes.map((s) => [s.id, s.outlineRef]));
+    const index = new Map<SceneId, EndStateKey[]>();
+    for (const decision of decisions) {
+      const key = this.extractEndStateKey(decision.id, decision.sceneId, decision.entryState);
+      const outlineLocation = outlineRefBySceneId.get(decision.sceneId) === undefined
+        ? undefined
+        : outlineLocationByRef.get(outlineRefBySceneId.get(decision.sceneId)!);
+      if (outlineLocation !== undefined) key.outlineLocation = outlineLocation;
+      const bucket = index.get(decision.sceneId);
+      if (bucket !== undefined) bucket.push(key);
+      else index.set(decision.sceneId, [key]);
+    }
+    this.endStateIndex = index;
+    return index;
+  }
+
+  /** 索引就绪后的增量维护：新决策节点入索引。 */
+  private indexDecision(decisionId: DecisionId, sceneId: SceneId, entryState: StateSnapshot): void {
+    if (this.endStateIndex === null) return; // 未 hydrate → 首次重建时自然包含
+    const key = this.extractEndStateKey(decisionId, sceneId, entryState);
+    const bucket = this.endStateIndex.get(sceneId);
+    if (bucket !== undefined) bucket.push(key);
+    else this.endStateIndex.set(sceneId, [key]);
+  }
+
+  /** 索引就绪后的增量维护：汇流孤儿化节点出索引。 */
+  private deindexDecision(decisionId: DecisionId): void {
+    if (this.endStateIndex === null) return;
+    for (const [sceneId, bucket] of this.endStateIndex) {
+      const next = bucket.filter((k) => k.decisionId !== decisionId);
+      if (next.length !== bucket.length) this.endStateIndex.set(sceneId, next);
+    }
+  }
+
+  /** 确定性预筛：命中键数（0 = 不送 judge）。 */
+  private prescreenScore(newKey: EndStateKey, candidate: EndStateKey): number {
+    let score = 0;
+    if (newKey.location !== "" && newKey.location === candidate.location) score += 1;
+    if (
+      newKey.characters.length > 0 &&
+      newKey.characters.length === candidate.characters.length &&
+      newKey.characters.every((c, i) => c === candidate.characters[i])
+    ) {
+      score += 1;
+    }
+    // D8：outline 物理地点等价（同地不同状态是常见汇流点）。
+    if (
+      newKey.outlineLocation !== undefined &&
+      newKey.outlineLocation === candidate.outlineLocation
+    ) {
+      score += 1;
+    }
+    return score;
+  }
 
   /** fire-and-forget：判定失败只告警，绝不影响运行时（实时性红线）。 */
   private scheduleConfluenceCheck(
@@ -666,33 +774,42 @@ export class RunGraphCoordinator implements RunGraphPort {
     const judge = this.judge;
     if (judge === undefined) return;
 
-    // 候选 = 同场景、有入边（孤儿/周目首节点排除）、不在当前路径上
-    //（防成环）的决策节点；自身按构造精确相等，亦排除。
-    const decisions = await this.store.listDecisions();
+    // 末态索引（M2.4 ①）→ 候选不再限同场景（场景间汇流）。
+    const index = await this.hydrateEndStateIndex();
+    const newKey = this.extractEndStateKey(context.newNodeId, context.sceneId, context.endState);
+
     const edges = await this.store.listEdges();
     const withInEdge = new Set(
       edges.filter((edge) => edge.to.kind === "decision").map((edge) => edge.to.id),
     );
     const pathNodes = pathAncestors(edges, context.newNodeId);
-    const candidates = decisions.filter(
-      (node) =>
-        node.sceneId === context.sceneId &&
-        node.id !== context.newNodeId &&
-        !pathNodes.has(node.id) &&
-        withInEdge.has(node.id),
-    );
-    if (candidates.length === 0) return;
+    // 保留：非自身、不在当前路径上（防成环）、有入边（孤儿/周目首节点排除）。
+    const allKeys = [...index.values()].flat();
+    const scored = allKeys
+      .filter(
+        (key) =>
+          key.decisionId !== context.newNodeId &&
+          !pathNodes.has(key.decisionId) &&
+          withInEdge.has(key.decisionId),
+      )
+      .map((key) => ({ key, score: this.prescreenScore(newKey, key) }))
+      .filter(({ score }) => score > 0) // 确定性预筛限流：无等价键不送 judge
+      .sort((a, b) => b.score - a.score); // 命中键数降序优先（D8 高优先）
 
+    // 滞后汇流天然获得：此处对索引全量预筛，旧节点即新边收束时的候选。
+    if (scored.length === 0) return;
+
+    // 预筛通过者仍逐个交 judge，置信最高命中走既有改绑。
     const judged = await Promise.allSettled(
-      candidates.map(async (candidate) => ({
-        candidate,
+      scored.map(async ({ key }) => ({
+        candidate: key,
         judgment: await judge.judge({
           endState: context.endState,
-          candidateEntry: candidate.entryState,
+          candidateEntry: key.entryState,
         }),
       })),
     );
-    let best: { candidate: (typeof candidates)[number]; judgment: ConfluenceJudgment } | null = null;
+    let best: { candidate: EndStateKey; judgment: ConfluenceJudgment } | null = null;
     for (const result of judged) {
       if (result.status === "rejected") {
         const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
@@ -708,7 +825,7 @@ export class RunGraphCoordinator implements RunGraphPort {
     if (best === null) return;
 
     await this.enqueue(() =>
-      this.applyConfluenceMatch(context, best.candidate.id, best.judgment),
+      this.applyConfluenceMatch(context, best.candidate.decisionId, best.judgment),
     );
   }
 
@@ -781,6 +898,8 @@ export class RunGraphCoordinator implements RunGraphPort {
     if (cursor !== null && cursor.runId === context.runId && cursor.position === context.newNodeId) {
       await this.store.saveCursor({ ...cursor, position: candidate });
     }
+    // M2.4：新节点沦为孤儿 → 出末态索引（不再作为后续汇流候选）。
+    this.deindexDecision(context.newNodeId);
     this.diagnostics.info(
       "RunGraphCoordinator",
       `汇流成立：边 ${context.edgeId} 改指既有节点 ${candidate}（${judgment.judgedBy}，置信 ${judgment.confidence.toFixed(2)}）；节点 ${context.newNodeId} 沦为孤儿`,

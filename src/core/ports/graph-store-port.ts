@@ -35,6 +35,9 @@ export interface GraphStorePort {
 
   putScene(scene: SceneNode): Promise<void>;
 
+  /** 全量场景节点（latest-wins 折叠；M2.4 末态索引用于 outlineRef 解析）。 */
+  listScenes(): Promise<SceneNode[]>;
+
   /** Persist a decision node: index line + entry snapshot in one call. */
   putDecision(node: DecisionNode): Promise<void>;
 

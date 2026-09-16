@@ -15,6 +15,7 @@ import { RunGraphCoordinator } from "./run-graph-coordinator.js";
 import { FakeClock } from "../../test-helpers.js";
 import { makeForm } from "../../core/graph/testing.js";
 import { createInitialState } from "../../story/state.js";
+import type { CharacterState } from "../../story/types.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type {
   ConfluenceJudgment,
@@ -69,10 +70,16 @@ const NO_MATCH: ConfluenceJudgment = {
   judgedBy: "fake-judge",
 };
 
-function makeMoment(marker: string, sceneId = SCENE_A): RuntimeMoment {
+function makeMoment(
+  marker: string,
+  sceneId = SCENE_A,
+  overrides?: { location?: string; characters?: Record<string, CharacterState> },
+): RuntimeMoment {
+  const base = createInitialState();
   return {
     storyState: createInitialState({
-      scene: { ...createInitialState().scene, id: sceneId },
+      scene: { ...base.scene, id: sceneId, ...(overrides?.location !== undefined ? { location: overrides.location } : {}) },
+      ...(overrides?.characters !== undefined ? { characters: overrides.characters } : {}),
       recent_summary: marker,
     }),
     visualState: { characters: {} },
@@ -115,12 +122,17 @@ function makeEndEvent(seq: number, text: string): StoredEvent {
 
 /**
  * 周目 1：异场景支点 D_B -(回主线)→ D1 -(A)→ D2 -(B)→ D3 -(C)→ 结局。
- * D_B 在 scene B（验证候选的场景过滤）；主线在 scene A（验证祖先排除、
- * 跨周目命中）。世界最大 seq = 7。
+ * D_B 在 scene B 且 location/在场角色集与主线不同（M2.4 预筛即排除——
+ * judge 调用次数断言依赖此）；主线在 scene A（验证祖先排除、跨周目命中）。
+ * 世界最大 seq = 7。
  */
 async function buildRun1ToEnding(coordinator: RunGraphCoordinator): Promise<void> {
   await coordinator.startRootRun();
-  await coordinator.openDecision({ modelSceneId: SCENE_B, form: makeForm(), moment: makeMoment("state-B", SCENE_B) });
+  await coordinator.openDecision({
+    modelSceneId: SCENE_B,
+    form: makeForm(),
+    moment: makeMoment("state-B", SCENE_B, { location: "后巷", characters: { 路人: {} } }),
+  });
   await coordinator.beginEdge({ kind: "option", text: "回主线" });
   await coordinator.appendEdgeEvents([makeStoredEvent(4)]);
   await coordinator.openDecision({ modelSceneId: SCENE_A, form: makeForm({ prompt: "第一幕" }), moment: makeMoment("state-D1") });
@@ -356,9 +368,9 @@ describe("RunGraphCoordinator confluence (M2.2)", () => {
     }
   });
 
-  it("excludes other-scene nodes from candidates", async () => {
+  it("excludes other-key nodes before judging (M2.4 pre-screen, judge-call assertion)", async () => {
     const harness = await makeHarness((marker) => {
-      if (marker === "state-B") return match(0.99); // 异场景命中也不可改绑
+      if (marker === "state-B") return match(0.99); // 无等价键的候选也不可改绑
       return NO_MATCH;
     });
     const { coordinator, store, judge } = harness;
@@ -370,8 +382,8 @@ describe("RunGraphCoordinator confluence (M2.2)", () => {
       await vi.waitFor(async () => {
         expect(judge.candidateMarkers.length).toBeGreaterThanOrEqual(3);
       });
-      // state-B 从未被比较（场景过滤发生在判定之前）；判定员对同场景
-      // 候选全部不命中 → 全图无任何改绑
+      // state-B 的 location/在场角色集与主线节点全不等价 → 确定性预筛阶段
+      // 即被排除（M2.4），从未送判；判定员对同键候选全部不命中 → 全图无改绑
       expect(judge.candidateMarkers).not.toContain("state-B");
       const edges = await store.listEdges();
       expect(edges.every((edge) => edge.confluence === undefined)).toBe(true);
@@ -404,8 +416,7 @@ describe("RunGraphCoordinator confluence (M2.2)", () => {
     }
   });
 
-  it("skips rebinding when the run already completed before the judgment lands", async () => {
-    let releaseMatch!: (value: ConfluenceJudgment) => void;
+  it("skips rebinding when the run already completed before the judgment lands", async () => {    let releaseMatch!: (value: ConfluenceJudgment) => void;
     const pendingMatch = new Promise<ConfluenceJudgment>((resolve) => {
       releaseMatch = resolve;
     });
@@ -429,6 +440,59 @@ describe("RunGraphCoordinator confluence (M2.2)", () => {
       const run2EdgeA = edges.find((edge) => edge.payload.lastSeq === 9)!;
       expect(run2EdgeA.confluence).toBeUndefined();
       expect(await store.loadCursor()).toBeNull(); // 周目已完结，游标已清
+    } finally {
+      await rm(harness.root, { recursive: true, force: true });
+    }
+  });
+
+  it("cross-scene confluence (M2.4): an other-scene node with equivalent keys is judged and rebinds", async () => {
+    const harness = await makeHarness((marker) =>
+      marker === "state-B-x" ? match(0.95) : NO_MATCH,
+    );
+    const { coordinator, store, judge } = harness;
+    try {
+      // 周目 1：主线首节点 → 场景 B 支点（location/角色集与主线同键，且有
+      // 入边——预筛与结构过滤都放行）→ 回主线 → 结局。
+      await coordinator.startRootRun();
+      await coordinator.openDecision({ modelSceneId: SCENE_A, form: makeForm(), moment: makeMoment("state-D0") });
+      await coordinator.beginEdge({ kind: "option", text: "进后巷" });
+      await coordinator.appendEdgeEvents([makeStoredEvent(4)]);
+      const openedBId = await coordinator.openDecision({
+        modelSceneId: SCENE_B,
+        form: makeForm({ prompt: "后巷" }),
+        moment: makeMoment("state-B-x", SCENE_B),
+      });
+      await coordinator.beginEdge({ kind: "option", text: "回主线" });
+      await coordinator.appendEdgeEvents([makeStoredEvent(5)]);
+      await coordinator.openDecision({ modelSceneId: SCENE_A, form: makeForm({ prompt: "第一幕" }), moment: makeMoment("state-D1") });
+      await coordinator.beginEdge({ kind: "option", text: "A" });
+      await coordinator.appendEdgeEvents([makeEndEvent(6, "落幕。")]);
+      await coordinator.reachEnding({ endingId: "fin", moment: makeMoment("state-end") });
+
+      // 周目 2：新边末态键与场景 B 支点等价（默认 location 相同）→ 预筛放行
+      // → judge 命中 → 跨场景改绑。
+      const { coordinator: c2 } = await harness.reopen();
+      const resume = await c2.restoreOrCreateRun({ restart: true });
+      if (resume.kind !== "fresh") throw new Error(`expected fresh, got ${resume.kind}`);
+      await c2.openDecision({ modelSceneId: SCENE_A, form: makeForm(), moment: makeMoment("state-D1-run2") });
+      await c2.beginEdge({ kind: "option", text: "A" });
+      await c2.appendEdgeEvents([makeStoredEvent(7), makeStoredEvent(8)]);
+      await c2.openDecision({ modelSceneId: SCENE_A, form: makeForm({ prompt: "二" }), moment: makeMoment("state-D2-run2") });
+
+      // state-B-x 被送判（预筛未按场景排除）
+      await judge.waitCalls(2);
+      expect(judge.candidateMarkers).toContain("state-B-x");
+
+      // 改绑落地：新边跨场景改指场景 B 的既有节点 + 游标前移。
+      await vi.waitFor(async () => {
+        const edges = await store.listEdges();
+        const rerouted = edges.find((edge) => edge.payload.lastSeq === 8)!;
+        expect(rerouted.confluence).toBeDefined();
+        expect(rerouted.to).toEqual({ kind: "decision", id: openedBId });
+      });
+      expect((await store.loadCursor())?.position).toBe(openedBId);
+      // 让后台检查完全落地后再清理（Windows 目录句柄时序）。
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
     } finally {
       await rm(harness.root, { recursive: true, force: true });
     }

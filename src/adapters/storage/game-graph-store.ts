@@ -172,6 +172,14 @@ export class GameGraphStore implements GraphStorePort {
     await this.appendRecord(GAME_STORAGE_LAYOUT.scenes, scene);
   }
 
+  async listScenes(): Promise<SceneNode[]> {
+    return [
+      ...latestById(
+        await parseJsonl(this.filePath(GAME_STORAGE_LAYOUT.scenes), SceneNodeSchema),
+      ).values(),
+    ];
+  }
+
   async putEnding(ending: EndingNode): Promise<void> {
     EndingNodeSchema.parse(ending);
     await this.appendRecord(GAME_STORAGE_LAYOUT.endings, ending);
