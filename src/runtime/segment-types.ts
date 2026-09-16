@@ -32,12 +32,6 @@ export interface ActiveSegment {
    * generation call).
    */
   failed: boolean;
-  /**
-   * Event mode（audit P2-10）：强制收束段。该段必须以 @end ending 收束；
-   * 以 buffer / interaction 收束时按 forcedEndingRetries 预算重试或由
-   * 运行时合成结局（防无限循环）。
-   */
-  endingRequired: boolean;
 }
 
 export type ActiveSegmentKind = "opening" | "continuation";

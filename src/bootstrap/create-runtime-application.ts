@@ -236,6 +236,9 @@ export async function createRuntimeApplication(
   const director = new DirectorService({
     runner: new AgentRunnerAdapter({ apiKey, api: config.api }),
     store: new GameGraphStore(gamesRoot, gameId),
+    // M3.5 ①：导演读大纲 ending 候选（导演可见、演员不可见）；缺省新世界
+    // 无大纲 → endingPressure 只能来自模型判定。
+    ...(outline !== undefined ? { outline: outline.store } : {}),
     ...(confluenceEnabled
       ? {
           judge: new ConfluenceJudgeAdapter({
@@ -254,8 +257,8 @@ export async function createRuntimeApplication(
   );
 
   /**
-   * Assemble the per-session game: fresh session store + (longform)
-   * narrative director + the Game itself. `restart()` reuses this to
+   * Assemble the per-session game: fresh session store, narrative
+   * director, and the Game itself. `restart()` reuses this to
    * rebuild the runtime in place with a new session id (Task 10).
    */
   const buildGameFor = async (
@@ -267,7 +270,7 @@ export async function createRuntimeApplication(
     // --- Narrative director assembly (§7.1) ---
     const diagnostics = new ConsoleDiagnosticSink();
     let narrativeDirector: NarrativeDirectorPort | undefined;
-    if (config.narrative.mode === "longform") {
+    {
       const plan = await loadStoryPlan(
         options.storyPlanPath ?? config.narrative.story_plan_path,
         diagnostics,

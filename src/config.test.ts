@@ -270,8 +270,6 @@ describe("loadConfig narrative section", () => {
     );
 
     const config = await loadConfig(filePath);
-
-    expect(config.narrative.mode).toBe("longform");
     expect(config.narrative.threads).toEqual({ max_major_active: 2, max_minor_active: 3 });
     expect(config.narrative.setups).toEqual({
       max_active: 6,
@@ -292,6 +290,40 @@ describe("loadConfig narrative section", () => {
     expect(config.narrative.story_plan_path).toBe("story-plan.yaml");
   });
 
+  // M3.5 ②：narrative.mode / narrative.event 是死键——zod strip 语义下
+  // 出现在 yaml 里不报错、不生效（longform 是唯一路径，分支条件已删）。
+  it("should silently strip the removed narrative.mode/event dead keys", async () => {
+    const filePath = await writeTempYaml(
+      "narrative-dead-keys",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    planner:",
+        "      candidate_prefetch_lines: 2",
+        "game:",
+        "  sessions_dir: sessions",
+        "narrative:",
+        "  mode: event",
+        "  event:",
+        "    max_interactions: 5",
+      ].join("\n"),
+    );
+
+    const config = await loadConfig(filePath);
+    expect((config.narrative as unknown as Record<string, unknown>).mode).toBeUndefined();
+    expect((config.narrative as unknown as Record<string, unknown>).event).toBeUndefined();
+    // 死键不影响其余段落的正常解析。
+    expect(config.narrative.threads).toEqual({ max_major_active: 2, max_minor_active: 3 });
+  });
+
   it("should parse explicit narrative values overriding defaults", async () => {
     const filePath = await writeTempYaml(
       "narrative-overrides",
@@ -310,9 +342,7 @@ describe("loadConfig narrative section", () => {
         "      candidate_prefetch_lines: 2",
         "game:",
         "  sessions_dir: sessions",
-        "",
-        "narrative:",
-        "  mode: event",
+        "","narrative:",
         "  threads:",
         "    max_major_active: 5",
         "    max_minor_active: 8",
@@ -329,8 +359,6 @@ describe("loadConfig narrative section", () => {
     );
 
     const config = await loadConfig(filePath);
-
-    expect(config.narrative.mode).toBe("event");
     expect(config.narrative.threads).toEqual({ max_major_active: 5, max_minor_active: 8 });
     expect(config.narrative.setups).toEqual({
       max_active: 10,
@@ -374,92 +402,13 @@ describe("loadConfig narrative section", () => {
     );
 
     const config = await loadConfig(filePath);
-    expect(config.narrative.mode).toBe("longform");
   });
 
-  it("should reject an unsupported narrative mode", async () => {
-    const filePath = await writeTempYaml(
-      "bad-narrative-mode",
-      [
-        "api:",
-        "  provider: openai_compatible",
-        "  model: test-model",
-        "  base_url: https://api.example.com",
-        "generation:",
-        "  temperature: 1.0",
-        "prefetch:",
-        "  branch_dialogue_lines: 3",
-        "media:",
-        "  audio:",
-        "    planner:",
-        "      candidate_prefetch_lines: 2",
-        "game:",
-        "  sessions_dir: sessions",
-        "",
-        "narrative:",
-        "  mode: other",
-      ].join("\n"),
-    );
 
-    await expect(loadConfig(filePath)).rejects.toThrow();
-  });
 
-  it("defaults narrative.event.max_interactions to 0 (unlimited)", async () => {
-    const filePath = await writeTempYaml(
-      "cfg-event-default",
-      [
-        "api:",
-        "  provider: openai_compatible",
-        "  model: test-model",
-        "  base_url: https://api.example.com",
-        "generation:",
-        "  temperature: 1.0",
-        "prefetch:",
-        "  branch_dialogue_lines: 3",
-        "media:",
-        "  audio:",
-        "    planner:",
-        "      candidate_prefetch_lines: 2",
-        "game:",
-        "  sessions_dir: sessions",
-      ].join("\n"),
-    );
 
-    const config = await loadConfig(filePath);
 
-    expect(config.narrative.event.max_interactions).toBe(0);
-  });
 
-  it("parses narrative.event.max_interactions", async () => {
-    const filePath = await writeTempYaml(
-      "cfg-event-max",
-      [
-        "api:",
-        "  provider: openai_compatible",
-        "  model: test-model",
-        "  base_url: https://api.example.com",
-        "generation:",
-        "  temperature: 1.0",
-        "prefetch:",
-        "  branch_dialogue_lines: 3",
-        "media:",
-        "  audio:",
-        "    planner:",
-        "      candidate_prefetch_lines: 2",
-        "game:",
-        "  sessions_dir: sessions",
-        "narrative:",
-        "  mode: event",
-        "  event:",
-        "    max_interactions: 5",
-      ].join("\n"),
-    );
-
-    const config = await loadConfig(filePath);
-
-    expect(config.narrative.mode).toBe("event");
-    expect(config.narrative.event.max_interactions).toBe(5);
-  });
 });
 
 // ---------------------------------------------------------------------------

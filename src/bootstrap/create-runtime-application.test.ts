@@ -693,7 +693,7 @@ function dashscopeConfig(): AppConfig {
     return planPath;
   }
 
-  it("assembles a NarrativeDirectorService instance for longform mode", async () => {
+  it("assembles a NarrativeDirectorService instance", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "galgame-nd-"));
     const sessionDir = path.join(dir, "sessions");
     const storyPlanPath = await writeStoryPlan(dir);
@@ -701,7 +701,6 @@ function dashscopeConfig(): AppConfig {
     const config = makeTestConfig({
       narrative: {
         ...DEFAULT_NARRATIVE_CONFIG,
-        mode: "longform" as const,
         consolidation: {
           ...DEFAULT_NARRATIVE_CONFIG.consolidation,
           batch_min_events: 1,
@@ -757,7 +756,7 @@ function dashscopeConfig(): AppConfig {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("writes narrative state after an interaction checkpoint in longform mode (plan channel removed, M4.4)", async () => {
+  it("writes narrative state after an interaction checkpoint (plan channel removed, M4.4)", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "galgame-plan-"));
     const sessionDir = path.join(dir, "sessions");
     const storyPlanPath = await writeStoryPlan(dir);
@@ -765,7 +764,6 @@ function dashscopeConfig(): AppConfig {
     const config = makeTestConfig({
       narrative: {
         ...DEFAULT_NARRATIVE_CONFIG,
-        mode: "longform" as const,
         consolidation: {
           ...DEFAULT_NARRATIVE_CONFIG.consolidation,
           batch_min_events: 1,
@@ -834,32 +832,6 @@ function dashscopeConfig(): AppConfig {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("does not assemble a narrative director for event mode", async () => {
-    const config = makeTestConfig({
-      narrative: { mode: "event" },
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
-    });
-    const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-ev-"));
-    generatorState.opening = {
-      events: [],
-      groups: [
-        { prelude: [], main: { type: "narration", text: "第一幕" } },
-      ],
-      state_patch: undefined,
-      segmentEnd: { kind: "complete", nonce: "bbbb", reason: "ending" },
-    };
-    try {
-      const app = await createRuntimeApplication({ config, sessionDir, gamesRoot: path.join(sessionDir, "games") });
-      expect((app.game as any).narrativeDirector).toBeUndefined();
-      // Event mode never assembles a director, so no plan file can exist.
-      await expect(
-        access(path.join(sessionDir, "test-session", "setup-directive.json")),
-      ).rejects.toThrow();
-    } finally {
-      await rm(sessionDir, { recursive: true, force: true });
-    }
-  });
-
   it("restart rebuilds the runtime in place with a fresh game", async () => {
     const config = makeTestConfig({
       characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
@@ -891,7 +863,6 @@ function dashscopeConfig(): AppConfig {
     const config = makeTestConfig({
       narrative: {
         ...DEFAULT_NARRATIVE_CONFIG,
-        mode: "longform" as const,
         consolidation: {
           ...DEFAULT_NARRATIVE_CONFIG.consolidation,
           batch_min_events: 1,
@@ -902,7 +873,7 @@ function dashscopeConfig(): AppConfig {
       characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
     });
 
-    // Same envelope as the longform test: narration groups + segmentEnd
+    // Same envelope as the narrative test: narration groups + segmentEnd
     // so game.run() completes.  The nonexistent plan yields an empty plan
     // (loadStoryPlan degrades gracefully), and config normalization
     // ensures getMemoryProjection never sees undefined sub-sections.

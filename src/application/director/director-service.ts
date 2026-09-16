@@ -22,6 +22,7 @@ import type { ConfluenceJudgePort } from "../../core/ports/confluence-judge-port
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { GraphStorePort } from "../../core/ports/graph-store-port.js";
+import type { OutlineStorePort } from "../../core/ports/outline-store-port.js";
 import type { StoredEvent } from "../../schema.js";
 import { serializeStoryContext } from "../../story/context-builder.js";
 
@@ -52,6 +53,8 @@ interface DirectorServiceOptions {
   store: GraphStorePort;
   /** M4.1 ④：汇流判定员由导演持有装配（bootstrap 接线变化）。 */
   judge?: ConfluenceJudgePort;
+  /** M3.5 ①：大纲读取（ending 候选 → 确定性收束压力）。导演可见、演员不可见。 */
+  outline?: OutlineStorePort;
   diagnostics?: DiagnosticSink;
 }
 
@@ -65,6 +68,7 @@ export class DirectorService {
   private readonly runner: AgentRunnerPort;
   private readonly store: GraphStorePort;
   private readonly judge: ConfluenceJudgePort | undefined;
+  private readonly outline: OutlineStorePort | undefined;
   private readonly diagnostics: DiagnosticSink;
   /** 场景 id → 本场景 directive（会话内工作态缓存）。 */
   private readonly directives = new Map<string, SceneDirective>();
@@ -74,6 +78,7 @@ export class DirectorService {
     this.runner = options.runner;
     this.store = options.store;
     this.judge = options.judge;
+    this.outline = options.outline;
     this.diagnostics = options.diagnostics ?? silentDiagnosticSink;
   }
 
@@ -121,12 +126,16 @@ export class DirectorService {
       executeTool,
     });
     const parsed = this.parseDirective(text);
+    // M3.5 ①：收束压力取「模型判定 ∨ 大纲确定性信号」——大纲信号是充分
+    // 条件，模型判定保留（提前收束的演出自由度）；演员只见方向性指令，
+    // 不见结局候选本身（§5.2 防火墙）。
+    directive.endingPressure =
+      (parsed !== undefined && parsed.endingPressure) || this.computeOutlineEndingPressure();
     if (parsed !== undefined) {
       if (parsed.sceneGoal !== undefined) {
         directive.sceneGoal = parsed.sceneGoal;
       }
       directive.defenseBeats = parsed.defenseBeats;
-      directive.endingPressure = parsed.endingPressure;
     }
     // narrowFormModes 的结果不覆盖——相位门是显式工具调用，先于最终文本落缓存。
     const previous = this.directives.get(input.sceneId);
@@ -170,9 +179,33 @@ export class DirectorService {
     return Promise.resolve(`已收窄 ${sceneId} → [${allowed.join(", ")}]`);
   }
 
+  /**
+   * M3.5 ①：大纲确定性收束压力（同步内存读，零 await）。
+   * - 维护调用判定进入终章：存在非 pruned 的 ending 候选已被 activate/realize；
+   * - 前沿 act 全部 realized 且至少还有一个 ending 候选可达成。
+   * 大纲未加载（协调器尚未 load）/读取失败 → false 只告警，绝不阻塞导演。
+   */
+  private computeOutlineEndingPressure(): boolean {
+    if (this.outline === undefined) return false;
+    let nodes;
+    try {
+      nodes = this.outline.getOutline().nodes;
+    } catch (err: unknown) {
+      this.diagnostics.warn(
+        "DirectorService",
+        `outline ending pressure read skipped: ${String(err)}`,
+      );
+      return false;
+    }
+    const live = nodes.filter((n) => n.status !== "pruned");
+    const acts = live.filter((n) => n.kind === "act");
+    const endings = live.filter((n) => n.kind === "ending");
+    if (endings.some((n) => n.status === "active" || n.status === "realized")) return true;
+    return acts.length > 0 && acts.every((n) => n.status === "realized") && endings.length > 0;
+  }
+
   /** 相位门工具：显式收窄某场景的 allowed_modes（M4.3 接 InteractionPolicy）。 */
-  narrowFormModes(sceneId: string, modes: FormMode[]): void {
-    const previous = this.directives.get(sceneId);
+  narrowFormModes(sceneId: string, modes: FormMode[]): void {    const previous = this.directives.get(sceneId);
     const directive: SceneDirective = previous ?? {
       sceneId,
       defenseBeats: [],

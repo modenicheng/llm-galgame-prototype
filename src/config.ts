@@ -78,9 +78,6 @@ interface RefinementContext {
 
 /** Narrative director tuning (threads, setups, consolidation, briefs). */
 export interface NarrativeConfig {
-  mode: "longform" | "event";
-  /** 活动模式策略（audit P2-10 最小集）。 */
-  event: { max_interactions: number };
   threads: { max_major_active: number; max_minor_active: number };
   setups: { max_active: number; max_untouched_checkpoints: number };
   /** 教训库（记忆 spec §7）：rejection 自动晋升阈值 + brief 规避清单上限。 */
@@ -101,8 +98,6 @@ export interface NarrativeConfig {
 }
 
 export const DEFAULT_NARRATIVE_CONFIG: NarrativeConfig = {
-  mode: "longform",
-  event: { max_interactions: 0 },
   threads: { max_major_active: 2, max_minor_active: 3 },
   setups: { max_active: 6, max_untouched_checkpoints: 6 },
   lessons: { auto_from_rejections: 2, brief_max: 8 },
@@ -338,13 +333,6 @@ const InteractionPolicyConfigSchema = z
 
 const NarrativeConfigSchema = z
   .object({
-    mode: z.enum(["longform", "event"]).default("longform"),
-    event: z
-      .object({
-        // 0 = 不限制；>0 = 故事最多出现这么多次交互，之后强制收束结局。
-        max_interactions: z.number().int().min(0).default(0),
-      })
-      .default({ max_interactions: 0 }),
     threads: z
       .object({
         max_major_active: z.number().int().min(0).max(20).default(2),

@@ -102,4 +102,102 @@ describe("DirectorService", () => {
     });
     expect(noJudge.exposeConfluenceJudge()).toBeUndefined();
   });
+
+  describe("outline-derived ending pressure (M3.5 ①)", () => {
+    type Node = ReturnType<typeof makeOutlineNode>;
+    function makeOutlineNode(
+      id: string,
+      kind: "act" | "ending",
+      status: "planned" | "active" | "realized" | "pruned",
+    ) {
+      return { id, kind, status, purpose: `${kind} ${id}` };
+    }
+    function makeOutline(nodes: Node[]) {
+      return {
+        getOutline: () => ({ nodes, revision: 1 }),
+        load: vi.fn(async () => ({ nodes, revision: 1 })),
+        applyRevision: vi.fn(async () => 2),
+      };
+    }
+
+    it("forces endingPressure when every frontier act is realized (model said false)", async () => {
+      const outline = makeOutline([
+        makeOutlineNode("act_1", "act", "realized"),
+        makeOutlineNode("act_2", "act", "realized"),
+        makeOutlineNode("act_3", "act", "pruned"),
+        makeOutlineNode("ending_a", "ending", "planned"),
+      ]);
+      const service = new DirectorService({
+        runner: makeRunner() as unknown as AgentRunnerPort,
+        store,
+        outline,
+      });
+      const directive = await service.refreshDirective({
+        sceneId: "天台",
+        scenePurpose: "终章前夜",
+        recentSummary: "所有主线场景已演完。",
+      });
+      expect(directive.endingPressure).toBe(true);
+    });
+
+    it("forces endingPressure when maintenance activated an ending candidate", async () => {
+      const outline = makeOutline([
+        makeOutlineNode("act_1", "act", "active"),
+        makeOutlineNode("ending_a", "ending", "active"),
+      ]);
+      const service = new DirectorService({
+        runner: makeRunner() as unknown as AgentRunnerPort,
+        store,
+        outline,
+      });
+      const directive = await service.refreshDirective({
+        sceneId: "旧校舍",
+        scenePurpose: "进入终章",
+        recentSummary: "",
+      });
+      expect(directive.endingPressure).toBe(true);
+    });
+
+    it("keeps the model verdict when the outline is still mid-story", async () => {
+      const outline = makeOutline([
+        makeOutlineNode("act_1", "act", "realized"),
+        makeOutlineNode("act_2", "act", "active"),
+        makeOutlineNode("ending_a", "ending", "planned"),
+      ]);
+      const service = new DirectorService({
+        runner: makeRunner() as unknown as AgentRunnerPort,
+        store,
+        outline,
+      });
+      const directive = await service.refreshDirective({
+        sceneId: "教室",
+        scenePurpose: "日常",
+        recentSummary: "",
+      });
+      expect(directive.endingPressure).toBe(false);
+    });
+
+    it("degrades to false (with a warning) when the outline is not loaded yet", async () => {
+      const outline = {
+        getOutline: () => {
+          throw new Error("OutlineStore.getOutline() called before load");
+        },
+        load: vi.fn(async () => ({ nodes: [], revision: 0 })),
+        applyRevision: vi.fn(async () => 1),
+      };
+      const service = new DirectorService({
+        runner: makeRunner() as unknown as AgentRunnerPort,
+        store,
+        outline,
+      });
+      const directive = await service.refreshDirective({
+        sceneId: "教室",
+        scenePurpose: "日常",
+        recentSummary: "",
+      });
+      // 导演不被大纲读取失败阻塞：directive 照常产出。
+      expect(directive.sceneGoal).toBe("查清终端来历");
+      expect(directive.endingPressure).toBe(false);
+    });
+  });
 });

@@ -110,9 +110,7 @@ const ANCHOR_STATUS_ORDER: Record<StoryAnchorState["status"], number> = {
 function normalizeNarrativeConfig(raw: NarrativeConfig): NarrativeConfig {
   const d = DEFAULT_NARRATIVE_CONFIG;
   return {
-    mode: raw.mode ?? d.mode,
     story_plan_path: raw.story_plan_path ?? d.story_plan_path,
-    event: { ...d.event, ...raw.event },
     threads: { ...d.threads, ...raw.threads },
     setups: { ...d.setups, ...raw.setups },
     lessons: { ...d.lessons, ...raw.lessons },

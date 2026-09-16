@@ -102,7 +102,6 @@ export interface GenerationStreamOptions {
    */
   briefing?: string;
   /** Event mode：本段必须以 @end ending 收束（audit P2-10 强制结局）。 */
-  endingRequired?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,10 +317,6 @@ export class StoryGenerator {
       target_lines: String(this.config.text_buffer.target_lines),
       prefetched: serializeStoryContext(prefetchedEvents),
     });
-    if (options?.endingRequired === true) {
-      extra +=
-        "\n\n本段必须收束结局：用 @end {nonce} ending 结束，不得打开新的交互表单。";
-    }
     return this.requestDslEnvelope(
       "continuation",
       "continuation",
@@ -630,9 +625,6 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
             : {}),
           ...(request.repairReason
             ? { repairReason: request.repairReason }
-            : {}),
-          ...(request.endingRequired
-            ? { endingRequired: request.endingRequired }
             : {}),
         },
       ),

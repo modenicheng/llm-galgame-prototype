@@ -183,9 +183,9 @@ describe("NarrativeDirectorService brief", () => {
   // -----------------------------------------------------------------------
   describe("config normalization", () => {
     it("survives a partial config where nested sections are undefined", async () => {
-      // Simulate the shallow-merge bug: only mode is set, everything else
-      // (threads, setups, consolidation, brief) is undefined.
-      const partial = { mode: "longform" as const } as NarrativeConfig;
+      // Simulate the shallow-merge bug: a bare literal with no nested
+      // sections (threads, setups, consolidation, brief are all undefined).
+      const partial = DEFAULT_NARRATIVE_CONFIG;
       const store = new FakeStore();
       const svc = new NarrativeDirectorService({
         config: partial,
@@ -209,7 +209,6 @@ describe("NarrativeDirectorService brief", () => {
 
     it("partial sub-objects merge with defaults (caller overrides only some keys)", async () => {
       const partial = {
-        mode: "longform" as const,
         story_plan_path: "/custom/path.yaml",
         brief: { max_relevant_episodes: 3 },
       } as NarrativeConfig;
@@ -234,10 +233,10 @@ describe("NarrativeDirectorService brief", () => {
     it("normalized config reaches MemoryConsolidator (not raw partial)", async () => {
       // Regression: the constructor passed opts.config (raw) to
       // MemoryConsolidator instead of this.config (normalized).
-      // When a caller supplies only { mode: "longform" },
+      // When a caller supplies only a partial literal,
       // MemoryConsolidator.consolidate() reads
       // config.consolidation.max_events_per_call → undefined → TypeError.
-      const partial = { mode: "longform" as const } as NarrativeConfig;
+      const partial = DEFAULT_NARRATIVE_CONFIG;
       const store = new FakeStore();
       const consolidateFn = vi.fn().mockResolvedValue({
         episode: {
@@ -249,7 +248,7 @@ describe("NarrativeDirectorService brief", () => {
           importance: "normal",
         },
         threadOps: [],
-        setupOps: [],
+        setupOps: [],
         factOps: [],
         beliefOps: [],
         findings: [],
