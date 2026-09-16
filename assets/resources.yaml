@@ -19,7 +19,8 @@ guidance: |
 
   通用配角男生A/男生B/女生A/女生B（male_A/male_B/female_A/female_B）
   可用于来访者、同学、路人等群像场面，
-  用 `ch <角色>:<变体>` 在 base/smile/surprised/embarrassed 间切换表情；
+  用 `ch <角色>:<变体>` 在 base/smile/surprised/embarrassed/joyful/angry/
+  thinking/smug 间切换表情（平静/微笑/惊讶/害羞/开怀/生气/思考/得意）；
   他们默认站在左右侧，不要抢占树莓娘的中央位。
 
   角色只能使用其"可用立绘组"内的素材组；
@@ -235,6 +236,18 @@ sprite_sets:
       embarrassed:
         src: characters/female_A/embarrassed.png
         description: 害羞、窘迫。
+      joyful:
+        src: characters/female_A/joyful.png
+        description: 开怀大笑，藏不住的高兴。
+      angry:
+        src: characters/female_A/angry.png
+        description: 生气、恼火。
+      thinking:
+        src: characters/female_A/thinking.png
+        description: 思考、沉吟，视线离开镜头。
+      smug:
+        src: characters/female_A/smug.png
+        description: 得意、自信的微笑。
 
   female_B:
     description: |
@@ -254,6 +267,18 @@ sprite_sets:
       embarrassed:
         src: characters/female_B/embarrassed.png
         description: 害羞、窘迫。
+      joyful:
+        src: characters/female_B/joyful.png
+        description: 开怀大笑，藏不住的高兴。
+      angry:
+        src: characters/female_B/angry.png
+        description: 生气、恼火。
+      thinking:
+        src: characters/female_B/thinking.png
+        description: 思考、沉吟，视线离开镜头。
+      smug:
+        src: characters/female_B/smug.png
+        description: 得意、自信的微笑。
 
   male_A:
     description: |
@@ -273,6 +298,18 @@ sprite_sets:
       embarrassed:
         src: characters/male_A/embarrassed.png
         description: 害羞、窘迫。
+      joyful:
+        src: characters/male_A/joyful.png
+        description: 开怀大笑，藏不住的高兴。
+      angry:
+        src: characters/male_A/angry.png
+        description: 生气、恼火。
+      thinking:
+        src: characters/male_A/thinking.png
+        description: 思考、沉吟，视线离开镜头。
+      smug:
+        src: characters/male_A/smug.png
+        description: 得意、自信的微笑。
 
   male_B:
     description: |
@@ -292,6 +329,18 @@ sprite_sets:
       embarrassed:
         src: characters/male_B/embarrassed.png
         description: 害羞、窘迫。
+      joyful:
+        src: characters/male_B/joyful.png
+        description: 开怀大笑，藏不住的高兴。
+      angry:
+        src: characters/male_B/angry.png
+        description: 生气、恼火。
+      thinking:
+        src: characters/male_B/thinking.png
+        description: 思考、沉吟，视线离开镜头。
+      smug:
+        src: characters/male_B/smug.png
+        description: 得意、自信的微笑。
 
 characters:
   raspberry:

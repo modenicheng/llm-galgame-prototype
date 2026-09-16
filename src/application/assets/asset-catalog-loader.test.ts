@@ -253,7 +253,7 @@ describe("loadAssetCatalog", () => {
     );
     // base + 18 表情差分 + 剪影。
     expect(Object.keys(raspberryVariants)).toHaveLength(20);
-    // 自制 AI 通用角色：各有 base + 3 表情差分，默认站左右侧（不占树莓娘中央位）。
+    // 自制 AI 通用角色：base + 7 表情差分，默认站左右侧（不占树莓娘中央位）。
     for (const castId of ["female_A", "female_B", "male_A", "male_B"]) {
       const castVariants = catalog.spriteSets[castId]!.variants;
       expect(Object.keys(castVariants)).toEqual([
@@ -261,6 +261,10 @@ describe("loadAssetCatalog", () => {
         "smile",
         "surprised",
         "embarrassed",
+        "joyful",
+        "angry",
+        "thinking",
+        "smug",
       ]);
       expect(castVariants.base!.src).toBe(`characters/${castId}/base.png`);
       expect(catalog.characters[castId]).toEqual({
