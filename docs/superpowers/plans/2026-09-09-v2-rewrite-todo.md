@@ -15,7 +15,7 @@
 1. 读卡：目标 / 前置 / 关联引用。把卡内引用的 spec 章节、既有文件读完再动手。
 2. 定落点：列出要新建/修改的文件清单（对照第 4 节反重复地图，先确认没有既有组件可复用）。
 3. 测试先行（能写时）：先写会失败的测试，再实现到绿。
-4. 验证：`npm test` 全绿 + `npm run typecheck` 通过；涉及构建产物时 `npm run build`；每 3–4 张卡加跑 `npm run hygiene`。
+4. 验证：`npm test` 全绿 + `npm run typecheck` 通过；涉及构建产物时 `npm run build`；每 3–4 张卡加跑 repo-hygiene 机械检查（skill §A 脚本）。
 5. 收尾：勾选本卡、必要时在附录 B 追加偏差记录、`git commit`（格式 `type(scope): 卡号 一句话`，如 `feat(graph): M3.1 outline store`）。不攒大包，main 直接提交。
 
 **测试与代码惯例**（照既有代码写，不要发明新风格）：
@@ -25,17 +25,17 @@
 
 **纪律**：
 - 测试红 = 停止一切推进，先修复。禁止 skip 测试、禁止 `// TODO` 顶替实现。
-- **冻结契约**（§3 schema 字段集、§3.3 判定签名、§4 大纲 schema、§9 存储布局、§7 删除语义）：不得增删字段。实现中发现必须改 → 登记附录 B `[BLOCKED 卡号]` 后跳卡。唯一预授权修订：MA-B 的 `SNAPSHOT_VERSION` 1→2（决议 D4）。运行时端口（`src/core/ports/*.ts` 的方法签名）不是冻结契约，按卡内说明演进。
+- **冻结契约**（§3 schema 字段集、§3.3 判定签名、§4 大纲 schema、§9 存储布局、§7 节点维护语义〔2026-09-16 D7 修订版〕）：不得增删字段。实现中发现必须改 → 登记附录 B `[BLOCKED 卡号]` 后跳卡。唯一预授权修订：MA-B 的 `SNAPSHOT_VERSION` 1→2（决议 D4）。运行时端口（`src/core/ports/*.ts` 的方法签名）不是冻结契约，按卡内说明演进。
 - 对既有行为有疑问：先读测试与 spec 引用；仍含糊 → 取与既有测试一致的保守实现，并在附录 B 注明你的解释。
 - 不在卡内的文件不顺手重构；发现的卫生问题记入下一张门卡处理。
 - 阻塞（需要真实 LLM、需要作者决策、环境不具备）：登记 `[BLOCKED 卡号] 原因`，继续下一张无依赖卡。
 
-**卫生门**（每阶段末的门卡执行）：`docs/skills/repo-hygiene/SKILL.md` 完整档，即：
-机械检查（`npm run hygiene`）→ subagent 只读评审（SKILL §B 的 prompt 模板，必须派发）→ 当场修复 P1/P2 → 单一真源与依赖方向核对 → 文档卫生（本清单勾选、status.md 同步、§N 引用可解析）。快速档（仅 §A + 新文件过目）每 3–4 张卡跑一次。
+**卫生门**（每阶段末的门卡执行）：触发 **`repo-hygiene`** skill执行完整档，即：
+机械检查（skill 自带脚本，读仓库根 `.hygiene.config.json` 的阈值与豁免）→ subagent 只读评审（SKILL §B 的 prompt 模板，必须派发）→ 当场修复 P1/P2 → 单一真源与依赖方向核对 → 文档卫生（本清单勾选、status.md 同步、§N 引用可解析）。快速档（仅 §A + 新文件过目）每 3–4 张卡跑一次。
 
 ## 2. 现状基线（2026-09-16，commit fabed3a）
 
-**验证基线**：1421 测试 / 96 文件全绿；node/web 双 typecheck、build 绿；`npm run hygiene` 通过。
+**验证基线**：1421 测试 / 96 文件全绿；node/web 双 typecheck、build 绿；repo-hygiene 机械检查通过（4 条豁免在册、标记基线 19）。
 
 已完成 M0–M2.2（历史细节见附录 A）。已落地组件：
 
@@ -59,16 +59,18 @@
 
 ## 3. 设计决议（本次交付前定稿，实现时不再讨论）
 
-- **D1 不使用 pi 框架**（作者 2026-09-16 确认；已回写 spec §5）：编剧 = 现有 openai-compatible client 上的**单次 JSON 调用 adapter**（沿用 PlotPlanner adapter 模式）；导演 = 同 client 上的**工具循环**（`AgentRunner` port + adapter）。角色边界与红线不变。不引入任何外部 agent 框架。
-- **D2 M2.3 归人工验证**：「离谱输入→防守节拍引回→图上汇流」的端到端验证前置依赖 M4.3（防守节拍在位）且需真实 LLM；协调器层自动化等价物已由 `run-graph-confluence.test.ts` 7 例覆盖。移入第 6 节人工清单，不阻塞开发。
+- **D1 不使用 pi 框架**：编剧 = 现有 openai-compatible client 上的**单次 JSON 调用 adapter**（沿用 PlotPlanner adapter 模式）；导演 = 同 client 上的**工具循环**（`AgentRunner` port + adapter）。角色边界与红线不变。不引入任何外部 agent 框架。
+- **D2 M2.3 归人工验证**：「偏离输入→防守节拍引回→图上汇流」的端到端验证前置依赖 M4.3（防守节拍在位）且需真实 LLM；协调器层自动化等价物已由 `run-graph-confluence.test.ts` 7 例覆盖。移入第 6 节人工清单，不阻塞开发。
 - **D3 执行序重排**（对设计 §11 建议的偏离）：M5.0 宿主接线提前到最前（后续一切实测依赖它）；M3.5 收束与 M3.6 canon、M3.7 清理挪到 M4 之后——收束压力与 canon 读取必须走导演剪报通道（§5.2 防火墙），导演在位前实现即破防火墙。
 - **D4 SNAPSHOT_VERSION 1→2 预授权**：MA-B 在 `MemoryDigest` 增加 facts/beliefs 时执行；旧 v1 快照读取即拒（zod literal 不匹配走结构损坏路径），dev 存档废弃、不做迁移，登记附录 B。
 - **D5 场景→大纲绑定规则**：场景节点创建时 outlineRef = 当前前沿 act 节点（首个未 realized 的 act），创建后不改绑；错绑接受（act 粒度粗，影响限于完成度统计）。大纲维护只增/剪前沿节点（§4 冻结原则）。
 - **D6 digest 事实嵌入制**：digest 内嵌路径层 facts/beliefs **全文**（恢复不得依赖 canon 可用性）；canon 晋升不回改既有快照；读取侧 canon 优先去重。这是对附录 A「引用制」决议的落地细则。
+- **D7 已演出内容不可删**（作者 2026-09-16 修订原 §7）：经历过的分支/节点/边是冻结的叙事事实，删除会使跨周目一致性失真。回溯只新增路径（`abandonedAt` 仅流水记账，不是内容作废）；「玩家删除决策」特性整体移除，§7 重写为不可达内容的内部 GC（孤儿/被汇流取代节点，无玩家入口）；导演/编剧输入始终包含全部已实现路径（**含已弃周目**，已回写 spec §5.1/§7）。
+- **D8 相同物理场景不同具体状态**：同幕内的状态漂移由各决策入口快照承载（既有设计，快照层天然分工）；跨幕的同地不同阶段 = 多个幕节点共享 `OutlineNode.location?`（物理地点标签，§4 演化区新增，契约代码已同步），场景总览与通关回顾按 location 并排分组展示。
 
 ## 4. 任务卡（执行序）
 
-**开工前**：先跑 `npm test`、`npm run typecheck`、`npm run hygiene`，确认与第 2 节基线一致；不一致即停止并登记 `[BLOCKED]`（基线损坏不是你的修复对象）。
+**开工前**：先跑 `npm test`、`npm run typecheck` 与 repo-hygiene 机械检查，确认与第 2 节基线一致；不一致即停止并登记 `[BLOCKED]`（基线损坏不是你的修复对象）。
 
 ### P1 快速见效
 
@@ -85,7 +87,7 @@
 - [ ] **MA-A 确定性规则与存储骨架**（记忆 spec §12 Phase A 条目 1–5）
   前置：无。关联：§5–§8、§10 变更表、§14 测试矩阵。
   要点：① depth 字段 + scheduler 门控 + RESOLVE_OR_DROP 第三档（§8.1/8.3）；② intendedPayoff 必填（runtime 拒绝 + author seed warning，§8.2）；③ 终局报告 ending-report.json（§8.4，确定性聚合，EndEvent 提交后异步）；④ lessons 存储 + rejection 自动晋升 + brief 规避清单（§7）；⑤ facts.jsonl/lessons.jsonl 存储通道（§5.3，B 阶段才有写入者）。新增配置键（facts/lessons/setups/beliefs 各上限）全部带 zod 默认值并被读取。
-  **卫生前置**：`src/application/narrative/narrative-director-service.test.ts`（2421 行）沿子系统缝拆分（consolidation / replan / brief / 生命周期；§14 矩阵即分缝参考），新测试进对应文件；完成后把它移出 `scripts/hygiene-check.mjs` 的 ALLOWLIST。
+  **卫生前置**：`src/application/narrative/narrative-director-service.test.ts`（2421 行）沿子系统缝拆分（consolidation / replan / brief / 生命周期；§14 矩阵即分缝参考），新测试进对应文件；完成后把它移出仓库根 `.hygiene.config.json` 的 allowlist。
   验收：记忆 spec §12 Phase A 验收的自动化等价（全量绿；RESOLVE_OR_DROP 进 brief 的单测；ending-report 数值单测）；getBrief 零新增 await 的断言（§11 红线）。
 
 - [ ] **MA-B consolidator 扩展 + digest v2**（记忆 spec §12 Phase B 条目 6–9）
@@ -104,7 +106,7 @@
 - [ ] **M3.2 编剧初版大纲（OutlineWriter）**
   前置：M3.1。关联：决议 D1；§4；`src/adapters/llm/plot-planner-adapter.ts`（模式样例）。
   目标：用户文本 → 世界设定 + 角色卡 + 初版大纲（一至两个结局）。
-  要点：① `src/application/outline/outline-writer.ts`：port `writeOutline({userText, seedStoryLine?}) → WorldDraft`；`WorldDraft = {worldSetting, characters[{id,name,description,spriteBinding?}], outline: OutlineNode[]}`（act 链 + 1–2 个 ending，全部 planned）；schema 定义同文件（非冻结契约）；② `src/adapters/llm/outline-writer-adapter.ts`：单次 JSON 调用（json_object + zod + 明确报错「outline 输出解析失败」）；prompt 约束：purpose ≤200 字禁台词（用常量）、至少 2 act + 1 ending、id 唯一。
+  要点：① `src/application/outline/outline-writer.ts`：port `writeOutline({userText, seedStoryLine?}) → WorldDraft`；`WorldDraft = {worldSetting, characters[{id,name,description,spriteBinding?}], outline: OutlineNode[]}`（act 链 + 1–2 个 ending，全部 planned；同地不同阶段的幕节点填同一 `location`，决议 D8）；schema 定义同文件（非冻结契约）；② `src/adapters/llm/outline-writer-adapter.ts`：单次 JSON 调用（json_object + zod + 明确报错「outline 输出解析失败」）；prompt 约束：purpose ≤200 字禁台词（用常量）、至少 2 act + 1 ending、id 唯一、location 为物理地点标签（如「教室」）不写状态细节。
   验收：adapter 单测三例（合法解析 / 非 JSON / schema 拒绝），形态同 plot-planner-adapter.test.ts。
 
 - [ ] **M3.3 世界生成管线 + 直通开玩**
@@ -124,7 +126,7 @@
 - [ ] **M4.1 AgentRunner + 导演骨架与工具集**
   前置：M3.4。关联：决议 D1；§5（三角色表）、§5.3；spec（设计）§3.3 落地注记。
   目标：导演 agent 骨架（工具循环）+ 首批工具；承接汇流判定。
-  要点：① `src/core/ports/agent-runner-port.ts` + `src/adapters/llm/agent-runner-adapter.ts`：`run({system, messages, tools}) → {text, toolCalls}` 最小工具循环——不做通用框架；步数上限常量（默认 6，超限强制收束为最终文本输出）；② `src/application/director/director-service.ts`：场景边界/checkpoint 异步触发（fire-and-forget + 诊断告警）；首批确定性工具：`readSceneHistory(sceneId)`（边负载回放投影，复用 serialize*）、`queryCharacterState(characterId)`（入口快照）、`narrowFormModes(modes)`（相位门 → InteractionPolicy.allowed_modes）、汇流判定承接；③ 导演产出 `SceneDirective`（本场景目标/防守节拍/收束压力/表单收窄），会话内工作态，不入图契约；④ 汇流承接取低风险路径：ConfluenceJudgePort 的持有与装配移入导演（bootstrap 接线变化），协调器调度机制与既有测试零改动。
+  要点：① `src/core/ports/agent-runner-port.ts` + `src/adapters/llm/agent-runner-adapter.ts`：`run({system, messages, tools}) → {text, toolCalls}` 最小工具循环——不做通用框架；步数上限常量（默认 6，超限强制收束为最终文本输出）；② `src/application/director/director-service.ts`：场景边界/checkpoint 异步触发（fire-and-forget + 诊断告警）；首批确定性工具：`readSceneHistory(sceneId)`（边负载回放投影，复用 serialize*）、`queryCharacterState(characterId)`（入口快照）、`narrowFormModes(modes)`（相位门 → InteractionPolicy.allowed_modes）、汇流判定承接；③ 导演产出 `SceneDirective`（本场景目标/防守节拍/收束压力/表单收窄），会话内工作态，不入图契约；④ 汇流承接取低风险路径：ConfluenceJudgePort 的持有与装配移入导演（bootstrap 接线变化），协调器调度机制与既有测试零改动；⑤ **跨周目事实**（决议 D7）：导演/编剧输入可读全部已实现路径（含已弃周目——`readSceneHistory` 返回该场景全部已实现边，不分周目；NG+ 前世记忆的取材来源）；演员防火墙不变（M4.2 剪报仍是唯一通道）。
   验收：runner 循环单测（fake client：工具调用→执行→二轮文本；超步数收束）；导演服务单测（工具被调、directive 落缓存）；`run-graph-confluence.test.ts` 全绿不动。
 
 - [ ] **M4.2 剪报防火墙**
@@ -149,7 +151,7 @@
   前置：M4.4。关联：附录 A「M4.5 挂项」。
   目标：game.ts 2668 行 → ~1500 行。
   要点：交互驱动（choice/input/hybrid + 两阶段提交）抽至 `src/runtime/`（动手前查 `src/core/interaction`、`src/interaction` 既有内容定归宿）；game.ts 保留 run 循环 + 段生命周期 + 恢复 + 图提交；game*.test.ts 沿同缝对齐（game-graph-restore / game-input / game-interactions + game-test-kit 已在缝上）。
-  验收：行为零变化（既有测试只许 import 路径变化）；`npm run hygiene` 后把 game.ts 移出 ALLOWLIST。
+  验收：行为零变化（既有测试只许 import 路径变化）；机械检查通过后把 game.ts 移出 `.hygiene.config.json` 的 allowlist。
 
 ### P5 收束与清理（原 M3 后半，按决议 D3 后置）
 
@@ -160,7 +162,7 @@
 
 - [ ] **M3.6 canon 存储 + 晋升流程**
   前置：MA-B（facts）、M4.2（剪报读取方）。关联：§5.1；决议 D6。
-  要点：① `src/core/ports/canon-store-port.ts` + `src/adapters/storage/canon-store.ts`：`world/canon.json` + `world/canon-log.jsonl`（append-only 修订留痕）；记录形状：worldSetting / characters / promotedFacts{id, content, evidenceRuns, judgedBy, promotedAt} / exceptions{id, content, reason, compensatingLimit}；② 晋升（后台，周目完结触发）：收集各已完结周目末态 digest 的 major facts → 编剧调用变体 `adjudicateCanon(candidates) → CanonOps[]`（单次 JSON）裁决 → promote 写 canon+log，矛盾事实过不了门（§5.1），例外登记附补偿限制；③ 读取方：导演剪报与编剧维护输入；晋升不回改既有快照（D6）。
+  要点：① `src/core/ports/canon-store-port.ts` + `src/adapters/storage/canon-store.ts`：`world/canon.json` + `world/canon-log.jsonl`（append-only 修订留痕）；记录形状：worldSetting / characters / promotedFacts{id, content, evidenceRuns, judgedBy, promotedAt} / exceptions{id, content, reason, compensatingLimit}；② 晋升（后台，周目完结或弃局时触发）：收集**全部周目（含已弃，决议 D7）**末态/游标快照 digest 的 major facts → 编剧调用变体 `adjudicateCanon(candidates) → CanonOps[]`（单次 JSON）裁决 → promote 写 canon+log，矛盾事实过不了门（§5.1），例外登记附补偿限制；③ 读取方：导演剪报与编剧维护输入；晋升不回改既有快照（D6）。
   验收：store 单测（append-only/原子写/损坏拒绝）；晋升管线单测（fake 裁决：双周目同 fact 晋升、单周目不晋升、例外登记留痕）；canon 内容进导演输入断言。
 
 - [ ] **M3.7 删除 story_line 静态注入**
@@ -170,14 +172,14 @@
 
 - [ ] **M2.4 末态索引 + 场景间/滞后汇流**
   前置：M3.4（图形态稳定后扩候选）。关联：设计 §3.3 场景间/滞后汇流；附录 A M2.2 细则。
-  要点：① 协调器维护末态索引 `Map<sceneId, {decisionId, 摘要键}[]>`（内存，hydrate 从 listDecisions 单点重建——同 ensureSceneNode 模式）；② 候选过滤去掉同场景限制（保留：非路径祖先、非自身、有入边）；确定性预筛限流（location 等价 + 在场角色集合等价优先），预筛通过仍逐个交 judge，置信最高命中走既有 applyConfluenceMatch（守卫与互斥零新机制）；③ 滞后汇流天然获得：新边关闭时对索引全量预筛，旧节点即新边的候选。
+  要点：① 协调器维护末态索引 `Map<sceneId, {decisionId, 摘要键}[]>`（内存，hydrate 从 listDecisions 单点重建——同 ensureSceneNode 模式）；② 候选过滤去掉同场景限制（保留：非路径祖先、非自身、有入边）；确定性预筛限流（location 等价 + 在场角色集合等价优先；`OutlineNode.location` 相同 = 同物理场景不同状态，视为高优先候选——D8，同地不同状态是常见汇流点），预筛通过仍逐个交 judge，置信最高命中走既有 applyConfluenceMatch（守卫与互斥零新机制）；③ 滞后汇流天然获得：新边关闭时对索引全量预筛，旧节点即新边的候选。
   验收：跨场景命中改绑单测；预筛排除不匹配（judge 调用次数断言）；既有 7 例汇流测试零回归。
 
 ### P6 图 UI 与结算
 
 - [ ] **M5.1 总览场景图**
   前置：M5.0。关联：§2 术语；可见性 §4（前沿不可见）。
-  要点：① web API `GET /api/graph`：场景节点 + 已实现边 + 当前游标 + run 统计；**脱敏**：只返回 realized/active 场景，不含 outline 未来信息；② 前端 `web/src/ui/graph-panel.ts`：最小可视化（场景块 + 连线 + 游标高亮；CSS/SVG 均可，不引入图库依赖）；③ 视图模型单测 + app 集成测试（fake 数据）。
+  要点：① web API `GET /api/graph`：场景节点 + 已实现边 + 当前游标 + run 统计；**脱敏**：只返回 realized/active 场景，不含 outline 未来信息；② 前端 `web/src/ui/graph-panel.ts`：最小可视化（场景块 + 连线 + 游标高亮；CSS/SVG 均可，不引入图库依赖；场景块按 `outline.location` 并排分组——同物理场景不同状态并列展示，组内保持剧情时序，决议 D8）；③ 视图模型单测 + app 集成测试（fake 数据）。
   验收：API 脱敏负面断言（响应无 planned/pruned outline 内容）；渲染测试。
 
 - [ ] **M5.2 决策子图展开**
@@ -186,9 +188,9 @@
   验收：子图渲染测试；未实现前沿不出现。
 
 - [ ] **M5.3 回溯入口 + 同选项快进**
-  前置：M5.2。关联：§6；附录 A「M1.5 快进推迟」决议（含 beginEdge 返回形状）。
-  要点：① `RunGraphPort` 增 `retraceFrom(decisionId)`（= M1.5 restart 的任意节点版：弃局活跃周目 + 在该节点开 retrace 新周目）；② `beginEdge` 返回判别联合 `{opened} | {fast_forward: RestorePoint}`：选择与既有出边完全一致（kind+text 严格相等）时命中快进；**结局端点不参与**（重选结局选项走新生成，如实留第二条边）；③ Game 快进处理：跳过生成，直接恢复后继节点表单；④ UI：图节点点选 → 回溯确认（当前周目将弃局）。
-  验收：retraceFrom 任意祖先节点单测（弃局标记 + 新边产生）；快进命中/未命中/结局排除三例；快进时生成器零调用断言。
+  前置：M5.2。关联：§6；决议 D7；附录 A「M1.5 快进推迟」决议（含 beginEdge 返回形状）。
+  要点：① `RunGraphPort` 增 `retraceFrom(decisionId)`（= M1.5 restart 的任意节点版：活跃周目记 `abandonedAt`——**仅流水记账，图零删除**（决议 D7）——并在该节点开 retrace 新周目）；② `beginEdge` 返回判别联合 `{opened} | {fast_forward: RestorePoint}`：选择与既有出边完全一致（kind+text 严格相等）时命中快进；**结局端点不参与**（重选结局选项走新生成，如实留第二条边）；③ Game 快进处理：跳过生成，直接恢复后继节点表单；④ UI：图节点点选 → 回溯确认，文案为「在此分叉开启新周目」（旧周目内容仍是既定事实、导演/编剧继续读取——不用「放弃/删除」措辞）。
+  验收：retraceFrom 任意祖先节点单测（abandonedAt 记账 + 新边产生 + 图零删除）；快进命中/未命中/结局排除三例；快进时生成器零调用断言。
 
 - [ ] **M5.4 结算与图鉴**
   前置：M5.1。关联：§6；MA-A ending-report（复用，反重复）。
@@ -197,17 +199,17 @@
 
 - [ ] **M5.5 通关打分 + 大纲回顾解锁**
   前置：M5.4。关联：§4 可见性（通关后解锁）；§8（评价喂回编剧）。
-  要点：① 结局后评分：玩家星级 + 编剧评注（单次 LLM 调用：输入末态 digest + ending-report，输出评语与大纲贴合度）→ `games/<gameId>/reviews/<runId>.json`；② 评价喂回：编剧维护调用输入携带历史评注；③ 大纲回顾：通关后 `GET /api/graph` 增返该周目路径触及的 outline 节点与已达成结局；未通关不返回（负面断言）。
+  要点：① 结局后评分：玩家星级 + 编剧评注（单次 LLM 调用：输入末态 digest + ending-report，输出评语与大纲贴合度）→ `games/<gameId>/reviews/<runId>.json`；② 评价喂回：编剧维护调用输入携带历史评注；③ 大纲回顾：通关后 `GET /api/graph` 增返该周目路径触及的 outline 节点与已达成结局，按 `location` 并排分组（D8）；未通关不返回（负面断言）。
   验收：评分落盘与喂回输入包含断言；未通关 outline 泄漏负面断言。
 
-- [ ] **M5.6 节点删除（DeleteBranch + 级联 GC）**
-  前置：M5.2。关联：§7（冻结语义）；附录 A「孤儿 decision」挂账（本卡清偿）。
-  要点：① 协调器 `deleteBranch(edgeId)`：守卫（不得位于活动游标祖先路径）→ 删边 → 引用计数级联（决策节点入边归零 → 删节点+快照+递归出边；结局节点同理）→ 释放负载文件；**不回滚项**：canon、stats、runs 流水（§7.5）；② 存储层：JSONL latest-wins tombstone 行（adapter 增 remove* 方法，磁盘记录加 deleted 标记；§3 契约 schema 不动，记附录 B）；③ 孤儿 decision（无入边且不在任何 run 路径）纳入 GC；④ UI：边上删除按钮 + 确认。
-  验收：级联单测（共享节点存活、独占链全回收、守卫拒绝、幂等删除）；孤儿清理；UI 测试。
+- [ ] **M5.6 图维护（不可达内容 GC；无玩家删除入口）**
+  前置：M5.2。关联：§7（2026-09-16 修订，决议 D7）；附录 A「孤儿 decision」挂账（本卡清偿）。
+  要点：① 协调器内部 GC，**仅回收不可达内容**：孤儿 decision（putDecision 后 putEdge 前崩溃窗口）、被汇流改绑取代的孤儿节点、孤儿 payload；级联规则：入边归零的下游递归回收，共享节点自然存活；不回滚 canon/stats/runs；② **保护不变量**：被任何周目路径（含已弃周目）到达过的节点与边不可回收——负面测试锁定；③ 存储层：JSONL latest-wins tombstone 行（adapter 增 remove* 方法，磁盘记录加 deleted 标记；§3 契约 schema 不动，记附录 B）；④ **不提供任何玩家删除 UI**（决议 D7：已演出内容 = 冻结事实；存储增长是接受成本）。
+  验收：级联单测（共享存活、独占回收、幂等）；「已到达内容不可回收」负面测试；孤儿清理（挂账清偿）。
 
 ### 门（每阶段末，逐个勾选）
 
-每道门 = `npm test` + `npm run typecheck` + `npm run build` + `npm run hygiene` 四绿，再按卫生自检文件 **`docs/skills/repo-hygiene/SKILL.md`**（本仓库内，相对仓库根）的**完整档**执行：机械检查之外，必须把 SKILL §B 的 subagent 只读评审 prompt 原样派发出去，P1/P2 问题当场修复。快速档（仅 §A + 新文件过目）每 3–4 张卡跑一次，同样以该文件为准。
+每道门 = `npm test` + `npm run typecheck` + `npm run build` 三绿 + repo-hygiene 机械检查通过，再触发该 skill 的**完整档**执行：机械检查之外，必须把 SKILL §B 的 subagent 只读评审 prompt 原样派发出去，P1/P2 问题当场修复。快速档（仅 §A + 新文件过目）每 3–4 张卡跑一次，同由该 skill 承载；阈值与豁免以仓库根 `.hygiene.config.json` 为准。skill 为用户级安装，未安装环境按本段要点降级执行（三绿 + 行数/标记扫描 + 七条 subagent 评审）。
 
 - [ ] **GH-P1**：无附加项。
 - [ ] **GH-P2**：narrative-director-service.test.ts 豁免移除；getBrief 零 await 断言在位。
@@ -215,7 +217,7 @@
 - [ ] **GH-P4**：M4.4 grep 清单清零；game.ts 豁免移除；`src/application/director|world|outline` 新目录进依赖方向评审。
 - [ ] **GH-P5**：event mode / story_line grep 清零；config 死键负面断言齐。
 - [ ] **GH-P6**：`GET /api/graph` 脱敏负面断言齐；stats 幂等。
-- [ ] **GH 终检**：全部任务卡与门勾选或登记 BLOCKED；四命令全绿 + `docs/skills/repo-hygiene/SKILL.md` 完整档最后一遍；`docs/status.md` 全面同步；第 6 节人工清单整理移交。
+- [ ] **GH 终检**：全部任务卡与门勾选或登记 BLOCKED；三命令全绿 + repo-hygiene skill 完整档最后一遍；`docs/status.md` 全面同步；第 6 节人工清单整理移交。
 
 ## 5. 反重复地图（动手前必查）
 
@@ -239,7 +241,7 @@
 1. **M2.3 汇流端到端**（前置 P4 完成）：真实 LLM 会话——离谱输入 → 防守节拍引回 → 图上呈现汇流（`games/<gameId>/graph/edges.jsonl` 出现 confluence 凭据）；检查 `narrative.confluence.enabled: true` 的实际效果与判定质量。
 2. **MA Phase A/B 验收**（记忆 spec §12「跑一局」项）：超期伏笔 RESOLVE_OR_DROP 出现；结局 ending-report.json 数值与体感一致；事实/认知边界端到端。
 3. **M3.3 世界生成质量**：真实描述 → 大纲/角色/开场可玩性、防剧透直通体验。
-4. **M5 图 UI 手测**：总览/子图/回溯/快进/删除/结算全流程。
+4. **M5 图 UI 手测**：总览（含同物理场景并排分组）/子图/回溯/快进/结算全流程。
 
 ---
 
@@ -303,7 +305,7 @@
 - [x] M2.1 ✅ ConfluenceJudge port（§3.3 冻结签名：`judge({endState, candidateEntry}) → {equivalent, confidence, rationale, judgedBy}`；候选枚举是调用方确定性职责）+ 首个 LLM adapter（json_object + zod）。A2 seq 决议：统一 `max(世界最大 seq, 路径末, 水位) + 1`（见附录 B 2026-09-16 条）
 - [x] M2.2 ✅ 场景内汇流：边收束后后台判定（候选 = 同场景、有入边、不在当前路径），置信最高命中改绑（入边改指候选 + 凭据 + 真实末态内联；出边改源；游标仍停新节点时前移）。promise 链互斥（判定在链外）。守卫：换周目/已完结放弃；apply 时重验祖先。落地细则见附录 B 2026-09-16 M2.2 条
 
-### 卫生门清单（原 GH-1/GH-2 定义；2026-09-16 起由 `docs/skills/repo-hygiene/SKILL.md` 承载并扩展）
+### 卫生门清单（原 GH-1/GH-2 定义；由 repo-hygiene skill 承载并扩展；2026-09-16 自仓库内文件迁移为用户级 skill）
 
 **GH-1 代码卫生**：全量测试 + 双 typecheck + build 绿；死代码清扫（对照反重复地图右列 grep）；单一真源核对；architecture.test 依赖方向覆盖新目录；config 无死键。
 **GH-2 文档卫生**：status.md 与实际一致；偏差入册、重大偏离回写 spec；§N 引用可解析；勾选状态与实际一致。
@@ -325,4 +327,7 @@
 - 2026-09-16（M2.2）：**场景节点世界级稳定修订**——原实现仅恢复路径重建场景缓存，fresh 新 root 周目会为同一模型场景重复建节点，跨周目汇流的同场景候选过滤会整体失效。修复：`ensureSceneNode` 收口为缓存 → 扫既有决策入口快照 → 惰性创建。
 - 2026-09-16（M2.2 落地细则）：① 改绑窗口守卫（判定落地时创建周目已完结/已换周目即放弃）；② 候选排除无入边节点（孤儿与周目首节点，dev 接受）；③ apply 时重验祖先（悬置期间路径可能变化）；④ `narrative.confluence.enabled` 配置门控（默认关，测试/CI 零网络）；⑤ 图变更加 promise 链互斥（LLM 判定在链外）。
 - 2026-09-16（交付版重整）：清单重写为一次性自主执行的交付版。变更：任务卡按依赖重排（决议 D3：M5.0 提前；M3.5/M3.6/M3.7 后置到 M4 后）；pi 框架决议 D1（作者 2026-09-16 确认不使用，已回写 spec §5）；M2.3 归人工清单（D2）；SNAPSHOT_VERSION 1→2 预授权（D4）；场景→大纲绑定规则（D5）；digest 事实嵌入制（D6，M1.1 引用制的落地细则）。新增卫生体系：`docs/skills/repo-hygiene/SKILL.md`（快速档/完整档 + subagent 评审模板）+ `npm run hygiene`（`scripts/hygiene-check.mjs`，行数阈值 + 临时标记，豁免清单含清偿任务号）。历史记录整体迁入附录 A/B，编号不变。
+- 2026-09-16（卫生体系迁移至用户级）：移除 `docs/skills/repo-hygiene/SKILL.md`、`scripts/hygiene-check.mjs` 与 `npm run hygiene`，卫生自检改由用户级 `repo-hygiene` skill 承载（`~/.agents/skills/repo-hygiene/`，任意仓库可用），门定义由四绿改为三绿 + skill 机械检查。本仓库校准值迁至仓库根 `.hygiene.config.json`（阈值 + 豁免，含清偿任务号）与 `.hygiene-baseline.json`（标记基线 19）。
+- 2026-09-16（回溯与删除语义修订，作者发起，决议 D7）：原 §7「玩家删除决策 + 级联 GC」整体移除——已演出内容是冻结事实，删除致跨周目一致性失真；§7 重写为不可达内容内部 GC（无玩家入口），M5.6 改为「图维护」卡；回溯（M5.3/M1.5）语义澄清：`abandonedAt` 仅流水记账、图零删除；导演/编剧输入显式包含全部已实现路径（含已弃周目，spec §5.1 注记；M4.1 ⑤ / M3.6 晋升范围同步）。
+- 2026-09-16（相同物理场景不同具体状态，决议 D8）：§4 `OutlineNode` 增可选 `location`（物理地点标签，演化区字段，outline.json 尚无落盘数据、零迁移；`src/core/outline/types.ts` 已同步 + 测试）。建模分工：同幕内状态漂移由决策入口快照承载；跨幕同地不同阶段 = 多幕节点共享 location，总览（M5.1）与通关回顾（M5.5）按它并排分组；M2.4 汇流预筛将其列为高优先候选。
 

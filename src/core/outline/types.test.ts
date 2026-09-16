@@ -38,6 +38,12 @@ describe("OutlineNodeSchema", () => {
   it("rejects an unknown kind", () => {
     expect(OutlineNodeSchema.safeParse({ ...node, kind: "chapter" }).success).toBe(false);
   });
+
+  it("accepts an optional location tag and rejects an empty one", () => {
+    const placed = { ...node, location: "教室" };
+    expect(OutlineNodeSchema.parse(placed)).toEqual(placed);
+    expect(OutlineNodeSchema.safeParse({ ...node, location: "" }).success).toBe(false);
+  });
 });
 
 describe("outline status machine", () => {

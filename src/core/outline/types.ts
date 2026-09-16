@@ -22,6 +22,12 @@ export interface OutlineNode {
   status: OutlineNodeStatus;
   /** realized 时回填：实例化它的场景节点。 */
   instantiatedBy?: SceneId;
+  /**
+   * 物理地点标签（如「教室」）。跨幕的同地不同阶段 = 多个幕节点共享同一
+   * location，总览/回顾按它并排分组（设计 §4，2026-09-16 增）；同幕内的
+   * 状态漂移由决策入口快照承载，不入大纲。
+   */
+  location?: string;
 }
 
 export const OUTLINE_PURPOSE_MAX_LENGTH = 200;
@@ -32,6 +38,7 @@ export const OutlineNodeSchema: z.ZodType<OutlineNode> = z.object({
   kind: z.enum(["act", "ending"]),
   status: z.enum(["planned", "active", "realized", "pruned"]),
   instantiatedBy: z.exactOptional(SceneIdSchema),
+  location: z.exactOptional(z.string().min(1)),
 });
 
 export const OUTLINE_TERMINAL_STATUSES: ReadonlySet<OutlineNodeStatus> = new Set([

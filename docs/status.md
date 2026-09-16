@@ -16,7 +16,7 @@
 | `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md` | 长期记忆强化与复核体系（facts/beliefs/lessons/audit）下一阶段设计，待实施 |
 | `docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md` | **v2 剧情图架构（实施中）**：回溯/存档/多周目三合一、编剧-导演-演员三角色、破坏性重构授权 |
 | `docs/superpowers/plans/2026-09-09-v2-rewrite-todo.md` | **v2 执行清单（交付版，2026-09-16 重整）**：面向一次性自主实现——任务卡 P1–P6 + 卫生门、设计决议 D1–D6、反重复地图、历史与偏差附录 |
-| `docs/skills/repo-hygiene/SKILL.md` | 仓库卫生自检 skill（快速档/完整档 + subagent 评审模板）；配套 `npm run hygiene` 机械检查 |
+| `.hygiene.config.json` / `.hygiene-baseline.json` | 仓库卫生自检校准值（阈值 / 豁免 / 标记基线），供用户级 `repo-hygiene` skill（`~/.agents/skills/repo-hygiene/`，不随仓库走）的机械检查脚本读取 |
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
 | `docs/agents/TTS-音色配置指南.md` | 音色创建与绑定操作指南 |
 | `DESIGN.md` | 已归档（model-jsonl 时代旧架构，仅历史参考） |
