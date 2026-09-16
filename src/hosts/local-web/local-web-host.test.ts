@@ -350,3 +350,82 @@ describe("LocalWebHost", () => {
     expect(result.status).toBe(0);
   });
 });
+
+
+describe("LocalWebHost POST /api/worlds (M3.3)", () => {
+  const DIST_ENV = "LLM_GALGAME_WEB_DIST_DIR";
+
+  function makeFakeApp(): RuntimeApplication {
+    const game = makeFakeGame();
+    const catalog = new AudioCatalogServiceImpl();
+    const projection = makeFakeProjection();
+    return {
+      game: game.game,
+      gameId: "game_initial",
+      audioCatalog: catalog,
+      ttsTasks: new FakeTtsTasks() as TtsTaskService,
+      projection: projection.projection,
+      config: makeConfig(),
+      metrics: {} as unknown as Metrics,
+      shutdown: vi.fn(async () => {}),
+      taskStatusSubscribe: vi.fn((_cb: never) => () => {}),
+    } as unknown as RuntimeApplication;
+  }
+
+  async function startHost(): Promise<{ host: LocalWebHost; app: RuntimeApplication; worldsCreate: ReturnType<typeof vi.fn>; port: number; distDir: string }> {
+    const distDir = mkdtempSync(path.join(tmpdir(), "web-dist-"));
+    process.env[DIST_ENV] = distDir;
+    const app = makeFakeApp();
+    const worldsCreate = vi.fn(async (text: string) => {
+      const next = makeFakeApp();
+      (next.gameId as string) = `game_${text.length}`;
+      return { gameId: `game_${text.length}`, app: next };
+    });
+    const host = new LocalWebHost({
+      config: makeConfig(),
+      app,
+      dev: false,
+      logger: () => {},
+      worlds: { create: worldsCreate },
+    });
+    await host.start();
+    const addr = host["httpServer"]!.address() as AddressInfo;
+    return { host, app, worldsCreate, port: addr.port, distDir };
+  }
+
+  afterEach(async () => {
+    delete process.env[DIST_ENV];
+  });
+
+  it("creates a world, swaps the runtime, and responds with the gameId", async () => {
+    const { host, app, worldsCreate, port } = await startHost();
+    const result = await request(port, "POST", "/api/worlds", { "content-type": "application/json" }, JSON.stringify({ text: "学园都市题材" }));
+    expect(result.status).toBe(200);
+    expect(JSON.parse(result.text).gameId).toBe("game_6");
+    expect(worldsCreate).toHaveBeenCalledWith("学园都市题材");
+    expect(app.shutdown).toHaveBeenCalled();
+    await host.shutdown();
+    rmSync(path.join(tmpdir(), "web-dist-"), { recursive: true, force: true });
+  });
+
+  it("returns 400 when text is missing or empty", async () => {
+    const { host, port } = await startHost();
+    const empty = await request(port, "POST", "/api/worlds", { "content-type": "application/json" }, JSON.stringify({ text: "  " }));
+    expect(empty.status).toBe(400);
+    const missing = await request(port, "POST", "/api/worlds", { "content-type": "application/json" }, "{}");
+    expect(missing.status).toBe(400);
+    await host.shutdown();
+  });
+
+  it("returns 404 when the worlds channel is not wired", async () => {
+    const distDir = mkdtempSync(path.join(tmpdir(), "web-dist-"));
+    process.env[DIST_ENV] = distDir;
+    const host = new LocalWebHost({ config: makeConfig(), app: makeFakeApp(), dev: false, logger: () => {} });
+    await host.start();
+    const addr = host["httpServer"]!.address() as AddressInfo;
+    const result = await request(addr.port, "POST", "/api/worlds", { "content-type": "application/json" }, JSON.stringify({ text: "x" }));
+    expect(result.status).toBe(404);
+    await host.shutdown();
+    rmSync(distDir, { recursive: true, force: true });
+  });
+});

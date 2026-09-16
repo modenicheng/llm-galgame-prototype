@@ -123,7 +123,8 @@
   要点：① `src/application/outline/outline-writer.ts`：port `writeOutline({userText, seedStoryLine?}) → WorldDraft`；`WorldDraft = {worldSetting, characters[{id,name,description,spriteBinding?}], outline: OutlineNode[]}`（act 链 + 1–2 个 ending，全部 planned；同地不同阶段的幕节点填同一 `location`，决议 D8）；schema 定义同文件（非冻结契约）；② `src/adapters/llm/outline-writer-adapter.ts`：单次 JSON 调用（json_object + zod + 明确报错「outline 输出解析失败」）；prompt 约束：purpose ≤200 字禁台词（用常量）、至少 2 act + 1 ending、id 唯一、location 为物理地点标签（如「教室」）不写状态细节。
   验收：adapter 单测三例（合法解析 / 非 JSON / schema 拒绝），形态同 plot-planner-adapter.test.ts。
 
-- [ ] **M3.3 世界生成管线 + 直通开玩**
+- [x] **M3.3 世界生成管线 + 直通开玩**
+  落地（2026-09-17）：`src/application/world/world-generator.ts`（OutlineWriter → OutlineStore 整批 add revision 1 → `world/canon.json` 脚手架（形状 M3.6 对齐）→ per-game prompts 渲染落盘 → gameId 复用 M5.0 约定；空描述/writer 失败大声抛错）；`loadPrompts` 增 perGamePromptDir 覆盖（characters/story_line 优先、其余回退全局）；bootstrap 显式 gameId 时传入覆盖目录；web `POST /api/worlds`（宿主 `worlds.create` 通道 + 进程内换绑 swapApplication + /api/config 增 has_world）+ 首屏无世界时创建表单；CLI `--new-world "<text>"`。偏差：`world/prompts` 目录常量定义于 world-generator.ts（未动 §9 冻结布局），记附录 B。
   前置：M3.2、M5.0。关联：§8；决议 D1/D5。
   目标：用户文本 → 编剧 → 落盘 → 直通开玩（无确认闸门，防剧透）。
   要点：① `src/application/world/world-generator.ts`：OutlineWriter → OutlineStore 写入 draft → `world/canon.json` 脚手架（worldSetting + characters，schema 与 M3.6 对齐）→ per-game prompt 文件 `world/prompts/characters.txt + story_line.txt`（由 WorldDraft 渲染）→ 返回 gameId；② prompts 装载优先级：`loadPrompts` 支持 per-game 覆盖（有 `world/prompts/` 对应文件则优先，否则回退全局 `prompts/`）；③ 入口：web `POST /api/worlds {text}` + 首屏最小改（无既有世界时显示描述输入框 + 开局按钮）；CLI `--new-world "<text>"`；gameId 复用 M5.0 通道；④ 生成失败大声报错，不静默回退全局 story_line。

@@ -9,20 +9,31 @@ import type { Metrics } from "../runtime/metrics.js";
 import { CliController } from "../apps/cli/cli-controller.js";
 import { TerminalUI, UserExitError } from "../apps/cli/terminal-ui.js";
 import { resolveExplicitGameId } from "../hosts/local-web/last-game.js";
+import { WorldGenerator } from "../application/world/world-generator.js";
+import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
+import { loadApiKey } from "../config.js";
 
 function parseArgs(argv: string[]): {
   configPath: string;
   debugRuntime: boolean;
   game: string | undefined;
+  newWorld: string | undefined;
 } {
   let configPath = "config.yaml";
   let debugRuntime = false;
   let game: string | undefined;
+  let newWorld: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--debug-runtime") {
       debugRuntime = true;
+    } else if (arg === "--new-world") {
+      newWorld = argv[i + 1];
+      if (newWorld === undefined) {
+        throw new Error("--new-world 需要一个世界描述参数");
+      }
+      i += 1;
     } else if (arg === "--game") {
       game = argv[i + 1];
       if (game === undefined) {
@@ -34,15 +45,24 @@ function parseArgs(argv: string[]): {
     }
   }
 
-  return { configPath, debugRuntime, game };
+  return { configPath, debugRuntime, game, newWorld };
 }
 
 async function main(): Promise<void> {
-  const { configPath, debugRuntime, game } = parseArgs(process.argv.slice(2));
+  const { configPath, debugRuntime, game, newWorld } = parseArgs(process.argv.slice(2));
   const config: AppConfig = await loadConfig(configPath);
   // M5.0：CLI 显式指定世界（参数 > 环境变量）；不读写 .last-game（那是
   // local-web 的「继续游戏」通道）。都缺 → 开新世界。
-  const gameId = resolveExplicitGameId(game, process.env);
+  let gameId = resolveExplicitGameId(game, process.env);
+  // M3.3 直通开玩：--new-world "<描述>" → 编剧生成世界 → 立即在该世界开局。
+  if (gameId === undefined && newWorld !== undefined) {
+    const worldService = new WorldGenerator({
+      writer: new OutlineWriterAdapter({ apiKey: loadApiKey(config), api: config.api }),
+    });
+    const generated = await worldService.generate({ userText: newWorld });
+    console.log(`已生成新世界：${generated.gameId}`);
+    gameId = generated.gameId;
+  }
   const app: RuntimeApplication = await createRuntimeApplication({
     configPath,
     config,

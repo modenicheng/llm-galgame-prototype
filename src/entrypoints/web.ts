@@ -3,7 +3,7 @@
  * (§6). Usage: `tsx src/entrypoints/web.ts [--dev] [--game <id>] [config.yaml]`.
  */
 import "dotenv/config";
-import { loadConfig } from "../config.js";
+import { loadConfig, loadApiKey } from "../config.js";
 import { createRuntimeApplication, DEFAULT_GAMES_ROOT } from "../bootstrap/create-runtime-application.js";
 import { LocalWebHost } from "../hosts/local-web/local-web-host.js";
 import {
@@ -11,6 +11,8 @@ import {
   resolveExplicitGameId,
   writeLastGameId,
 } from "../hosts/local-web/last-game.js";
+import { WorldGenerator } from "../application/world/world-generator.js";
+import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
 
 function parseArgs(argv: string[]): {
   dev: boolean;
@@ -50,11 +52,29 @@ async function main(): Promise<void> {
     ...(gameId !== undefined ? { gameId } : {}),
   });
   writeLastGameId(DEFAULT_GAMES_ROOT, app.gameId);
+  // M3.3 直通开玩：POST /api/worlds → 生成世界 → 装配新 RuntimeApplication
+  // → 宿主进程内换绑。生成失败大声报错（500 透传），不回退旧世界。
+  const worldService = new WorldGenerator({
+    writer: new OutlineWriterAdapter({ apiKey: loadApiKey(config), api: config.api }),
+    gamesRoot: DEFAULT_GAMES_ROOT,
+  });
   const host = new LocalWebHost({
     config,
     app,
     dev,
     logger: (line) => console.log(line),
+    worlds: {
+      create: async (text) => {
+        const { gameId } = await worldService.generate({ userText: text });
+        const nextApp = await createRuntimeApplication({
+          config,
+          configPath,
+          gameId,
+        });
+        writeLastGameId(DEFAULT_GAMES_ROOT, gameId);
+        return { gameId, app: nextApp };
+      },
+    },
   });
   const { url } = await host.start();
   console.log(`listening ${url}`);

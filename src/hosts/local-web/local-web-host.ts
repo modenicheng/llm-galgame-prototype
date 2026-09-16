@@ -25,12 +25,18 @@ import { AudioStreamRoute } from "./audio-stream-route.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";
 import { createViteDevMiddleware, type ViteDevMiddleware } from "./vite-middleware.js";
 import { openBrowser } from "./open-browser.js";
+import { DEFAULT_GAMES_ROOT } from "../../bootstrap/create-runtime-application.js";
 
 /**
  * Walk up from this module until a directory containing package.json is
  * found. Works in both layouts: dev (tsx: <repo>/src/hosts/local-web) and
  * prod (compiled: <repo>/dist/node/hosts/local-web).
  */
+/** 「继续游戏」探测根：与 entrypoint 的 cwd 约定一致（不引 Node 专属状态）。 */
+function gamesRootForWorldHint(): string {
+  return process.cwd();
+}
+
 function findProjectRoot(): string {
   let dir = path.dirname(fileURLToPath(import.meta.url));
   for (let depth = 0; depth < 10; depth++) {
@@ -54,6 +60,15 @@ export interface LocalWebHostOptions {
   logger?: (line: string) => void;
   /** Asset catalog for manifest + /game-assets serving. 缺省时不启用资源服务。 */
   assetCatalog?: AssetCatalog;
+  /**
+   * M3.3 世界生成通道（直通开玩）：POST /api/worlds 时调用 create——
+   * 实现方（entrypoint）负责生成世界、装配并返回新世界的 RuntimeApplication，
+   * 宿主负责在进程内换绑（旧 app shutdown → rebase → run）。缺省时
+   * /api/worlds 返回 404。
+   */
+  worlds?: {
+    create: (text: string) => Promise<{ gameId: string; app: RuntimeApplication }>;
+  };
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -78,7 +93,7 @@ const MIME_TYPES: Record<string, string> = {
 
 export class LocalWebHost {
   private readonly config: AppConfig;
-  private readonly app: RuntimeApplication;
+  private app: RuntimeApplication;
   private readonly dev: boolean;
   private readonly logger: (line: string) => void;
   private readonly token: string;
@@ -88,6 +103,7 @@ export class LocalWebHost {
   private readonly distRoot: string;
   private readonly assetRoot: string | null;
   private readonly assetManifest: PublicAssetManifest | null;
+  private readonly worlds: LocalWebHostOptions["worlds"];
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private devMiddleware: ViteDevMiddleware | null = null;
@@ -96,6 +112,7 @@ export class LocalWebHost {
   constructor(options: LocalWebHostOptions) {
     this.config = options.config;
     this.app = options.app;
+    this.worlds = options.worlds;
     this.dev = options.dev;
     this.logger = options.logger ?? (() => {});
     this.token = randomBytes(16).toString("hex");
@@ -237,6 +254,65 @@ export class LocalWebHost {
     });
   }
 
+  /**
+   * M3.3 直通开玩：把运行时整体换成新世界的 RuntimeApplication。旧 app
+   * 正常关停（落盘），websocket rebase 到新 game 并重开 run 循环。
+   */
+  private async handleWorldCreation(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const body = (await this.readJsonBody(req)) as { text?: unknown };
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+      if (text.length === 0) {
+        this.sendJson(res, 400, { error: "text required" });
+        return;
+      }
+      const { gameId, app } = await this.worlds!.create(text);
+      this.logger(`world created: ${gameId}; swapping runtime…`);
+      await this.app.shutdown();
+      this.app = app;
+      this.runtimeWs.rebase(this.app.game);
+      void this.app.game.run().catch((error: unknown) => {
+        if (error instanceof RuntimeShutdownError) return;
+        this.logger(`game run loop exited after world swap: ${String(error)}`);
+      });
+      this.sendJson(res, 200, { gameId });
+    } catch (error) {
+      this.logger(`world creation failed: ${String(error)}`);
+      this.sendJson(res, 500, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async readJsonBody(req: IncomingMessage, maxBytes = 65536): Promise<unknown> {
+    const { promise, resolve, reject } = Promise.withResolvers<string>();
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new Error("request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+    const raw = await promise;
+    if (raw.trim().length === 0) return {};
+    return JSON.parse(raw) as unknown;
+  }
+
+  /** 是否已有可玩世界（当前 app 的世界大纲已落盘；未知 id → 无）。 */
+  private hasWorld(): boolean {
+    const gameId = this.app.gameId;
+    if (gameId === undefined) return false;
+    return existsSync(
+      path.join(gamesRootForWorldHint(), DEFAULT_GAMES_ROOT, gameId, "outline.json"),
+    );
+  }
+
   /** §15.3 order: stop commands → abort runtime → close WS → close HTTP → close vite. */
   async shutdown(): Promise<void> {
     if (this.shutdownCalled) return;
@@ -288,7 +364,15 @@ export class LocalWebHost {
       return;
     }
     if (req.method === "GET" && pathname === "/api/config") {
-      this.sendJson(res, 200, this.publicConfig);
+      this.sendJson(res, 200, { ...this.publicConfig, has_world: this.hasWorld() });
+      return;
+    }
+    if (req.method === "POST" && pathname === "/api/worlds") {
+      if (this.worlds === undefined) {
+        this.sendJson(res, 404, { error: "world creation unavailable" });
+        return;
+      }
+      void this.handleWorldCreation(req, res);
       return;
     }
     if (req.method === "GET" && pathname === "/api/assets/manifest") {

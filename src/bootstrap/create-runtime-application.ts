@@ -19,6 +19,8 @@ import { SystemClock } from "../adapters/platform/system-clock.js";
 import { RunGraphCoordinator } from "../application/graph/run-graph-coordinator.js";
 import { ConfluenceJudgeAdapter } from "../adapters/llm/confluence-judge-adapter.js";
 import { loadPrompts } from "../prompts.js";
+import path from "node:path";
+import { WORLD_PROMPTS_DIR } from "../application/world/world-generator.js";
 import { Metrics } from "../runtime/metrics.js";
 import { RuntimeStatus } from "../runtime/status.js";
 import { UiProjectionStoreImpl } from "../application/ui/ui-projection-store.js";
@@ -177,7 +179,12 @@ export async function createRuntimeApplication(
   const config: AppConfig =
     options.config ?? (await loadConfig(options.configPath ?? "config.yaml"));
   const authorConfig = await loadAuthorConfig("prompts/author.yaml");
-  const { bundle, instructions } = await loadPrompts("prompts");
+  const gamesRoot = options.gamesRoot ?? DEFAULT_GAMES_ROOT;
+  const perGamePromptsDir =
+    options.gameId !== undefined
+      ? path.join(gamesRoot, options.gameId, WORLD_PROMPTS_DIR)
+      : undefined;
+  const { bundle, instructions } = await loadPrompts("prompts", perGamePromptsDir);
   const voices = await loadVoices(options.voicesPath ?? "voices.yaml");
   const apiKey = loadApiKey(config);
   // Asset catalog (docs §57–§60): resource bindings for the model prompt
@@ -210,7 +217,6 @@ export async function createRuntimeApplication(
   // options.gameId 固定世界（「继续游戏」指向同一目录）；缺省每次启动
   // 生成新世界。
   const gameId = options.gameId ?? `game_${new Date().toISOString().replace(/[:.]/g, "-")}`;
-  const gamesRoot = options.gamesRoot ?? DEFAULT_GAMES_ROOT;
   const graphCoordinator = buildGraphCoordinator(config, apiKey, gamesRoot, gameId);
 
   /**

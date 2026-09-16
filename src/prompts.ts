@@ -66,12 +66,38 @@ export interface LoadedPrompts {
   instructions: InstructionSet;
 }
 
-export async function loadPrompts(promptDir = "prompts"): Promise<LoadedPrompts> {
+/**
+ * 装载提示词。M3.3 ②：`perGamePromptDir`（`games/<gameId>/world/prompts`）
+ * 里的 characters.txt / story_line.txt 优先，其余文件与未提供的段回退全局
+ * `prompts/`——破坏性纪律：per-game 缺 story_line 且全局被 M3.7 删除后，
+ * 缺失即大声报错，无静默回退。
+ */
+export async function loadPrompts(
+  promptDir = "prompts",
+  perGamePromptDir?: string,
+): Promise<LoadedPrompts> {
   const root = path.resolve(promptDir);
 
+  const readWithPerGameOverride = async (fileName: string): Promise<string> => {
+    if (perGamePromptDir !== undefined) {
+      const perGamePath = path.join(path.resolve(perGamePromptDir), fileName);
+      try {
+        return await readRequiredFile(perGamePath);
+      } catch (err) {
+        if (
+          !(err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT")
+        ) {
+          throw err;
+        }
+        // ENOENT → 回退全局
+      }
+    }
+    return readRequiredFile(path.join(root, fileName));
+  };
+
   const [characters, storyLine, guideline, dslProtocol, rawYaml] = await Promise.all([
-    readRequiredFile(path.join(root, "characters.txt")),
-    readRequiredFile(path.join(root, "story_line.txt")),
+    readWithPerGameOverride("characters.txt"),
+    readWithPerGameOverride("story_line.txt"),
     readRequiredFile(path.join(root, "guideline.txt")),
     readRequiredFile(path.join(root, "dsl-protocol.txt")),
     readFile(path.join(root, "instructions.yaml"), "utf8"),
