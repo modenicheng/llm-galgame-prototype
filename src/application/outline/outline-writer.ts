@@ -1,6 +1,6 @@
 /**
  * OutlineWriter port（执行清单 M3.2，决议 D1）——编剧 = 单次 JSON 调用
- * adapter（沿用 PlotPlanner adapter 模式），不引入外部 agent 框架。
+ * adapter（沿用单次 JSON 调用 adapter 模式），不引入外部 agent 框架。
  *
  * 用户文本 → 世界设定 + 角色卡 + 初版大纲（一至两个结局）。产物 schema
  * 定义在本文件（非冻结契约）；大纲节点结构复用 `core/outline/types.ts`

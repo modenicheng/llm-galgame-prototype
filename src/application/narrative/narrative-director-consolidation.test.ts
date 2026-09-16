@@ -11,7 +11,6 @@ import { describe, it, expect, vi } from "vitest";
 
 import type { NarrativeMemoryState, PlotThread, SetupPayoff, StoryAnchorState, EpisodeMemory } from "../../core/narrative/memory-types.js";
 import type { RejectedOp } from "../../core/narrative/memory-operation.js";
-import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import type { NarrativeMemoryStorePort } from "../../core/ports/narrative-memory-store-port.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { StoryPlan } from "../../adapters/static/story-plan-loader.js";
@@ -62,7 +61,7 @@ describe("NarrativeDirectorService consolidation", () => {
       });
       await svc.initialize();
 
-      svc.getBrief({
+      svc.getMemoryProjection({
         turn: 1,
         eventSeq: 1,
         location: "clubroom",
@@ -492,7 +491,7 @@ describe("NarrativeDirectorService consolidation", () => {
       expect(result1.applied).toBe(0);
       expect(result1.rejected).toEqual([]);
       // Watermark unchanged
-      let brief = svc.getBrief({
+      let brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",
@@ -509,7 +508,7 @@ describe("NarrativeDirectorService consolidation", () => {
       expect(consolidator.consolidate).toHaveBeenCalledTimes(2);
 
       // Watermark now advanced from the retried batch
-      brief = svc.getBrief({
+      brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",
@@ -554,7 +553,7 @@ describe("NarrativeDirectorService consolidation", () => {
 
       // Failure: nothing applied, memory untouched, warning emitted.
       expect(result1.applied).toBe(0);
-      let brief = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      let brief = svc.getMemoryProjection({ turn: 1, eventSeq: 10, location: "", characters: [] });
       expect(brief.revision).toBe(0);
       expect(brief.consolidatedThroughEventSeq).toBe(0);
       // appendEpisodes must NOT have been called.
@@ -565,7 +564,7 @@ describe("NarrativeDirectorService consolidation", () => {
       const result2 = await svc.consolidatePending();
       expect(result2.applied).toBeGreaterThanOrEqual(1);
       expect(consolidateFn).toHaveBeenCalledTimes(2);
-      brief = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      brief = svc.getMemoryProjection({ turn: 1, eventSeq: 10, location: "", characters: [] });
       expect(brief.revision).toBe(1);
       expect(brief.consolidatedThroughEventSeq).toBe(10);
       // Exactly one episode appended across both attempts (idempotent id).
@@ -609,7 +608,7 @@ describe("NarrativeDirectorService consolidation", () => {
 
       // Failure after saveState: in-memory state must still be rolled back.
       expect(result1.applied).toBe(0);
-      let brief = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      let brief = svc.getMemoryProjection({ turn: 1, eventSeq: 10, location: "", characters: [] });
       expect(brief.revision).toBe(0);
       expect(brief.consolidatedThroughEventSeq).toBe(0);
       expect(brief.relevantEpisodes).toHaveLength(0);
@@ -617,7 +616,7 @@ describe("NarrativeDirectorService consolidation", () => {
       // Retry converges: same episode id, single append.
       const result2 = await svc.consolidatePending();
       expect(result2.applied).toBeGreaterThanOrEqual(1);
-      brief = svc.getBrief({ turn: 1, eventSeq: 10, location: "", characters: [] });
+      brief = svc.getMemoryProjection({ turn: 1, eventSeq: 10, location: "", characters: [] });
       expect(brief.revision).toBe(1);
       const allEpisodes = store.appendEpisodesCalls.flat();
       expect(allEpisodes).toHaveLength(1);
@@ -632,17 +631,6 @@ describe("NarrativeDirectorService consolidation", () => {
   describe("flush", () => {
     it("drains pending events and persists the plan", async () => {
       const store = new FakeStore(emptyState());
-      store.seedPlan({
-        revision: 1,
-        basedOnMemoryRevision: 0,
-        phase: "development",
-        currentGoal: "g",
-        beats: [{ purpose: "p" }],
-        focusThreads: [],
-        setupDirectives: [],
-        revealLocks: [],
-        expiresAfterCheckpoint: 100,
-      });
       const consolidateFn = vi.fn().mockResolvedValue({
         episode: {
           summary: "Flush episode",
@@ -687,7 +675,7 @@ describe("NarrativeDirectorService consolidation", () => {
 
       expect(consolidateFn).toHaveBeenCalled();
       expect(store.saveStateCalls.length).toBeGreaterThanOrEqual(1);
-      expect(store.savePlanCalls.length).toBeGreaterThanOrEqual(1);
+      expect(store.saveStateCalls.length).toBeGreaterThanOrEqual(1);
     });
 
     it("is a no-op without a consolidator and without pending events", async () => {
@@ -702,7 +690,7 @@ describe("NarrativeDirectorService consolidation", () => {
 
       await expect(svc.flush()).resolves.toBeUndefined();
       expect(store.saveStateCalls).toHaveLength(0);
-      expect(store.savePlanCalls).toHaveLength(0);
+      expect(store.saveStateCalls).toHaveLength(0);
     });
 
     it("awaits an in-flight consolidation whose pending events are already drained (C6)", async () => {

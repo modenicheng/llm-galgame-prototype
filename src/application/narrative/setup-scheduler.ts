@@ -1,6 +1,6 @@
 /**
  * Pure setup scheduling helpers shared by NarrativeDirectorService and the
- * future PlotPlanner (Task 3 extraction).
+ * outline maintenance path (M3.4).
  *
  * `computeCurrentAnchorId` was extracted from the service's private
  * method and reworked for prerequisites-DAG ordering (audit P1-5);
@@ -9,7 +9,7 @@
  */
 
 import type { SetupPayoff, StoryAnchorState } from "../../core/narrative/memory-types.js";
-import type { SetupDirective } from "../../core/narrative/director-plan.js";
+import type { SetupDirective } from "../../core/narrative/setup-directive.js";
 import { classifySetup } from "./memory-validator.js";
 import { NON_TERMINAL_SETUP_STATUSES } from "./memory-consolidator.js";
 

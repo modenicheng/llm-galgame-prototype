@@ -1,11 +1,7 @@
 /**
- * Narrative brief types and zod schema (narrative director, Task 1).
- * Pure types + schema only — no runtime logic.
- *
- * A NarrativeBrief is the per-turn digest the runtime sends to the model so
- * it can keep longform promises, setups and threads coherent (see the
- * narrative-director plan). `revealLocks` come from the active director
- * plan (empty when no plan is in effect).
+ * MemoryProjection——导演记忆子层的每回合投影（M4.4：自 narrative-brief.ts
+ * 收缩而来；plan 段 phase/currentGoal/beats/revealLocks 已随 PlotPlanner
+ * 删除）。剪报组装（actor-briefing）与剧本渲染消费本投影。纯类型 + schema。
  */
 
 import { z } from "zod";
@@ -25,16 +21,9 @@ import type {
   PlotThread,
   StoryAnchorState,
 } from "./memory-types.js";
-import {
-  DirectorPhaseSchema,
-  PlannedBeatSchema,
-  SetupDirectiveSchema,
-  type DirectorPhase,
-  type PlannedBeat,
-  type SetupDirective,
-} from "./director-plan.js";
+import { SetupDirectiveSchema, type SetupDirective } from "./setup-directive.js";
 
-export interface NarrativeBriefRequest {
+export interface MemoryProjectionRequest {
   turn: number;
   eventSeq: number;
   location: string;
@@ -42,7 +31,7 @@ export interface NarrativeBriefRequest {
   currentInteractionId?: string;
 }
 
-export interface NarrativeBrief {
+export interface MemoryProjection {
   revision: number;
   consolidatedThroughEventSeq: number;
   currentEventSeq: number;
@@ -64,18 +53,12 @@ export interface NarrativeBrief {
   setupDirectives: SetupDirective[];
   relevantEpisodes: EpisodeMemory[];
   anchors: StoryAnchorState[];
-  /** From the active director plan; empty when no plan is in effect. */
-  revealLocks: string[];
   /** 规避清单（记忆 spec §7.3，MA-A）：active lessons，occurrences 降序。 */
   avoidanceLessons: Lesson[];
   /** 相关既定事实（§5.3，MA-B）：fact-retriever 选取，checkpoint 倒序。 */
   relatedFacts: FactRecord[];
   /** 在场角色的 active 认知（§6.2，MA-B）。 */
   characterBeliefs: BeliefState[];
-  // 第 3 步新增（可选；无有效计划时为 undefined → 渲染省略 [导演目标]）
-  phase?: DirectorPhase;
-  currentGoal?: string;
-  beats?: PlannedBeat[];
 }
 
 const ActiveThreadSchema = z.object({
@@ -94,7 +77,7 @@ const ActiveThreadSchema = z.object({
   nextPressure: z.exactOptional(z.string().min(1)),
 });
 
-export const NarrativeBriefSchema: z.ZodType<NarrativeBrief> = z.object({
+export const MemoryProjectionSchema: z.ZodType<MemoryProjection> = z.object({
   revision: z.number().int().nonnegative(),
   consolidatedThroughEventSeq: z.number().int().nonnegative(),
   currentEventSeq: z.number().int().nonnegative(),
@@ -105,11 +88,7 @@ export const NarrativeBriefSchema: z.ZodType<NarrativeBrief> = z.object({
   setupDirectives: z.array(SetupDirectiveSchema),
   relevantEpisodes: z.array(EpisodeMemorySchema),
   anchors: z.array(StoryAnchorStateSchema),
-  revealLocks: z.array(z.string().min(1)),
   avoidanceLessons: z.array(LessonSchema),
   relatedFacts: z.array(FactRecordSchema),
   characterBeliefs: z.array(BeliefStateSchema),
-  phase: z.exactOptional(DirectorPhaseSchema),
-  currentGoal: z.exactOptional(z.string().min(1).max(200)),
-  beats: z.exactOptional(z.array(PlannedBeatSchema).min(1).max(6)),
 });

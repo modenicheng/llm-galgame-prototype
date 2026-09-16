@@ -12,7 +12,7 @@ import {
   GeneratorPortFacade,
   type StoryGenerator,
 } from "../../adapters/llm/openai-compatible-generator.js";
-import type { NarrativeBrief } from "../narrative/narrative-brief.js";
+import type { MemoryProjection } from "../narrative/memory-projection.js";
 import type { StoryState } from "../../story/types.js";
 import type { InteractionEvent } from "../../schema.js";
 
@@ -113,7 +113,7 @@ function makeHandle(id: string) {
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function makeBrief(): NarrativeBrief {
+function makeBrief(): MemoryProjection {
   return {
     revision: 3,
     consolidatedThroughEventSeq: 120,
@@ -125,8 +125,7 @@ function makeBrief(): NarrativeBrief {
     setupDirectives: [],
     relevantEpisodes: [],
     anchors: [],
-    revealLocks: [],
-    avoidanceLessons: [],
+        avoidanceLessons: [],
     relatedFacts: [],
     characterBeliefs: [],
   };

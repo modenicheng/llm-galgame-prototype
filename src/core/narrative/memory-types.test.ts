@@ -4,7 +4,7 @@
  *
  * These tests verify that every schema parses legal states, rejects
  * missing required fields, the transition maps are total and terminal
- * statuses map to [], and NarrativeBrief round-trips all fields.
+ * statuses map to [], and MemoryProjection round-trips all fields.
  */
 
 import { describe, it, expect } from "vitest";
@@ -23,7 +23,7 @@ import {
   SetupOpSchema,
   EpisodeSummaryOpSchema,
 } from "./memory-operation.js";
-import { NarrativeBriefSchema } from "./narrative-brief.js";
+import { MemoryProjectionSchema } from "./memory-projection.js";
 
 import type {
   PlotThread,
@@ -39,7 +39,7 @@ import type {
   SetupOp,
   EpisodeSummaryOp,
 } from "./memory-operation.js";
-import type { NarrativeBrief } from "./narrative-brief.js";
+import type { MemoryProjection } from "./memory-projection.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -166,7 +166,7 @@ const validSummaryOp: EpisodeSummaryOp = {
   importance: "normal",
 };
 
-const validBrief: NarrativeBrief = {
+const validBrief: MemoryProjection = {
   revision: 4,
   consolidatedThroughEventSeq: 60,
   currentEventSeq: 75,
@@ -189,8 +189,7 @@ const validBrief: NarrativeBrief = {
   ],
   relevantEpisodes: [validEpisode],
   anchors: [validAnchor],
-  revealLocks: [],
-  avoidanceLessons: [],
+    avoidanceLessons: [],
     relatedFacts: [],
     characterBeliefs: [],
 };
@@ -456,13 +455,13 @@ describe("EpisodeSummaryOpSchema", () => {
 // narrative-brief.ts
 // ---------------------------------------------------------------------------
 
-describe("NarrativeBriefSchema", () => {
+describe("MemoryProjectionSchema", () => {
   it("round-trips all fields of a fully-populated brief", () => {
-    expect(NarrativeBriefSchema.parse(validBrief)).toEqual(validBrief);
+    expect(MemoryProjectionSchema.parse(validBrief)).toEqual(validBrief);
   });
 
   it("rejects missing required fields", () => {
-    expectMissingFieldRejected(NarrativeBriefSchema, validBrief, [
+    expectMissingFieldRejected(MemoryProjectionSchema, validBrief, [
       "revision",
       "consolidatedThroughEventSeq",
       "currentEventSeq",
@@ -473,7 +472,6 @@ describe("NarrativeBriefSchema", () => {
       "setupDirectives",
       "relevantEpisodes",
       "anchors",
-      "revealLocks",
     ]);
   });
 
@@ -484,7 +482,7 @@ describe("NarrativeBriefSchema", () => {
         { ...validBrief.activeThreads[0]!, summary: "" },
       ],
     };
-    expect(NarrativeBriefSchema.safeParse(badBrief).success).toBe(false);
+    expect(MemoryProjectionSchema.safeParse(badBrief).success).toBe(false);
 
     const badDirective = {
       ...validBrief,
@@ -492,19 +490,8 @@ describe("NarrativeBriefSchema", () => {
         { id: "setup-1", action: "drop", urgency: "normal" },
       ],
     };
-    expect(NarrativeBriefSchema.safeParse(badDirective).success).toBe(false);
+    expect(MemoryProjectionSchema.safeParse(badDirective).success).toBe(false);
   });
 
-  it("accepts optional plan fields and rejects empty beats entries", () => {
-    const brief = {
-      ...validBrief,
-      phase: "escalation" as const,
-      currentGoal: "推进怀疑",
-      beats: [{ purpose: "侧面证据" }],
-    };
-    expect(NarrativeBriefSchema.parse(brief).phase).toBe("escalation");
-    expect(
-      NarrativeBriefSchema.safeParse({ ...brief, beats: [{ purpose: "" }] }).success,
-    ).toBe(false);
-  });
+
 });

@@ -11,7 +11,6 @@ import { describe, it, expect, vi } from "vitest";
 
 import type { NarrativeMemoryState, PlotThread, SetupPayoff, StoryAnchorState, EpisodeMemory } from "../../core/narrative/memory-types.js";
 import type { RejectedOp } from "../../core/narrative/memory-operation.js";
-import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import type { NarrativeMemoryStorePort } from "../../core/ports/narrative-memory-store-port.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { StoryPlan } from "../../adapters/static/story-plan-loader.js";
@@ -40,7 +39,7 @@ describe("NarrativeDirectorService lifecycle", () => {
       });
       await svc.initialize();
 
-      const brief = svc.getBrief({
+      const brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",
@@ -61,7 +60,7 @@ describe("NarrativeDirectorService lifecycle", () => {
       });
       await svc.initialize();
 
-      const brief = svc.getBrief({
+      const brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",
@@ -82,7 +81,7 @@ describe("NarrativeDirectorService lifecycle", () => {
       });
       await svc.initialize();
 
-      const brief = svc.getBrief({
+      const brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",
@@ -144,7 +143,7 @@ describe("NarrativeDirectorService lifecycle", () => {
 
       // The runtime lifecycle survives the restart — the plan must only
       // create MISSING entries, never overwrite persisted state.
-      const brief = svc.getBrief({
+      const brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",
@@ -204,8 +203,8 @@ describe("NarrativeDirectorService lifecycle", () => {
       expect(result.rejected).toEqual([]);
     });
 
-    it("getBrief does not trigger consolidation", async () => {
-      // getBrief is synchronous and must never call consolidatePending
+    it("getMemoryProjection does not trigger consolidation", async () => {
+      // getMemoryProjection is synchronous and must never call consolidatePending
       const store = new FakeStore();
       const svc = new NarrativeDirectorService({
         config: makeConfig(),
@@ -217,8 +216,8 @@ describe("NarrativeDirectorService lifecycle", () => {
 
       svc.observeCommitted([makeEvent(1)]);
 
-      // getBrief works fine without consolidation
-      const brief = svc.getBrief({
+      // getMemoryProjection works fine without consolidation
+      const brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 5,
         location: "study",
@@ -245,7 +244,7 @@ describe("NarrativeDirectorService lifecycle", () => {
       await svc.initialize();
 
       svc.checkpoint("scene_change");
-      let brief = svc.getBrief({
+      let brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",
@@ -254,7 +253,7 @@ describe("NarrativeDirectorService lifecycle", () => {
       expect(brief.checkpointCount).toBe(1);
 
       svc.checkpoint("interaction_completed");
-      brief = svc.getBrief({
+      brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",
@@ -309,7 +308,7 @@ describe("NarrativeDirectorService lifecycle", () => {
     });
   });
 
-  it("getBrief is synchronous (zero-await red line, spec §11)", async () => {
+  it("getMemoryProjection is synchronous (zero-await red line, spec §11)", async () => {
     const store = new FakeStore();
     const svc = new NarrativeDirectorService({
       config: makeConfig(),
@@ -318,7 +317,7 @@ describe("NarrativeDirectorService lifecycle", () => {
       plan: makePlan(),
     });
     await svc.initialize();
-    const brief = svc.getBrief({ turn: 1, eventSeq: 1, location: "", characters: [] });
+    const brief = svc.getMemoryProjection({ turn: 1, eventSeq: 1, location: "", characters: [] });
     expect(brief).not.toBeInstanceOf(Promise);
     expect(brief.avoidanceLessons).toEqual([]);
   });

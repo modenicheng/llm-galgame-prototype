@@ -32,9 +32,9 @@ import type { NarrativeDirectorPort } from "./core/ports/narrative-director-port
 import { EMPTY_MEMORY_DIGEST } from "./core/graph/memory-digest.js";
 import type { MemoryDigest } from "./core/graph/types.js";
 import type {
-  NarrativeBrief,
-  NarrativeBriefRequest,
-} from "./core/narrative/narrative-brief.js";
+  MemoryProjection,
+  MemoryProjectionRequest,
+} from "./core/narrative/memory-projection.js";
 import type { GamePorts } from "./game.js";
 
 // ---------------------------------------------------------------------------
@@ -278,15 +278,15 @@ export interface GameScopingInternals {
 export type DirectorCall =
   | { type: "observeCommitted"; events: readonly StoredEvent[] }
   | { type: "checkpoint"; reason: string }
-  | { type: "getBrief"; request: NarrativeBriefRequest }
+  | { type: "getMemoryProjection"; request: MemoryProjectionRequest }
   | { type: "flush" };
 
 export function makeDirectorFake(
-  briefOverrides?: Partial<NarrativeBrief>,
+  briefOverrides?: Partial<MemoryProjection>,
 ): NarrativeDirectorPort & { calls: DirectorCall[]; restoredWith: MemoryDigest[] } {
   const calls: DirectorCall[] = [];
   const restoredWith: MemoryDigest[] = [];
-  const baseBrief: NarrativeBrief = {
+  const baseBrief: MemoryProjection = {
     revision: 0,
     consolidatedThroughEventSeq: 0,
     currentEventSeq: 0,
@@ -297,7 +297,6 @@ export function makeDirectorFake(
     setupDirectives: [],
     relevantEpisodes: [],
     anchors: [],
-    revealLocks: [],
     avoidanceLessons: [],
     relatedFacts: [],
     characterBeliefs: [],
@@ -306,8 +305,8 @@ export function makeDirectorFake(
   return {
     calls,
     restoredWith,
-    getBrief(request: NarrativeBriefRequest): NarrativeBrief {
-      calls.push({ type: "getBrief", request });
+    getMemoryProjection(request: MemoryProjectionRequest): MemoryProjection {
+      calls.push({ type: "getMemoryProjection", request });
       return {
         ...baseBrief,
         currentEventSeq: request.eventSeq,

@@ -39,10 +39,9 @@ import type {
   AuditFinding,
 } from "../../core/narrative/memory-operation.js";
 import type {
-  NarrativeBrief,
-  NarrativeBriefRequest,
-} from "../../core/narrative/narrative-brief.js";
-import type { DirectorPlan } from "../../core/narrative/director-plan.js";
+  MemoryProjection,
+  MemoryProjectionRequest,
+} from "../../core/narrative/memory-projection.js";
 import { memoryDigestFromState, memoryStateFromDigest } from "../../core/graph/memory-digest.js";
 import type { MemoryDigest } from "../../core/graph/types.js";
 import {
@@ -70,13 +69,6 @@ import type {
   MemoryConsolidatorPort,
   ConsolidationOutcome,
 } from "./memory-consolidator.js";
-import {
-  PlotPlanner,
-  PLANNER_RECENT_EVENTS_MAX,
-  validateAnchorOp,
-  applyAnchorOpToState,
-} from "./plot-planner.js";
-import type { PlotPlannerPort } from "./plot-planner.js";
 
 // ---------------------------------------------------------------------------
 // Consolidator port (implemented by Task 8 in memory-consolidator.ts;
@@ -128,7 +120,6 @@ function normalizeNarrativeConfig(raw: NarrativeConfig): NarrativeConfig {
     beliefs: { ...d.beliefs, ...raw.beliefs },
     consolidation: { ...d.consolidation, ...raw.consolidation },
     brief: { ...d.brief, ...raw.brief },
-    plan: { ...d.plan, ...raw.plan },
     confluence: { ...d.confluence, ...raw.confluence },
   };
 }
@@ -144,8 +135,6 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   private readonly hasConsolidator: boolean;
   private readonly storyPlan: StoryPlan;
   private readonly diagnostics: DiagnosticSink;
-  private readonly planner: PlotPlanner;
-  private readonly hasPlanner: boolean;
 
   // In-memory consolidated state
   private memory!: NarrativeMemoryState;
@@ -161,10 +150,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   private pendingEvents: StoredEvent[] = [];
 
   // Director plan lifecycle (Task 8)
-  private plan: DirectorPlan | undefined;
-  private planRunning = false;
-  private recentCommittedEvents: StoredEvent[] = [];
-  private lastBriefRequest: NarrativeBriefRequest | undefined;
+  private lastBriefRequest: MemoryProjectionRequest | undefined;
 
   // Serializes all "read this.memory → shadow → saveState → swap" writes
   // (consolidation apply and anchor progression) so concurrent writers
@@ -188,7 +174,6 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     config: NarrativeConfig;
     store: NarrativeMemoryStorePort;
     consolidator: MemoryConsolidatorPort | undefined;
-    planner?: PlotPlannerPort;
     plan: StoryPlan;
     diagnostics?: DiagnosticSink;
   }) {
@@ -208,14 +193,6 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       config: this.config,
       diagnostics: this.diagnostics,
     });
-    // Wrap the optional Task 7 port in a PlotPlanner; an absent port
-    // yields a null plan without calling anything.
-    this.planner = new PlotPlanner({
-      port: opts.planner,
-      config: this.config,
-      diagnostics: this.diagnostics,
-    });
-    this.hasPlanner = opts.planner !== undefined;
   }
 
   // -----------------------------------------------------------------------
@@ -276,19 +253,13 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         `loadLessons failed (degraded to empty): ${String(err)}`,
       );
     }
-
-    // Resume the director plan (if any) from the store; a fresh session
-    // starts without one and the first checkpoint creates it. The store
-    // contract is `DirectorPlan | null` — normalize to undefined so every
-    // `this.plan !== undefined` guard holds.
-    this.plan = (await this.store.loadPlan()) ?? undefined;
   }
 
   // -----------------------------------------------------------------------
   // getBrief — synchronous digest
   // -----------------------------------------------------------------------
 
-  getBrief(request: NarrativeBriefRequest): NarrativeBrief {
+  getMemoryProjection(request: MemoryProjectionRequest): MemoryProjection {
     // Active threads (non-terminal)
     const activeThreads = Object.values(this.memory.threads)
       .filter((t) => ACTIVE_THREAD_STATUSES.has(t.status))
@@ -355,20 +326,9 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       return a.id.localeCompare(b.id);
     });
 
-    // Director plan section: expose phase/goal/beats/revealLocks while the
-    // plan is still in effect. A hard-expired plan acts as a non-blocking
-    // barrier — the brief simply omits the plan section (the model keeps
-    // playing; replanning happens in the background) instead of blocking
-    // the turn on the LLM.
-    const planInEffect =
-      this.plan !== undefined &&
-      this.memory.checkpointCount <= this.plan.expiresAfterCheckpoint
-        ? this.plan
-        : undefined;
-
     this.lastBriefRequest = request;
 
-    const brief: NarrativeBrief = {
+    const projection: MemoryProjection = {
       revision: this.memory.revision,
       consolidatedThroughEventSeq: this.memory.consolidatedThroughEventSeq,
       currentEventSeq: request.eventSeq,
@@ -379,7 +339,6 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       setupDirectives,
       relevantEpisodes,
       anchors,
-      revealLocks: planInEffect?.revealLocks ?? [],
       // 规避清单（§7.3）：纯内存切片，零 await（§11 红线）。
       avoidanceLessons: this.lessonService.briefLessons(),
       // 相关既定事实（§5.3）+ 在场角色认知（§6.2）：纯内存数组扫描。
@@ -395,14 +354,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
             request.characters.includes(b.characterId)),
       ),
     };
-    // exactOptionalPropertyTypes: an explicit `undefined` is not assignable
-    // to an optional property — assign conditionally instead.
-    if (planInEffect !== undefined) {
-      brief.phase = planInEffect.phase;
-      brief.currentGoal = planInEffect.currentGoal;
-      brief.beats = planInEffect.beats;
-    }
-    return brief;
+    return projection;
   }
 
   // -----------------------------------------------------------------------
@@ -420,7 +372,6 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     this.memory = memoryStateFromDigest(digest);
     this.episodes = [];
     this.pendingEvents = [];
-    this.plan = undefined;
   }
 
   // -----------------------------------------------------------------------
@@ -445,13 +396,6 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       });
     }
     this.pendingEvents.push(...freshEvents);
-    // Rolling window of recently committed events for the planner.
-    this.recentCommittedEvents.push(...freshEvents);
-    if (this.recentCommittedEvents.length > PLANNER_RECENT_EVENTS_MAX) {
-      this.recentCommittedEvents = this.recentCommittedEvents.slice(
-        -PLANNER_RECENT_EVENTS_MAX,
-      );
-    }
     this.maybeSchedule();
   }
 
@@ -482,7 +426,6 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   checkpoint(_reason: NarrativeCheckpointReason): void {
     this.memory.checkpointCount += 1;
     this.maybeSchedule();
-    this.maybeReplan();
   }
 
   // -----------------------------------------------------------------------
@@ -739,115 +682,6 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       await this.consolidatePending();
     }
     await this.memoryWriteChain; // 等在链内所有写入（含在飞 consolidation）落定
-    if (this.plan !== undefined) {
-      try {
-        await this.store.savePlan(this.plan);
-      } catch (err) {
-        this.diagnostics.warn(
-          "NarrativeDirector",
-          `flush savePlan failed: ${String(err)}`,
-        );
-      }
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // Director plan lifecycle (Task 8)
-  // -----------------------------------------------------------------------
-
-  private maybeReplan(): void {
-    if (!this.hasPlanner || this.planRunning) return;
-    if (this.plan === undefined) {
-      this.startReplan();
-      return;
-    }
-    const ahead = this.config.plan.replan_ahead_checkpoints;
-    const needsReplan =
-      this.memory.checkpointCount > this.plan.expiresAfterCheckpoint ||
-      (this.memory.revision > this.plan.basedOnMemoryRevision &&
-        this.memory.checkpointCount >=
-          this.plan.expiresAfterCheckpoint - ahead);
-    if (needsReplan) this.startReplan();
-  }
-
-  private startReplan(): void {
-    // NOTE (Task 8 deviation from the plan draft): replan() itself flips
-    // planRunning synchronously before its first await, so setting it here
-    // first would make the guard inside replan() early-return and wedge
-    // planRunning true forever (the scheduled plan would never be created).
-    // This mirrors the maybeSchedule/consolidatePending pattern: the
-    // public method owns its own running flag.
-    void this.replan().catch((err: unknown) => {
-      this.diagnostics.warn(
-        "NarrativeDirector",
-        `scheduled replan error: ${String(err)}`,
-      );
-    });
-  }
-
-  /** Public for testability — same pattern as consolidatePending. */
-  async replan(): Promise<void> {
-    if (!this.hasPlanner || this.planRunning) return;
-    this.planRunning = true;
-    try {
-      const outcome = await this.planner.plan({
-        events: [...this.recentCommittedEvents],
-        memory: this.memory,
-        currentPlan: this.plan,
-        anchorOrderById: this.seedAnchorOrder,
-        location: this.lastBriefRequest?.location ?? "",
-        characters: this.lastBriefRequest?.characters ?? [],
-      });
-
-      if (outcome.plan === null) {
-        if (outcome.rejected.length > 0) {
-          await this.recordRejectedOps(outcome.rejected);
-        }
-        return; // 旧计划继续生效；下一次 checkpoint 重试
-      }
-
-      // 锚点推进：走内存写互斥，链内重新读取最新 memory
-      await this.mutateMemory(async (current) => {
-        const shadow = structuredClone(current);
-        let appliedAny = false;
-        for (const op of outcome.anchorOps) {
-          // Re-validate against the chain-latest anchor state; ops that no
-          // longer apply (e.g. an anchor another writer already reached)
-          // are silently skipped.
-          if (validateAnchorOp(op, shadow.anchors) === null) {
-            applyAnchorOpToState(shadow, op);
-            appliedAny = true;
-          }
-        }
-        if (!appliedAny) return;
-        shadow.revision += 1;
-        await this.store.saveState(shadow); // 提交点；失败 → 链 reject → 计划不换
-        // final review P3: checkpoint() 在克隆与交换之间同步递增时，保留该增量
-        shadow.checkpointCount = this.memory.checkpointCount;
-        this.memory = shadow;
-      });
-
-      // 计划激活时以链内最新内存为准重新锚定（final review P2）：
-      // 生成期间 consolidation 可能已推进 checkpointCount/revision。
-      outcome.plan.expiresAfterCheckpoint =
-        this.memory.checkpointCount + this.config.plan.horizon_checkpoints;
-      outcome.plan.basedOnMemoryRevision = this.memory.revision;
-
-      this.plan = outcome.plan;
-      try {
-        await this.store.savePlan(outcome.plan); // 失败仅记日志，内存计划照常生效
-      } catch (err) {
-        this.diagnostics.warn(
-          "NarrativeDirector",
-          `savePlan failed (plan still active in memory): ${String(err)}`,
-        );
-      }
-      if (outcome.rejected.length > 0) {
-        await this.recordRejectedOps(outcome.rejected);
-      }
-    } finally {
-      this.planRunning = false;
-    }
   }
 
   /**

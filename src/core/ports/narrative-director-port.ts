@@ -7,7 +7,7 @@
  * provides a public consolidatePending() for testability.
  */
 
-import type { NarrativeBriefRequest, NarrativeBrief } from "../narrative/narrative-brief.js";
+import type { MemoryProjectionRequest, MemoryProjection } from "../narrative/memory-projection.js";
 import type { MemoryDigest } from "../graph/types.js";
 import type { StoredEvent } from "../../schema.js";
 
@@ -17,8 +17,8 @@ export type NarrativeCheckpointReason =
   | "scene_change";
 
 export interface NarrativeDirectorPort {
-  /** Synchronous per-turn digest for the model. */
-  getBrief(request: NarrativeBriefRequest): NarrativeBrief;
+  /** Synchronous per-turn memory projection for the model (剪报输入). */
+  getMemoryProjection(request: MemoryProjectionRequest): MemoryProjection;
 
   /**
    * 当前记忆子层摘要——决策节点入口/末态快照的唯一记忆真源

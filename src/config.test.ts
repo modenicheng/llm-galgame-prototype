@@ -374,45 +374,7 @@ describe("loadConfig narrative section", () => {
     );
 
     const config = await loadConfig(filePath);
-
-    expect(config.narrative.plan).toEqual({
-      horizon_checkpoints: 3,
-      replan_ahead_checkpoints: 1,
-    });
-  });
-
-  it("should parse explicit narrative plan values overriding defaults", async () => {
-    const filePath = await writeTempYaml(
-      "narrative-plan-overrides",
-      [
-        "api:",
-        "  provider: openai_compatible",
-        "  model: test-model",
-        "  base_url: https://api.example.com",
-        "  api_key_env: TEST_KEY",
-        "generation:",
-        "  temperature: 1.0",
-        "prefetch:",
-        "  branch_dialogue_lines: 3",
-        "media:",
-        "  audio:",
-        "    planner:",
-        "      candidate_prefetch_lines: 2",
-        "game:",
-        "  sessions_dir: sessions",
-        "narrative:",
-        "  plan:",
-        "    horizon_checkpoints: 5",
-        "    replan_ahead_checkpoints: 2",
-      ].join("\n"),
-    );
-
-    const config = await loadConfig(filePath);
-
-    expect(config.narrative.plan).toEqual({
-      horizon_checkpoints: 5,
-      replan_ahead_checkpoints: 2,
-    });
+    expect(config.narrative.mode).toBe("longform");
   });
 
   it("should reject an unsupported narrative mode", async () => {

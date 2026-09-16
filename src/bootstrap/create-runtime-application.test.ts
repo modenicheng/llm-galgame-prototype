@@ -18,7 +18,6 @@ import { createRuntimeApplication } from "./create-runtime-application.js";
 import type { RuntimeApplication } from "../application/runtime-application.js";
 import { makeTestConfig, MemoryController } from "../test-helpers.js";
 import { NarrativeDirectorService } from "../application/narrative/narrative-director-service.js";
-import { DirectorPlanSchema } from "../core/narrative/director-plan.js";
 import { DEFAULT_NARRATIVE_CONFIG } from "../config.js";
 import type { AppConfig } from "../config.js";
 import type { GeneratedEvent } from "../story/types.js";
@@ -77,25 +76,7 @@ vi.mock("../adapters/llm/narrative-consolidator-adapter.js", () => ({
   },
 }));
 
-// Mock PlotPlannerAdapter so the composition root never calls the real
-// LLM — the mock succeeds trivially with a minimal well-formed proposal.
-vi.mock("../adapters/llm/plot-planner-adapter.js", () => ({
-  PlotPlannerAdapter: class {
-    constructor(_opts: unknown) {
-      /* no-op — never touches the network */
-    }
-    async plan(_request: unknown) {
-      return {
-        phase: "development",
-        currentGoal: "推进测试剧情",
-        beats: [{ purpose: "测试节拍" }],
-        focusThreads: [],
-        revealLocks: [],
-        anchorOps: [],
-      };
-    }
-  },
-}));
+
 
 /** Mutable envelopes the mocked StoryGenerator returns (per test). */
 const generatorState = vi.hoisted(() => ({
@@ -776,7 +757,7 @@ function dashscopeConfig(): AppConfig {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("writes a director plan after an interaction checkpoint in longform mode", async () => {
+  it("writes narrative state after an interaction checkpoint in longform mode (plan channel removed, M4.4)", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "galgame-plan-"));
     const sessionDir = path.join(dir, "sessions");
     const storyPlanPath = await writeStoryPlan(dir);
@@ -840,19 +821,15 @@ function dashscopeConfig(): AppConfig {
     controller.attach(app.game);
     await app.game.run();
 
-    // checkpoint → maybeReplan → 首轮计划（fire-and-forget）。计划写入是
-    // 异步链（mutateMemory → saveState → savePlan）；等待文件出现而不是
-    // 固定 sleep，避免全量测试负载下的时序抖动。
+    // checkpoint → consolidation（fire-and-forget）。等待 narrative-state
+    // 落盘而不是固定 sleep，避免全量测试负载下的时序抖动。
     await vi.waitFor(async () => {
-      await access(path.join(sessionDir, "test-session", "director-plan.json"));
+      await access(path.join(sessionDir, "test-session", "narrative-state.json"));
     });
 
-    // director-plan.json 已写入且通过 schema
-    const planRaw = await readFile(
-      path.join(sessionDir, "test-session", "director-plan.json"),
-      "utf8",
-    );
-    expect(DirectorPlanSchema.safeParse(JSON.parse(planRaw)).success).toBe(true);
+    // M4.4：director-plan.json 通道已删除，narrative-state.json 仍落盘
+    expect(existsSync(path.join(sessionDir, "test-session", "narrative-state.json"))).toBe(true);
+    expect(existsSync(path.join(sessionDir, "test-session", "director-plan.json"))).toBe(false);
 
     await rm(dir, { recursive: true, force: true });
   });
@@ -876,7 +853,7 @@ function dashscopeConfig(): AppConfig {
       expect((app.game as any).narrativeDirector).toBeUndefined();
       // Event mode never assembles a director, so no plan file can exist.
       await expect(
-        access(path.join(sessionDir, "test-session", "director-plan.json")),
+        access(path.join(sessionDir, "test-session", "setup-directive.json")),
       ).rejects.toThrow();
     } finally {
       await rm(sessionDir, { recursive: true, force: true });
@@ -928,7 +905,7 @@ function dashscopeConfig(): AppConfig {
     // Same envelope as the longform test: narration groups + segmentEnd
     // so game.run() completes.  The nonexistent plan yields an empty plan
     // (loadStoryPlan degrades gracefully), and config normalization
-    // ensures getBrief never sees undefined sub-sections.
+    // ensures getMemoryProjection never sees undefined sub-sections.
     generatorState.opening = {
       events: [],
       groups: [

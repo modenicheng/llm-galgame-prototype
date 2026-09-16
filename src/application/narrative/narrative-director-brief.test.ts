@@ -1,6 +1,6 @@
 /**
  * NarrativeDirectorService tests - brief
- * getBrief content and config normalization.
+ * getMemoryProjection content and config normalization.
  *
  * Split from the former narrative-director-service.test.ts along the
  * subsystem seams (MA-A hygiene prerequisite). Shared fakes live in
@@ -11,7 +11,6 @@ import { describe, it, expect, vi } from "vitest";
 
 import type { NarrativeMemoryState, PlotThread, SetupPayoff, StoryAnchorState, EpisodeMemory } from "../../core/narrative/memory-types.js";
 import type { RejectedOp } from "../../core/narrative/memory-operation.js";
-import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import type { NarrativeMemoryStorePort } from "../../core/ports/narrative-memory-store-port.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { StoryPlan } from "../../adapters/static/story-plan-loader.js";
@@ -26,9 +25,9 @@ import { makeEvent, makeConfig, FakeStore, emptyState, RecordingDiagnostics, mak
 describe("NarrativeDirectorService brief", () => {
 
   // -----------------------------------------------------------------------
-  // getBrief — content
+  // getMemoryProjection — content
   // -----------------------------------------------------------------------
-  describe("getBrief", () => {
+  describe("getMemoryProjection", () => {
     it("returns relevantEpisodes via retriever rules", async () => {
       const store = new FakeStore(emptyState(), [
         {
@@ -62,7 +61,7 @@ describe("NarrativeDirectorService brief", () => {
       });
       await svc.initialize();
 
-      const brief = svc.getBrief({
+      const brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 20,
         location: "",
@@ -95,7 +94,7 @@ describe("NarrativeDirectorService brief", () => {
       svc.checkpoint("scene_change");
       svc.checkpoint("scene_change");
 
-      const brief = svc.getBrief({
+      const brief = svc.getMemoryProjection({
         turn: 2,
         eventSeq: 20,
         location: "",
@@ -119,13 +118,12 @@ describe("NarrativeDirectorService brief", () => {
       });
       await svc.initialize();
 
-      const brief = svc.getBrief({
+      const brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "anywhere",
         characters: ["anyone"],
       });
-      expect(brief.revealLocks).toEqual([]);
     });
 
     it("activeThreads only includes non-terminal threads", async () => {
@@ -142,7 +140,7 @@ describe("NarrativeDirectorService brief", () => {
       });
       await svc.initialize();
 
-      const brief = svc.getBrief({
+      const brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",
@@ -167,7 +165,7 @@ describe("NarrativeDirectorService brief", () => {
       });
       await svc.initialize();
 
-      const brief = svc.getBrief({
+      const brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",
@@ -197,9 +195,9 @@ describe("NarrativeDirectorService brief", () => {
       });
       await svc.initialize();
 
-      // getBrief must not throw TypeError (e.g. "Cannot read
+      // getMemoryProjection must not throw TypeError (e.g. "Cannot read
       // properties of undefined (reading 'max_relevant_episodes')").
-      const brief = svc.getBrief({
+      const brief = svc.getMemoryProjection({
         turn: 1,
         eventSeq: 10,
         location: "",

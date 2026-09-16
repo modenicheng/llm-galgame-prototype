@@ -11,17 +11,17 @@
  * runtime canon 子集随 M3.6 canon store 接入后并入本组装器。
  */
 
-import type { NarrativeBrief } from "../../core/narrative/narrative-brief.js";
-import { renderDirectorNote } from "../../application/narrative/narrative-context-builder.js";
+import type { MemoryProjection } from "../../core/narrative/memory-projection.js";
+import { renderMemoryProjection } from "../../application/narrative/narrative-context-builder.js";
 import type { BeliefState, FactRecord, Lesson } from "../../core/narrative/memory-types.js";
 import type { SceneDirective } from "./director-service.js";
 
 export interface ActorBriefingInput {
   /**
-   * 导演记忆投影（NarrativeBrief——其字段集不含 outline 全量/结局候选/
-   * 他周目数据，形状即防火墙）。渲染复用既有便签渲染函数（随迁不改）。
+   * 导演记忆投影（MemoryProjection——其字段集不含 outline 全量/结局候选/
+   * 他周目数据，形状即防火墙）。渲染复用既有投影渲染函数（随迁不改）。
    */
-  memoryBrief?: NarrativeBrief;
+  memoryBrief?: MemoryProjection;
   /** 原始已实现事件数（便签 revision 行引用）。 */
   rawEventCount?: number;
   relatedFacts?: readonly FactRecord[];
@@ -35,7 +35,7 @@ export function buildActorBriefing(input: ActorBriefingInput): string {
   const parts: string[] = [];
 
   if (input.memoryBrief !== undefined) {
-    parts.push(renderDirectorNote(input.memoryBrief, input.rawEventCount ?? 0));
+    parts.push(renderMemoryProjection(input.memoryBrief, input.rawEventCount ?? 0));
   }
 
   const lines: string[] = [];

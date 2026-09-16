@@ -7,8 +7,6 @@
  */
 
 import type { AuthorConfig } from "../config.js";
-import { renderDirectorNote } from "../application/narrative/narrative-context-builder.js";
-import type { NarrativeBrief } from "../core/narrative/narrative-brief.js";
 import type { ModelAssetCatalog } from "../core/assets/types.js";
 import type { VisualState } from "../core/presentation/types.js";
 import type { PromptBundle } from "../prompts.js";
@@ -30,10 +28,8 @@ export interface ContextInput {
   /** Optional author-enforced constraints. */
   authorConfig?: AuthorConfig;
   /** Per-turn narrative director brief (rendered as a director note). */
-  directorBrief?: NarrativeBrief;
   /**
-   * M4.2 剪报通道（actor-briefing 组装产物）。存在时取代 directorBrief 的
-   * 渲染位置（旧 NarrativeBrief 通道 M4.4 删）；D9 布局不变——历史区仍置前。
+   * M4.2 剪报通道（actor-briefing 组装产物）。D9 布局不变——历史区仍置前。
    */
   actorBriefing?: string;
 }
@@ -252,10 +248,6 @@ export function buildDslUserPrompt(
 
   if (input.actorBriefing !== undefined && input.actorBriefing !== "") {
     sections.push(input.actorBriefing);
-  } else if (input.directorBrief) {
-    sections.push(
-      renderDirectorNote(input.directorBrief, input.recentEvents.length),
-    );
   }
 
   if (input.tailVisualState) {

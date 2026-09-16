@@ -34,8 +34,8 @@ import type {
 import type { GenerationEnvelope } from "./story/types.js";
 
 import type {
-  NarrativeBrief,
-} from "./core/narrative/narrative-brief.js";
+  MemoryProjection,
+} from "./core/narrative/memory-projection.js";
 
 import {
   endEvent,
@@ -888,7 +888,7 @@ describe("NarrativeDirector integration", () => {
     expect(allObservedTexts).toContain(branchAContent);
   });
 
-  it("passes the brief from getBrief into generator options", async () => {
+  it("passes the brief from getMemoryProjection into generator options", async () => {
     const director = makeDirectorFake({
       revision: 7,
       checkpointCount: 3,
@@ -932,7 +932,7 @@ describe("NarrativeDirector integration", () => {
 
     expect(generator.generateOpening).toHaveBeenCalled();
 
-    // The request object carries the brief from getBrief.
+    // The request object carries the brief from getMemoryProjection.
     const callArgs = (
       generator.generateOpening as ReturnType<typeof vi.fn>
     ).mock.calls[0] as unknown[];

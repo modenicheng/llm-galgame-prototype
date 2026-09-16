@@ -16,7 +16,6 @@ import type {
   EndingReport,
 } from "../../core/narrative/memory-types.js";
 import type { RejectedOp } from "../../core/narrative/memory-operation.js";
-import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import type { NarrativeMemoryStorePort } from "../../core/ports/narrative-memory-store-port.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { StoryPlan } from "../../adapters/static/story-plan-loader.js";
@@ -46,13 +45,11 @@ export class FakeStore implements NarrativeMemoryStorePort {
 
   private state: NarrativeMemoryState = emptyState();
   private episodes: EpisodeMemory[] = [];
-  private plan: DirectorPlan | null = null;
 
   // recording
   saveStateCalls: NarrativeMemoryState[] = [];
   appendEpisodesCalls: EpisodeMemory[][] = [];
   appendOpsCalls: RejectedOp[][] = [];
-  savePlanCalls: DirectorPlan[] = [];
 
   // failure injection (audit finding 6: persistence failure atomicity)
   failNextSaveState = false;
@@ -101,19 +98,6 @@ export class FakeStore implements NarrativeMemoryStorePort {
     this.appendOpsCalls.push(ops);
   }
 
-  async loadPlan(): Promise<DirectorPlan | null> {
-    return this.plan;
-  }
-
-  async savePlan(plan: DirectorPlan): Promise<void> {
-    this.savePlanCalls.push(plan);
-    this.plan = plan;
-  }
-
-  /** Seed a persisted plan so initialize() loads it. */
-  seedPlan(plan: DirectorPlan): void {
-    this.plan = plan;
-  }
 
   // MA-A 通道（lessons/facts/ending-report）
   lessons: Lesson[] = [];

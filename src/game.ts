@@ -32,7 +32,7 @@ import type { MemoryDigest } from "./core/graph/types.js";
 import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { NarrativeDirectorPort } from "./core/ports/narrative-director-port.js";
-import type { NarrativeBrief } from "./core/narrative/narrative-brief.js";
+import type { MemoryProjection } from "./core/narrative/memory-projection.js";
 import { BranchManager } from "./runtime/branch-manager.js";
 import type { LiveBranchSelection } from "./runtime/prefetch.js";
 import { GenerationScheduler } from "./runtime/generation-scheduler.js";
@@ -2645,9 +2645,9 @@ export class Game {
     });
   }
 
-  private makeBrief(turn: number): NarrativeBrief | undefined {
+  private makeBrief(turn: number): MemoryProjection | undefined {
     if (!this.narrativeDirector) return undefined;
-    return this.narrativeDirector.getBrief({
+    return this.narrativeDirector.getMemoryProjection({
       turn,
       // The last COMMITTED event seq (this.seq is the next slot to
       // allocate) — the brief's currentEventSeq must not lie about the
@@ -2659,7 +2659,7 @@ export class Game {
   }
 
   /**
-   * M4.2 剪报通道：NarrativeBrief（记忆投影）+ 导演 SceneDirective 组装成
+   * M4.2 剪报通道：MemoryProjection（记忆投影）+ 导演 SceneDirective 组装成
    * 演员剪报文本。输入类型上不含 outline 全量/结局候选/他周目数据——防火墙
    * 落为参数形状（§5.2）。
    */

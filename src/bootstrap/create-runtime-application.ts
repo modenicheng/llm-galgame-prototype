@@ -52,7 +52,6 @@ import { loadAssetCatalog } from "../application/assets/asset-catalog-loader.js"
 import { NarrativeDirectorService } from "../application/narrative/narrative-director-service.js";
 import { JsonNarrativeMemoryStore } from "../adapters/storage/json-narrative-memory-store.js";
 import { NarrativeConsolidatorAdapter } from "../adapters/llm/narrative-consolidator-adapter.js";
-import { PlotPlannerAdapter } from "../adapters/llm/plot-planner-adapter.js";
 import { loadStoryPlan } from "../adapters/static/story-plan-loader.js";
 import type { NarrativeDirectorPort } from "../core/ports/narrative-director-port.js";
 
@@ -283,17 +282,10 @@ export async function createRuntimeApplication(
         config: config.narrative,
         diagnostics,
       });
-      const planner = new PlotPlannerAdapter({
-        apiKey,
-        api: config.api,
-        config: config.narrative,
-        diagnostics,
-      });
       const service = new NarrativeDirectorService({
         config: config.narrative,
         store: narrativeStore,
         consolidator,
-        planner,
         plan,
         diagnostics,
       });

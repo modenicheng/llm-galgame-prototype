@@ -15,7 +15,6 @@ import type {
   EndingReport,
 } from "../narrative/memory-types.js";
 import type { RejectedOp } from "../narrative/memory-operation.js";
-import type { DirectorPlan } from "../narrative/director-plan.js";
 
 export interface NarrativeMemoryStorePort {
   /** Human-readable location of the store (directory or file path). */
@@ -35,16 +34,6 @@ export interface NarrativeMemoryStorePort {
 
   /** Append rejected narrative operations to the diagnostics log. */
   appendOps(ops: RejectedOp[]): Promise<void>;
-
-  /**
-   * Load the persisted director plan, or null when no plan is stored yet or
-   * the stored file is missing/corrupt. This never throws for storage
-   * problems.
-   */
-  loadPlan(): Promise<DirectorPlan | null>;
-
-  /** Persist the director plan (atomic where supported). */
-  savePlan(plan: DirectorPlan): Promise<void>;
 
   // ---------------------------------------------------------------------
   // MA-A 存储通道（记忆 spec §5.3/§7.3/§8.4）：lessons.jsonl / facts.jsonl /

@@ -1,17 +1,17 @@
 /**
- * Tests for NarrativeBrief director-note rendering (narrative director, Task 7).
+ * Tests for MemoryProjection director-note rendering (narrative director, Task 7).
  */
 
 import { describe, it, expect } from "vitest";
 
-import type { NarrativeBrief } from "../../core/narrative/narrative-brief.js";
-import { renderDirectorNote } from "./narrative-context-builder.js";
+import type { MemoryProjection } from "../../core/narrative/memory-projection.js";
+import { renderMemoryProjection } from "./narrative-context-builder.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function makeBrief(overrides: Partial<NarrativeBrief> = {}): NarrativeBrief {
+function makeBrief(overrides: Partial<MemoryProjection> = {}): MemoryProjection {
   return {
     revision: 3,
     consolidatedThroughEventSeq: 120,
@@ -23,8 +23,7 @@ function makeBrief(overrides: Partial<NarrativeBrief> = {}): NarrativeBrief {
     setupDirectives: [],
     relevantEpisodes: [],
     anchors: [],
-    revealLocks: [],
-    avoidanceLessons: [],
+        avoidanceLessons: [],
     relatedFacts: [],
     characterBeliefs: [],
     ...overrides,
@@ -32,12 +31,12 @@ function makeBrief(overrides: Partial<NarrativeBrief> = {}): NarrativeBrief {
 }
 
 // ---------------------------------------------------------------------------
-// renderDirectorNote
+// renderMemoryProjection
 // ---------------------------------------------------------------------------
 
-describe("renderDirectorNote", () => {
+describe("renderMemoryProjection", () => {
   it("renders the revision annotation with both seq numbers", () => {
-    const note = renderDirectorNote(makeBrief(), 40);
+    const note = renderMemoryProjection(makeBrief(), 40);
     expect(note).toContain("===== 导演便签 =====");
     expect(note).toContain(
       "记忆已整理至事件 120（当前事件 135），最近 40 条原始事件见上方剧情历史。",
@@ -51,13 +50,13 @@ describe("renderDirectorNote", () => {
         { id: "s2", action: "payoff", urgency: "now", premise: "教授失踪。", payoff: "揭示教授的去向。" },
       ],
     });
-    const note = renderDirectorNote(brief, 80);
+    const note = renderMemoryProjection(brief, 80);
     expect(note).toContain("REINFORCE s1（soon）；前提：终端似乎会对苏遥产生异常响应。");
     expect(note).toContain("PAYOFF s2（now）；前提：教授失踪。；目标：揭示教授的去向。");
   });
 
   it("annotates the raw-history window with the exact count passed in", () => {
-    const note = renderDirectorNote(makeBrief(), 80);
+    const note = renderMemoryProjection(makeBrief(), 80);
     expect(note).toContain("最近 80 条原始事件见上方剧情历史");
   });
 
@@ -108,9 +107,8 @@ describe("renderDirectorNote", () => {
           status: "pending",
         },
       ],
-      revealLocks: ["lock_old_terminal"],
-    });
-    const note = renderDirectorNote(brief, 40);
+          });
+    const note = renderMemoryProjection(brief, 40);
 
     expect(note).toContain("[活跃剧情线]");
     expect(note).toContain(
@@ -129,55 +127,22 @@ describe("renderDirectorNote", () => {
     expect(note).toContain("[锚点进度]");
     expect(note).toContain("- anchor_escape：pending");
 
-    expect(note).toContain("[禁止透露]");
-    expect(note).toContain("- lock_old_terminal");
   });
 
   it("omits sections whose lists are empty", () => {
-    const note = renderDirectorNote(makeBrief(), 40);
+    const note = renderMemoryProjection(makeBrief(), 40);
     expect(note).not.toContain("[活跃剧情线]");
     expect(note).not.toContain("[伏笔任务]");
     expect(note).not.toContain("[相关长线记忆]");
     expect(note).not.toContain("[锚点进度]");
-    expect(note).not.toContain("[禁止透露]");
     expect(note).not.toContain("- ");
   });
 
-  it("renders the director goal section before threads when present", () => {
-    const note = renderDirectorNote(
-      makeBrief({
-        activeThreads: [
-          {
-            id: "thread_suyao",
-            kind: "character",
-            summary: "苏遥对主角隐瞒了旧终端的秘密",
-            status: "developing",
-            importance: "major",
-            lastTouchedAtCheckpoint: 10,
-          },
-        ],
-        phase: "development",
-        currentGoal: "推进玩家对苏遥的怀疑",
-        beats: [{ purpose: "让玩家得到侧面证据" }, { purpose: "苏遥阻止调查" }],
-      }),
-      40,
-    );
-    expect(note).toContain("[导演目标]");
-    expect(note).toContain("阶段：development");
-    expect(note).toContain("目标：推进玩家对苏遥的怀疑");
-    expect(note).toContain("节拍 1：让玩家得到侧面证据");
-    expect(note).toContain("节拍 2：苏遥阻止调查");
-    expect(note.indexOf("[导演目标]")).toBeLessThan(note.indexOf("[活跃剧情线]"));
-  });
 
-  it("omits the director goal section when no plan is in effect", () => {
-    const note = renderDirectorNote(makeBrief(), 40);
-    expect(note).not.toContain("[导演目标]");
-  });
 });
 
 
-describe("renderDirectorNote MA-A sections", () => {
+describe("renderMemoryProjection MA-A sections", () => {
   it("renders the avoidance lessons list", () => {
     const brief = makeBrief({
       avoidanceLessons: [
@@ -192,13 +157,13 @@ describe("renderDirectorNote MA-A sections", () => {
         },
       ],
     });
-    const note = renderDirectorNote(brief, 40);
+    const note = renderMemoryProjection(brief, 40);
     expect(note).toContain("[规避清单]");
     expect(note).toContain("没有回收计划的伏笔不许下场（setup-flow，×2）");
   });
 
   it("omits the avoidance section when there are no lessons", () => {
-    expect(renderDirectorNote(makeBrief(), 40)).not.toContain("[规避清单]");
+    expect(renderMemoryProjection(makeBrief(), 40)).not.toContain("[规避清单]");
   });
 
   it("appends the overdue ultimatum for resolve_or_drop directives", () => {
@@ -212,7 +177,7 @@ describe("renderDirectorNote MA-A sections", () => {
         },
       ],
     });
-    const note = renderDirectorNote(brief, 40);
+    const note = renderMemoryProjection(brief, 40);
     expect(note).toContain("RESOLVE_OR_DROP s1（overdue）");
     expect(note).toContain("本段必须推进回收或显式放弃，不得继续悬置");
   });
@@ -223,6 +188,6 @@ describe("renderDirectorNote MA-A sections", () => {
         { id: "s1", action: "hold", urgency: "normal", premise: "p", payoffMissing: true },
       ],
     });
-    expect(renderDirectorNote(brief, 40)).toContain("未定回收计划");
+    expect(renderMemoryProjection(brief, 40)).toContain("未定回收计划");
   });
 });

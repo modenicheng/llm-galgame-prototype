@@ -10,7 +10,7 @@ import {
   type DslContextInput,
 } from "./context-builder.js";
 import { createInitialState } from "./state.js";
-import type { NarrativeBrief } from "../core/narrative/narrative-brief.js";
+import type { MemoryProjection } from "../core/narrative/memory-projection.js";
 import type { PromptBundle } from "../prompts.js";
 import type { StoryContextEvent } from "../schema.js";
 import type { StoryState } from "./types.js";
@@ -52,7 +52,7 @@ function makeRichState(): StoryState {
   });
 }
 
-function makeBrief(): NarrativeBrief {
+function makeBrief(): MemoryProjection {
   return {
     revision: 2,
     consolidatedThroughEventSeq: 88,
@@ -73,8 +73,7 @@ function makeBrief(): NarrativeBrief {
     setupDirectives: [{ id: "setup_key", action: "reinforce", urgency: "now" }],
     relevantEpisodes: [],
     anchors: [],
-    revealLocks: [],
-    avoidanceLessons: [],
+        avoidanceLessons: [],
     relatedFacts: [],
     characterBeliefs: [],
   };
@@ -199,8 +198,9 @@ describe("buildDslUserPrompt", () => {
       taskType: "continuation",
       generationNonce: "b7f2",
       targetLines: 6,
-      directorBrief: makeBrief(),
       tailVisualState: { background: "library", characters: {} },
+      actorBriefing:
+        "===== 导演便签 =====\n记忆已整理至事件 88（当前事件 92），最近 0 条原始事件见上方剧情历史。\n[活跃剧情线]\n- thread_1（main，developing，major）：寻找失踪的妹妹",
       modelAssetCatalog: {
         guidance: "",
         backgrounds: { library: { description: "旧图书馆" } },

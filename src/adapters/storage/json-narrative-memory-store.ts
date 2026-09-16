@@ -8,8 +8,6 @@
  *   atomically (write tmp file, then rename).
  * - `episodes.jsonl` — one `EpisodeMemory` JSON per line.
  * - `narrative-ops.jsonl` — one `RejectedOp` JSON per line.
- * - `director-plan.json` — the director's future plan, kept out of the
- *   consolidated state by design; written atomically like the state file.
  *
  * `load()` degrades missing or corrupt files to empty values instead of
  * throwing: corrupt state file → empty state; corrupt episode line → that
@@ -18,8 +16,6 @@
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NarrativeMemoryStorePort } from "../../core/ports/narrative-memory-store-port.js";
-import { DirectorPlanSchema } from "../../core/narrative/director-plan.js";
-import type { DirectorPlan } from "../../core/narrative/director-plan.js";
 import {
   EpisodeMemorySchema,
   EndingReportSchema,
@@ -39,7 +35,6 @@ import type { RejectedOp } from "../../core/narrative/memory-operation.js";
 const STATE_FILE = "narrative-state.json";
 const EPISODES_FILE = "episodes.jsonl";
 const OPS_FILE = "narrative-ops.jsonl";
-const PLAN_FILE = "director-plan.json";
 const FACTS_FILE = "facts.jsonl";
 const LESSONS_FILE = "lessons.jsonl";
 const ENDING_REPORT_FILE = "ending-report.json";
@@ -85,10 +80,6 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
     return path.join(this.dir, OPS_FILE);
   }
 
-  private get planPath(): string {
-    return path.join(this.dir, PLAN_FILE);
-  }
-
   async load(): Promise<{ state: NarrativeMemoryState; episodes: EpisodeMemory[] }> {
     let state: NarrativeMemoryState = EMPTY_STATE;
     try {
@@ -131,28 +122,6 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
 
   async appendOps(ops: RejectedOp[]): Promise<void> {
     await this.appendJsonl(this.opsPath, ops);
-  }
-
-  async loadPlan(): Promise<DirectorPlan | null> {
-    try {
-      const raw = await readFile(this.planPath, "utf8");
-      if (raw.trim().length > 0) {
-        const parsed: unknown = JSON.parse(raw);
-        // Structural corruption (valid JSON, wrong shape) degrades the same
-        // way as syntax corruption: only a zod-valid plan is returned.
-        const checked = DirectorPlanSchema.safeParse(parsed);
-        if (checked.success) {
-          return checked.data;
-        }
-      }
-    } catch {
-      // Missing or corrupt plan file → no plan, never throw.
-    }
-    return null;
-  }
-
-  async savePlan(plan: DirectorPlan): Promise<void> {
-    await this.writeAtomic(this.planPath, JSON.stringify(plan));
   }
 
   // ---------------------------------------------------------------------

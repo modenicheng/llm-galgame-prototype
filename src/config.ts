@@ -95,7 +95,6 @@ export interface NarrativeConfig {
     min_checkpoint_gap_ms: number;
   };
   brief: { max_relevant_episodes: number };
-  plan: { horizon_checkpoints: number; replan_ahead_checkpoints: number };
   /** M2.2 场景内汇流：后台判定新边末态 ≈ 同场景既有节点入口态，命中即改指既有节点。 */
   confluence: { enabled: boolean };
   story_plan_path: string;
@@ -115,7 +114,6 @@ export const DEFAULT_NARRATIVE_CONFIG: NarrativeConfig = {
     min_checkpoint_gap_ms: 5000,
   },
   brief: { max_relevant_episodes: 6 },
-  plan: { horizon_checkpoints: 3, replan_ahead_checkpoints: 1 },
   confluence: { enabled: false },
   story_plan_path: "story-plan.yaml",
 };
@@ -396,12 +394,6 @@ const NarrativeConfigSchema = z
         max_relevant_episodes: z.number().int().min(1).max(50).default(6),
       })
       .default({ max_relevant_episodes: 6 }),
-    plan: z
-      .object({
-        horizon_checkpoints: z.number().int().min(1).max(10),
-        replan_ahead_checkpoints: z.number().int().min(0).max(5),
-      })
-      .default({ horizon_checkpoints: 3, replan_ahead_checkpoints: 1 }),
     confluence: z
       .object({
         // M2.2 场景内汇流：边收束后后台判定等价性，命中即改指既有节点；

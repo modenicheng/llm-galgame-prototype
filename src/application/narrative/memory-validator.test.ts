@@ -31,7 +31,7 @@ import type {
   EpisodeSummaryOp,
 } from "../../core/narrative/memory-operation.js";
 import { ThreadOpSchema } from "../../core/narrative/memory-operation.js";
-import type { SetupDirective } from "../../core/narrative/director-plan.js";
+import type { SetupDirective } from "../../core/narrative/setup-directive.js";
 
 // ---------------------------------------------------------------------------
 // Helpers / fixtures
