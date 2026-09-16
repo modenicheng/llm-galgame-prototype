@@ -18,6 +18,7 @@
 
 import type { AppConfig } from "../../config.js";
 import type { AgentRunnerPort, AgentTool } from "../../core/ports/agent-runner-port.js";
+import type { CanonStorePort } from "../../core/ports/canon-store-port.js";
 import type { ConfluenceJudgePort } from "../../core/ports/confluence-judge-port.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
@@ -55,6 +56,8 @@ interface DirectorServiceOptions {
   judge?: ConfluenceJudgePort;
   /** M3.5 ①：大纲读取（ending 候选 → 确定性收束压力）。导演可见、演员不可见。 */
   outline?: OutlineStorePort;
+  /** M3.6 ③：canon 读取（晋升事实进导演输入）。导演可见、演员不可见。 */
+  canon?: CanonStorePort;
   diagnostics?: DiagnosticSink;
 }
 
@@ -69,6 +72,7 @@ export class DirectorService {
   private readonly store: GraphStorePort;
   private readonly judge: ConfluenceJudgePort | undefined;
   private readonly outline: OutlineStorePort | undefined;
+  private readonly canon: CanonStorePort | undefined;
   private readonly diagnostics: DiagnosticSink;
   /** 场景 id → 本场景 directive（会话内工作态缓存）。 */
   private readonly directives = new Map<string, SceneDirective>();
@@ -79,7 +83,12 @@ export class DirectorService {
     this.store = options.store;
     this.judge = options.judge;
     this.outline = options.outline;
+    this.canon = options.canon;
     this.diagnostics = options.diagnostics ?? silentDiagnosticSink;
+    // M3.6 ③：canon 后台预热（fire-and-forget；未就绪时导演输入无 canon 段）。
+    void this.canon?.load().catch((err: unknown) => {
+      this.diagnostics.warn("DirectorService", `canon load failed: ${String(err)}`);
+    });
   }
 
   /** M4.1 ④：协调器调度机制零改动——判定员实例由导演持有并交出。 */
@@ -106,12 +115,14 @@ export class DirectorService {
       name === "narrowFormModes"
         ? this.executeNarrowFormModes(input.sceneId, argsJson)
         : this.executeTool(name, argsJson);
+    const canonSection = this.renderCanonSection();
     const user = [
       "===== 场景 =====",
       `sceneId: ${input.sceneId}`,
       `目的: ${input.scenePurpose}`,
       "===== 最近剧情摘要 =====",
       input.recentSummary === "" ? "（暂无）" : input.recentSummary,
+      ...(canonSection !== undefined ? [canonSection] : []),
     ].join("\n");
 
     const directive: SceneDirective = {
@@ -177,6 +188,35 @@ export class DirectorService {
     );
     this.narrowFormModes(sceneId, allowed);
     return Promise.resolve(`已收窄 ${sceneId} → [${allowed.join(", ")}]`);
+  }
+
+  /**
+   * M3.6 ③：canon 段（导演可见、演员不可见）。晋升事实是跨周目世界真相，
+   * 供导演校准场景目标；未加载/为空时省略整段。上限 20 条，保 prompt 有界。
+   */
+  private renderCanonSection(): string | undefined {
+    if (this.canon === undefined) return undefined;
+    let snap;
+    try {
+      snap = this.canon.getCanon();
+    } catch (err: unknown) {
+      this.diagnostics.warn("DirectorService", `canon read skipped: ${String(err)}`);
+      return undefined;
+    }
+    const lines: string[] = [];
+    if (snap.promotedFacts.length > 0) {
+      lines.push("===== 世界既定（canon）=====");
+      for (const fact of snap.promotedFacts.slice(0, 20)) {
+        lines.push(`- ${fact.content}`);
+      }
+    }
+    if (snap.exceptions.length > 0) {
+      if (lines.length === 0) lines.push("===== 世界既定（canon）=====");
+      for (const e of snap.exceptions.slice(0, 10)) {
+        lines.push(`- 例外：${e.content}（限制：${e.compensatingLimit}）`);
+      }
+    }
+    return lines.length > 0 ? lines.join("\n") : undefined;
   }
 
   /**

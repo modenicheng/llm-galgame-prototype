@@ -9,6 +9,7 @@
 
 import type { OutlineNode } from "../../core/outline/types.js";
 import type { MemoryDigest } from "../../core/graph/types.js";
+import type { CanonSnapshot } from "../../core/ports/canon-store-port.js";
 import type { OutlineOp } from "../../core/ports/outline-store-port.js";
 
 /** 角色卡（M3.3 渲染进 per-game characters.txt；spriteBinding 可缺省）。 */
@@ -33,11 +34,13 @@ export interface OutlineWriterRequest {
   seedStoryLine?: string;
 }
 
-/** 后台维护请求（M3.4 ②）：大纲现状 + 最近摘要 + 记忆 digest。 */
+/** 后台维护请求（M3.4 ②）：大纲现状 + 最近摘要 + 记忆 digest（+ M3.6 canon）。 */
 export interface OutlineMaintenanceRequest {
   outline: OutlineNode[];
   recentSummary: string;
   memoryDigest: MemoryDigest;
+  /** M3.6 ③：canon 快照（跨周目世界真相，编剧维护的约束输入）。 */
+  canon?: CanonSnapshot;
 }
 
 export interface OutlineWriterPort {

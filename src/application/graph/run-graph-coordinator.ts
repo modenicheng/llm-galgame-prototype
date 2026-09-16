@@ -20,6 +20,7 @@ import type {
 } from "../../core/ports/confluence-judge-port.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
+import type { CanonSnapshot, CanonStorePort } from "../../core/ports/canon-store-port.js";
 import type {
   EdgeChoice,
   RestorePoint,
@@ -110,6 +111,9 @@ export class RunGraphCoordinator implements RunGraphPort {
   private frontierOutlineRef: OutlineNodeId | null = null;
   private frontierSceneId: SceneId | null = null;
   private maintenanceRunning = false;
+  /** M3.6 ③：canon 读取（后台维护的约束输入；惰性加载一次）。 */
+  private readonly canon: CanonStorePort | undefined;
+  private canonLoaded = false;
 
   constructor(
     private readonly store: GraphStorePort,
@@ -119,12 +123,14 @@ export class RunGraphCoordinator implements RunGraphPort {
       judge?: ConfluenceJudgePort;
       diagnostics?: DiagnosticSink;
       outline?: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort };
+      canon?: CanonStorePort;
     },
   ) {
     this.location = store.location;
     this.judge = options?.judge;
     this.diagnostics = options?.diagnostics ?? silentDiagnosticSink;
     this.outline = options?.outline;
+    this.canon = options?.canon;
   }
 
   /** 串行执行一次图变更（见 mutationChain）。 */
@@ -503,10 +509,12 @@ export class RunGraphCoordinator implements RunGraphPort {
     }
     this.maintenanceRunning = true;
     try {
+      const canonSnapshot = await this.loadCanonQuietly();
       const ops = await this.outline.maintainer.maintainOutline({
         outline: this.outlineNodes,
         recentSummary: input.moment.storyState.recent_summary,
         memoryDigest: input.moment.memoryDigest,
+        ...(canonSnapshot !== undefined ? { canon: canonSnapshot } : {}),
       });
       const allowed = ops.filter((op) => {
         if (op.type === "add") return op.node.status === "planned";
@@ -524,6 +532,26 @@ export class RunGraphCoordinator implements RunGraphPort {
       this.diagnostics.warn("RunGraphCoordinator", `大纲后台维护失败（忽略）：${String(err)}`);
     } finally {
       this.maintenanceRunning = false;
+    }
+  }
+
+  /** M3.6 ③：惰性加载 canon（缺文件 = 空 canon；失败只告警不带 canon 进维护）。 */
+  private async loadCanonQuietly(): Promise<CanonSnapshot | undefined> {
+    if (this.canon === undefined) return undefined;
+    if (!this.canonLoaded) {
+      try {
+        await this.canon.load();
+      } catch (err) {
+        this.diagnostics.warn("RunGraphCoordinator", `canon 加载失败（忽略）：${String(err)}`);
+        return undefined;
+      }
+      this.canonLoaded = true;
+    }
+    try {
+      return this.canon.getCanon();
+    } catch (err) {
+      this.diagnostics.warn("RunGraphCoordinator", `canon 读取失败（忽略）：${String(err)}`);
+      return undefined;
     }
   }
 

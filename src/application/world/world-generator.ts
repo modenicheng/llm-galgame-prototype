@@ -11,6 +11,7 @@
 import { mkdir, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { OutlineStore } from "../../adapters/storage/outline-store.js";
+import { CanonStore } from "../../adapters/storage/canon-store.js";
 import { DEFAULT_GAMES_ROOT } from "../../bootstrap/create-runtime-application.js";
 import type { OutlineWriterPort, WorldDraft } from "../outline/outline-writer.js";
 
@@ -61,22 +62,12 @@ export class WorldGenerator {
     );
 
     const gameDir = path.join(this.gamesRoot, gameId);
-    // world/canon.json 脚手架（形状与 M3.6 对齐；promoted/exceptions 留空）。
-    const worldDir = path.join(gameDir, "world");
-    await mkdir(worldDir, { recursive: true });
-    await writeAtomic(
-      path.join(worldDir, "canon.json"),
-      JSON.stringify(
-        {
-          worldSetting: draft.worldSetting,
-          characters: draft.characters,
-          promotedFacts: [],
-          exceptions: [],
-        },
-        null,
-        2,
-      ),
-    );
+    // world/canon.json 脚手架（M3.6 CanonStore：形状唯一真源；拒绝覆写）。
+    const canon = new CanonStore(this.gamesRoot, gameId);
+    await canon.saveScaffold({
+      worldSetting: draft.worldSetting,
+      characters: draft.characters,
+    });
 
     // per-game prompts（loadPrompts 优先读取，见 prompts.ts）。
     const promptsDir = path.join(gameDir, WORLD_PROMPTS_DIR);

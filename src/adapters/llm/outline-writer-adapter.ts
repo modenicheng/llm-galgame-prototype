@@ -172,6 +172,19 @@ export class OutlineWriterAdapter implements OutlineWriterPort, OutlineMaintaine
         request.memoryDigest.threads.map((t) => `${t.id}(${t.status})`).join("、") || "无"
       }`,
     );
+    if (request.canon !== undefined) {
+      parts.push("===== 世界既定（canon，维护不得与之矛盾）=====");
+      if (request.canon.promotedFacts.length === 0) {
+        parts.push("（暂无晋升事实）");
+      } else {
+        for (const fact of request.canon.promotedFacts.slice(0, 20)) {
+          parts.push(`- ${fact.content}`);
+        }
+      }
+      for (const e of request.canon.exceptions.slice(0, 10)) {
+        parts.push(`- 例外：${e.content}（限制：${e.compensatingLimit}）`);
+      }
+    }
 
     const response = await this.client.chat.completions.create({
       model: this.model,

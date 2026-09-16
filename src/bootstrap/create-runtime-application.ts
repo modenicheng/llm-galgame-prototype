@@ -23,9 +23,13 @@ import { loadPrompts } from "../prompts.js";
 import path from "node:path";
 import { WORLD_PROMPTS_DIR } from "../application/world/world-generator.js";
 import { OutlineStore } from "../adapters/storage/outline-store.js";
+import { CanonStore } from "../adapters/storage/canon-store.js";
+import type { CanonStorePort } from "../core/ports/canon-store-port.js";
 import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
+import { CanonAdjudicatorAdapter } from "../adapters/llm/canon-adjudicator-adapter.js";
 import { AgentRunnerAdapter } from "../adapters/llm/agent-runner-adapter.js";
 import { DirectorService } from "../application/director/director-service.js";
+import { CanonPromoter } from "../application/canon/canon-promoter.js";
 import type {
   OutlineMaintainerPort,
 } from "../application/outline/outline-writer.js";
@@ -160,6 +164,7 @@ function buildGraphCoordinator(
   gameId: string,
   outline?: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort },
   confluenceJudge?: ConfluenceJudgePort,
+  canon?: CanonStorePort,
 ): RunGraphCoordinator {
   const graphStore = new GameGraphStore(gamesRoot, gameId);
   return new RunGraphCoordinator(
@@ -171,6 +176,7 @@ function buildGraphCoordinator(
         ? { judge: confluenceJudge, diagnostics: new ConsoleDiagnosticSink() }
         : {}),
       ...(outline !== undefined ? { outline } : {}),
+      ...(canon !== undefined ? { canon } : {}),
     },
   );
 }
@@ -229,6 +235,9 @@ export async function createRuntimeApplication(
       maintainer: new OutlineWriterAdapter({ apiKey, api: config.api }),
     };
   }
+  // M3.6：canon 存储（跨周目世界真相）。缺省新世界 = 空 canon（读宽容），
+  // 晋升管线周目完结/弃局后 fire-and-forget。
+  const canonStore = new CanonStore(gamesRoot, gameId);
   // M4.1 ④：汇流判定员的持有与装配移入导演；协调器只接收实例（调度机制
   // 零改动）。判定失败只告警；confluence.enabled 门控不变（测试/CI 零网络）。
   const confluenceEnabled =
@@ -239,6 +248,8 @@ export async function createRuntimeApplication(
     // M3.5 ①：导演读大纲 ending 候选（导演可见、演员不可见）；缺省新世界
     // 无大纲 → endingPressure 只能来自模型判定。
     ...(outline !== undefined ? { outline: outline.store } : {}),
+    // M3.6 ③：canon 晋升事实进导演输入（导演可见、演员不可见）。
+    canon: canonStore,
     ...(confluenceEnabled
       ? {
           judge: new ConfluenceJudgeAdapter({
@@ -254,7 +265,19 @@ export async function createRuntimeApplication(
     gameId,
     outline,
     director.exposeConfluenceJudge(),
+    canonStore,
   );
+  // M3.6 ②：晋升管线（后台，周目完结/弃局后触发；串行合批，失败只告警）。
+  const canonPromoter = new CanonPromoter({
+    graph: new GameGraphStore(gamesRoot, gameId),
+    canon: canonStore,
+    adjudicator: new CanonAdjudicatorAdapter({
+      apiKey,
+      api: config.api,
+      diagnostics: new ConsoleDiagnosticSink(),
+    }),
+    diagnostics: new ConsoleDiagnosticSink(),
+  });
 
   /**
    * Assemble the per-session game: fresh session store, narrative
@@ -317,8 +340,15 @@ export async function createRuntimeApplication(
   let game = await buildGameFor(config, sessionId, options);
 
   // Every runtime output feeds the projection (§7.7) so a reconnecting
-  // browser can restore the page without restarting the Game.
-  game.subscribe((output) => projection.applyOutput(output));
+  // browser can restore the page without restarting the Game. A run's
+  // formal end also fires the M3.6 canon promotion (background).
+  const watchGame = (g: Game): void => {
+    g.subscribe((output) => {
+      projection.applyOutput(output);
+      if (output.type === "session_ended") void canonPromoter.promoteFromRuns();
+    });
+  };
+  watchGame(game);
 
   const app: RuntimeApplication = {
     game,
@@ -350,7 +380,9 @@ export async function createRuntimeApplication(
       await game.flush();
       const freshSessionId = new SessionIdGenerator().nextSessionId();
       game = await buildGameFor(config, freshSessionId, options, "restart");
-      game.subscribe((output) => projection.applyOutput(output));
+      watchGame(game);
+      // 弃局周目已定格（abandonedAt）→ 晋升管线后台跑一轮（M3.6 ②）。
+      void canonPromoter.promoteFromRuns();
       // 原地替换 game 字段并返回同一 app 对象：宿主持有的 app 引用保持有效，
       // 只需重新调用 app.game.run()。
       app.game = game;

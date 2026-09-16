@@ -182,10 +182,11 @@
   验收：grep event mode 零残留；收束指令进 prompt 单测（导演在场时）；全量绿。
   落地（2026-09-17）：① `DirectorService` 增可选 `outline: OutlineStorePort`，`refreshDirective` 的 `endingPressure` 取「模型判定 ∨ 大纲确定性信号」（信号 = 维护已 activate/realize 某 ending 候选，或前沿 act 全 realized 且尚有 ending 候选；大纲未加载/读取失败 → false 只告警不阻塞）；bootstrap 显式世界时把 `outline.store` 接入导演。收束指令进 prompt 既有链路：directive → `makeBriefing` → `buildActorBriefing`（「- 收束：剧情接近终章，向结局推进」行，actor-briefing.test 断言在册）→ 演员生成请求 `briefing` 字段。② forced ending 机构整体删除：game.ts 的 forceEnding/forcedEndingRetries/interactionCount/concludeWithRuntimeEnding/FORCED_ENDING_REPAIR_REASON、SegmentOutcome/ContinuationRequest 的 endingRequired、config `narrative.mode`+`narrative.event` 键、bootstrap mode 门控（导演无条件装配）、game-dsl 强制收束三测试与 bootstrap event-mode 测试。③ config 负面断言：yaml 含 `narrative.mode: event` 加载不报错且键被 zod strip（死键不生效）。验收三绿（1448 测试）。
 
-- [ ] **M3.6 canon 存储 + 晋升流程**
+- [x] **M3.6 canon 存储 + 晋升流程**
   前置：MA-B（facts）、M4.2（剪报读取方）。关联：§5.1；决议 D6。
   要点：① `src/core/ports/canon-store-port.ts` + `src/adapters/storage/canon-store.ts`：`world/canon.json` + `world/canon-log.jsonl`（append-only 修订留痕）；记录形状：worldSetting / characters / promotedFacts{id, content, evidenceRuns, judgedBy, promotedAt} / exceptions{id, content, reason, compensatingLimit}；② 晋升（后台，周目完结或弃局时触发）：收集**全部周目（含已弃，决议 D7）**末态/游标快照 digest 的 major facts → 编剧调用变体 `adjudicateCanon(candidates) → CanonOps[]`（单次 JSON）裁决 → promote 写 canon+log，矛盾事实过不了门（§5.1），例外登记附补偿限制；③ 读取方：导演剪报与编剧维护输入；晋升不回改既有快照（D6）。
   验收：store 单测（append-only/原子写/损坏拒绝）；晋升管线单测（fake 裁决：双周目同 fact 晋升、单周目不晋升、例外登记留痕）；canon 内容进导演输入断言。
+  落地（2026-09-17）：① `CanonStorePort`/`CanonStore`（`GAME_STORAGE_LAYOUT.worldCanon/worldCanonLog` 即 §9 已登记的 `world/canon.json` + `world/canon.log.jsonl`）；`saveScaffold` 拒绝覆写（WorldGenerator 改用它，形状唯一真源）；`applyPromotion` 整批校验 + 原子写 + 日志留痕 + 重复晋升拒绝。② `CanonPromoter`（`application/canon/`）：范围 = 已定格周目（完结取 ending 边 endState、弃局取 abandonedAt 入口快照、活跃跳过；含已弃，D7）；佐证键 = 内容 trim 全等且 ≥2 个不同周目；裁决 `CanonAdjudicatorAdapter.adjudicateCanon`（单次 JSON，宁缺毋滥）→ store 落盘；已晋升/已例外内容幂等跳过；触发 = bootstrap 在 session_ended 与 restart 弃局后 fire-and-forget（串行合批，失败只告警）。③ 读取方 = 导演（refreshDirective 用户提示增「世界既定（canon）」段，测试断言在册）+ 编剧维护（OutlineMaintenanceRequest 增可选 canon，adapter 渲染「维护不得与之矛盾」段；协调器惰性加载传入）；晋升管线零快照写入（D6）。
 
 - [ ] **M3.7 删除 story_line 静态注入**
   前置：M3.5、M3.6。
@@ -353,6 +354,7 @@
 - 2026-09-16（回溯与删除语义修订，作者发起，决议 D7）：原 §7「玩家删除决策 + 级联 GC」整体移除——已演出内容是冻结事实，删除致跨周目一致性失真；§7 重写为不可达内容内部 GC（无玩家入口），M5.6 改为「图维护」卡；回溯（M5.3/M1.5）语义澄清：`abandonedAt` 仅流水记账、图零删除；导演/编剧输入显式包含全部已实现路径（含已弃周目，spec §5.1 注记；M4.1 ⑤ / M3.6 晋升范围同步）。
 - 2026-09-16（相同物理场景不同具体状态，决议 D8）：§4 `OutlineNode` 增可选 `location`（物理地点标签，演化区字段，outline.json 尚无落盘数据、零迁移；`src/core/outline/types.ts` 已同步 + 测试）。建模分工：同幕内状态漂移由决策入口快照承载；跨幕同地不同阶段 = 多幕节点共享 location，总览（M5.1）与通关回顾（M5.5）按它并排分组；M2.4 汇流预筛将其列为高优先候选。
 
+- 2026-09-17（M3.6 落地）：canon 修订日志文件名取 §9 布局常量 `worldCanonLog` = `world/canon.log.jsonl`（卡面行文的 `canon-log.jsonl` 以布局常量为准）；跨周目佐证采用确定性键（内容 trim 全等 + evidenceRuns 周目 id 排序），LLM 只裁决晋升/例外，不做事实匹配；`judgedBy` 由 store 盖章为 `canon-adjudicator`（promotedAt 同批）；bootstrap 晋升触发为 fire-and-forget（与 consolidator 同容错纪律，测试/CI 零网络下快速失败被吞为告警）。
 - 2026-09-17（M3.5 落地，D3 执行）：`narrative.mode` 配置键整体删除（longform 成唯一运行路径）——`DEFAULT_NARRATIVE_CONFIG`/`NarrativeConfigSchema` 去 mode/event 段，zod strip 语义下旧 yaml 中的死键静默失效（负面断言在册）；event mode 专属机构（forced ending 合成、interactionCount、endingRequired 请求字段、mode 门控装配）零残留。
 - 2026-09-17（演员上下文布局修订，作者发起，决议 D9）：`buildDslUserPrompt` 段落重排为「稳定 → 易变」
 （历史/素材前置、任务头置尾），删除 `game.history_events`（schema、config.yaml、全部 fixture/断言）；

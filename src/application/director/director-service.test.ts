@@ -103,6 +103,74 @@ describe("DirectorService", () => {
     expect(noJudge.exposeConfluenceJudge()).toBeUndefined();
   });
 
+  describe("canon input (M3.6 ③)", () => {
+    function makeCanon(canon: {
+      promotedFacts: Array<{ id: string; content: string; evidenceRuns: string[]; judgedBy: string; promotedAt: string }>;
+      exceptions: Array<{ id: string; content: string; reason: string; compensatingLimit: string }>;
+    }) {
+      return {
+        getCanon: () => ({ revision: 1, worldSetting: "", characters: [], ...canon }),
+        load: vi.fn(async () => ({ revision: 1, worldSetting: "", characters: [], ...canon })),
+        saveScaffold: vi.fn(),
+        applyPromotion: vi.fn(async () => 2),
+      };
+    }
+
+    it("carries promoted facts into the director prompt (directors see canon)", async () => {
+      const canonStore = makeCanon({
+        promotedFacts: [
+          {
+            id: "canon_1",
+            content: "旧终端连通着废弃的广播站。",
+            evidenceRuns: ["run_a", "run_b"],
+            judgedBy: "canon-adjudicator",
+            promotedAt: "2026-09-17T00:00:00.000Z",
+          },
+        ],
+        exceptions: [
+          {
+            id: "exc_1",
+            content: "苏遥记得前世。",
+            reason: "矛盾",
+            compensatingLimit: "仅限终章梦境段",
+          },
+        ],
+      });
+      const runner = makeRunner();
+      const service = new DirectorService({
+        runner: runner as unknown as AgentRunnerPort,
+        store,
+        canon: canonStore,
+      });
+      await service.refreshDirective({
+        sceneId: "旧校舍",
+        scenePurpose: "调查",
+        recentSummary: "",
+      });
+      const userArg = (runner.runLoop.mock.calls[0]![0] as unknown as { user: string }).user;
+      expect(userArg).toContain("世界既定（canon）");
+      expect(userArg).toContain("旧终端连通着废弃的广播站。");
+      expect(userArg).toContain("例外：苏遥记得前世。（限制：仅限终章梦境段）");
+    });
+
+    it("omits the canon section when nothing was promoted", async () => {
+      const canonStore = makeCanon({ promotedFacts: [], exceptions: [] });
+      const runner = makeRunner();
+      const service = new DirectorService({
+        runner: runner as unknown as AgentRunnerPort,
+        store,
+        canon: canonStore,
+      });
+      await service.refreshDirective({
+        sceneId: "教室",
+        scenePurpose: "日常",
+        recentSummary: "",
+      });
+      const userArg = (runner.runLoop.mock.calls[0]![0] as unknown as { user: string }).user;
+      expect(userArg).not.toContain("canon");
+    });
+  });
+
   describe("outline-derived ending pressure (M3.5 ①)", () => {
     type Node = ReturnType<typeof makeOutlineNode>;
     function makeOutlineNode(
