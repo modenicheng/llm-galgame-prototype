@@ -139,7 +139,8 @@
 
 ### P4 导演
 
-- [ ] **M4.1 AgentRunner + 导演骨架与工具集**
+- [x] **M4.1 AgentRunner + 导演骨架与工具集**
+  落地（2026-09-17）：`agent-runner-port.ts`（runLoop + MAX_AGENT_TOOL_STEPS=6 超限强制收束）+ `agent-runner-adapter.ts`（同一 openai client 的最小工具循环，工具执行抛错回喂）；`director-service.ts`——确定性工具 readSceneHistory（D7 跨周目全量边负载回放）/queryCharacterState（入口快照）/narrowFormModes（相位门缓存），SceneDirective 会话内缓存（不入图契约），triggerDirective fire-and-forget 单飞，`exposeConfluenceJudge()` 汇流承接（bootstrap 持有装配移入导演，协调器调度零改动，run-graph-confluence.test.ts 不动）。
   前置：M3.4。关联：决议 D1；§5（三角色表）、§5.3；spec（设计）§3.3 落地注记。
   目标：导演 agent 骨架（工具循环）+ 首批工具；承接汇流判定。
   要点：① `src/core/ports/agent-runner-port.ts` + `src/adapters/llm/agent-runner-adapter.ts`：`run({system, messages, tools}) → {text, toolCalls}` 最小工具循环——不做通用框架；步数上限常量（默认 6，超限强制收束为最终文本输出）；② `src/application/director/director-service.ts`：场景边界/checkpoint 异步触发（fire-and-forget + 诊断告警）；首批确定性工具：`readSceneHistory(sceneId)`（边负载回放投影，复用 serialize*）、`queryCharacterState(characterId)`（入口快照）、`narrowFormModes(modes)`（相位门 → InteractionPolicy.allowed_modes）、汇流判定承接；③ 导演产出 `SceneDirective`（本场景目标/防守节拍/收束压力/表单收窄），会话内工作态，不入图契约；④ 汇流承接取低风险路径：ConfluenceJudgePort 的持有与装配移入导演（bootstrap 接线变化），协调器调度机制与既有测试零改动；⑤ **跨周目事实**（决议 D7）：导演/编剧输入可读全部已实现路径（含已弃周目——`readSceneHistory` 返回该场景全部已实现边，不分周目；NG+ 前世记忆的取材来源）；演员防火墙不变（M4.2 剪报仍是唯一通道）。

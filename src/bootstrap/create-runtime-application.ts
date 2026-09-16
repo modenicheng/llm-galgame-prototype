@@ -24,6 +24,8 @@ import path from "node:path";
 import { WORLD_PROMPTS_DIR } from "../application/world/world-generator.js";
 import { OutlineStore } from "../adapters/storage/outline-store.js";
 import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
+import { AgentRunnerAdapter } from "../adapters/llm/agent-runner-adapter.js";
+import { DirectorService } from "../application/director/director-service.js";
 import type {
   OutlineMaintainerPort,
 } from "../application/outline/outline-writer.js";
@@ -155,29 +157,19 @@ function buildAudioStack(
  * 手拼 config 的缺省（options.config 可绕过 zod 默认值填充）。
  */
 function buildGraphCoordinator(
-  config: AppConfig,
-  apiKey: string,
   gamesRoot: string,
   gameId: string,
   outline?: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort },
+  confluenceJudge?: ConfluenceJudgePort,
 ): RunGraphCoordinator {
   const graphStore = new GameGraphStore(gamesRoot, gameId);
-  const confluenceEnabled =
-    config.narrative.confluence?.enabled ?? DEFAULT_NARRATIVE_CONFIG.confluence.enabled;
   return new RunGraphCoordinator(
     graphStore,
     new SystemClock(),
     (prefix) => `${prefix}${crypto.randomUUID()}`,
     {
-      ...(confluenceEnabled
-        ? {
-            judge: new ConfluenceJudgeAdapter({
-              apiKey,
-              api: config.api,
-              diagnostics: new ConsoleDiagnosticSink(),
-            }) as ConfluenceJudgePort,
-            diagnostics: new ConsoleDiagnosticSink(),
-          }
+      ...(confluenceJudge !== undefined
+        ? { judge: confluenceJudge, diagnostics: new ConsoleDiagnosticSink() }
         : {}),
       ...(outline !== undefined ? { outline } : {}),
     },
@@ -238,7 +230,29 @@ export async function createRuntimeApplication(
       maintainer: new OutlineWriterAdapter({ apiKey, api: config.api }),
     };
   }
-  const graphCoordinator = buildGraphCoordinator(config, apiKey, gamesRoot, gameId, outline);
+  // M4.1 ④：汇流判定员的持有与装配移入导演；协调器只接收实例（调度机制
+  // 零改动）。判定失败只告警；confluence.enabled 门控不变（测试/CI 零网络）。
+  const confluenceEnabled =
+    config.narrative.confluence?.enabled ?? DEFAULT_NARRATIVE_CONFIG.confluence.enabled;
+  const director = new DirectorService({
+    runner: new AgentRunnerAdapter({ apiKey, api: config.api }),
+    store: new GameGraphStore(gamesRoot, gameId),
+    ...(confluenceEnabled
+      ? {
+          judge: new ConfluenceJudgeAdapter({
+            apiKey,
+            api: config.api,
+            diagnostics: new ConsoleDiagnosticSink(),
+          }),
+        }
+      : {}),
+  });
+  const graphCoordinator = buildGraphCoordinator(
+    gamesRoot,
+    gameId,
+    outline,
+    director.exposeConfluenceJudge(),
+  );
 
   /**
    * Assemble the per-session game: fresh session store + (longform)
