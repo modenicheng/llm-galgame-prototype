@@ -2588,7 +2588,7 @@ export class Game {
       storyState: this.storyState,
       visualState: this.renderedVisualState,
       memoryDigest,
-      outlineRevision: 0,
+      outlineRevision: this.graph.currentOutlineRevision(),
     };
   }
 

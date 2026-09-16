@@ -51,6 +51,13 @@ import {
   RUN_ID_PREFIX,
   SCENE_ID_PREFIX,
 } from "../../core/graph/ids.js";
+import type { OutlineNodeId } from "../../core/graph/ids.js";
+import type {
+  OutlineStorePort,
+  OutlineOp,
+} from "../../core/ports/outline-store-port.js";
+import type { OutlineMaintainerPort } from "../../application/outline/outline-writer.js";
+import type { OutlineNode } from "../../core/outline/types.js";
 
 /** M1 种子大纲节点 id（编剧 M3.2 接入后由真实大纲取代；不迁移旧 game）。 */
 export const SEED_OUTLINE_NODE_ID = "ol_seed";
@@ -79,6 +86,8 @@ export class RunGraphCoordinator implements RunGraphPort {
   private openEdge: OpenEdge | null = null;
   /** 模型场景 id → 场景节点 id（会话内缓存；恢复路径 M1.4 重建）。 */
   private readonly sceneNodes = new Map<string, SceneId>();
+  /** 场景节点 → outlineRef（M3.4：确定性迁移的去重依据）。 */
+  private readonly sceneOutlineRefs = new Map<SceneId, OutlineNodeId>();
   /**
    * 图变更互斥链：演员管线的生命周期调用与后台汇流改绑共用一条串行队列。
    * 互斥体只做快速落盘/状态变更；LLM 判定在链外等待，绝不阻塞运行时。
@@ -86,16 +95,36 @@ export class RunGraphCoordinator implements RunGraphPort {
   private mutationChain: Promise<unknown> = Promise.resolve();
   private readonly judge: ConfluenceJudgePort | undefined;
   private readonly diagnostics: DiagnosticSink;
+  /**
+   * M3.4 大纲动态维护：OutlineStore 接线后，确定性迁移（activate/realize）
+   * 走 applyRevision；后台维护（LLM maintainer）fire-and-forget 产 op。
+   * outlineRevision 缓存供 RuntimeMoment 嵌入快照。
+   */
+  private readonly outline:
+    | { store: OutlineStorePort; maintainer?: OutlineMaintainerPort }
+    | undefined;
+  private outlineLoaded = false;
+  private outlineNodes: OutlineNode[] = [];
+  private outlineRevision = 0;
+  /** 前沿 outlineRef（D5：首个未 realized 的 act）与其场景节点。 */
+  private frontierOutlineRef: OutlineNodeId | null = null;
+  private frontierSceneId: SceneId | null = null;
+  private maintenanceRunning = false;
 
   constructor(
     private readonly store: GraphStorePort,
     private readonly clock: ClockPort,
     private readonly newId: (prefix: string) => string,
-    options?: { judge?: ConfluenceJudgePort; diagnostics?: DiagnosticSink },
+    options?: {
+      judge?: ConfluenceJudgePort;
+      diagnostics?: DiagnosticSink;
+      outline?: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort };
+    },
   ) {
     this.location = store.location;
     this.judge = options?.judge;
     this.diagnostics = options?.diagnostics ?? silentDiagnosticSink;
+    this.outline = options?.outline;
   }
 
   /** 串行执行一次图变更（见 mutationChain）。 */
@@ -304,11 +333,14 @@ export class RunGraphCoordinator implements RunGraphPort {
     form: InteractionFormSnapshot;
     moment: RuntimeMoment;
   }): Promise<DecisionId> {
-    return this.enqueue(async () => {
+    const opened = await this.enqueue(async () => {
       const opened = await this.openDecisionUnsafe(input);
       this.scheduleConfluenceCheck(input, opened);
-      return opened.decisionId;
+      return opened;
     });
+    // M3.4：大纲后台维护 fire-and-forget（LLM 链外，落盘走 store 队列）。
+    void this.maintainOutlineQuietly(input);
+    return opened.decisionId;
   }
 
   private async openDecisionUnsafe(input: {
@@ -323,6 +355,7 @@ export class RunGraphCoordinator implements RunGraphPort {
     const sceneId = await this.ensureSceneNode(input.modelSceneId);
     const entryState = toStateSnapshot(input.moment);
     await this.store.putDecision({ id: decisionId, sceneId, entryState, form: input.form });
+    await this.migrateOutlineForScene(sceneId);
 
     // 先收束前一条边（endState = 本次入口快照），再推进游标。
     const edge = this.openEdge;
@@ -353,6 +386,124 @@ export class RunGraphCoordinator implements RunGraphPort {
 
   async reachEnding(input: { endingId: string; moment: RuntimeMoment }): Promise<EndingId> {
     return this.enqueue(() => this.reachEndingUnsafe(input));
+  }
+
+  currentOutlineRevision(): number {
+    return this.outlineRevision;
+  }
+
+  // ----------------------------------------------------------------
+  // M3.4 大纲确定性迁移与后台维护
+  // ----------------------------------------------------------------
+
+  /** 惰性加载 OutlineStore（缺文件 = 空大纲 revision 0）。 */
+  private async ensureOutlineLoaded(): Promise<void> {
+    if (this.outline === undefined || this.outlineLoaded) return;
+    this.outlineLoaded = true;
+    const snap = await this.outline.store.load();
+    this.outlineNodes = snap.nodes;
+    this.outlineRevision = snap.revision;
+  }
+
+  /**
+   * 确定性迁移（无 LLM，openDecision 时机，决议 D5）：
+   * - 场景的首个决策落成 → 其 outlineRef 节点 activate（planned → active）；
+   * - 进入不同 outlineRef 的场景 → 上一前沿 act realize
+   *   （instantiatedBy = 上一场景节点）。
+   * applyRevision 内部整批校验；迁移失败只告警不阻塞演出（实时性红线）。
+   */
+  private async migrateOutlineForScene(sceneId: SceneId): Promise<void> {
+    if (this.outline === undefined) return;
+    try {
+      await this.ensureOutlineLoaded();
+      if (this.sceneOutlineRefs.has(sceneId)) return; // 同场景后续决策：不迁移
+
+      // ① 进入新场景：上一前沿 act（active 且未被实例化）→ realize。
+      if (this.frontierOutlineRef !== null && this.frontierSceneId !== null) {
+        const previous = this.outlineNodes.find((n) => n.id === this.frontierOutlineRef);
+        if (previous?.status === "active" && previous.instantiatedBy === undefined) {
+          await this.applyOutlineQuietly(
+            [
+              {
+                type: "realize",
+                id: previous.id,
+                instantiatedBy: this.frontierSceneId,
+              },
+            ],
+            "M3.4：游玩进入下一幕场景 → 上一前沿 act realize",
+          );
+        }
+      }
+
+      // ② 前沿推进：首个未 realized 的 act；planned → activate。
+      const ref = this.pickFrontierRef();
+      this.sceneOutlineRefs.set(sceneId, ref);
+      const node = this.outlineNodes.find((n) => n.id === ref);
+      if (node?.status === "planned") {
+        await this.applyOutlineQuietly([{ type: "activate", id: ref }], "M3.4：场景首个决策落成 → activate");
+      }
+
+      this.frontierOutlineRef = ref;
+      this.frontierSceneId = sceneId;
+    } catch (err) {
+      this.diagnostics.warn("RunGraphCoordinator", `大纲确定性迁移失败（不阻塞演出）：${String(err)}`);
+    }
+  }
+
+  /** D5 前沿 = 首个未 realized 的 act；无大纲（dev 种子世界）时回退 ol_seed。 */
+  private pickFrontierRef(): OutlineNodeId {
+    const frontier = this.outlineNodes.find(
+      (n) => n.kind === "act" && n.status !== "realized",
+    );
+    return (frontier?.id ?? SEED_OUTLINE_NODE_ID) as OutlineNodeId;
+  }
+
+  private async applyOutlineQuietly(ops: OutlineOp[], reason: string): Promise<void> {
+    if (this.outline === undefined) return;
+    try {
+      this.outlineRevision = await this.outline.store.applyRevision(ops, reason);
+      this.outlineNodes = this.outline.store.getOutline().nodes;
+    } catch (err) {
+      this.diagnostics.warn("RunGraphCoordinator", `大纲修订被拒绝（${reason}）：${String(err)}`);
+    }
+  }
+
+  /** 后台维护（LLM）：单飞；产 op 预筛后 applyRevision，store 兜底拒绝非法。 */
+  private async maintainOutlineQuietly(input: {
+    moment: RuntimeMoment;
+    modelSceneId: string;
+  }): Promise<void> {
+    if (
+      this.outline?.maintainer === undefined ||
+      this.maintenanceRunning ||
+      this.outlineNodes.length === 0
+    ) {
+      return;
+    }
+    this.maintenanceRunning = true;
+    try {
+      const ops = await this.outline.maintainer.maintainOutline({
+        outline: this.outlineNodes,
+        recentSummary: input.moment.storyState.recent_summary,
+        memoryDigest: input.moment.memoryDigest,
+      });
+      const allowed = ops.filter((op) => {
+        if (op.type === "add") return op.node.status === "planned";
+        if (op.type === "prune") {
+          const target = this.outlineNodes.find((n) => n.id === op.id);
+          if (target === undefined) return false;
+          return target.status === "planned" || (target.status === "active" && target.instantiatedBy === undefined);
+        }
+        return false; // 维护不得 activate/realize（确定性迁移独占）
+      });
+      if (allowed.length > 0) {
+        await this.applyOutlineQuietly(allowed, "M3.4：后台维护（LLM）");
+      }
+    } catch (err) {
+      this.diagnostics.warn("RunGraphCoordinator", `大纲后台维护失败（忽略）：${String(err)}`);
+    } finally {
+      this.maintenanceRunning = false;
+    }
   }
 
   private async reachEndingUnsafe(input: {

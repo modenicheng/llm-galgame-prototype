@@ -8,6 +8,8 @@
  */
 
 import type { OutlineNode } from "../../core/outline/types.js";
+import type { MemoryDigest } from "../../core/graph/types.js";
+import type { OutlineOp } from "../../core/ports/outline-store-port.js";
 
 /** 角色卡（M3.3 渲染进 per-game characters.txt；spriteBinding 可缺省）。 */
 export interface DraftCharacter {
@@ -31,6 +33,22 @@ export interface OutlineWriterRequest {
   seedStoryLine?: string;
 }
 
+/** 后台维护请求（M3.4 ②）：大纲现状 + 最近摘要 + 记忆 digest。 */
+export interface OutlineMaintenanceRequest {
+  outline: OutlineNode[];
+  recentSummary: string;
+  memoryDigest: MemoryDigest;
+}
+
 export interface OutlineWriterPort {
   writeOutline(request: OutlineWriterRequest): Promise<WorldDraft>;
+}
+
+/**
+ * 大纲后台维护 port（M3.4 ②）：单次 JSON 调用产出候选 OutlineOp[]
+ * （只允许 add(planned)/prune；activate/realize 为确定性迁移独占）。
+ * 实现方（OutlineWriterAdapter）与 writeOutline 共用同一 LLM client。
+ */
+export interface OutlineMaintainerPort {
+  maintainOutline(request: OutlineMaintenanceRequest): Promise<OutlineOp[]>;
 }

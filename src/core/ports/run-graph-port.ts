@@ -117,4 +117,11 @@ export interface RunGraphPort {
    * 完结 + 游标清除。开局直接结局（无开放边）也成立。
    */
   reachEnding(input: { endingId: string; moment: RuntimeMoment }): Promise<EndingId>;
+
+  /**
+   * 当前大纲修订号（执行清单 M3.4）：协调器缓存 OutlineStore 的 revision，
+   * Game 构造 RuntimeMoment 时读取并嵌入决策入口/末态快照。未接线
+   * OutlineStore（无编剧世界）时恒为 0。
+   */
+  currentOutlineRevision(): number;
 }

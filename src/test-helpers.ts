@@ -95,6 +95,9 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
  * 不复现 RunGraphCoordinator 的状态机（后者配真实 GameGraphStore 另测）。
  */
 export class MemoryRunGraph implements RunGraphPort {
+  currentOutlineRevision(): number {
+    return 0;
+  }
   readonly location = "memory-graph";
   rootRunsStarted = 0;
   readonly begunEdges: EdgeChoice[] = [];

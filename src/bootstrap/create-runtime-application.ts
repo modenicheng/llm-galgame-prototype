@@ -18,9 +18,16 @@ import { SessionIdGenerator } from "../adapters/platform/session-id-generator.js
 import { SystemClock } from "../adapters/platform/system-clock.js";
 import { RunGraphCoordinator } from "../application/graph/run-graph-coordinator.js";
 import { ConfluenceJudgeAdapter } from "../adapters/llm/confluence-judge-adapter.js";
+import type { ConfluenceJudgePort } from "../core/ports/confluence-judge-port.js";
 import { loadPrompts } from "../prompts.js";
 import path from "node:path";
 import { WORLD_PROMPTS_DIR } from "../application/world/world-generator.js";
+import { OutlineStore } from "../adapters/storage/outline-store.js";
+import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
+import type {
+  OutlineMaintainerPort,
+} from "../application/outline/outline-writer.js";
+import type { OutlineStorePort } from "../core/ports/outline-store-port.js";
 import { Metrics } from "../runtime/metrics.js";
 import { RuntimeStatus } from "../runtime/status.js";
 import { UiProjectionStoreImpl } from "../application/ui/ui-projection-store.js";
@@ -152,6 +159,7 @@ function buildGraphCoordinator(
   apiKey: string,
   gamesRoot: string,
   gameId: string,
+  outline?: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort },
 ): RunGraphCoordinator {
   const graphStore = new GameGraphStore(gamesRoot, gameId);
   const confluenceEnabled =
@@ -160,16 +168,19 @@ function buildGraphCoordinator(
     graphStore,
     new SystemClock(),
     (prefix) => `${prefix}${crypto.randomUUID()}`,
-    confluenceEnabled
-      ? {
-          judge: new ConfluenceJudgeAdapter({
-            apiKey,
-            api: config.api,
+    {
+      ...(confluenceEnabled
+        ? {
+            judge: new ConfluenceJudgeAdapter({
+              apiKey,
+              api: config.api,
+              diagnostics: new ConsoleDiagnosticSink(),
+            }) as ConfluenceJudgePort,
             diagnostics: new ConsoleDiagnosticSink(),
-          }),
-          diagnostics: new ConsoleDiagnosticSink(),
-        }
-      : undefined,
+          }
+        : {}),
+      ...(outline !== undefined ? { outline } : {}),
+    },
   );
 }
 
@@ -217,7 +228,17 @@ export async function createRuntimeApplication(
   // options.gameId 固定世界（「继续游戏」指向同一目录）；缺省每次启动
   // 生成新世界。
   const gameId = options.gameId ?? `game_${new Date().toISOString().replace(/[:.]/g, "-")}`;
-  const graphCoordinator = buildGraphCoordinator(config, apiKey, gamesRoot, gameId);
+  // M3.4：显式世界接线 OutlineStore（确定性迁移 + 大纲后台维护）；缺省新世界
+  // 无大纲 → 协调器走 ol_seed 种子回退。
+  let outline: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort } | undefined;
+  if (options.gameId !== undefined) {
+    const outlineStore = new OutlineStore(gamesRoot, gameId);
+    outline = {
+      store: outlineStore,
+      maintainer: new OutlineWriterAdapter({ apiKey, api: config.api }),
+    };
+  }
+  const graphCoordinator = buildGraphCoordinator(config, apiKey, gamesRoot, gameId, outline);
 
   /**
    * Assemble the per-session game: fresh session store + (longform)

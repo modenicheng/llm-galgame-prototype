@@ -22,8 +22,11 @@ export interface OutlineSnapshot {
 }
 
 export interface OutlineStorePort {
-  /** 当前大纲全量 + 修订号（同步内存读取）。 */
+  /** 当前大纲全量 + 修订号（同步内存读取；须先 load）。 */
   getOutline(): OutlineSnapshot;
+
+  /** 启动路径的显式加载：缺文件 = 空大纲 revision 0；损坏抛错。 */
+  load(): Promise<OutlineSnapshot>;
 
   /**
    * 应用一批修订：整批校验 → 落盘（原子写）→ 追加修订日志。任何非法 op

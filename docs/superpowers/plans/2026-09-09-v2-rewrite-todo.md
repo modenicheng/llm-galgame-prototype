@@ -130,7 +130,8 @@
   要点：① `src/application/world/world-generator.ts`：OutlineWriter → OutlineStore 写入 draft → `world/canon.json` 脚手架（worldSetting + characters，schema 与 M3.6 对齐）→ per-game prompt 文件 `world/prompts/characters.txt + story_line.txt`（由 WorldDraft 渲染）→ 返回 gameId；② prompts 装载优先级：`loadPrompts` 支持 per-game 覆盖（有 `world/prompts/` 对应文件则优先，否则回退全局 `prompts/`）；③ 入口：web `POST /api/worlds {text}` + 首屏最小改（无既有世界时显示描述输入框 + 开局按钮）；CLI `--new-world "<text>"`；gameId 复用 M5.0 通道；④ 生成失败大声报错，不静默回退全局 story_line。
   验收：world-generator 单测（fake writer：落盘文件齐全、outline revision=1、prompts 覆盖生效）；web 路由测试（fake 依赖注入）；真实生成质量归人工清单。
 
-- [ ] **M3.4 大纲动态维护 + realized 冻结**
+- [x] **M3.4 大纲动态维护 + realized 冻结**
+  落地（2026-09-17）：确定性迁移挂 openDecision（场景首个决策 → activate 前沿 act；进入新场景 → 上一前沿 act realize，instantiatedBy=上一场景节点；同场景复开不重迁移；迁移失败只告警不阻塞演出）；后台维护 `OutlineWriterAdapter.maintainOutline`（单次 JSON，只产 add(planned)/prune，协调器预筛 activate/realize 与已实例化 prune，store 兜底拒绝）fire-and-forget 单飞；`RunGraphPort.currentOutlineRevision()` 接 `RuntimeMoment.outlineRevision`（game currentMoment 真值）；bootstrap 显式 gameId 时装配 OutlineStore + maintainer；⑤ 种子回退保留（无大纲世界 → ol_seed）。
   前置：M3.3。关联：§4 冻结原则；决议 D5。
   目标：编剧扩展/剪枝前沿；outlineRevision 进快照。
   要点：① 确定性迁移（无 LLM，协调器 openDecision 时机）：场景首个决策节点落成 → 其 outlineRef 节点 activate；游玩进入不同 outlineRef 的场景 → 上一场景节点 realize（instantiatedBy=sceneId）；均走 `applyRevision`；② 后台维护（LLM）：openDecision 收束后 fire-and-forget（互斥链纪律：LLM 链外、落盘入队），outline-writer adapter 增 `maintainOutline({outline, recentSummary, memoryDigest}) → OutlineOp[]`（单次 JSON）；只允许 add(planned)/prune(planned 或未 instantiated 的 active)，store 校验兜底拒绝触碰 realized/pruned；③ `RuntimeMoment.outlineRevision` 接真值：`RunGraphPort` 增只读 `currentOutlineRevision()`（协调器缓存 store revision），Game 构造 moment 时取；④ 场景 outlineRef 绑定按 D5；⑤ outline.json 缺失时的旧单节点种子保留为 dev 回退（测试构造依赖它），记附录 B。

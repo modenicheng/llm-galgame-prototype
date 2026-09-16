@@ -10,9 +10,12 @@ import type { AppConfig } from "../../config.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { OUTLINE_PURPOSE_MAX_LENGTH } from "../../core/outline/types.js";
+import type { OutlineOp } from "../../core/ports/outline-store-port.js";
 import type {
+  OutlineMaintainerPort,
   OutlineWriterPort,
   OutlineWriterRequest,
+  OutlineMaintenanceRequest,
   WorldDraft,
 } from "../../application/outline/outline-writer.js";
 
@@ -67,7 +70,7 @@ const RawWorldDraftSchema = z.object({
       { message: "结局节点 id 须以 ol_end_ 开头" },
     ),
 });
-export class OutlineWriterAdapter implements OutlineWriterPort {
+export class OutlineWriterAdapter implements OutlineWriterPort, OutlineMaintainerPort {
   private readonly client: OpenAI;
   private readonly model: string;
   private readonly diagnostics: DiagnosticSink;
@@ -141,4 +144,74 @@ export class OutlineWriterAdapter implements OutlineWriterPort {
     }
     return parts.join("\n\n");
   }
+
+  // -------------------------------------------------------------------------
+  // M3.4 后台维护：单次 JSON 调用产出候选 OutlineOp[]（只允许 add/planned
+  // 与 prune）。activate/realize 为协调器确定性迁移独占，这里产出即忽略。
+  // -------------------------------------------------------------------------
+
+  private static readonly MAINTENANCE_SYSTEM_PROMPT =
+    "你是大纲维护器。输入当前大纲、最近剧情摘要与记忆摘要，输出结构修订 JSON：" +
+    '{ops:[{type:"add",node:{id,purpose,kind,status,location?}}|{type:"prune",id}]}。' +
+    "add 只允许 status=planned 的新幕节点（id 用 ol_ 前缀且不得与现有节点重复，purpose 不超过 " +
+    OUTLINE_PURPOSE_MAX_LENGTH + " 字）；prune 只允许剪除尚未实例化的 planned/active 节点。" +
+    "不得输出 activate/realize；没有需要的修订时输出空 ops。";
+
+  async maintainOutline(request: OutlineMaintenanceRequest): Promise<OutlineOp[]> {
+    const parts: string[] = ["===== 当前大纲 ====="];
+    for (const node of request.outline) {
+      parts.push(
+        `- ${node.id}（${node.kind}，${node.status}${node.instantiatedBy !== undefined ? "，已实例化" : ""}）：${node.purpose}`,
+      );
+    }
+    parts.push("===== 最近剧情摘要 =====");
+    parts.push(request.recentSummary === "" ? "（暂无）" : request.recentSummary);
+    parts.push("===== 记忆摘要 =====");
+    parts.push(
+      `revision ${request.memoryDigest.revision}；threads：${
+        request.memoryDigest.threads.map((t) => `${t.id}(${t.status})`).join("、") || "无"
+      }`,
+    );
+
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      messages: [
+        { role: "system", content: OutlineWriterAdapter.MAINTENANCE_SYSTEM_PROMPT },
+        { role: "user", content: parts.join("\n\n") },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.4,
+    });
+
+    const rawContent = response.choices[0]?.message?.content ?? "";
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawContent);
+    } catch {
+      throw new Error("outline 维护输出解析失败");
+    }
+    const checked = RawMaintenanceOpsSchema.safeParse(parsed);
+    if (!checked.success) {
+      throw new Error("outline 维护输出解析失败");
+    }
+    return checked.data.ops.map((op) => op as OutlineOp);
+  }
 }
+
+const RawMaintenanceAddSchema = z.object({
+  type: z.literal("add"),
+  node: z.object({
+    id: z.string().min(1).max(64),
+    purpose: z.string().min(1).max(OUTLINE_PURPOSE_MAX_LENGTH),
+    kind: z.enum(["act", "ending"]),
+    status: z.literal("planned"),
+    location: z.exactOptional(z.string().min(1).max(64)),
+  }),
+});
+const RawMaintenancePruneSchema = z.object({
+  type: z.literal("prune"),
+  id: z.string().min(1),
+});
+const RawMaintenanceOpsSchema = z.object({
+  ops: z.array(z.discriminatedUnion("type", [RawMaintenanceAddSchema, RawMaintenancePruneSchema])),
+});
