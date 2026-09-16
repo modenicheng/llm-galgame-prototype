@@ -18,6 +18,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
+import { QWEN3_TTS_SAMPLE_RATE, ttsModelFamilyOf } from "../core/ports/tts-model-family.js";
 
 /** DashScope instruction policy for a voice. */
 export type InstructionMode = "free" | "fixed_emotion" | "none";
@@ -136,5 +137,59 @@ export function validateDashscopeEnv(
   if (baseUrl !== undefined && !/^https?:\/\//.test(baseUrl)) {
     missing.push("DASHSCOPE_TTS_BASE_URL must be an http(s) URL");
   }
+  const qwen3BaseUrl = env.DASHSCOPE_QWEN3_TTS_BASE_URL;
+  if (qwen3BaseUrl !== undefined && !/^https?:\/\//.test(qwen3BaseUrl)) {
+    missing.push("DASHSCOPE_QWEN3_TTS_BASE_URL must be an http(s) URL");
+  }
   return missing;
+}
+
+/**
+ * Startup validation (dashscope mode only): cross-check each binding's model
+ * family against its voice id and the configured sample rate. Returns a list
+ * of configuration errors; [] when consistent.
+ *
+ *  - Voice ids self-describe their family (cloned/designed ids embed the
+ *    model prefix, e.g. `cosyvoice-v3-flash-suyao-xxxx` / qwen 复刻 id 以
+ *    `qwen3-tts` 开头). DashScope does not accept voices across families.
+ *  - qwen3-tts streams fixed 24 kHz PCM while the browser resamples from the
+ *    global `synthesis.sample_rate` — cosyvoice supports 24 kHz, so a single
+ *    consistent rate works for mixed deployments.
+ */
+export function validateDashscopeModelConfig(
+  voices: VoicesConfig,
+  env: Record<string, string | undefined>,
+  sampleRate: number,
+): string[] {
+  const errors: string[] = [];
+  for (const [profileId, profile] of Object.entries(voices.profiles)) {
+    const binding = profile.providers.dashscope;
+    if (binding === undefined) continue;
+    const family = ttsModelFamilyOf(binding.model);
+    if (family === "qwen3-tts" && sampleRate !== QWEN3_TTS_SAMPLE_RATE) {
+      errors.push(
+        `profile "${profileId}" uses qwen3-tts model "${binding.model}"（固定 ${QWEN3_TTS_SAMPLE_RATE} Hz 输出）` +
+          `，但 synthesis.sample_rate=${sampleRate}；请将 media.audio.synthesis.sample_rate 设为 ${QWEN3_TTS_SAMPLE_RATE}` +
+          `（cosyvoice 同样支持 24 kHz，可混布）`,
+      );
+    }
+    const voiceId = env[binding.voice_id_env];
+    if (voiceId === undefined || voiceId === "") continue;
+    const voiceIsCosyvoice = voiceId.startsWith("cosyvoice");
+    const voiceIsQwen3 = voiceId.startsWith("qwen3-tts");
+    if (family === "qwen3-tts" && voiceIsCosyvoice) {
+      errors.push(
+        `profile "${profileId}"：模型 "${binding.model}" 属 qwen3-tts 族，但 voice-id "${voiceId.slice(0, 24)}…" 是 CosyVoice 复刻/设计音色——` +
+          `两族音色不互用。请在百炼控制台对 qwen3-tts 系模型重新复刻/设计音色后更新 ${binding.voice_id_env}，` +
+          `或将 model 改回 cosyvoice 系`,
+      );
+    }
+    if (family === "cosyvoice" && voiceIsQwen3) {
+      errors.push(
+        `profile "${profileId}"：模型 "${binding.model}" 属 cosyvoice 族，但 voice-id 是 qwen3-tts 音色（"${voiceId.slice(0, 24)}…"）——` +
+          `两族音色不互用。请将 model 改为对应的 qwen3-tts 模型，或更换 ${binding.voice_id_env} 为 cosyvoice 音色`,
+      );
+    }
+  }
+  return errors;
 }

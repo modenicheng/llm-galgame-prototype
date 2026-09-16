@@ -6,6 +6,7 @@ import type { TtsSynthesisRequest } from "../../core/ports/tts-provider-port.js"
 import {
   DashScopeCosyVoiceProvider,
   DASHSCOPE_DEFAULT_BASE_URL,
+  DASHSCOPE_QWEN3_TTS_DEFAULT_BASE_URL,
   TtsProviderError,
 } from "./dashscope-cosyvoice-provider.js";
 
@@ -205,3 +206,208 @@ describe("DashScopeCosyVoiceProvider", () => {
     );
   });
 });
+
+/** Canonical 44-byte PCM WAV header + payload (sizes are real; the live
+ * qwen3 stream uses placeholder sizes, which the stripper never reads). */
+function wavBytes(pcm: Buffer, sampleRate = 24000): Buffer {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8, "ascii");
+  header.write("fmt ", 12, "ascii");
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+function audioEvent(bytes: Buffer): string {
+  return `data: {"output":{"audio":{"data":"${bytes.toString("base64")}"},"finish_reason":"null"}}\n\n`;
+}
+
+const STOP_EVENT = 'data: {"output":{"audio":{"data":"","url":"http://oss.example/x.wav"},"finish_reason":"stop"}}\n\n';
+
+describe("DashScopeCosyVoiceProvider — qwen3-tts family", () => {
+  it("posts the multimodal-generation body (text/voice only) and strips the WAV header", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const pcm = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
+    const fetchImpl = (async (url: string, init: RequestInit): Promise<Response> => {
+      seen.push({ url, init });
+      return sseResponse([audioEvent(wavBytes(pcm)), STOP_EVENT]);
+    }) as unknown as typeof fetch;
+
+    const provider = new DashScopeCosyVoiceProvider({ apiKey: "k", fetchImpl });
+    const req = makeRequest({
+      model: "qwen3-tts-flash",
+      voiceId: "Cherry",
+      rate: 1.2,
+      pitch: 0.9,
+      volume: 70,
+      seed: 99,
+      sampleRate: 22050,
+    });
+    const session = await provider.start(req, new AbortController().signal);
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of session.chunks) chunks.push(chunk);
+
+    expect(seen[0]!.url).toBe(DASHSCOPE_QWEN3_TTS_DEFAULT_BASE_URL);
+    const headers = seen[0]!.init.headers as Record<string, string>;
+    expect(headers["X-DashScope-SSE"]).toBe("enable");
+    expect(headers["X-DashScope-Data-Inspector"]).toBeUndefined();
+    const body = JSON.parse(String(seen[0]!.init.body)) as {
+      model: string;
+      input: Record<string, unknown>;
+    };
+    expect(body.model).toBe("qwen3-tts-flash");
+    // Only text + voice; the CosyVoice-only params are dropped.
+    expect(body.input).toEqual({ text: "你好，世界", voice: "Cherry" });
+    // The 44-byte WAV header is stripped; downstream sees raw PCM only.
+    expect(Buffer.concat(chunks).equals(pcm)).toBe(true);
+    // Metadata and duration math use the family's fixed 24 kHz.
+    expect(session.metadata.sampleRate).toBe(24000);
+    await expect(session.completion).resolves.toMatchObject({
+      totalBytes: pcm.length,
+      durationMs: Math.round((pcm.length / 2 / 24000) * 1000),
+    });
+  });
+
+  it("maps instruction → instructions on instruct models only", async () => {
+    const bodies: string[] = [];
+    const pcm = Buffer.from([9, 9, 9, 9]);
+    const fetchImpl = (async (_url: string, init: RequestInit): Promise<Response> => {
+      bodies.push(String(init.body));
+      return sseResponse([audioEvent(wavBytes(pcm)), STOP_EVENT]);
+    }) as unknown as typeof fetch;
+
+    const provider = new DashScopeCosyVoiceProvider({ apiKey: "k", fetchImpl });
+    await drain(
+      provider.start(
+        makeRequest({
+          model: "qwen3-tts-instruct-flash-2026-01-26",
+          voiceId: "Cherry",
+          instruction: "语气：温柔。",
+        }),
+        new AbortController().signal,
+      ),
+    );
+    await drain(
+      provider.start(
+        makeRequest({
+          model: "qwen3-tts-vc-2026-01-22",
+          voiceId: "qwen3-tts-vc-suyao-abc",
+          instruction: "语气：温柔。",
+        }),
+        new AbortController().signal,
+      ),
+    );
+
+    const instruct = JSON.parse(bodies[0]!) as { input: Record<string, unknown> };
+    expect(instruct.input.instructions).toBe("语气：温柔。");
+    const nonInstruct = JSON.parse(bodies[1]!) as { input: Record<string, unknown> };
+    expect(nonInstruct.input).not.toHaveProperty("instructions");
+  });
+
+  it("reassembles PCM when the WAV header spans two SSE chunks", async () => {
+    const pcm = Buffer.alloc(64, 0xab);
+    const wav = wavBytes(pcm);
+    const fetchImpl = (async () =>
+      sseResponse([
+        audioEvent(wav.subarray(0, 20)), // partial header
+        audioEvent(wav.subarray(20)), // rest of header + all PCM
+        STOP_EVENT,
+      ])) as unknown as typeof fetch;
+
+    const provider = new DashScopeCosyVoiceProvider({ apiKey: "k", fetchImpl });
+    const session = await provider.start(
+      makeRequest({ model: "qwen3-tts-flash", voiceId: "Cherry" }),
+      new AbortController().signal,
+    );
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of session.chunks) chunks.push(chunk);
+    expect(Buffer.concat(chunks).equals(pcm)).toBe(true);
+    await expect(session.completion).resolves.toMatchObject({ totalBytes: 64 });
+  });
+
+  it("passes a headerless qwen3 stream through as raw PCM (instruct models emit no WAV header)", async () => {
+    const pcm = Buffer.from([0xfe, 0xff, 0xfd, 0xff, 0xfc, 0xff, 0xfb, 0xff]);
+    const fetchImpl = (async () =>
+      sseResponse([audioEvent(pcm), STOP_EVENT])) as unknown as typeof fetch;
+
+    const provider = new DashScopeCosyVoiceProvider({ apiKey: "k", fetchImpl });
+    const session = await provider.start(
+      makeRequest({ model: "qwen3-tts-instruct-flash-2026-01-26", voiceId: "Cherry" }),
+      new AbortController().signal,
+    );
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of session.chunks) chunks.push(chunk);
+    expect(Buffer.concat(chunks).equals(pcm)).toBe(true);
+    await expect(session.completion).resolves.toMatchObject({ totalBytes: pcm.length });
+    expect(session.metadata.sampleRate).toBe(24000);
+  });
+
+  it("fails typed on a non-PCM WAV fmt chunk", async () => {
+    // fmt audio_format = 0x0011 (ADPCM) — forwarding compressed payload as
+    // raw PCM would be noise, so this stays a typed failure.
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0, "ascii");
+    header.writeUInt32LE(36, 4);
+    header.write("WAVE", 8, "ascii");
+    header.write("fmt ", 12, "ascii");
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(0x11, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(24000, 24);
+    header.writeUInt32LE(24000 * 2, 28);
+    header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write("data", 36, "ascii");
+    header.writeUInt32LE(4, 40);
+    const wav = Buffer.concat([header, Buffer.from([1, 2, 3, 4])]);
+    const fetchImpl = (async () =>
+      sseResponse([audioEvent(wav), STOP_EVENT])) as unknown as typeof fetch;
+
+    const provider = new DashScopeCosyVoiceProvider({ apiKey: "k", fetchImpl });
+    const session = await provider.start(
+      makeRequest({ model: "qwen3-tts-flash", voiceId: "Cherry" }),
+      new AbortController().signal,
+    );
+    const iterator = session.chunks[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toBeInstanceOf(TtsProviderError);
+    await expect(iterator.next()).rejects.toMatchObject({ code: "sse_parse" });
+    await expect(session.completion).rejects.toMatchObject({ code: "sse_parse" });
+  });
+
+  it("respects the qwen3BaseUrl override", async () => {
+    const pcm = Buffer.from([1, 1]);
+    let url = "";
+    const fetchImpl = (async (u: string): Promise<Response> => {
+      url = u;
+      return sseResponse([audioEvent(wavBytes(pcm)), STOP_EVENT]);
+    }) as unknown as typeof fetch;
+
+    const provider = new DashScopeCosyVoiceProvider({
+      apiKey: "k",
+      fetchImpl,
+      qwen3BaseUrl: "https://proxy.example.com/generation",
+    });
+    await drain(
+      provider.start(
+        makeRequest({ model: "qwen3-tts-flash", voiceId: "Cherry" }),
+        new AbortController().signal,
+      ),
+    );
+    expect(url).toBe("https://proxy.example.com/generation");
+  });
+});
+
+async function drain(sessionPromise: Promise<{ chunks: AsyncIterable<Uint8Array> }>): Promise<void> {
+  for await (const _ of (await sessionPromise).chunks) {
+    // drain
+  }
+}

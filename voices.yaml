@@ -1,36 +1,41 @@
 # 角色音色配置 V3（严格）
 #
 # 每个角色通过 config.yaml characters.<key>.voice_profile 引用一个逻辑音色。
-# dashscope 绑定只有两个核心字段：
-#   - model:         CosyVoice 模型名（与音色匹配，如 cosyvoice-v3-flash）
+# dashscope 绑定核心字段：
+#   - model:         合成模型名。两个模型族协议不同（provider 按前缀自动分支）：
+#                      · cosyvoice*（cosyvoice-v3-flash / v3.5-flash …）
+#                        走 SpeechSynthesizer 端点，支持 rate/pitch/volume/seed/instruction。
+#                      · qwen3-tts*（qwen3-tts-flash / -instruct-flash / -vc- / -vd- 快照名）
+#                        走 multimodal-generation 端点，固定 24000 Hz PCM 输出；
+#                        不支持 rate/pitch/volume/seed（发送前自动丢弃）；
+#                        仅 -instruct- 模型支持逐请求指令（instruction → instructions）。
 #   - voice_id_env:  存放 voice-id 的环境变量名（voice-id 放 .env，像 API key 一样，
 #                     各协作者可各自复刻/设计自己的音色，互不串扰）
 #
 # voice-id 三种来源，全部只需复制 id 填入 .env，无需本地调用：
-#   1. 系统音色：音色列表中的字面量（如 longanyang、longxiaochun_v3）
-#   2. 声音复刻：百炼控制台 → 选择模型 → 复刻音色 → 上传 10~20 秒音频 → 得到 voice-id
-#   3. 声音设计：百炼控制台 → 设计音色 → 填写声音描述 → 得到 voice-id
-#   CosyVoice 系列复刻/设计免费。本项目合成走北京地域的 SpeechSynthesizer 端点。
+#   1. 系统音色：音色列表中的字面量
+#        · cosyvoice-v3-flash：longxiaochun_v3、longanyang 等 long 前缀
+#        · qwen3-tts-flash：Cherry、Serena、Ethan、Chelsie 等英文人名（48 个，含方言）
+#   2. 声音复刻：百炼控制台 → 选择目标模型 → 复刻音色 → 上传 10~20 秒音频 → 得到 voice-id
+#   3. 声音设计：百炼控制台 → 选择目标模型 → 设计音色 → 填写声音描述 → 得到 voice-id
+#
+# ⚠ 模型族之间音色不互用（官方 FAQ）：复刻/设计音色创建时绑定目标模型。
+#   cosyvoice 复刻的音色 id（cosyvoice-…-前缀）不能用于 qwen3-tts-vc，反之亦然；
+#   换模型族必须在该模型下重新复刻/设计。启动校验会按 id 前缀拦截串用。
+#
+# ⚠ 使用 qwen3-tts 族时，config.yaml 的 media.audio.synthesis.sample_rate
+#   必须为 24000（cosyvoice 同样支持 24 kHz，可混布）。
 #
 # 旁白（narration）不配音：只有角色行会合成语音。
-#
-# V2 的 voice_sources（零样本复刻资产注册）已移出运行时配置。
-# 历史资产（已从运行时配置移除，仅存档）：
-#   suyao_source.reference_audio: assets/voices/suyao/reference.wav
-#   suyao_source.reference_text: 这是一段音色注册参考文本。
-#
-# 可选字段：
-#   - voice_revision:   缓存失效版本号（默认 1）。在控制台重新复刻同一音色后 +1。
-#   - instruction_mode: 指令格式（默认 free）。
-#       free          → 复刻/设计音色，支持任意自然语言指令（≤100 字符，汉字按 2 字符计）
-#       fixed_emotion → 系统音色（支持 Instruct 时），格式「你说话的情感是<emotion>。」
-#                       emotion: neutral/fearful/angry/sad/surprised/happy/disgusted
-#       none          → 音色不支持 Instruct
 
 version: 3
 
 profiles:
-  # 系统音色配置（voice-id 在 .env 的 COSYVOICE_VOICE_SUYAO）
+  # qwen3-tts 复刻音色（voice-id 在 .env 的 QWEN3_VOICE_SUYAO）
+  # 注意：需在百炼控制台对 qwen3-tts-vc 模型复刻苏遥音色（10~20s 干净人声，
+  # 采样率 ≥24kHz 单声道）；旧的 cosyvoice 复刻 id 不能直接沿用。
+  # 想切回 CosyVoice：model 改回 cosyvoice-v3.5-flash，
+  # voice_id_env 改回 COSYVOICE_VOICE_SUYAO（旧 id 仍在 .env 中）。
   suyao_main:
     semantic:
       base_description: 年轻女性，音色清亮偏冷，表达克制，句子较短。
@@ -46,12 +51,14 @@ profiles:
 
     providers:
       dashscope:
-        # model: cosyvoice-v3.5-flash
         model: qwen3-tts-vc-2026-01-22
-        voice_id_env: COSYVOICE_VOICE_SUYAO
-        instruction_mode: free
+        # model: cosyvoice-v3.5-flash
+        # voice_id_env: COSYVOICE_VOICE_SUYAO
+        voice_id_env: QWEN3_VOICE_SUYAO
+        # qwen3-tts-vc 不支持逐请求指令（provider 会丢弃）；qwen3-tts-instruct 系才可 free
+        instruction_mode: none
 
-  # 林澈（玩家角色）音色配置（voice-id 在 .env 的 COSYVOICE_VOICE_LINCHE）
+  # 林澈（玩家角色）qwen3-tts 复刻音色（voice-id 在 .env 的 QWEN3_VOICE_LINCHE）
   linche_main:
     semantic:
       base_description: 年轻女性，声线自然偏沉，语气平淡随性，句子简短。
@@ -68,12 +75,14 @@ profiles:
       dashscope:
         model: qwen3-tts-vc-2026-01-22
         # model: cosyvoice-v3.5-flash
-        voice_id_env: COSYVOICE_VOICE_LINCHE
-        instruction_mode: free
+        # voice_id_env: COSYVOICE_VOICE_LINCHE
+        voice_id_env: QWEN3_VOICE_LINCHE
+        # qwen3-tts-vc 不支持逐请求指令（provider 会丢弃）；qwen3-tts-instruct 系才可 free
+        instruction_mode: none
 
-  # 系统音色示例：直接使用预设音色（voice-id = longanyang，放入 .env）
-  # longanyang 支持 Instruct（固定格式），故用 fixed_emotion 演示情绪指令；
-  # 不支持 Instruct 的音色（多数 v3-flash 系统音色）则用 none。
+  # 系统音色示例：直接使用预设音色（voice-id 放 .env）
+  # · cosyvoice-v3-flash 配 longanyang（支持 Instruct 固定格式 → fixed_emotion）
+  # · qwen3-tts-flash 配 Cherry（无逐请求指令 → none；-instruct 模型才可 free）
   # 注意：启动时会校验本文件中所有 dashscope 绑定的音色变量（含此示例），
   # 未在 config.yaml 引用的 profile 也需在 .env 中设好对应变量。
   # example_system_voice:
@@ -81,6 +90,6 @@ profiles:
   #     base_description: 阳光大男孩，语速略快。
   #   providers:
   #     dashscope:
-  #       model: cosyvoice-v3-flash
-  #       voice_id_env: COSYVOICE_VOICE_SYSTEM_SAMPLE
-  #       instruction_mode: fixed_emotion
+  #       model: qwen3-tts-flash
+  #       voice_id_env: QWEN3_VOICE_SYSTEM_SAMPLE
+  #       instruction_mode: none

@@ -9,7 +9,7 @@
  */
 import { loadApiKey, loadAuthorConfig, loadConfig } from "../config.js";
 import type { AppConfig } from "../config.js";
-import { loadVoices, validateDashscopeEnv } from "../config/voices.js";
+import { loadVoices, validateDashscopeEnv, validateDashscopeModelConfig } from "../config/voices.js";
 import { Game } from "../game.js";
 import { GeneratorPortFacade, StoryGenerator } from "../adapters/llm/openai-compatible-generator.js";
 import { NodeJsonlSessionStore } from "../adapters/storage/node-jsonl-session-store.js";
@@ -107,10 +107,17 @@ export async function createRuntimeApplication(
     if (missing.length > 0) {
       throw new Error(`DashScope TTS env incomplete — missing: ${missing.join(", ")}`);
     }
+    const modelErrors = validateDashscopeModelConfig(voices, process.env, synthesis.sample_rate);
+    if (modelErrors.length > 0) {
+      throw new Error(`DashScope TTS model config invalid — ${modelErrors.join("; ")}`);
+    }
     provider = new DashScopeCosyVoiceProvider({
       apiKey,
       ...(process.env.DASHSCOPE_TTS_BASE_URL !== undefined
         ? { baseUrl: process.env.DASHSCOPE_TTS_BASE_URL }
+        : {}),
+      ...(process.env.DASHSCOPE_QWEN3_TTS_BASE_URL !== undefined
+        ? { qwen3BaseUrl: process.env.DASHSCOPE_QWEN3_TTS_BASE_URL }
         : {}),
       timeoutMs: config.api.timeout_ms,
     });

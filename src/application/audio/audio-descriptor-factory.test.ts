@@ -295,4 +295,42 @@ describe("AudioDescriptorFactory", () => {
     // A non-zero pause must change the audio identity.
     expect(withPause.recipe.cacheKey).not.toBe(identity.recipe.cacheKey);
   });
+
+  it("uses the qwen3 fixed 24 kHz rate for qwen3-tts bindings, regardless of the global rate", () => {
+    const qwen3Voices: VoicesConfig = {
+      version: 3,
+      profiles: {
+        suyao_main: {
+          semantic: { base_description: "温柔的少女声", allowed_delivery: [], forbidden_delivery: [] },
+          providers: {
+            dashscope: {
+              model: "qwen3-tts-vc-2026-01-22",
+              voice_id_env: "SUYAO_VOICE_ID",
+              voice_revision: 3,
+              instruction_mode: "none",
+            },
+          },
+        },
+      },
+    };
+    const factory = makeFactory({
+      voices: qwen3Voices,
+      sampleRate: 24000, // global rate when qwen3 is deployed (startup-validated)
+    });
+    const result = factory.build(dialogue("suyao", "你好。", "l13"), { type: "active" }, "current")!;
+    expect(result.descriptor.format.sampleRate).toBe(24000);
+
+    // Even if the global rate is still 22050 (misconfiguration caught at
+    // startup), the qwen3 descriptor must carry the family's real rate.
+    const mismatched = makeFactory({
+      voices: qwen3Voices,
+      sampleRate: 22050,
+    }).build(dialogue("suyao", "你好。", "l13"), { type: "active" }, "current")!;
+    expect(mismatched.descriptor.format.sampleRate).toBe(24000);
+  });
+
+  it("keeps the configured global rate for cosyvoice bindings", () => {
+    const result = makeFactory().build(dialogue("suyao", "你好。", "l14"), { type: "active" }, "current")!;
+    expect(result.descriptor.format.sampleRate).toBe(22050);
+  });
 });

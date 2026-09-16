@@ -61,6 +61,13 @@ npm run dev -- --debug-runtime
 默认 `config.yaml` 的 `media.audio.synthesis.provider: dashscope` 会启用 DashScope 语音合成，
 启动时需要 `.env` 中已配置 `DASHSCOPE_API_KEY` 及 `voices.yaml` 引用的音色变量
 （创建与绑定方法见 [docs/agents/TTS-音色配置指南.md](./docs/agents/TTS-音色配置指南.md)）。
+合成模型在 `voices.yaml` 逐音色配置，支持两个模型族（可混布）：
+
+- `cosyvoice*`（v3-flash / v3.5-flash）：SpeechSynthesizer 端点，支持语速/音调/音量/种子；
+- `qwen3-tts*`（flash / instruct-flash / vc / vd）：固定 24000 Hz PCM 输出，
+  音色需在该族下单独复刻/设计（与 CosyVoice 音色不互用），
+  启用时 `synthesis.sample_rate` 必须为 24000。
+
 不配置 TTS 时，把 `synthesis.provider` 改为 `disabled` 即可纯文本运行（CLI 同理）。
 
 ## 验证媒体调度

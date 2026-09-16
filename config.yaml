@@ -91,6 +91,10 @@ media:
       model_profile: cosyvoice_v3_flash
       api_key_env: DASHSCOPE_API_KEY
       format: pcm_s16le
+      # 实际合成模型在 voices.yaml 逐音色配置（model 字段），支持两个族：
+      #   cosyvoice*（本 sample_rate 生效）与 qwen3-tts*（固定 24000 输出）。
+      # voices.yaml 出现 qwen3-tts 档案时此处必须为 24000（启动校验拦截）；
+      # cosyvoice 同样支持 24000，混布时统一 24k 即可。
       sample_rate: 22050
 
     cache:

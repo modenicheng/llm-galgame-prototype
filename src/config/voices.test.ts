@@ -7,6 +7,7 @@ import {
   resolveVoiceBinding,
   resolveVoiceId,
   validateDashscopeEnv,
+  validateDashscopeModelConfig,
   type VoicesConfig,
 } from "./voices.js";
 
@@ -122,5 +123,88 @@ describe("validateDashscopeEnv", () => {
 
   it("flags an empty base override (absent = undefined, empty = invalid)", () => {
     expect(validateDashscopeEnv({ version: 3, profiles: {} }, { DASHSCOPE_TTS_BASE_URL: "" })).toHaveLength(1);
+  });
+
+  it("flags a non-URL qwen3 base override", () => {
+    expect(
+      validateDashscopeEnv({ version: 3, profiles: {} }, { DASHSCOPE_QWEN3_TTS_BASE_URL: "not-a-url" }),
+    ).toHaveLength(1);
+    expect(
+      validateDashscopeEnv(
+        { version: 3, profiles: {} },
+        { DASHSCOPE_QWEN3_TTS_BASE_URL: "https://example.com" },
+      ),
+    ).toEqual([]);
+  });
+});
+
+function voicesWithBinding(model: string, envName: string): VoicesConfig {
+  return {
+    version: 3,
+    profiles: {
+      p: {
+        semantic: { base_description: "", allowed_delivery: [], forbidden_delivery: [] },
+        providers: { dashscope: { model, voice_id_env: envName, voice_revision: 1, instruction_mode: "free" } },
+      },
+    },
+  };
+}
+
+describe("validateDashscopeModelConfig", () => {
+  it("accepts a consistent config in either family", () => {
+    expect(
+      validateDashscopeModelConfig(
+        voicesWithBinding("cosyvoice-v3-flash", "V"),
+        { V: "cosyvoice-v3-flash-suyao-abc" },
+        22050,
+      ),
+    ).toEqual([]);
+    expect(
+      validateDashscopeModelConfig(
+        voicesWithBinding("qwen3-tts-vc-2026-01-22", "V"),
+        { V: "qwen3-tts-vc-suyao-abc" },
+        24000,
+      ),
+    ).toEqual([]);
+  });
+
+  it("requires 24000 Hz when a qwen3-tts profile is present", () => {
+    const errors = validateDashscopeModelConfig(
+      voicesWithBinding("qwen3-tts-flash", "V"),
+      { V: "Cherry" },
+      22050,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("24000");
+    // cosyvoice profiles impose no rate constraint (24k works for both).
+    expect(
+      validateDashscopeModelConfig(voicesWithBinding("cosyvoice-v3-flash", "V"), { V: "longanyang" }, 24000),
+    ).toEqual([]);
+  });
+
+  it("rejects a cosyvoice voice id paired with a qwen3 model", () => {
+    const errors = validateDashscopeModelConfig(
+      voicesWithBinding("qwen3-tts-vc-2026-01-22", "V"),
+      { V: "cosyvoice-v3-flash-suyao-abc" },
+      24000,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("不互用");
+  });
+
+  it("rejects a qwen3 voice id paired with a cosyvoice model", () => {
+    const errors = validateDashscopeModelConfig(
+      voicesWithBinding("cosyvoice-v3.5-flash", "V"),
+      { V: "qwen3-tts-vc-linche-xyz" },
+      22050,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("不互用");
+  });
+
+  it("skips the voice-family check when the env var is unset (validateDashscopeEnv reports it)", () => {
+    expect(
+      validateDashscopeModelConfig(voicesWithBinding("qwen3-tts-flash", "V"), {}, 24000),
+    ).toEqual([]);
   });
 });

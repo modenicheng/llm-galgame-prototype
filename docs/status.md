@@ -66,12 +66,20 @@
 - **UiProjection.visualState**：重连恢复完整视觉状态（§107）。
 
 ### 音频（TTS V2/V3 管线）
-- **合成**：DashScope CosyVoice（`voices.yaml` V3 逻辑音色 → `.env` voice-id），
-  PCM 流式（`pcm_s16le`）；TTS 按 `characterId` 查音色（§67），旁白不配音。
+- **合成**：DashScope 双模型族（`voices.yaml` V3 逻辑音色逐档案配 `model`，`.env` 放
+  voice-id），PCM 流式（`pcm_s16le`）；TTS 按 `characterId` 查音色（§67），旁白不配音。
+  - `cosyvoice*`：SpeechSynthesizer 端点（参数在 input，支持 rate/pitch/volume/seed）。
+  - `qwen3-tts*`（flash/instruct/vc/vd）：multimodal-generation 端点（text/voice，参数
+    不支持自动丢弃），固定 24000 Hz PCM；flash/vc 带 WAV 容器头（provider 剥离），
+    instruct 为裸 PCM（直通）；仅 instruct 模型支持 `instructions`。
+  - 启动校验：qwen3 档案要求 `synthesis.sample_rate: 24000`；跨族音色（按 id 前缀）
+    直接报错（两族复刻/设计音色不互用）。真 key 冒烟：四模型×克隆音色全部通过。
 - **调度**：`audio-intent-planner` / `performance-compiler` / `tts-task-service` /
   `cache-key`，播放水位参数（startup_buffer / low_watermark / target_buffer）。
+  缓存键含 model/采样率，换模型族自然失效。
 - **播放**：`web/src/audio/`——AudioCoordinator（共享 AudioContext + AudioWorklet）、
-  AudioTimeline（顺序排队 / skip / 低水位驱动）、pcm-decoder。
+  AudioTimeline（顺序排队 / skip / 低水位驱动）、pcm-decoder（worklet 按
+  descriptor 采样率重采样）。
 - **缓存**：IndexedDB（`audio-db` + cache reader/writer/cleaner，容量上限与清理）。
 
 ### 持久化

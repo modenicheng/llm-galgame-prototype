@@ -285,12 +285,16 @@ describe("createRuntimeApplication", () => {
       expect(app.config.game.show_line_ids).toBe(true);
       expect(app.config.media.audio.provider).toBe("disabled");
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
     }
   });
 
 /** Write a minimal voices.yaml with a single suyao_main dashscope binding. */
-async function writeDashscopeVoices(dir: string): Promise<string> {
+async function writeDashscopeVoices(
+  dir: string,
+  model = "cosyvoice-v3-flash",
+  envName = "COSYVOICE_VOICE_SUYAO",
+): Promise<string> {
   const voicesPath = path.join(dir, "voices.yaml");
   await writeFile(
     voicesPath,
@@ -302,8 +306,8 @@ async function writeDashscopeVoices(dir: string): Promise<string> {
       "      base_description: 年轻女性。",
       "    providers:",
       "      dashscope:",
-      "        model: cosyvoice-v3-flash",
-      "        voice_id_env: COSYVOICE_VOICE_SUYAO",
+      `        model: ${model}`,
+      `        voice_id_env: ${envName}`,
       "",
     ].join("\n"),
     "utf8",
@@ -312,7 +316,7 @@ async function writeDashscopeVoices(dir: string): Promise<string> {
 }
 
 /** config with media.audio.synthesis.provider = dashscope. */
-function dashscopeConfig(): AppConfig {
+function dashscopeConfig(sampleRate = 22050): AppConfig {
   return makeTestConfig({
     media: {
       audio: {
@@ -331,7 +335,7 @@ function dashscopeConfig(): AppConfig {
           model_profile: "cosyvoice_v3_flash",
           api_key_env: "DASHSCOPE_API_KEY",
           format: "pcm_s16le",
-          sample_rate: 22050,
+          sample_rate: sampleRate,
         },
       },
     },
@@ -357,7 +361,7 @@ function dashscopeConfig(): AppConfig {
       else process.env.DASHSCOPE_API_KEY = originalDashscopeKey;
       if (originalCosyvoiceSuyao === undefined) delete process.env.COSYVOICE_VOICE_SUYAO;
       else process.env.COSYVOICE_VOICE_SUYAO = originalCosyvoiceSuyao;
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
     }
   });
 
@@ -377,7 +381,7 @@ function dashscopeConfig(): AppConfig {
       else process.env.DASHSCOPE_API_KEY = originalDashscopeKey;
       if (originalCosyvoiceSuyao === undefined) delete process.env.COSYVOICE_VOICE_SUYAO;
       else process.env.COSYVOICE_VOICE_SUYAO = originalCosyvoiceSuyao;
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
     }
   });
 
@@ -404,7 +408,75 @@ function dashscopeConfig(): AppConfig {
       else process.env.COSYVOICE_VOICE_SUYAO = originalCosyvoiceSuyao;
       if (originalBaseUrl === undefined) delete process.env.DASHSCOPE_TTS_BASE_URL;
       else process.env.DASHSCOPE_TTS_BASE_URL = originalBaseUrl;
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
+    }
+  });
+
+  it("rejects a qwen3-tts profile when synthesis.sample_rate is not 24000", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-voices-"));
+    const voicesPath = await writeDashscopeVoices(dir, "qwen3-tts-vc-2026-01-22", "QWEN3_VOICE_SUYAO");
+    const originalDashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const originalQwen3Suyao = process.env.QWEN3_VOICE_SUYAO;
+    process.env.DASHSCOPE_API_KEY = "test-dashscope-key";
+    process.env.QWEN3_VOICE_SUYAO = "qwen3-tts-vc-suyao-test";
+    try {
+      await expect(
+        createRuntimeApplication({ config: dashscopeConfig(22050), voicesPath }),
+      ).rejects.toThrow(/24000/);
+      // 24 kHz with a matching-family voice id passes model validation.
+      await createRuntimeApplication({ config: dashscopeConfig(24000), voicesPath });
+      expect(dashscopeProviderState.instances.length).toBeGreaterThan(0);
+    } finally {
+      if (originalDashscopeKey === undefined) delete process.env.DASHSCOPE_API_KEY;
+      else process.env.DASHSCOPE_API_KEY = originalDashscopeKey;
+      if (originalQwen3Suyao === undefined) delete process.env.QWEN3_VOICE_SUYAO;
+      else process.env.QWEN3_VOICE_SUYAO = originalQwen3Suyao;
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
+    }
+  });
+
+  it("rejects a cosyvoice voice id paired with a qwen3 model at startup", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-voices-"));
+    const voicesPath = await writeDashscopeVoices(dir, "qwen3-tts-vc-2026-01-22", "COSYVOICE_VOICE_SUYAO");
+    const originalDashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const originalCosyvoiceSuyao = process.env.COSYVOICE_VOICE_SUYAO;
+    process.env.DASHSCOPE_API_KEY = "test-dashscope-key";
+    process.env.COSYVOICE_VOICE_SUYAO = "cosyvoice-v3-flash-suyao-test";
+    try {
+      await expect(
+        createRuntimeApplication({ config: dashscopeConfig(24000), voicesPath }),
+      ).rejects.toThrow(/不互用/);
+    } finally {
+      if (originalDashscopeKey === undefined) delete process.env.DASHSCOPE_API_KEY;
+      else process.env.DASHSCOPE_API_KEY = originalDashscopeKey;
+      if (originalCosyvoiceSuyao === undefined) delete process.env.COSYVOICE_VOICE_SUYAO;
+      else process.env.COSYVOICE_VOICE_SUYAO = originalCosyvoiceSuyao;
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
+    }
+  });
+
+  it("forwards DASHSCOPE_QWEN3_TTS_BASE_URL to the provider when set", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "galgame-voices-"));
+    const voicesPath = await writeDashscopeVoices(dir, "qwen3-tts-vc-2026-01-22", "QWEN3_VOICE_SUYAO");
+    const originalDashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const originalQwen3Suyao = process.env.QWEN3_VOICE_SUYAO;
+    const originalQwen3BaseUrl = process.env.DASHSCOPE_QWEN3_TTS_BASE_URL;
+    process.env.DASHSCOPE_API_KEY = "test-dashscope-key";
+    process.env.QWEN3_VOICE_SUYAO = "qwen3-tts-vc-suyao-test";
+    try {
+      process.env.DASHSCOPE_QWEN3_TTS_BASE_URL = "https://custom.example.com/generation";
+      await createRuntimeApplication({ config: dashscopeConfig(24000), voicesPath });
+      expect(dashscopeProviderState.instances.at(-1)?.qwen3BaseUrl).toBe(
+        "https://custom.example.com/generation",
+      );
+    } finally {
+      if (originalDashscopeKey === undefined) delete process.env.DASHSCOPE_API_KEY;
+      else process.env.DASHSCOPE_API_KEY = originalDashscopeKey;
+      if (originalQwen3Suyao === undefined) delete process.env.QWEN3_VOICE_SUYAO;
+      else process.env.QWEN3_VOICE_SUYAO = originalQwen3Suyao;
+      if (originalQwen3BaseUrl === undefined) delete process.env.DASHSCOPE_QWEN3_TTS_BASE_URL;
+      else process.env.DASHSCOPE_QWEN3_TTS_BASE_URL = originalQwen3BaseUrl;
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
     }
   });
 
@@ -705,7 +777,7 @@ function dashscopeConfig(): AppConfig {
       access(path.join(sessionDir, "test-session", "narrative-ops.jsonl")),
     ).rejects.toThrow();
 
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
   });
 
   it("writes a director plan after an interaction checkpoint in longform mode", async () => {
@@ -785,7 +857,7 @@ function dashscopeConfig(): AppConfig {
     );
     expect(DirectorPlanSchema.safeParse(JSON.parse(planRaw)).success).toBe(true);
 
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
   });
 
   it("does not assemble a narrative director for event mode", async () => {
@@ -899,6 +971,6 @@ function dashscopeConfig(): AppConfig {
       access(path.join(sessionDir, "test-session", "narrative-state.json")),
     ).resolves.toBeUndefined();
 
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
   });
 });

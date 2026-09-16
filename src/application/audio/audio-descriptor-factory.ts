@@ -16,6 +16,7 @@ import type {
 } from "../../shared/wire/audio-descriptor.js";
 import type { InternalAudioRecipe } from "./internal-audio-recipe.js";
 import { cacheKeyFromRecipe, type CacheKeyRecipe } from "./cache-key.js";
+import { QWEN3_TTS_SAMPLE_RATE, ttsModelFamilyOf } from "../../core/ports/tts-model-family.js";
 import {
   resolveVoiceBinding,
   resolveVoiceId,
@@ -101,8 +102,14 @@ export class AudioDescriptorFactory {
     });
 
     const seed = this.options.seedFor(event.line_id);
+    // Effective sample rate is per model family: qwen3-tts streams fixed
+    // 24 kHz PCM regardless of the global synthesis.sample_rate, and the
+    // browser resamples from the descriptor's rate — so the descriptor must
+    // carry the rate the provider will actually emit.
+    const sampleRate =
+      ttsModelFamilyOf(binding.model) === "qwen3-tts" ? QWEN3_TTS_SAMPLE_RATE : this.options.sampleRate;
     const cacheKey = cacheKeyFromRecipe(
-      this.cacheKeyRecipe(binding, voiceId, event.text, compiled, seed),
+      this.cacheKeyRecipe(binding, voiceId, event.text, compiled, seed, sampleRate),
     );
     ttsLog(
       "build",
@@ -139,7 +146,7 @@ export class AudioDescriptorFactory {
         displaySpeaker: character.displayName,
         format: {
           encoding: this.options.format,
-          sampleRate: this.options.sampleRate,
+          sampleRate,
           channels: 1,
         },
       },
@@ -195,6 +202,7 @@ export class AudioDescriptorFactory {
     text: string,
     compiled: CompiledPerformance,
     seed: number,
+    sampleRate: number,
   ): CacheKeyRecipe {
     const recipe: CacheKeyRecipe = {
       provider: this.options.provider,
@@ -207,7 +215,7 @@ export class AudioDescriptorFactory {
       volume: compiled.volume,
       seed,
       format: this.options.format,
-      sampleRate: this.options.sampleRate,
+      sampleRate,
     };
     if (compiled.instruction !== undefined) {
       recipe.compiledInstruction = compiled.instruction;
