@@ -2649,7 +2649,6 @@ export class Game {
    */
   private makeBriefing(turn: number): string | undefined {
     const brief = this.makeBrief(turn);
-    console.log("MB_DEBUG:", typeof brief, brief === undefined ? "undef" : brief.length, !!this.director);
     const directive = this.director?.getDirective(this.storyState.scene.id);
     if (brief === undefined && directive === undefined) return undefined;
     return buildActorBriefing({
