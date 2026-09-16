@@ -6,7 +6,6 @@
   },
   "allowlist": {
     "src/game.ts": "M4.5 拆分卡（执行清单）已有拆分目标 ~1500 行",
-    "src/application/narrative/narrative-director-service.test.ts": "MA-A 任务卡含沿子系统缝拆分（执行清单）",
     "docs/llm-outputs-refactor.md": "冻结的协议规范总档（按 § 追加，不拆分）",
     "docs/superpowers/plans/2026-08-08-asset-pipeline-browser.md": "已结项的历史执行记录",
     "docs/novel-skill/": "外部参考素材，非本项目维护"
