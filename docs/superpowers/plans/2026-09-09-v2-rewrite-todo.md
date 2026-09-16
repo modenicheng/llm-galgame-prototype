@@ -166,7 +166,7 @@
   要点：① 删除：`application/narrative/plot-planner.ts` + `plot-planner-adapter.ts`、DirectorPlan 存储通道（director-plan.json）、NarrativeBrief 类型与便签渲染链（facts/beliefs/lessons 三段渲染已在 M4.2 随迁，删的是便签宿主）；导演输入改为携带 anchors/setups 台账（记忆 digest 投影）；② 配置死键清扫：planner 相关键（horizon_checkpoints、replan 节流等）逐键定去留（并入导演节流或删除），记附录 B；③ NarrativeDirectorService 收窄为记忆子层（consolidator/checkpoint/记忆查询），planner 分支与对应测试拆分文件删改；④ story-plan.yaml 作者种子保留（种子的是记忆锚点，非 planner）。
   验收：grep `PlotPlanner|DirectorPlan|NarrativeBrief|director-plan` 零残留；被删配置键有 config 负面断言；全量绿。
 
-- [ ] **M4.5 game.ts 拆分**
+- [ ] **M4.5 game.ts 拆分**（进行中：交互驱动簇 = resolveInteraction/createBranchManager*/bridge prefetch/adoptSelectedBranch/handleChoice/handleInteractionInput/startInputResponseGeneration/stageResponseEvent/makePlayerDialogue/handleHybridInteraction/countBufferedDialogues/recordPlayer* 共约 900 行，经 `InteractionHost` 接口移入 `src/runtime/interaction-driver.ts`，Game 以 `interactionDriver` 委托；call sites 全量改 `this.interactionDriver.*`）
   前置：M4.4。关联：附录 A「M4.5 挂项」。
   目标：game.ts 2668 行 → ~1500 行。
   要点：交互驱动（choice/input/hybrid + 两阶段提交）抽至 `src/runtime/`（动手前查 `src/core/interaction`、`src/interaction` 既有内容定归宿）；game.ts 保留 run 循环 + 段生命周期 + 恢复 + 图提交；game*.test.ts 沿同缝对齐（game-graph-restore / game-input / game-interactions + game-test-kit 已在缝上）。
