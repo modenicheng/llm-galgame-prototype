@@ -59,7 +59,7 @@
 
 ## 3. 设计决议（本次交付前定稿，实现时不再讨论）
 
-- **D1 pi 框架替代**（已回写 spec §5）：仓库无 pi 可用产物。编剧 = 现有 openai-compatible client 上的**单次 JSON 调用 adapter**（沿用 PlotPlanner adapter 模式）；导演 = 同 client 上的**工具循环**（`AgentRunner` port + adapter）。角色边界与红线不变；端口可替换。
+- **D1 不使用 pi 框架**（作者 2026-09-16 确认；已回写 spec §5）：编剧 = 现有 openai-compatible client 上的**单次 JSON 调用 adapter**（沿用 PlotPlanner adapter 模式）；导演 = 同 client 上的**工具循环**（`AgentRunner` port + adapter）。角色边界与红线不变。不引入任何外部 agent 框架。
 - **D2 M2.3 归人工验证**：「离谱输入→防守节拍引回→图上汇流」的端到端验证前置依赖 M4.3（防守节拍在位）且需真实 LLM；协调器层自动化等价物已由 `run-graph-confluence.test.ts` 7 例覆盖。移入第 6 节人工清单，不阻塞开发。
 - **D3 执行序重排**（对设计 §11 建议的偏离）：M5.0 宿主接线提前到最前（后续一切实测依赖它）；M3.5 收束与 M3.6 canon、M3.7 清理挪到 M4 之后——收束压力与 canon 读取必须走导演剪报通道（§5.2 防火墙），导演在位前实现即破防火墙。
 - **D4 SNAPSHOT_VERSION 1→2 预授权**：MA-B 在 `MemoryDigest` 增加 facts/beliefs 时执行；旧 v1 快照读取即拒（zod literal 不匹配走结构损坏路径），dev 存档废弃、不做迁移，登记附录 B。
@@ -207,7 +207,7 @@
 
 ### 门（每阶段末，逐个勾选）
 
-每道门 = `npm test` + `npm run typecheck` + `npm run build` + `npm run hygiene` 四绿，再按第 1 节卫生门流程跑 SKILL 完整档（含 subagent 评审与 P1/P2 当场修复）。
+每道门 = `npm test` + `npm run typecheck` + `npm run build` + `npm run hygiene` 四绿，再按卫生自检文件 **`docs/skills/repo-hygiene/SKILL.md`**（本仓库内，相对仓库根）的**完整档**执行：机械检查之外，必须把 SKILL §B 的 subagent 只读评审 prompt 原样派发出去，P1/P2 问题当场修复。快速档（仅 §A + 新文件过目）每 3–4 张卡跑一次，同样以该文件为准。
 
 - [ ] **GH-P1**：无附加项。
 - [ ] **GH-P2**：narrative-director-service.test.ts 豁免移除；getBrief 零 await 断言在位。
@@ -215,7 +215,7 @@
 - [ ] **GH-P4**：M4.4 grep 清单清零；game.ts 豁免移除；`src/application/director|world|outline` 新目录进依赖方向评审。
 - [ ] **GH-P5**：event mode / story_line grep 清零；config 死键负面断言齐。
 - [ ] **GH-P6**：`GET /api/graph` 脱敏负面断言齐；stats 幂等。
-- [ ] **GH 终检**：全部任务卡与门勾选或登记 BLOCKED；四命令全绿；`docs/status.md` 全面同步；第 6 节人工清单整理移交。
+- [ ] **GH 终检**：全部任务卡与门勾选或登记 BLOCKED；四命令全绿 + `docs/skills/repo-hygiene/SKILL.md` 完整档最后一遍；`docs/status.md` 全面同步；第 6 节人工清单整理移交。
 
 ## 5. 反重复地图（动手前必查）
 
@@ -324,5 +324,5 @@
 - 2026-09-16（M2.1，A2 决议）：seq 播种统一 `nextSeq = max(世界最大 seq, 路径末事件 seq, digest 水位) + 1`，fresh 与 retrace 同式。世界最大 seq 取各边 payload.lastSeq 最大值。理由（正确性）：M2.2 多入边成真后，seq 回绕会让 pickLatestInEdge 选错边、让水位过滤静默丢弃整段新分支。载体：`RunResume` fresh 变体增 nextSeq 字段（运行时端口类型，非 §3 冻结 schema）。
 - 2026-09-16（M2.2）：**场景节点世界级稳定修订**——原实现仅恢复路径重建场景缓存，fresh 新 root 周目会为同一模型场景重复建节点，跨周目汇流的同场景候选过滤会整体失效。修复：`ensureSceneNode` 收口为缓存 → 扫既有决策入口快照 → 惰性创建。
 - 2026-09-16（M2.2 落地细则）：① 改绑窗口守卫（判定落地时创建周目已完结/已换周目即放弃）；② 候选排除无入边节点（孤儿与周目首节点，dev 接受）；③ apply 时重验祖先（悬置期间路径可能变化）；④ `narrative.confluence.enabled` 配置门控（默认关，测试/CI 零网络）；⑤ 图变更加 promise 链互斥（LLM 判定在链外）。
-- 2026-09-16（交付版重整）：清单重写为一次性自主执行的交付版。变更：任务卡按依赖重排（决议 D3：M5.0 提前；M3.5/M3.6/M3.7 后置到 M4 后）；pi 框架决议 D1（已回写 spec §5）；M2.3 归人工清单（D2）；SNAPSHOT_VERSION 1→2 预授权（D4）；场景→大纲绑定规则（D5）；digest 事实嵌入制（D6，M1.1 引用制的落地细则）。新增卫生体系：`docs/skills/repo-hygiene/SKILL.md`（快速档/完整档 + subagent 评审模板）+ `npm run hygiene`（`scripts/hygiene-check.mjs`，行数阈值 + 临时标记，豁免清单含清偿任务号）。历史记录整体迁入附录 A/B，编号不变。
+- 2026-09-16（交付版重整）：清单重写为一次性自主执行的交付版。变更：任务卡按依赖重排（决议 D3：M5.0 提前；M3.5/M3.6/M3.7 后置到 M4 后）；pi 框架决议 D1（作者 2026-09-16 确认不使用，已回写 spec §5）；M2.3 归人工清单（D2）；SNAPSHOT_VERSION 1→2 预授权（D4）；场景→大纲绑定规则（D5）；digest 事实嵌入制（D6，M1.1 引用制的落地细则）。新增卫生体系：`docs/skills/repo-hygiene/SKILL.md`（快速档/完整档 + subagent 评审模板）+ `npm run hygiene`（`scripts/hygiene-check.mjs`，行数阈值 + 临时标记，豁免清单含清偿任务号）。历史记录整体迁入附录 A/B，编号不变。
 
