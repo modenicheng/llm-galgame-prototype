@@ -669,7 +669,10 @@ describe("loadAuthorConfig validation errors", () => {
     expect(config.rules.locked).toContain(
       "结局只能依据本局已经确认的事实，不得凭空补全未验证的结果",
     );
-    expect(config.rules.preferred).toContain("整体气质亲切日常，像真实的社团值班");
+    // 2026-09-17 去 AI 味改造：preferred 首条改为具体的校园生活边界。
+    expect(config.rules.preferred).toContain(
+      "以网协成员之间真实的校园生活为主，写出共同经历、兴趣和熟人玩笑；允许闲逛、偷懒和没有任务的相处，不总靠修电脑或设备故障推动故事",
+    );
     expect(config.rules.seeds).toEqual([]);
   });
 });
