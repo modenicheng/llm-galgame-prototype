@@ -11,9 +11,14 @@
  *   beat                          → beat
  *   bg|bgm|se <id>                → background | bgm | sound_effect
  *   ch <id>:<variant> [position]  → character_cue set
- *   ch <id> hide|show             → character_cue hide|show
+ *   ch <id> hide|show             → character_cue hide/show
  *   <speaker>[<visual>](<name>): <text> → dialogue
  *   otherwise                     → narration
+ *
+ * `knownSpeakers` (optional, from the character registry) gates the
+ * full-width-colon normalization: 「苏遥：台词」 only converts to dialogue
+ * when 苏遥 is a registered speaker. The parser itself stays pure — the
+ * caller decides which names count.
  *
  * Pure text → structured data. No runtime, wire, or LLM dependencies.
  */
@@ -145,8 +150,17 @@ function parseName(content: string | undefined): DialogueNameSpec {
   return { hasName: true, resetName: false, displayName };
 }
 
-/** Parse ONE complete DSL line into a DslLine. Throws DslProtocolError on violations. */
-export function parseDslLine(rawLine: string): DslLine {
+/**
+ * Parse ONE complete DSL line into a DslLine. Throws DslProtocolError on
+ * violations.
+ *
+ * `knownSpeakers`: registered speaker names (script names / character ids
+ * from the asset registry). When provided, the full-width-colon
+ * normalization only fires for a prefix that is a registered speaker —
+ * 「苏遥：台词」 converts, 「警告：危险」 stays narration. Omit it to disable
+ * the normalization entirely (conservative: no guessing).
+ */
+export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string>): DslLine {
   // Callers are expected to trim, but be defensive (also strips "\r").
   const line = rawLine.trim();
 
@@ -243,19 +257,23 @@ export function parseDslLine(rawLine: string): DslLine {
 
   // 9. dialogue: <speaker>[<visual>](<name>): <text>
   // A full-width "：" as the delimiter is a high-frequency Chinese LLM
-  // output. When it sits exactly in the delimiter position (short
-  // punctuation-free speaker + optional [visual]/(name)), normalize it to
-  // ASCII — otherwise the line silently degrades into narration and the
-  // speaker/[visual] syntax leaks into player-visible text. Sentence
-  // punctuation (incl. CJK quotes/brackets) in the "speaker" position means
-  // real narration and is left untouched; the replacement targets the
-  // colon AT the delimiter position only, so a ： inside [visual]/(name)
-  // neither tears the line nor blocks normalization.
+  // output. When it sits exactly in the delimiter position AND the prefix
+  // is a registered speaker (knownSpeakers), normalize it to ASCII —
+  // otherwise the line silently degrades into narration and the
+  // speaker/[visual] syntax leaks into player-visible text. Speaker
+  // membership replaces the earlier text-shape heuristic, which could not
+  // tell 「苏遥：台词」 from narration like 「警告：危险」. The replacement
+  // targets the colon AT the delimiter position only, so a ： inside
+  // [visual]/(name) neither tears the line nor blocks normalization.
   const fullwidthDelimiter =
     /^([^，。！？；、…："'‘’“”「」『』（）()[\]{},.]{1,24})(?:\[[^\]]*\])?(?:\([^)]*\))?：/;
   const delimiterMatch = fullwidthDelimiter.exec(line);
+  const normalizeDelimiter =
+    delimiterMatch !== null &&
+    knownSpeakers !== undefined &&
+    knownSpeakers.has(delimiterMatch[1]!.trim());
   const dialogueSource =
-    delimiterMatch !== null
+    delimiterMatch !== null && normalizeDelimiter
       ? `${delimiterMatch[0].slice(0, -1)}:${line.slice(delimiterMatch[0].length)}`
       : line;
   const dialogueMatch = /^([^\[\]:]+?)(?:\[([^\]]*)\])?(?:\(([^)]*)\))?:\s*(.+)$/.exec(

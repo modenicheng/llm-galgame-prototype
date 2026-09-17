@@ -37,7 +37,12 @@ import type {
  */
 export function parseDslSegmentText(
   text: string,
-  options: { expectedNonce: string; allowedReasons: readonly SegmentEndReason[] },
+  options: {
+    expectedNonce: string;
+    allowedReasons: readonly SegmentEndReason[];
+    /** Registered speaker names — gates full-width-colon normalization. */
+    knownSpeakers?: ReadonlySet<string>;
+  },
 ): DslSegmentResult {
   const parser = new DslSegmentParser(options);
   const groups: EventGroupDraft[] = [];
@@ -47,7 +52,7 @@ export function parseDslSegmentText(
     const line = rawLine.trim();
     if (line.length === 0) continue;
     if (line === "```") continue;
-    const parsed = parseDslLine(line);
+    const parsed = parseDslLine(line, options.knownSpeakers);
     const emitted = parser.pushLine(parsed);
     groups.push(...emitted);
   }
