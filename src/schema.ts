@@ -118,6 +118,19 @@ export type RuntimePlayableEvent =
   | RuntimeNarrationEvent
   | PlayerDialogueEvent;
 
+/**
+ * 运行时合成的舞台 beat：DSL `@beat` 组的播放时间线影子（模型从不直接
+ * 产出，也不入库）。它存在的意义是把 beat 组前奏里的舞台 cue（@bg/@bgm/
+ * @ch/@se）放到播放队列里的正确位置生效——与台词行的 `stage` 载荷同一
+ * 时机契约——而不是在解析完成时立即打到舞台上。
+ */
+export interface RuntimeBeatEvent {
+  type: "beat";
+  line_id: string;
+  /** Stage cues carried by the beat's group prelude (docs §63). */
+  stage?: StageCue[];
+}
+
 export type RuntimeModelEvent =
   | RuntimeDialogueEvent
   | RuntimeNarrationEvent

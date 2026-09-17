@@ -1303,3 +1303,138 @@ describe("Game initialStoryState", () => {
     expect(controller.ended()).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Beat 组的舞台 cue 时序（bug：BGM/背景切换在解析完成时立即触发，而不是
+// 播放到 beat 的位置才触发）
+// ---------------------------------------------------------------------------
+
+function beatGroup(cues: EventGroupDraft["prelude"]): EventGroupDraft {
+  return { prelude: cues, main: { type: "beat" } };
+}
+
+describe("DSL mode — beat 组的舞台 cue 时序", () => {
+  it("beat 组的 bgm cue 在播放到达 beat 位置时才生效（不随解析触发）", async () => {
+    const config = makeDslConfig({
+      text_buffer: { start_threshold_lines: 2, target_lines: 6, refill_threshold_lines: 0 },
+    });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslDialogue("苏遥", "第一句。"));
+          // 解析顺序：第一句 → beat（带 bgm + 立绘切换）→ 第二句。beat 在解析时
+          // 第二句还在缓冲里没播——此刻 bgm/立绘都不得生效。
+          onGroup(beatGroup([
+            { type: "bgm", assetId: "mystery" },
+            { type: "character_patch", character: "suyao", variant: { op: "set", value: "anxious" } },
+          ]));
+          onGroup(dslDialogue("苏遥", "第二句。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          onGroup(dslNarration("故事结束。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const controller = new MemoryController();
+    controller.attach(game);
+    await game.run();
+
+    const outputs = controller.outputs;
+    const firstIdx = outputs.findIndex(
+      (o) => o.type === "playback_ready" && (o.event as { text?: string }).text === "第一句。",
+    );
+    const secondIdx = outputs.findIndex(
+      (o) => o.type === "playback_ready" && (o.event as { text?: string }).text === "第二句。",
+    );
+    const beatIdx = outputs.findIndex((o) => o.type === "stage_beat_ready");
+    expect(firstIdx).toBeGreaterThanOrEqual(0);
+    expect(secondIdx).toBeGreaterThan(firstIdx);
+    // beat 的生效必须落在第一句播完之后、第二句开播之前。
+    expect(beatIdx).toBeGreaterThan(firstIdx);
+    expect(beatIdx).toBeLessThan(secondIdx);
+    const first = outputs[firstIdx]!;
+    if (first.type !== "playback_ready") throw new Error("unreachable");
+    // 第一句播放时 bgm 尚未切换、立绘还是初始 variant（旧实现此处 beat 已把
+    // 预测尾部整体同步进了渲染状态——BGM 与立绘一起提前生效）。
+    expect(first.presentation?.visualState.bgm).toBeUndefined();
+    expect(first.presentation?.visualState.characters["suyao"]?.variant).toBe("normal");
+    const beat = outputs[beatIdx]!;
+    if (beat.type !== "stage_beat_ready") throw new Error("unreachable");
+    expect(beat.presentation.visualState.bgm).toBe("mystery");
+    expect(beat.presentation.visualState.characters["suyao"]?.variant).toBe("anxious");
+    const second = outputs[secondIdx]!;
+    if (second.type !== "playback_ready") throw new Error("unreachable");
+    // 第二句自身无 cue：playback_ready 不带 presentation（前端沿用 beat
+    // 已建立的 visualState，bgm 保持 mystery）。
+    if (second.presentation !== undefined) {
+      expect(second.presentation.visualState.bgm).toBe("mystery");
+    }
+    expect(controller.ended()).toBe(true);
+  });
+
+  it("分支预取里的 beat cue 折叠进下一行：随该行播放生效而不是丢失", async () => {
+    const config = makeDslConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslInteraction({
+            prompt: "怎么办？",
+            optionTexts: ["追上去", "留在原地"],
+            mode: "choice",
+          }));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("interaction") };
+        }),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        dslHandle("branch", async (_signal, onGroup) => {
+          onGroup(dslDialogue("苏遥", "分支第一句。"));
+          // 分支路径没有播放队列：beat cue 必须折叠进下一行随其播放生效。
+          onGroup(beatGroup([{ type: "bgm", assetId: "mystery" }]));
+          onGroup(dslDialogue("苏遥", "分支第二句。"));
+          return { events: [], state_patch: {}, groups: [] };
+        }),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          onGroup(dslNarration("故事结束。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
+    );
+
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => controller.select(output.interactionId, `${output.interactionId}_opt_0`),
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    controller.attach(game);
+    await game.run();
+
+    const branchFirst = playbackOf(controller.outputs).find(
+      (o) => (o.event as { text?: string }).text === "分支第一句。",
+    );
+    const branchSecond = playbackOf(controller.outputs).find(
+      (o) => (o.event as { text?: string }).text === "分支第二句。",
+    );
+    expect(branchFirst).toBeDefined();
+    expect(branchSecond).toBeDefined();
+    expect(branchFirst!.presentation?.visualState.bgm).toBeUndefined();
+    // beat 的 bgm 随第二行生效（旧实现里分支泵直接丢弃 beat 组，bgm 永远丢失）。
+    expect(branchSecond!.presentation?.visualState.bgm).toBe("mystery");
+    expect(controller.ended()).toBe(true);
+  });
+});

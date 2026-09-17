@@ -61,6 +61,7 @@ import type {
   InputInteraction,
   InteractionEvent,
   PlayerDialogueEvent,
+  RuntimeBeatEvent,
   RuntimeModelEvent,
   RuntimePlayableEvent,
   RuntimeBufferEvent,
@@ -92,7 +93,8 @@ interface ActiveSegment {
   turn: number;
   taskId: string;
   events: RuntimeModelEvent[];
-  queue: AsyncEventQueue<RuntimeModelEvent>;
+  /** 播放时间线：模型事件 + 舞台 beat（其 cue 在播放位生效，docs §63）。 */
+  queue: AsyncEventQueue<RuntimeModelEvent | RuntimeBeatEvent>;
   done: Promise<void>;
   branchManager: BranchManager | null;
   terminal: RuntimeModelEvent | null;
@@ -860,7 +862,7 @@ export class Game {
     repairReason?: string,
     endingRequired = false,
   ): ActiveSegment {
-    const queue = new AsyncEventQueue<RuntimeModelEvent>();
+    const queue = new AsyncEventQueue<RuntimeModelEvent | RuntimeBeatEvent>();
     const taskId = this.ids.nextGenerationId(kind === "opening" ? "opening" : `continuation:${turn}`);
     const segment: ActiveSegment = {
       turn,
@@ -1210,6 +1212,19 @@ export class Game {
       }
 
       const event = next.value;
+      if (event.type === "beat") {
+        // The beat plays at its queue position: its cues apply exactly when
+        // everything before it has been presented — same timing contract as
+        // a line's `stage` payload (docs §54–§55, §63). No buffer advance
+        // (beats never enter playbackBuffer), no media, no advance wait:
+        // v1 beats paint the stage without pausing. A cue set that survives
+        // compilation but changes nothing (or is empty) emits nothing.
+        const presentation = this.applyPlayableStage(event.stage ?? []);
+        if (presentation !== undefined) {
+          this.emit({ type: "stage_beat_ready", presentation });
+        }
+        continue;
+      }
       if (isPlayableEvent(event)) {
         if (!firstPlayableSeen) {
           firstPlayableSeen = true;
@@ -1605,7 +1620,7 @@ export class Game {
       turn,
       taskId: this.ids.nextGenerationId(`resume:${turn}`),
       events: [interaction],
-      queue: new AsyncEventQueue<RuntimeModelEvent>(),
+      queue: new AsyncEventQueue<RuntimeModelEvent | RuntimeBeatEvent>(),
       done: Promise.resolve(),
       branchManager: this.createBranchManagerForTerminal(interaction, turn, this.generationHistory()),
       terminal: interaction,
@@ -1841,13 +1856,16 @@ export class Game {
       return;
     }
 
-    // Beat: a bare stage node. v1 applies it at commit time (no buffering)
-    // and emits stage_beat_ready; the renderer decides its duration.
-    this.renderedVisualState = tailState;
-    this.emit({
-      type: "stage_beat_ready",
-      presentation: { cues, visualState: tailState },
-    });
+    // Beat: a pure stage node. It enters the playback timeline like a line:
+    // its prelude cues ride the queue and apply exactly when playback
+    // reaches the beat's position (docs §54–§55, §63). Applying at parse
+    // time fired bg/背景/BGM switches while earlier buffered lines were
+    // still playing (and syncing rendered ← tail also leaked those lines'
+    // own cues early). The predictive tail was already advanced by
+    // compileGroup above; nothing else to do here for the state.
+    if (cues.length > 0) {
+      segment.queue.push({ type: "beat", line_id: this.nextLineId(), stage: cues });
+    }
   }
 
   private createBranchManagerForTerminal(
@@ -2641,14 +2659,20 @@ export class Game {
           tailVisualState: this.tailVisualState,
         });
         // 泵：与旧 onGroup 直连语义等价——组到达即编译并喂给 onEvent
-        // （branch-local visual state 逐组折叠）。
+        // （branch-local visual state 逐组折叠）。beat 组没有播放队列可占位：
+        // 其 cue 折叠进下一行随播放生效（mergeBeatCues）。
+        let pendingBeatCues: StageCue[] = [];
         const pump = (async () => {
           for await (const group of handle.events) {
-            const { playable, tailState } = this.compileGroup(group, branchState, turn);
+            const { playable, cues, tailState } = this.compileGroup(group, branchState, turn);
             branchState = tailState;
             if (playable !== null) {
-              materialized.push(playable);
-              onEvent(playable);
+              const event = this.mergeBeatCues(pendingBeatCues, playable);
+              pendingBeatCues = [];
+              materialized.push(event);
+              onEvent(event);
+            } else if (group.main.type === "beat") {
+              pendingBeatCues.push(...cues);
             }
           }
         })();
@@ -2674,6 +2698,23 @@ export class Game {
   }
 
   /**
+   * Branch/input-response paths have no playback queue to hold a beat at
+   * its position: the beat group's cues ride the NEXT playable line
+   * (prepended — semantic order preserved) so they apply at that line's
+   * playback instead of vanishing with the skipped beat group. The caller
+   * clears its pending buffer after a successful merge.
+   */
+  private mergeBeatCues(
+    beatCues: readonly StageCue[],
+    playable: RuntimePlayableEvent,
+  ): RuntimePlayableEvent {
+    if (beatCues.length === 0) return playable;
+    if (playable.type !== "dialogue" && playable.type !== "narration") return playable;
+    const stage = [...beatCues, ...(playable.stage ?? [])];
+    return stage.length > 0 ? { ...playable, stage } : playable;
+  }
+
+  /**
    * Compile DSL groups into materialized playable events, chaining the
    * visual state across groups. Used by branch prefetch and input-response
    * paths (docs §56, §79).
@@ -2684,18 +2725,31 @@ export class Game {
     turn: number,
   ): { events: RuntimePlayableEvent[]; tailState: VisualState } {
     let state = baseState;
+    let pendingBeatCues: StageCue[] = [];
     const events: RuntimePlayableEvent[] = [];
     for (const draft of groups) {
-      const { playable, tailState } = this.compileGroup(draft, state, turn);
+      const { playable, cues, tailState } = this.compileGroup(draft, state, turn);
       state = tailState;
       if (playable !== null) {
-        events.push(playable);
+        events.push(this.mergeBeatCues(pendingBeatCues, playable));
+        pendingBeatCues = [];
+      } else if (draft.main.type === "beat") {
+        pendingBeatCues.push(...cues);
       } else {
         this.diagnostics.warn(
           "DSL",
           `片段跳过不可播放的组：${draft.main.type}`,
         );
       }
+    }
+    if (pendingBeatCues.length > 0) {
+      // Trailing beat: no line left to ride. The predictive tail already
+      // includes its state; the rendered stage catches up via the tail on
+      // the next adopt/restore boundary.
+      this.diagnostics.warn(
+        "DSL",
+        "段尾 beat 的舞台 cue 未折叠进任何行（预测尾部已包含其状态）",
+      );
     }
     return { events, tailState: state };
   }
@@ -2965,17 +3019,22 @@ export class Game {
     });
 
     // 泵：把 handle 的事件流喂进 staging 路径（与旧 onGroup 直连等价）。
-    // 中止后的迟到组照旧丢弃并计数。
+    // 中止后的迟到组照旧丢弃并计数。beat 组的 cue 折叠进下一行随播放生效。
+    let pendingBeatCues: StageCue[] = [];
     const pump = (async () => {
       for await (const group of handle.events) {
         if (controller.signal.aborted) {
           this.metrics.recordStaleInputEventDropped();
           continue;
         }
-        const { playable, tailState } = this.compileGroup(group, responseState, turn);
+        const { playable, cues, tailState } = this.compileGroup(group, responseState, turn);
         responseState = tailState;
         if (playable !== null) {
-          this.stageResponseEvent(responseSession, playable);
+          const event = this.mergeBeatCues(pendingBeatCues, playable);
+          pendingBeatCues = [];
+          this.stageResponseEvent(responseSession, event);
+        } else if (group.main.type === "beat") {
+          pendingBeatCues.push(...cues);
         }
       }
     })();
