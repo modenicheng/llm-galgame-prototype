@@ -221,9 +221,13 @@ export async function createRuntimeApplication(
     options: RuntimeApplicationOptions,
   ): Promise<Game> => {
     // 落盘器跟随会话目录（支持 options.sessionDir 覆盖）；restart 换新
-    // sessionId 时在此切换，落盘记录与存档同生命周期。
+    // sessionId 时在此切换，落盘记录与存档同生命周期。目录同时上报监控
+    // hub（状态帧 recordDir + /monitor/records 只读路由的服务根）。
     if (recorder !== null) {
       await recorder.beginSession(options.sessionDir ?? config.game.sessions_dir, sessionId);
+      monitor.setRecordDir(recorder.location);
+    } else {
+      monitor.setRecordDir(null);
     }
     const store = new NodeJsonlSessionStore(options.sessionDir ?? config.game.sessions_dir);
     // --- Narrative director assembly (§7.1) ---
@@ -386,7 +390,10 @@ function fanOutDslStreamObserver(observers: readonly DslStreamObserver[]): DslSt
     pick: (observer: DslStreamObserver) => ((...args: A) => void) | undefined,
   ) =>
     (...args: A): void => {
-      for (const observer of observers) pick(observer)?.(...args);
+      // .call(observer)：class 方法的观察者（如 llm-stream-recorder）依赖
+      // this；裸方法引用经 fanOut 调用会丢 this（hub 的箭头函数字段不受
+      // 影响，掩盖了这个问题直到 recorder 上线）。
+      for (const observer of observers) pick(observer)?.call(observer, ...args);
     };
   return {
     onAttemptStart: call((observer) => observer.onAttemptStart),

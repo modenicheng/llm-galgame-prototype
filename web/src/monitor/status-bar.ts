@@ -100,6 +100,12 @@ function fmtInt(n: number): string {
   return n.toLocaleString("zh-CN");
 }
 
+/** Page-URL session token as a query string; the /monitor URL always carries it. */
+function sessionTokenQuery(): string {
+  const token = new URLSearchParams(window.location.search).get("token") ?? "";
+  return token.length > 0 ? `?token=${encodeURIComponent(token)}` : "";
+}
+
 export class StatusBar {
   private readonly model: MonitorModel;
   private readonly refs: StatusBarRefs;
@@ -250,6 +256,17 @@ export class StatusBar {
     tokenSeg.appendChild(el("span", undefined, `${(llm.cache_hit_rate * 100).toFixed(0)}%`));
     tokenSeg.appendChild(el("span", undefined, `请求 ${requests}`));
     bar.appendChild(tokenSeg);
+
+    // 落盘记录（observability）：写手 DSL 流全量留档；点击打开会话 index。
+    const recordDir = state.recordDir;
+    if (recordDir !== undefined && recordDir !== null) {
+      const recordLink = el("a", "seg seg-record", "落盘记录");
+      recordLink.href = `/monitor/records/index.jsonl${sessionTokenQuery()}`;
+      recordLink.target = "_blank";
+      recordLink.rel = "noreferrer";
+      recordLink.title = `写手 DSL 流落盘目录：${recordDir}`;
+      bar.appendChild(recordLink);
+    }
 
     bar.appendChild(seg(`事件 ${session.eventCount}`));
 

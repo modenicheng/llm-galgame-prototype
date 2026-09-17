@@ -103,6 +103,11 @@ export class LlmStreamRecorder implements DslStreamObserver {
     this.nextSeq = maxSeq + 1;
   }
 
+  /** Absolute path of the current session's `llm/` dir; null before beginSession. */
+  get location(): string | null {
+    return this.llmDir;
+  }
+
   /** Resolves once every queued write has settled (tests / shutdown). */
   async flush(): Promise<void> {
     await this.queue;

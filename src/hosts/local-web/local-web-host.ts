@@ -27,6 +27,7 @@ import {
   summarizeArchive,
 } from "../../adapters/storage/session-archive.js";
 import { isAllowedOrigin } from "./origin-guard.js";
+import { handleMonitorRecordsRequest } from "./monitor-records.js";
 import { AudioStreamRoute } from "./audio-stream-route.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";
 import { MonitorWebSocket } from "./monitor-websocket.js";
@@ -413,6 +414,20 @@ export class LocalWebHost {
     }
     if (req.method === "GET" && pathname === "/api/saves") {
       void this.handleSavesRequest(res);
+      return;
+    }
+    if (req.method === "GET" && pathname.startsWith("/monitor/records/")) {
+      // 写手 DSL 流落盘记录只读视图（observability）；需会话 token。
+      void handleMonitorRecordsRequest(
+        {
+          recordDir: () => this.app.monitor.recordLocation,
+          token: this.token,
+          logger: this.logger,
+        },
+        req,
+        res,
+        pathname,
+      );
       return;
     }
     if (req.method === "GET" && pathname.startsWith("/game-assets/")) {

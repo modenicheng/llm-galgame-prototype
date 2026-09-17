@@ -50,6 +50,12 @@ function fmtTime(at: number): string {
   return new Date(at).toLocaleTimeString("zh-CN", { hour12: false });
 }
 
+/** Page-URL session token as a query string; the /monitor URL always carries it. */
+function sessionTokenQuery(): string {
+  const token = new URLSearchParams(window.location.search).get("token") ?? "";
+  return token.length > 0 ? `?token=${encodeURIComponent(token)}` : "";
+}
+
 interface RequestSection {
   task: WriterTaskModel;
   attempt: WriterAttemptModel;
@@ -281,6 +287,16 @@ export class WriterPanel {
     );
     title.appendChild(el("span", "writer-request-time", fmtTime(attempt.startedAt)));
     title.appendChild(el("span", `writer-request-state state-${attempt.state}`, STATE_LABELS[attempt.state]));
+    // 落盘记录入口：该 attempt 的原始流全文（其余文件见记录目录 index）。
+    const recordDir = this.model.state?.recordDir;
+    if (recordDir !== undefined && recordDir !== null) {
+      const recordLink = el("a", "writer-record-link", "落盘↗");
+      recordLink.href = `/monitor/records/by-attempt/${encodeURIComponent(attempt.attemptId)}/output.raw.txt${sessionTokenQuery()}`;
+      recordLink.target = "_blank";
+      recordLink.rel = "noreferrer";
+      recordLink.title = `落盘记录 ${recordDir}（prompts.jsonl / output.raw.txt / events.jsonl）`;
+      title.appendChild(recordLink);
+    }
 
     const elapsed =
       attempt.usage?.latencyMs ??

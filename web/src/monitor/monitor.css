@@ -267,6 +267,18 @@
   color: var(--mon-fail);
 }
 
+/* 落盘记录入口（observability）：每 attempt 打开其原始流全文。 */
+.writer-record-link {
+  color: #777781;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.writer-record-link:hover {
+  color: var(--mon-live);
+  text-decoration: underline;
+}
+
 .writer-request-meta {
   margin: 2px 0 0 15px;
   color: #85858f;
@@ -1138,6 +1150,17 @@ pre.mon-pre {
 .mon-statusbar .seg.grow {
   flex: 1;
   min-width: 60px;
+}
+
+/* 落盘记录入口（observability）：打开会话落盘 index.jsonl。 */
+.mon-statusbar a.seg-record {
+  color: #9d9da7;
+  text-decoration: none;
+}
+
+.mon-statusbar a.seg-record:hover {
+  color: var(--mon-live);
+  text-decoration: underline;
 }
 
 .mon-statusbar .conn-open {

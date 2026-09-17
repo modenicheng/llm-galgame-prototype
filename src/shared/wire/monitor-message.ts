@@ -132,6 +132,11 @@ export interface MonitorStateFrame {
   session: GameMonitorState;
   status: RuntimeStatusSnapshot;
   metrics: MetricsSnapshot;
+  /**
+   * 写手 DSL 流落盘目录（observability，绝对路径）；null/缺省 = 未开启
+   * 落盘。文件经 `/monitor/records/…` 只读路由访问（需会话 token）。
+   */
+  recordDir?: string | null;
 }
 
 /** Static facts the dashboard labels panels with. */

@@ -198,6 +198,12 @@ export class MonitorHub {
   private readonly attemptIndex = new Map<string, { task: WriterTaskRecord; attempt: WriterAttemptRecord }>();
   /** Session-invariant writer system prompt (segmented, audit view). */
   private writerSystemPrompt: MonitorWriterPromptMessage | null = null;
+  /**
+   * 写手 DSL 流落盘目录（observability，绝对路径；null = 未开启）。
+   * 随会话切换（restart），同时作为 wire 字段与 /monitor/records 路由的
+   * 服务根。变更即作废 lastStateJson，让下一帧把它推给前端。
+   */
+  private recordDir: string | null = null;
   private readonly contextTasks: MonitorContextTask[] = [];
   private contextSeq = 0;
   private readonly diagnostics: MonitorDiagnosticEntry[] = [];
@@ -459,6 +465,18 @@ export class MonitorHub {
    * one's request document — with in-flight attempts settled as cancelled
    * rather than left "streaming" forever.
    */
+  /** Current record root (null = recording off); /monitor/records serves it. */
+  get recordLocation(): string | null {
+    return this.recordDir;
+  }
+
+  /** Composition root calls this per session (restart switches it). */
+  setRecordDir(dir: string | null): void {
+    if (dir === this.recordDir) return;
+    this.recordDir = dir;
+    this.lastStateJson = null;
+  }
+
   clearWriterHistory(): void {
     for (const task of this.writerTasks.values()) {
       for (const attempt of task.attempts) {
@@ -567,6 +585,7 @@ export class MonitorHub {
       session,
       status: this.options.status.snapshot(),
       metrics: this.options.metrics.snapshot(),
+      ...(this.recordDir !== null ? { recordDir: this.recordDir } : {}),
     };
   }
 
