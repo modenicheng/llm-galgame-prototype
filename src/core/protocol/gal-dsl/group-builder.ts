@@ -61,8 +61,15 @@ export class EventGroupBuilder {
             },
           );
         }
-        this.interaction = new InteractionBuilder();
-        this.interaction.start(line.prompt);
+        {
+          // 先验证再挂载：start() 对空提示抛 EMPTY_FORM_PROMPT 时，一个
+          // 半开的 builder（实例在、prompt 为 null）残留会让下一个
+          // form_start 误判 FORM_ALREADY_OPEN——strip-continue 续写补的
+          // `@? 提示` 就死在这（2026-09-17 监控 21:25 复盘）。
+          const interaction = new InteractionBuilder();
+          interaction.start(line.prompt);
+          this.interaction = interaction;
+        }
         return [];
 
       case "form_option":
@@ -89,6 +96,14 @@ export class EventGroupBuilder {
           "UNKNOWN_LINE",
           "segment_end must be handled by the segment validator, not the group builder.",
         );
+
+      case "ending_epilogue":
+        // 同上：validator 在哨兵窗口内消费 @ending 并拦截哨兵前孤儿，
+        // 到达 builder 即管线误用。
+        throw new DslProtocolError(
+          "UNKNOWN_LINE",
+          "ending_epilogue must be handled by the segment validator, not the group builder.",
+        );
     }
   }
 
@@ -107,18 +122,29 @@ export class EventGroupBuilder {
         }
       }
     }
-    return { pendingCues: this.pendingCues, openInteraction };
+    // finish() 是终态调用：两个分支都摘下 builder 并清空待交付 cues（所
+    // 有权已随返回值转移），防止"finish 后继续 push"重复交付/误报
+    // FORM_ALREADY_OPEN（2026-09-17 独立审计 G1/N2——当前零生产调用方，
+    // 纯防御）。
+    const cues = this.pendingCues;
+    this.interaction = null;
+    this.pendingCues = [];
+    return { pendingCues: cues, openInteraction };
   }
 
   /**
    * Open form, or a throwaway builder when none is open — the
    * InteractionBuilder itself then raises FORM_LINE_OUTSIDE_FORM /
-   * FORM_END_WITHOUT_OPEN (docs §100). Any throw aborts the segment, so the
-   * leftover open state is irrelevant.
+   * FORM_END_WITHOUT_OPEN (docs §100). The throwaway is NEVER mounted on
+   * `this.interaction`: the streaming adapter keeps feeding THIS parser
+   * instance after a strip-continue, so any half-open instance left behind
+   * by a throw would poison the next form_start into a false
+   * FORM_ALREADY_OPEN (2026-09-17 独立审计 S1/S2)——keeping it unmounted
+   * is what makes the throw stateless.
    */
   private ensureInteraction(): InteractionBuilder {
     if (this.interaction === null) {
-      this.interaction = new InteractionBuilder();
+      return new InteractionBuilder();
     }
     return this.interaction;
   }

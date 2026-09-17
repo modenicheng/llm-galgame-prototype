@@ -990,6 +990,250 @@ describe("DSL mode generation", () => {
     }
   });
 
+  it("strip-continues past an unrelated bad line without leaving a stale deferred @? behind", async () => {
+    // 2026-09-17 独立审计 S1：旁白 → 裸 @? → 坏指令行。剔除坏行时必须连带
+    // 剔除未合并的 @?，否则续写里模型写出正确的 `@? 提示` 会撞上 stale
+    // deferred 被强制空提示，预算已耗 → fail（模型修对了仍失败）。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["走廊尽头的灯闪了一下。", "@?", "@badcmd 乱写"];
+      }
+      return [
+        "@? 要不要上前查看？",
+        "@+ 上前查看",
+        "@+ 先退回来",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.content).toContain("走廊尽头的灯闪了一下。");
+    expect(assistant.content).not.toContain("@?");
+    expect(assistant.content).not.toContain("@badcmd");
+    expect(received).toHaveLength(2);
+    expect(received[1]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { prompt: "要不要上前查看？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("deduplicates two consecutive bare @? rows instead of poisoning the prefix", async () => {
+    // 2026-09-17 独立审计 S2：双裸 @?。第二个顶替第一个成为延迟行，第一
+    // 个从 rawLines 删除——否则它留在 prefix 尾部成为 stale deferred 陷阱。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["夜色压了下来。", "@?", "@?", `@end ${nonce} interaction`];
+      }
+      return [
+        "@? 接下来去哪？",
+        "@+ 天台",
+        "@+ 机房",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.content).not.toContain("@?");
+    expect(received).toHaveLength(2);
+    expect(received[1]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { prompt: "接下来去哪？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues a retired bare alias into its @ form", async () => {
+    // 白名单新码（RETIRED_ALIAS）：裸 bg 行剔除后续写改写成 @bg 形式。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["教室里粉笔灰缓缓落下。", "bg classroom_day", `@end ${nonce} buffer`];
+      }
+      return ["@bg classroom_day", `@end ${nonce} buffer`];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    // 尾部 cue 无主事件跟随即丢弃（docs §50 既有语义）：旁白 1 组 + buffer 收束。
+    expect(received).toHaveLength(1);
+    expect(received[0]!.main).toEqual({ type: "narration", text: "教室里粉笔灰缓缓落下。" });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "buffer" });
+  });
+
+  it("strip-continues an @ending written before the sentinel", async () => {
+    // 白名单新码（ENDING_EPILOGUE_ORPHAN）：哨兵前 @ending 剔除后续写，
+    // 模型把 @ending 放到 @end ending 之后。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["故事在这里停住。", "@ending HE 樱花落幕", `@end ${nonce} ending`];
+      }
+      return ["她合上笔记本。", `@end ${nonce} ending`, "@ending HE 樱花落幕"];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.content).not.toContain("@ending");
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "ending" });
+  });
+
+  it("retries the whole attempt (no assistant prefix) when a bare @? is the first line", async () => {
+    // 首行即坏：无前缀可续 → 剔除回退 → 无已提交组 → 整段 retry，
+    // 第二次请求保持 [system, user] 两消息形状。
+    const gen = makeDslGenerator({ generation: { repair_attempts: 1 } });
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) return ["@?", `@end ${nonce} interaction`];
+      return ["@? 怎么回应？", "@+ 先看看", `@end ${nonce} interaction`];
+    });
+
+    const envelope = await (gen as any).generateOpening(1, createInitialState());
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    const retryMessages = create.mock.calls[1]![0].messages as Array<{ role: string }>;
+    expect(retryMessages.map((message) => message.role)).toEqual(["system", "user"]);
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues when an empty form is force-closed by a stray bare @? (N1)", async () => {
+    // 2026-09-17 独立复核 N1：`@? 提示`（零选项）后又一个裸 @? 触发
+    // FORM_ALREADY_OPEN 修复，修复内 closeOpenInteraction 对空表单抛
+    // EMPTY_FORM——在 catch 处理器内若不接住会穿透修复信封裸拒绝。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["台灯在桌角投下光圈。", "@? 你要不要看看？", "@?", `@end ${nonce} interaction`];
+      }
+      return [
+        "@+ 打开看看",
+        "@+ 先放着不动",
+        "@/?",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    // 续写从空表单的 @? 提示行之前继续（提示保留、补选项后收尾）。
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.content).toContain("台灯在桌角投下光圈。");
+    expect(received.at(-1)!.main).toMatchObject({
+      type: "interaction",
+      interaction: expect.objectContaining({ prompt: "你要不要看看？" }),
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues a bare @? followed by the interaction sentinel", async () => {
+    // 2026-09-17 真实会话形状（监控 21:25 截图）：正文 → 裸 @? → 直接收
+    // @end interaction。延迟行的"下一行不是旁白"分支必须走剔除续写，
+    // 而不是 fail 掉整段（那会让修复链等玩家读完所有保留事件）。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return [
+          "苏遥把纸片折好塞进口袋。",
+          "树莓娘[center]: 你看到她写的什么了吗？",
+          "@?",
+          `@end ${nonce} interaction`,
+        ];
+      }
+      return [
+        "@? 你打算怎么接这个话头？",
+        "@+ 直接问她写的是什么",
+        "@= 自己说一句",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+
+    expect(create).toHaveBeenCalledTimes(2);
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.content).toContain("树莓娘[center]: 你看到她写的什么了吗？");
+    expect(assistant.content).not.toContain("@?");
+    expect(received).toHaveLength(3);
+    expect(received[2]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { mode: "hybrid", prompt: "你打算怎么接这个话头？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues a bare @? followed directly by an option row", async () => {
+    // 另一真实形状：裸 @? 的下一行是 @+ 选项——提示缺失但选项已经在写。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["走廊尽头的灯闪了一下。", "@?", "@+ 上前查看", `@end ${nonce} interaction`];
+      }
+      return [
+        "@? 要不要上前查看？",
+        "@+ 上前查看",
+        "@+ 先退回来",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    expect(received).toHaveLength(2);
+    expect(received[1]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { prompt: "要不要上前查看？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
   it("strip-continues past a mismatched sentinel and completes with the corrected one", async () => {
     const gen = makeDslGenerator();
     let callCount = 0;

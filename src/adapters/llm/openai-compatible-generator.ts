@@ -834,7 +834,19 @@ export class StoryGenerator {
         atLineIndex: number,
       ): Promise<boolean> => {
         if (stripBudget <= 0 || !STRIP_CONTINUE_CODES.has(error.code)) return false;
-        const prefix = rawLines.slice(0, rawIndex).join("\n");
+        // Stale-deferred fold（独立审计 S1）：被剔除行不是延迟行自身时，未
+        // 合并的裸 @? 必须一并从前缀消失——否则它坐在续写前缀尾部，模型
+        // 写出正确的 `@? 提示` 反而撞上 stale deferred 被强制空提示，预算
+        // 已耗 → fail。主循环内延迟行必为被剔除行的紧邻上一行，两者之间
+        // 没有好行，故前缀边界直接退到 pending.rawIndex。
+        const staleDeferred =
+          pendingFormStart !== null &&
+          pendingFormStart.rawIndex !== rawIndex &&
+          pendingFormStart.rawIndex < rawIndex
+            ? pendingFormStart
+            : null;
+        const prefixEnd = staleDeferred !== null ? staleDeferred.rawIndex : rawIndex;
+        const prefix = rawLines.slice(0, prefixEnd).join("\n");
         if (prefix.trim() === "") return false;
         stripBudget -= 1;
         this.metrics?.recordSchemaValidationFailure();
@@ -843,29 +855,23 @@ export class StoryGenerator {
           lineIndex: atLineIndex,
           message: `第 ${atLineIndex} 行无法解析，已剔除并让模型从断点续写：${error.message.slice(0, 100)}`,
         });
+        if (staleDeferred !== null) {
+          observer?.onRepair?.(attemptId, {
+            kind: "strip_continue",
+            lineIndex: staleDeferred.lineIndex,
+            message: "连带剔除未合并的裸 @?（其提示缺失，交由续写补全）。",
+          });
+        }
         console.warn(
           `[LLM] ${type} 剔除续写：第 ${atLineIndex} 行 "${rawLines[rawIndex] ?? ""}" [${error.code}]`,
         );
-        // The canonical output is everything except the deleted line. When the
-        // deleted line is NOT the deferred bare `@?` itself, the stale
-        // deferred row must go too: it would otherwise sit at the prefix tail
-        // and turn the model's correct fix (`@? 提示`) into a forced empty
-        // form_start → EMPTY_FORM_PROMPT with the budget already spent →
-        // fail（2026-09-17 独立审计 S1，已实证复现）。
-        if (
-          pendingFormStart !== null &&
-          pendingFormStart.rawIndex !== rawIndex &&
-          pendingFormStart.rawIndex > rawIndex
-        ) {
-          observer?.onRepair?.(attemptId, {
-            kind: "strip_continue",
-            lineIndex: pendingFormStart.lineIndex,
-            message: "连带剔除未合并的裸 @?（其提示缺失，交由续写补全）。",
-          });
-          rawLines.splice(pendingFormStart.rawIndex, 1);
+        // The canonical output is everything except the deleted lines. 先删
+        // 后面的坏行（大索引）再删 pending（小索引），互不影响。
+        rawLines.splice(rawIndex, 1);
+        if (staleDeferred !== null) {
+          rawLines.splice(staleDeferred.rawIndex, 1);
           pendingFormStart = null;
         }
-        rawLines.splice(rawIndex, 1);
         foldedUsage = reportedUsage();
         apiUsage = null;
         const previousController = activeController;
@@ -1105,7 +1111,27 @@ export class StoryGenerator {
                 parsed.prompt === "" &&
                 parser.hasOpenInteraction()
               ) {
-                const closed = parser.closeOpenInteraction();
+                let closed: EventGroupDraft[];
+                try {
+                  closed = parser.closeOpenInteraction();
+                } catch (closeError) {
+                  if (closeError instanceof DslProtocolError) {
+                    // 空表单（@? 提示在、零选项/零输入）收不了尾：本调用在
+                    // catch 处理器内，closeError 若不接住会穿透 outer 循环
+                    // 绕过整个修复信封（独立复核 N1）。剔除当前裸 @? 行，
+                    // EMPTY_FORM 在白名单内 → 续写补全选项后收尾。
+                    observer?.onLine(attemptId, lineIndex, {
+                      kind: null,
+                      error: closeError.message,
+                    });
+                    if (await tryStripContinue(closeError, rawLines.length - 1, lineIndex)) {
+                      continue outer;
+                    }
+                    rejectLine(closeError, trimmed);
+                    break;
+                  }
+                  throw closeError;
+                }
                 observer?.onRepair?.(attemptId, {
                   kind: "form_close",
                   lineIndex,
