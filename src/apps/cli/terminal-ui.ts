@@ -455,7 +455,7 @@ export class TerminalUI {
 
   private ensureInteractive(): void {
     if (!process.stdin.isTTY || !process.stdout.isTTY || !process.stdin.setRawMode) {
-      throw new Error("当前 TUI 需要交互式终端运行。请直接执行 npm run dev。 ");
+      throw new Error("当前 TUI 需要交互式终端运行。请直接执行 pnpm dev。 ");
     }
   }
 

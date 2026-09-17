@@ -21,7 +21,7 @@
    male_B}/`）随仓库分发，克隆后即有，无需单独准备。
    文件不齐会在加载时报错。
 2. `.env` 中配置 `OPENAI_API_KEY`（文本模式不需要任何 TTS key）。
-3. `npm install && npm run dev`，浏览器自动打开本地页面。
+3. `pnpm install && pnpm dev`，浏览器自动打开本地页面。
 4. 首局即自动从一条叙事种子开始（开场会点明"此刻在处理什么事"）。
 
 ### 指定演示种子（可选）
@@ -29,7 +29,7 @@
 每局种子由新会话 ID 确定性轮换；如需指定：
 
 ```bash
-CAMPUS_SCENARIO_SEED_ID=projector-on-but-blank npm run dev
+CAMPUS_SCENARIO_SEED_ID=projector-on-but-blank pnpm dev
 ```
 
 种子目录见 `prompts/campus-ops.yaml`（`id` 即此处使用的标识）。

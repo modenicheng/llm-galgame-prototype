@@ -5,15 +5,15 @@
 //     → chroma key 纯蓝 + despill → 透明底立绘 PNG
 //
 // 用法：
-//   npx tsx scripts/gen-cast-bases.mjs [--stage all|bases|diffs] [--only <castId>] [--force]
-//   npx tsx scripts/gen-cast-bases.mjs --rekey-only [--only <castId>]   # 对已有 *_blue.png 重跑色键，不调 API
+//   pnpm exec tsx scripts/gen-cast-bases.mjs [--stage all|bases|diffs] [--only <castId>] [--force]
+//   pnpm exec tsx scripts/gen-cast-bases.mjs --rekey-only [--only <castId>]   # 对已有 *_blue.png 重跑色键，不调 API
 //
 // 产出：output/image-gen/cast/<castId>/{base_blue,base,<diff>}.png
 //       output/image-gen/cast/manifest.json
 //       output/image-gen/cast/_contact_sheet.png
 // 产出仅限内部使用，禁止提交/外传（output/ 已被 .gitignore 忽略）。
 //
-// Run: npx tsx scripts/gen-cast-bases.mjs
+// Run: pnpm exec tsx scripts/gen-cast-bases.mjs
 import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";

@@ -37,7 +37,7 @@ IMAGE_GEN_API_KEY=sk-xxxxxxxx
 **② 出第一张图**：
 
 ```bash
-npm run image -- generate "雨夜校园天台，少女回望镜头，赛璐璐风格" --size 1024x1536
+pnpm image generate "雨夜校园天台，少女回望镜头，赛璐璐风格" --size 1024x1536
 ```
 
 **③ 取结果**：图片默认写入 `output/image-gen/`，同时打印 token 用量：
@@ -72,46 +72,46 @@ tokens: input=52 output=1420 total=1472
 
 ## 3. CLI 使用
 
-入口：`npm run image -- <子命令> [参数]`（`--` 不能省，否则参数会被 npm 吃掉）。
+入口：`pnpm image <子命令> [参数]`（pnpm 会把脚本名后的参数原样透传，无需 `--` 分隔符）。
 
 ### 3.1 generate — 文生图
 
 ```bash
 # 竖版立绘（高质量）
-npm run image -- generate "雨夜校园天台，少女回望镜头，赛璐璐风格" \
+pnpm image generate "雨夜校园天台，少女回望镜头，赛璐璐风格" \
   --size 1024x1536 --quality high
 
 # 透明底 PNG 立绘，一次两张
-npm run image -- generate "校服少女立绘，全身，白底" \
+pnpm image generate "校服少女立绘，全身，白底" \
   --background transparent --format png --n 2
 
 # 横版 CG，2.5 系列最高画质
-npm run image -- generate "夕阳教室，光尘浮动，电影感构图" \
+pnpm image generate "夕阳教室，光尘浮动，电影感构图" \
   --model gpt-image-2.5-sunburst --size 1536x1024 --quality xhigh
 
 # 任意尺寸（16 的倍数，宽高比 1:3 ~ 3:1）
-npm run image -- generate "手机竖屏壁纸" --size 1152x2048
+pnpm image generate "手机竖屏壁纸" --size 1152x2048
 
 # 流式生成并保存逐步精化的部分图预览
-npm run image -- generate "cg：天台决战" --stream --partial-images 2 --save-partials
+pnpm image generate "cg：天台决战" --stream --partial-images 2 --save-partials
 
 # 透明底立绘（自动抠图兜底，见 §3.5）
-npm run image -- generate "大学生形象立绘，站姿全身像" --size 1024x1536 --cutout --keep-raw
+pnpm image generate "大学生形象立绘，站姿全身像" --size 1024x1536 --cutout --keep-raw
 ```
 
 ### 3.2 edit — 图片编辑（垫图 / mask 局部重绘）
 
 ```bash
 # 垫图改背景，高保真保留原图主体
-npm run image -- edit "把背景换成黄昏的操场" \
+pnpm image edit "把背景换成黄昏的操场" \
   --image ./assets/raw/standee.png --input-fidelity high
 
 # 多张参考图（最多 16 张）
-npm run image -- edit "融合两张角色的服装设计" \
+pnpm image edit "融合两张角色的服装设计" \
   --image ./a.png --image ./b.webp
 
 # mask 局部重绘：mask 图中“透明区域”为重绘区（尺寸须与参考图一致）
-npm run image -- edit "只改变面部表情为惊讶" \
+pnpm image edit "只改变面部表情为惊讶" \
   --image ./standee.png --mask ./mask.png
 ```
 
@@ -233,7 +233,7 @@ for await (const event of client.generateStream({ prompt: "封面图" })) {
 ```
 
 构建后的运行时（Node 产物）等价导入路径为
-`dist/node/tools/image-gen/client.js`（`npm run build:node` 产物）。
+`dist/node/tools/image-gen/client.js`（`pnpm build:node` 产物）。
 
 ### 4.2 错误处理范式
 
@@ -342,9 +342,9 @@ camelCase 与 snake_case（`output_format`）等价、字符串数字（`"3"`）
 ## 7. 开发
 
 ```bash
-npm run typecheck          # 类型检查
-npx vitest run src/tools/image-gen   # 仅本工具的 52 个用例
-npm test                   # 全仓库测试
+pnpm typecheck          # 类型检查
+pnpm exec vitest run src/tools/image-gen   # 仅本工具的 52 个用例
+pnpm test                   # 全仓库测试
 ```
 
 改动校验规则时同步更新 `validate.test.ts` 的校验矩阵；请求体结构改动以

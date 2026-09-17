@@ -4,7 +4,7 @@
  * Plain JavaScript (not TS): this file is loaded by the browser as an
  * AudioWorklet module via `addModule(workletUrl)`, and Vite only emits a
  * real `?url` asset for non-TypeScript sources — a `.ts?url` import is
- * dropped from the production bundle, breaking audio in `npm start:web`.
+ * dropped from the production bundle, breaking audio in `pnpm start:web`.
  *
  * Runs in the AudioWorklet scope. Receives PCM samples (Int16Array, or a
  * pre-scaled Float32Array) through the MessagePort, holds them in a

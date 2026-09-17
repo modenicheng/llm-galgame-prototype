@@ -1,2 +1,7 @@
-allowBuilds:
-  esbuild: set this to true or false
+# pnpm 构建脚本审批：esbuild 装平台二进制、onnxruntime-node 经 prebuild-install
+# 拉预编译原生绑定、sharp 0.32 经 install 脚本下载预编译 libvips
+# （@imgly/background-removal-node 运行时依赖），其余默认拒绝。
+onlyBuiltDependencies:
+  - esbuild
+  - onnxruntime-node
+  - sharp

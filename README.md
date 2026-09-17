@@ -38,22 +38,22 @@ TTS 音色创建与绑定见 [docs/agents/TTS-音色配置指南.md](./docs/agen
 ## 运行
 
 ```bash
-npm install
+pnpm install
 cp .env.example .env
-npm run dev
+pnpm dev
 ```
 
 Windows PowerShell：
 
 ```powershell
 Copy-Item .env.example .env
-npm run dev
+pnpm dev
 ```
 
 调试运行时状态面板（缓冲、任务、媒体状态；普通模式不显示）：
 
 ```bash
-npm run dev -- --debug-runtime
+pnpm dev --debug-runtime
 ```
 
 ## TTS 语音（可选）

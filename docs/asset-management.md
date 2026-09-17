@@ -121,13 +121,13 @@ assets/
 
 ```bash
 # 竖版立绘（生成 + 自动抠图 + 保留白底原图备查）
-npm run image -- generate "<提示词>" --size 1024x1536 --quality high --cutout --keep-raw
+pnpm image generate "<提示词>" --size 1024x1536 --quality high --cutout --keep-raw
 
 # 基于垫图改图（edit：换表情/换光照/风格化照片）
-npm run image -- edit --image base.png "<修改指令>"
+pnpm image edit --image base.png "<修改指令>"
 
 # 参数全集与排障
-npm run image -- help
+pnpm image help
 ```
 
 ## 3.2 抠图决策链（`cutout.ts` / `matting.ts`）
@@ -270,7 +270,7 @@ characters:
 
 ## 5.1 调用链
 
-`npm run dev` / `npm start` → `src/entrypoints/web.ts`（或 `cli.ts`）→ `src/bootstrap/create-runtime-application.ts`：
+`pnpm dev` / `pnpm start` → `src/entrypoints/web.ts`（或 `cli.ts`）→ `src/bootstrap/create-runtime-application.ts`：
 
 ```ts
 const assetCatalog = await loadAssetCatalog(config.assets.catalog); // 默认 assets/resources.yaml
@@ -299,7 +299,7 @@ const assetCatalog = await loadAssetCatalog(config.assets.catalog); // 默认 as
 | 所有 `src` 解析后**不得逃逸** `assets/` 根目录 | `逃逸素材根目录` |
 | 所有 `src` 文件必须真实存在 | `文件不存在` |
 
-排错入口：直接跑 `npx tsx -e "import('./src/application/assets/asset-catalog-loader.ts').then(m=>m.loadAssetCatalog('assets/resources.yaml').then(()=>console.log('OK')))"`，或看启动报错（错误信息自带 YAML 路径与条目位置）。回归用例见 `src/application/assets/asset-catalog-loader.test.ts`。
+排错入口：直接跑 `pnpm exec tsx -e "import('./src/application/assets/asset-catalog-loader.ts').then(m=>m.loadAssetCatalog('assets/resources.yaml').then(()=>console.log('OK')))"`，或看启动报错（错误信息自带 YAML 路径与条目位置）。回归用例见 `src/application/assets/asset-catalog-loader.test.ts`。
 
 ---
 
@@ -410,7 +410,7 @@ System prompt 侧由 `prompts/dsl-protocol.txt` 定义协议本体（指令语�
 
 ## 8.3 语音（TTS）链路与资产目录的关系
 
-TTS 是与素材目录并行的独立链路：`config.yaml` 的 `characters.<id>.voice_profile` → `voices.yaml` 的逻辑音色 profile（semantic 描述 + dashscope voice-id 环境变量）→ `AudioIntentPlanner` 逐行台词产出合成意图 → 浏览器经 `/api/audio/synthesize` 拉流。当前校园分支 `synthesis.provider: disabled` 且 `characters: {}`，每行台词静默降级为纯文本，不阻塞启动。启用步骤见 §9.5；音色创建细节见 `docs/agents/TTS-音色配置指南.md`（`npm run verify:voice-guide` 校验其完整性）。
+TTS 是与素材目录并行的独立链路：`config.yaml` 的 `characters.<id>.voice_profile` → `voices.yaml` 的逻辑音色 profile（semantic 描述 + dashscope voice-id 环境变量）→ `AudioIntentPlanner` 逐行台词产出合成意图 → 浏览器经 `/api/audio/synthesize` 拉流。当前校园分支 `synthesis.provider: disabled` 且 `characters: {}`，每行台词静默降级为纯文本，不阻塞启动。启用步骤见 §9.5；音色创建细节见 `docs/agents/TTS-音色配置指南.md`（`pnpm verify:voice-guide` 校验其完整性）。
 
 注意：**立绘资产与音色配置互不感知**。给树莓娘加新表情变体不需要动 voices.yaml；给树莓娘配音不需要动 resources.yaml——两者只在 `characters` 这一层（一个用 `sprite_set`，一个用 `voice_profile`）交汇于 `config.yaml`/`resources.yaml` 的角色绑定。
 
@@ -420,7 +420,7 @@ TTS 是与素材目录并行的独立链路：`config.yaml` 的 `characters.<id>
 
 ## 9.1 新增一张立绘差分（最常见）
 
-1. **制作**：§3 管线产出透明底 PNG——已有角色补差分用蓝幕管线（`output/` 历史脚本或参考其写法），全新角色可直接 `npx tsx scripts/gen-cast-bases.mjs`（基准图 + 差分 + QC 拼图一条龙），或 `npm run image -- generate ... --cutout` 单张生成；
+1. **制作**：§3 管线产出透明底 PNG——已有角色补差分用蓝幕管线（`output/` 历史脚本或参考其写法），全新角色可直接 `pnpm exec tsx scripts/gen-cast-bases.mjs`（基准图 + 差分 + QC 拼图一条龙），或 `pnpm image generate ... --cutout` 单张生成；
 2. **入库**：复制进 `assets/characters/<组>/`，文件名即变体 id（snake_case）；树莓娘及含官方原稿像素的资产仅内部复制，不入 git；
 3. **注册**：`assets/resources.yaml` → `sprite_sets.<组>.variants` 增加 `<变体id>: { src: ..., description: <适用情绪> }`；如属默认形态另改 `characters.<id>.default_variant`；
 4. **校验**：§9.6。
@@ -454,9 +454,9 @@ TTS 是与素材目录并行的独立链路：`config.yaml` 的 `characters.<id>
 ## 9.6 验证清单（任何资产变更后）
 
 ```bash
-npm run typecheck                      # 类型
-npx vitest run src/application/assets  # 目录加载/校验回归
-npm run dev                            # 启动冒烟：加载失败会当场抛错
+pnpm typecheck                      # 类型
+pnpm exec vitest run src/application/assets  # 目录加载/校验回归
+pnpm dev                            # 启动冒烟：加载失败会当场抛错
 ```
 
 启动后人工核对两点：
@@ -517,7 +517,7 @@ npm run dev                            # 启动冒烟：加载失败会当场抛
 | cue 端到端传递 | `src/game-dsl.test.ts`、`src/game.test.ts` |
 | host 路由安全（403/404/405、manifest 投影） | `src/hosts/local-web/local-web-host.test.ts` |
 | 浏览器占位降级 | `web/src/stage/*.test.ts` |
-| image-gen 工具 | `src/tools/image-gen/*.test.ts`（`npx vitest run src/tools/image-gen`） |
+| image-gen 工具 | `src/tools/image-gen/*.test.ts`（`pnpm exec vitest run src/tools/image-gen`） |
 
 ## 11.3 上游规范章节对照
 

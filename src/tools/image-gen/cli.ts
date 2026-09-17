@@ -2,9 +2,9 @@
  * image-gen CLI — gpt-image-2 / 2.5 生成与编辑的命令行入口（core 之上的薄兼容层）。
  *
  * 用法（在仓库根目录）：
- *   npm run image -- generate "<提示词>" [选项]
- *   npm run image -- edit "<提示词>" --image <图片路径> [--image ...] [选项]
- *   npm run image -- help
+ *   pnpm image generate "<提示词>" [选项]
+ *   pnpm image edit "<提示词>" --image <图片路径> [--image ...] [选项]
+ *   pnpm image help
  *
  * 退出码：0 成功；2 参数/配置错误（未发出网络请求）；1 API/网络错误。
  */
@@ -35,9 +35,9 @@ import type {
 const USAGE = `image-gen — gpt-image-2 / 2.5 图像生成工具
 
 用法:
-  npm run image -- generate "<提示词>" [选项]
-  npm run image -- edit    "<提示词>" --image <图片路径> [--image ...] [选项]
-  npm run image -- help
+  pnpm image generate "<提示词>" [选项]
+  pnpm image edit    "<提示词>" --image <图片路径> [--image ...] [选项]
+  pnpm image help
 
 共用选项（未提供时按 .env 可选默认值 > 内置默认 回退）:
   --model <id>            gpt-image-2 | gpt-image-2.5-sunburst | gpt-image-2.5-flare（含日期快照，默认 gpt-image-2）
@@ -71,9 +71,9 @@ edit 专属选项:
   --input-fidelity <h|l>  input_fidelity high | low（对参考图的高保真程度）
 
 示例:
-  npm run image -- generate "雨夜校园天台，少女回望镜头，赛璐璐风格" --size 1024x1536 --quality high
-  npm run image -- generate "角色立绘" --background transparent --format png --n 2
-  npm run image -- edit "把背景换成黄昏" --image ./photo.png --input-fidelity high
+  pnpm image generate "雨夜校园天台，少女回望镜头，赛璐璐风格" --size 1024x1536 --quality high
+  pnpm image generate "角色立绘" --background transparent --format png --n 2
+  pnpm image edit "把背景换成黄昏" --image ./photo.png --input-fidelity high
 `;
 
 interface SharedValues {
@@ -148,7 +148,7 @@ function parseCli(
     const parsed = parseArgs({ args: argv, options, allowPositionals: true });
     return { values: parsed.values as Record<string, unknown>, positionals: parsed.positionals };
   } catch (error) {
-    throw new ImageParamError([`命令行参数错误: ${errMessage(error)}`, "用法见: npm run image -- help"]);
+    throw new ImageParamError([`命令行参数错误: ${errMessage(error)}`, "用法见: pnpm image help"]);
   }
 }
 
@@ -166,7 +166,7 @@ function requirePrompt(positionals: readonly string[]): string {
   if (positionals.length !== 1) {
     throw new ImageParamError([
       `需要恰好 1 个提示词位置参数，收到 ${positionals.length} 个`,
-      '示例: npm run image -- generate "雨夜校园天台" --size 1024x1536',
+      '示例: pnpm image generate "雨夜校园天台" --size 1024x1536',
     ]);
   }
   return positionals[0] ?? "";
