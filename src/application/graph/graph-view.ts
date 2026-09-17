@@ -69,12 +69,22 @@ export interface GraphView {
   /** 当前活动游标（无活动周目时缺省）。 */
   cursor?: { runId: string; decisionId: string } | undefined;
   runs: GraphRunStats;
+  /**
+   * M5.5 ③：大纲回顾（通关后解锁）——路径触及的 outline act（按 location
+   * 分组）与已达成结局。未通关（无已结算周目）时不返回该字段。
+   */
+  outlineReview?: {
+    acts: Array<{ id: string; location?: string | undefined; status: string; purpose: string }>;
+    endings: Array<{ id: string; label: string; count: number }>;
+  } | undefined;
 }
 
 export interface GraphViewStores {
   gameId: string;
   graph: GraphStorePort;
   outline?: OutlineStorePort | undefined;
+  /** M5.5 ③：通关解锁（settledRuns ≥ 1 时返回大纲回顾）。 */
+  stats?: StatsStorePort | undefined;
 }
 
 /**
@@ -167,11 +177,39 @@ export async function buildGraphView(stores: GraphViewStores): Promise<GraphView
     active: runs.filter((r) => r.endedAt === undefined && r.abandonedAt === undefined).length,
   };
 
+  // M5.5 ③：大纲回顾——通关（有已结算周目）才解锁；未通关绝不返回。
+  let outlineReview: GraphView["outlineReview"];
+  if (stores.stats !== undefined && stores.outline !== undefined) {
+    try {
+      const statsSnap = await stores.stats.load();
+      if (statsSnap.settledRuns.length > 0) {
+        const { nodes } = await stores.outline.load();
+        const acts = nodes
+          .filter((n) => n.kind === "act" && (n.status === "active" || n.status === "realized"))
+          .map((n) => ({
+            id: n.id,
+            ...(n.location !== undefined ? { location: n.location } : {}),
+            status: n.status,
+            purpose: n.purpose,
+          }));
+        const endings = statsSnap.endings.map((e) => ({
+          id: e.id,
+          label: e.id.replace(/^end_/, ""),
+          count: e.count,
+        }));
+        outlineReview = { acts, endings };
+      }
+    } catch {
+      outlineReview = undefined;
+    }
+  }
+
   return {
     gameId: stores.gameId,
     scenes: sceneViews,
     ...(cursor !== null ? { cursor: { runId: cursor.runId, decisionId: cursor.position } } : {}),
     runs: runStats,
+    ...(outlineReview !== undefined ? { outlineReview } : {}),
   };
 }
 

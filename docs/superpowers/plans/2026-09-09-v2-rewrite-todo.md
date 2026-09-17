@@ -226,10 +226,11 @@
   验收：stats 增量与幂等测试；结算聚合单测；图鉴不剧透断言。
   落地（2026-09-17）：① `StatsStorePort`/`StatsStore`（§9 布局 `stats.json`；`settledRuns` 幂等留痕——同周目重复结算 no-op；结局键 = EndingNode id，边键 = EdgeId 按首次通过的不重复周目计数）；coordinator `reachEnding` 落盘后沿「最近入边」路径回采 traversed 边并调 `recordSettlement`（失败只告警）。② `buildSettlementView`：最新完结周目的结局文本（结局边负载回收）+ payoffRate（`<sessions>/<sessionId>/ending-report.json` best-effort 读取，Game 增 `currentSessionId` 只读访问器）+ 大纲完成度（realized act/总 act）+ 统计。③ `buildGalleryView`：已达成结局给语义名+次数；未达成 outline 结局候选固定「???」（purpose/location 零泄漏，测试断言）。④ API：`GET /api/graph/settlement`、`GET /api/graph/gallery`（graph 通道扩展，未接线 404）。
 
-- [ ] **M5.5 通关打分 + 大纲回顾解锁**
+- [x] **M5.5 通关打分 + 大纲回顾解锁**
   前置：M5.4。关联：§4 可见性（通关后解锁）；§8（评价喂回编剧）。
   要点：① 结局后评分：玩家星级 + 编剧评注（单次 LLM 调用：输入末态 digest + ending-report，输出评语与大纲贴合度）→ `games/<gameId>/reviews/<runId>.json`；② 评价喂回：编剧维护调用输入携带历史评注；③ 大纲回顾：通关后 `GET /api/graph` 增返该周目路径触及的 outline 节点与已达成结局，按 `location` 并排分组（D8）；未通关不返回（负面断言）。
   验收：评分落盘与喂回输入包含断言；未通关 outline 泄漏负面断言。
+  落地（2026-09-17）：① `ReviewStorePort`/`ReviewStore`（`reviews/<runId>.json` 原子写 + 损坏抛错）+ `ReviewAdapter`（单次 JSON：digest 摘要 + ending-report + 大纲 acts → comment/outlineFit）；`POST /api/reviews`（rating 1–5 校验，host `reviews.submit` 通道，未接线 404）；entrypoint 实现取结局边末态 digest 摘要 + 会话 ending-report。② `OutlineMaintenanceRequest.reviews` + adapter 渲染「历史通关评注」段（coordinator 经可选 reviewStore 传入；喂回输入包含断言在册）。③ `buildGraphView` 增可选 stats——`settledRuns ≥ 1` 时返回 `outlineReview`（active/realized act 带 location 分组 + 已达成结局计数），未通关时字段整体缺省（负面断言在册）。
 
 - [ ] **M5.6 图维护（不可达内容 GC；无玩家删除入口）**
   前置：M5.2。关联：§7（2026-09-16 修订，决议 D7）；附录 A「孤儿 decision」挂账（本卡清偿）。

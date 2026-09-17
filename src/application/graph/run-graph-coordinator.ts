@@ -22,6 +22,7 @@ import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { CanonSnapshot, CanonStorePort } from "../../core/ports/canon-store-port.js";
 import type { StatsStorePort } from "../../core/ports/stats-store-port.js";
+import type { ReviewStorePort } from "../../core/ports/review-store-port.js";
 import type {
   EdgeChoice,
   RestorePoint,
@@ -133,6 +134,8 @@ export class RunGraphCoordinator implements RunGraphPort {
   private canonLoaded = false;
   /** M5.4：结算统计（可选装配；失败只告警）。 */
   private readonly stats: StatsStorePort | undefined;
+  /** M5.5 ②：通关评注喂回（可选装配）。 */
+  private readonly reviewStore: ReviewStorePort | undefined;
 
   constructor(
     private readonly store: GraphStorePort,
@@ -145,6 +148,8 @@ export class RunGraphCoordinator implements RunGraphPort {
       canon?: CanonStorePort;
       /** M5.4：周目完结时的结算统计（结局达成 + 边通过，按周目幂等）。 */
       stats?: StatsStorePort;
+      /** M5.5 ②：历史通关评注喂回编剧维护输入。 */
+      reviewStore?: ReviewStorePort;
     },
   ) {
     this.location = store.location;
@@ -153,6 +158,7 @@ export class RunGraphCoordinator implements RunGraphPort {
     this.outline = options?.outline;
     this.canon = options?.canon;
     this.stats = options?.stats;
+    this.reviewStore = options?.reviewStore;
   }
 
   /** 串行执行一次图变更（见 mutationChain）。 */
@@ -598,11 +604,13 @@ export class RunGraphCoordinator implements RunGraphPort {
     this.maintenanceRunning = true;
     try {
       const canonSnapshot = await this.loadCanonQuietly();
+      const reviews = this.reviewStore !== undefined ? await this.reviewStore.list() : [];
       const ops = await this.outline.maintainer.maintainOutline({
         outline: this.outlineNodes,
         recentSummary: input.moment.storyState.recent_summary,
         memoryDigest: input.moment.memoryDigest,
         ...(canonSnapshot !== undefined ? { canon: canonSnapshot } : {}),
+        ...(reviews.length > 0 ? { reviews } : {}),
       });
       const allowed = ops.filter((op) => {
         if (op.type === "add") return op.node.status === "planned";

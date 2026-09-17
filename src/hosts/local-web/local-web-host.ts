@@ -79,6 +79,10 @@ export interface LocalWebHostOptions {
     settlement?: (gameId: string) => Promise<unknown>;
     gallery?: (gameId: string) => Promise<unknown>;
   };
+  /** M5.5 ①：通关评分通道（rating 由玩家给定；评注由编剧 LLM 产出）。缺省 404。 */
+  reviews?: {
+    submit: (gameId: string, rating: number, sessionId: string) => Promise<unknown>;
+  };
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -115,6 +119,7 @@ export class LocalWebHost {
   private readonly assetManifest: PublicAssetManifest | null;
   private readonly worlds: LocalWebHostOptions["worlds"];
   private readonly graph: LocalWebHostOptions["graph"];
+  private readonly reviews: LocalWebHostOptions["reviews"];
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private devMiddleware: ViteDevMiddleware | null = null;
@@ -125,6 +130,7 @@ export class LocalWebHost {
     this.app = options.app;
     this.worlds = options.worlds;
     this.graph = options.graph;
+    this.reviews = options.reviews;
     this.dev = options.dev;
     this.logger = options.logger ?? (() => {});
     this.token = randomBytes(16).toString("hex");
@@ -289,6 +295,26 @@ export class LocalWebHost {
   }
 
   /**
+   * M5.5 ①：通关评分提交（rating 1–5 由玩家给定；编剧评注在通道实现内产出）。
+   */
+  private async handleReviewSubmission(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const body = (await this.readJsonBody(req)) as { rating?: unknown };
+      const rating = Number(body.rating);
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+        this.sendJson(res, 400, { error: "rating must be an integer 1–5" });
+        return;
+      }
+      const review = await this.reviews!.submit(this.app.gameId, rating, this.app.game.currentSessionId);
+      this.sendJson(res, 200, review);
+    } catch (error) {
+      this.sendJson(res, 500, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * M3.3 直通开玩：把运行时整体换成新世界的 RuntimeApplication。旧 app
    * 正常关停（落盘），websocket rebase 到新 game 并重开 run 循环。
    */
@@ -407,6 +433,14 @@ export class LocalWebHost {
         return;
       }
       void this.handleWorldCreation(req, res);
+      return;
+    }
+    if (req.method === "POST" && pathname === "/api/reviews") {
+      if (this.reviews === undefined) {
+        this.sendJson(res, 404, { error: "review submission unavailable" });
+        return;
+      }
+      void this.handleReviewSubmission(req, res);
       return;
     }
     if (req.method === "GET" && pathname === "/api/graph/settlement") {

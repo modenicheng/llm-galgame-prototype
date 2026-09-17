@@ -185,6 +185,12 @@ export class OutlineWriterAdapter implements OutlineWriterPort, OutlineMaintaine
         parts.push(`- 例外：${e.content}（限制：${e.compensatingLimit}）`);
       }
     }
+    if (request.reviews !== undefined && request.reviews.length > 0) {
+      parts.push("===== 历史通关评注（M5.5 评价喂回）=====");
+      for (const review of request.reviews.slice(-5)) {
+        parts.push(`- ★${review.rating}：${review.comment}（贴合度：${review.outlineFit}）`);
+      }
+    }
 
     const response = await this.client.chat.completions.create({
       model: this.model,

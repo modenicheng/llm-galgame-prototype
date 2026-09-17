@@ -3,6 +3,7 @@
  * (§6). Usage: `tsx src/entrypoints/web.ts [--dev] [--game <id>] [config.yaml]`.
  */
 import "dotenv/config";
+import path from "node:path";
 import { loadConfig, loadApiKey } from "../config.js";
 import { createRuntimeApplication, DEFAULT_GAMES_ROOT } from "../bootstrap/create-runtime-application.js";
 import { LocalWebHost } from "../hosts/local-web/local-web-host.js";
@@ -17,6 +18,8 @@ import { GameGraphStore } from "../adapters/storage/game-graph-store.js";
 import { OutlineStore } from "../adapters/storage/outline-store.js";
 import { buildGraphView, buildSettlementView, buildGalleryView } from "../application/graph/graph-view.js";
 import { StatsStore } from "../adapters/storage/stats-store.js";
+import { ReviewStore } from "../adapters/storage/review-store.js";
+import { ReviewAdapter } from "../adapters/llm/review-adapter.js";
 
 function parseArgs(argv: string[]): {
   dev: boolean;
@@ -103,6 +106,53 @@ async function main(): Promise<void> {
           outline: new OutlineStore(DEFAULT_GAMES_ROOT, gameId),
           stats: new StatsStore(DEFAULT_GAMES_ROOT, gameId),
         }),
+    },
+    // M5.5 ①：通关评分（玩家星级 → 编剧评注 → reviews/<runId>.json）。
+    reviews: {
+      submit: async (gameId, rating, sessionId) => {
+        const graph = new GameGraphStore(DEFAULT_GAMES_ROOT, gameId);
+        const outlineStore = new OutlineStore(DEFAULT_GAMES_ROOT, gameId);
+        const runs = await graph.listRuns();
+        const last = [...runs].reverse().find((r) => r.ending !== undefined && r.endedAt !== undefined);
+        if (last === undefined) throw new Error("尚无已完结周目（通关后才可评分）");
+        const endingId = last.ending!;
+        // 末态 digest 摘要 + 结局文本：从结局边取（负载 + 内联末态）。
+        const edges = await graph.listEdges();
+        const endingEdge = [...edges].reverse().find((e) => e.to.kind === "ending" && e.to.id === endingId);
+        if (endingEdge === undefined) throw new Error("结局边缺失（结构损坏）");
+        const digest = endingEdge.endState.memoryDigest;
+        const digestSummary =
+          `scene: ${endingEdge.endState.storyState.scene.id}；summary: ${endingEdge.endState.storyState.recent_summary}；` +
+          `threads ${digest.threads.length} / setups ${digest.setups.length} / facts ${digest.facts.length}`;
+        let endingReport: { setups: { payoffRate: number }; threads: { resolved: number; abandoned: number; active: number } } | undefined;
+        try {
+          const { readFile } = await import("node:fs/promises");
+          endingReport = JSON.parse(
+            await readFile(path.join(config.game.sessions_dir, sessionId, "ending-report.json"), "utf8"),
+          );
+        } catch {
+          endingReport = undefined;
+        }
+        const { nodes } = await outlineStore.load();
+        const outlineActs = nodes
+          .filter((n) => n.kind === "act" && n.status !== "pruned")
+          .map((n) => ({ id: n.id, purpose: n.purpose, status: n.status }));
+        const review = await new ReviewAdapter({ apiKey: loadApiKey(config), api: config.api }).reviewRun({
+          digestSummary,
+          ...(endingReport !== undefined ? { endingReport } : {}),
+          outlineActs,
+        });
+        const stored = {
+          runId: last.id,
+          rating,
+          comment: review.comment,
+          outlineFit: review.outlineFit,
+          reviewedAt: new Date().toISOString(),
+        };
+        const reviewStore = new ReviewStore(DEFAULT_GAMES_ROOT, gameId);
+        await reviewStore.save(stored);
+        return stored;
+      },
     },
   });
   const { url } = await host.start();
