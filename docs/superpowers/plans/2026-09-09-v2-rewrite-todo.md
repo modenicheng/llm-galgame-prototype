@@ -154,16 +154,18 @@
 ③ 剪报组装继承决议 D9 布局：历史区保持 append-only 置前、易变区置尾，不引入窗口截断；④ Game→StoryGenerator 上下文供给切换到剪报（本卡建新通道并切换；旧 NarrativeBrief 通道 M4.4 删）。
   验收：单测——生成请求 user prompt 不含未实现 outline purpose 与结局候选文本（负面断言）；有 directive 时含防守/收束段；无 directive 时与现行为等价（回归）。
 
-- [ ] **M4.3 防守节拍**
+- [x] **M4.3 防守节拍**
   前置：M4.2。关联：§5.3；设计 §3.3（拉回 = 汇流的常见情形）。
   目标：离谱输入 → 防守节拍引回（进演出指令，演员执行）。
   要点：① 触发：free_input 解决后（`beginEdge(choice.kind==="free_input")`）导演后台评估输入 vs 当前场景目标（工具：readSceneHistory + SceneDirective）→ 产出 DefenseBeat 写入下一段 directive；② 滞后一拍是有意行为：评估与生成并行，本段按既有 directive 播出，引回作用于下一段（不阻塞生成，红线）；③ 相位门接通：directive.formModes 实际作用到 InteractionPolicy（Game 侧消费点）。
   验收：集成测试（fake LLM/导演）——free_input 后下一段 prompt 含引回指令；choice 不触发；allowed_modes 收窄生效（扩既有 policy 测试）。
+  落地（2026-09-17，随 P4）：game.ts record() 的 free_input 分支后台调用 `director.evaluateFreeInput`（滞后一拍，fire-and-forget 不阻塞生成，失败仅告警）；`assertInteractionPolicy` 消费 `directive.formModes` 收窄 allowed_modes（M4.3 相位门消费点）；测试 `game-defense-beat.test.ts` + director-service `evaluateFreeInput` 覆盖。
 
-- [ ] **M4.4 删除 PlotPlanner / DirectorPlan / NarrativeBrief**
+- [x] **M4.4 删除 PlotPlanner / DirectorPlan / NarrativeBrief**
   前置：M4.2、M4.3。关联：§10 映射表；执行规则「不留暂时共存」（阶段内删除）。
   目标：战术规划并入导演编排，剪报取代便签。
   要点：① 删除：`application/narrative/plot-planner.ts` + `plot-planner-adapter.ts`、DirectorPlan 存储通道（director-plan.json）、NarrativeBrief 类型与便签渲染链（facts/beliefs/lessons 三段渲染已在 M4.2 随迁，删的是便签宿主）；导演输入改为携带 anchors/setups 台账（记忆 digest 投影）；② 配置死键清扫：planner 相关键（horizon_checkpoints、replan 节流等）逐键定去留（并入导演节流或删除），记附录 B；③ NarrativeDirectorService 收窄为记忆子层（consolidator/checkpoint/记忆查询），planner 分支与对应测试拆分文件删改；④ story-plan.yaml 作者种子保留（种子的是记忆锚点，非 planner）。
+  落地（2026-09-17，随 P4）：plot-planner.ts/plot-planner-adapter.ts 及其测试删除；director-plan 存储通道删除（narrative-state.json 保留，bootstrap 测试断言 director-plan.json 不存在）；narrative-brief.ts 更名 memory-projection.ts（phase/goal/beats/revealLocks 字段删）；director-plan.ts 更名 setup-directive.ts（仅 SetupDirective）；planner/replan 配置死键清零（config narrative 无 mode/plan 键）；NarrativeDirectorService 收窄为记忆子层（planner/plan/replan 删除，测试拆为四文件 + test-kit）；残留仅注释中的历史沿革引用（GH-P4 grep 清零核验）。
   验收：grep `PlotPlanner|DirectorPlan|NarrativeBrief|director-plan` 零残留；被删配置键有 config 负面断言；全量绿。
 
 - [x] **M4.5 game.ts 拆分**（2707 → 1588 行，偏差记附录 B）
@@ -248,7 +250,7 @@
 - [x] **GH-P4**：M4.4 grep 清单清零（PlotPlanner/DirectorPlan/NarrativeBrief/director-plan 零残留）；game.ts 2707→1588（交互驱动 ~900 行迁 `interaction-driver.ts`，段类型迁 `segment-types.ts`）；`application/director|world|outline` 新目录经 architecture 依赖评审（仅 application→adapters/ports 正向依赖）。豁免偏差：game.ts 1588 与 interaction-driver 1171 仍超 900 阈值，豁免保留并注明清偿路径（driver 二分 input/choice）。三绿 + 机械检查 + subagent 评审 25 条（P1×1、P2×9、P3×15）：P1（导演场景指令生产零接线→已在 reconcile 场景边界接线 triggerDirective）与正确性 P2（narrowFormModes 闭包绑定 sceneId、actor-briefing 冗余字段删除）当场修复；其余 P2/P3 记附录 B。
 - [x] **GH-P5**：event mode / story_line grep 清零；config 死键负面断言齐。（2026-09-17 过门：三绿 + 机械检查 + subagent 评审 23 条（P1×0、P2×2、P3×21），P2 当场修复、随手清 6 条本阶段自留 debris、其余 P3 记附录 B；run-graph-coordinator 958 行登记豁免+清偿路径）
 - [x] **GH-P6**：`GET /api/graph` 脱敏负面断言齐；stats 幂等。（2026-09-17 过门：三绿 + 机械检查 + subagent 评审 25 条（P1×1、P2×7、P3×17），P1 与正确性/接线 P2 当场修复、长度类 P2 与其余 P3 记附录 B）
-- [ ] **GH 终检**：全部任务卡与门勾选或登记 BLOCKED；三命令全绿 + repo-hygiene skill 完整档最后一遍；`docs/status.md` 全面同步；第 6 节人工清单整理移交。
+- [x] **GH 终检**：全部任务卡与门勾选或登记 BLOCKED；三命令全绿 + repo-hygiene skill 完整档最后一遍；`docs/status.md` 全面同步；第 6 节人工清单整理移交。（2026-09-17 过终检：任务卡 P1–P6 与 GH-P1～GH-P6 全勾、无 BLOCKED；116 文件 1499 测试全绿 + typecheck/build 绿 + 机械检查通过；status.md 快照更新至 2026-09-17——长线剧情重写为导演子系统/记忆强化现状、持久化增 canon/stats/reviews/GC、未完成清单收敛为技术债与人工项、提交锚点补 P4–P6；第 6 节四项人工验证移交。基线 1499 测试 / 116 文件。）
 
 ## 5. 反重复地图（动手前必查）
 
@@ -269,10 +271,13 @@
 
 ## 6. 人工验证清单（不在自主实现范围，不阻塞勾选）
 
-1. **M2.3 汇流端到端**（前置 P4 完成）：真实 LLM 会话——离谱输入 → 防守节拍引回 → 图上呈现汇流（`games/<gameId>/graph/edges.jsonl` 出现 confluence 凭据）；检查 `narrative.confluence.enabled: true` 的实际效果与判定质量。
+> 移交说明（2026-09-17，GH 终检）：自主实现部分已全部完成并通过六道完整档
+> 卫生门；以下四项需要**真实 LLM 会话 / 人工手感**验证，不在自主范围。
+
+1. **M2.3 汇流端到端**（实现已就绪）：真实 LLM 会话——离谱输入 → 防守节拍引回 → 图上呈现汇流（`games/<gameId>/graph/edges.jsonl` 出现 confluence 凭据）；检查 `narrative.confluence.enabled: true` 的实际效果与判定质量。
 2. **MA Phase A/B 验收**（记忆 spec §12「跑一局」项）：超期伏笔 RESOLVE_OR_DROP 出现；结局 ending-report.json 数值与体感一致；事实/认知边界端到端。
 3. **M3.3 世界生成质量**：真实描述 → 大纲/角色/开场可玩性、防剧透直通体验。
-4. **M5 图 UI 手测**：总览（含同物理场景并排分组）/子图/回溯/快进/结算全流程。
+4. **M5 图 UI 手测**：总览（含同物理场景并排分组）/子图/回溯/快进/结算/图鉴/评分全流程（web 控制区「剧情图」按钮入口）。
 
 ---
 

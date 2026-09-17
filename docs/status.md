@@ -1,6 +1,6 @@
 # 实施进度对照（status）
 
-> 快照日期：**2026-09-16**，对照 `main` 分支代码。本文是唯一的进度权威文档；
+> 快照日期：**2026-09-17**，对照 `main` 分支代码。本文是唯一的进度权威文档；
 > 设计规范见 `docs/llm-outputs-refactor.md`，变更记录见 `docs/changelog.md`。
 > 后续开发完成/变更条目时请同步更新本文。
 
@@ -14,7 +14,7 @@
 | `docs/changelog.md` | 实施日志摘编（按日期） |
 | `docs/superpowers/specs/*` | NarrativeDirector、浏览器资源管线的专项设计 |
 | `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md` | 长期记忆强化与复核体系（facts/beliefs/lessons/audit）下一阶段设计，待实施 |
-| `docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md` | **v2 剧情图架构（实施中）**：回溯/存档/多周目三合一、编剧-导演-演员三角色、破坏性重构授权 |
+| `docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md` | **v2 剧情图架构（已全量落地）**：回溯/存档/多周目三合一、编剧-导演-演员三角色、破坏性重构授权 |
 | `docs/superpowers/plans/2026-09-09-v2-rewrite-todo.md` | **v2 执行清单（交付版，2026-09-16 重整）**：面向一次性自主实现——任务卡 P1–P6 + 卫生门、设计决议 D1–D6、反重复地图、历史与偏差附录 |
 | `.hygiene.config.json` / `.hygiene-baseline.json` | 仓库卫生自检校准值（阈值 / 豁免 / 标记基线），供用户级 `repo-hygiene` skill（`~/.agents/skills/repo-hygiene/`，不随仓库走）的机械检查脚本读取 |
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
@@ -52,12 +52,29 @@
 
 ### 长线剧情（NarrativeDirector，spec 见 superpowers）
 - 第 1+2 步「记忆过去」：committed events → episodes / threads / setups / anchors，
-  导演便签（NarrativeBrief）注入 Writer 上下文；consolidator 流水线（FIFO 批次、
-  shadow-state 事务校验、copy-on-write 持久化、单飞 + 节流）。
-- 第 3 步「规划未来」：PlotPlanner / DirectorPlan，horizon 计划、低水位后台重规划、
-  硬过期非阻塞 barrier、锚点推进与 consolidation 走内存写互斥。
-- 三条硬约束（只记 committed / 计划不入事实记忆 / planner 不写台词）全部落实。
-- `story-plan.yaml` 作者种子（threads / setups / anchors），加载容错。
+  consolidator 流水线（FIFO 批次、shadow-state 事务校验、copy-on-write 持久化、
+  单飞 + 节流）；**MA-A（2026-09-17）**记忆强化五项落地（depth/RESOLVE_OR_DROP、
+  intendedPayoff 硬拒、ending-report 确定性聚合、lessons 拒绝码计数自动晋升 +
+  brief 规避清单、facts/lessons jsonl 通道）；**MA-B/MA-A2（2026-09-17）**：
+  MemoryDigest 嵌入 facts/beliefs 全文（SNAPSHOT_VERSION 1→2→3，StoryState 收缩
+  为 reconcile 投影产物：scene/characters/recent_summary），恢复不依赖 canon。
+- **导演子系统（M4.1–M4.5，2026-09-17）**：`DirectorService`（AgentRunnerPort
+  工具循环 ≤6 步强制收束）产 `SceneDirective`（场景目标/防守节拍/收束压力/
+  表单收窄）；场景边界 `triggerDirective` fire-and-forget；**剪报防火墙**
+  （`buildActorBriefing` = MemoryProjection + directive，参数形状不含 outline
+  全量/结局候选/他周目数据）；游戏侧 `assertInteractionPolicy` 消费 formModes、
+  free_input 后台 `evaluateFreeInput` 防守节拍（滞后一拍）；交互驱动簇迁
+  `interaction-driver.ts`；PlotPlanner/DirectorPlan/NarrativeBrief 已整体删除
+  （M4.4，战术规划并入导演编排）。
+- **收束与跨周目真相（M3.5/M3.6，2026-09-17）**：`narrative.mode` 键整体删除
+  （longform 唯一路径），收束压力 = 模型判定 ∨ 大纲确定性信号（前沿 act 全
+  realized 或维护已 activate 终章候选——导演读大纲 ending 候选、演员不可见）；
+  `CanonStore`（world/canon.json + canon.log.jsonl）+ `CanonPromoter` 跨周目
+  major facts 后台晋升（≥2 周目内容佐证 → 编剧裁决 promote/例外登记；读取方 =
+  导演输入 + 编剧维护，演员不可见；晋升不回改既有快照）。
+- `story-plan.yaml` 作者种子（threads / setups / anchors），加载容错；
+  `prompts/story_line.txt` 全局注入已删除（M3.7），storyLine 只来自 per-game
+  `world/prompts/`（缺失大声报错；无世界启动时该段缺省）。
 - **记忆审计 Phase A（MA-A，2026-09-17）**：伏笔台账增强——`depth` 三档 +
   heavy 积累门控 + RESOLVE_OR_DROP 强制了断第三档（超期先于前置门）；
   intendedPayoff 必填（author seed 缺省记 warning，运行时 seed 硬拒，稳定规则
@@ -118,21 +135,38 @@
   `games/.last-game` 续玩，启动后写回（best-effort：损坏/缺失即开新世界，
   读写失败不阻塞启动；id 只接受安全字符集，防路径逃逸）。CLI 不读写
   `.last-game`。`RuntimeApplication.gameId` 暴露给宿主。
+- **场景间/滞后汇流 + 末态索引（M2.4，2026-09-17）**：候选不再限同场景——
+  末态索引（摘要键 = location/在场角色集/outline 物理地点）确定性预筛限流
+  judge 调用，命中键数降序优先；滞后汇流天然获得（新边收束对索引全量预筛）。
+- **回溯入口 + 同选项快进（M5.3，2026-09-17）**：`retraceFrom(decisionId)`
+  任意祖先节点开新周目（活跃周目 abandonedAt 仅记账，图零删除，D7）；
+  `beginEdge` 返回判别联合——选择与既有出边 kind+text 严格相等且指向决策
+  节点时命中快进（零内容生成，直接恢复后继表单；结局端点不参与）；
+  retrace 命令贯穿 wire schema → Game（RetraceRequestedError → prepareRetrace
+  → 同一 Game 重入 run）→ 图面板回溯确认 UI（「在此分叉开启新周目」措辞）。
+- **世界级附加存储（M3.6/M5.4/M5.5，2026-09-17）**：`world/canon.json` +
+  `world/canon.log.jsonl`（跨周目事实晋升）；`stats.json`（结局达成 + 边通过
+  计数，按周目幂等结算）；`reviews/<runId>.json`（通关评分：玩家星级 + 编剧
+  评注，评价喂回编剧维护输入）。均为 append-only/原子写、损坏大声抛错。
+- **图维护 GC（M5.6，2026-09-17）**：协调器内部回收**不可达**内容（崩溃孤儿、
+  汇流孤儿、入边归零级联；幂等）——被任何周目路径（含已弃）到达的节点与边
+  不可回收（负面测试锁定）；存储层 tombstone 行（`{id, deleted:true}`，
+  append-only 不回改，§3 契约 schema 未动）；无任何玩家删除入口（D7）。
 - `sessions/<sessionId>/` 仅存 narrative 记忆工作缓存（narrative-state.json /
-  episodes.jsonl / narrative-ops.jsonl + director-plan.json）；**可丢弃**——恢复
-  永不读它，v1 的事件日志 `events.jsonl` 与内存态快照已随 M1.6 删除。
+  episodes.jsonl / narrative-ops.jsonl + facts/lessons jsonl + ending-report）；
+  **可丢弃**——恢复永不读它，v1 的事件日志 `events.jsonl` 与内存态快照已随
+  M1.6 删除。
 
 ## 简化 / 未完成
 
-- **v2 剧情图架构（实施中）**：M0 契约冻结、M1.1 记忆摘要映射、M1.2 图存储、
-  M1.3 演员接图、M1.4 游标恢复、M1.5 新周目入口（root/retrace）、M1.6 sessions
-  JSONL store 删除、M2.1 ConfluenceJudge port + LLM 判定 adapter、M2.2 场景内
-  汇流（后台判定 + 有界改绑 + promise 链互斥）、M5.0 宿主接线均已完成；
-  执行清单已于 2026-09-16 重整为**交付版**（任务卡 P1–P6：M5.0 宿主接线 →
-  记忆审计 Phase A/B → 编剧+大纲+世界生成 → 导演+剪报 → 收束+canon+汇流补完 →
-  图 UI+结算；M2.3 端到端验证归人工清单）。待做清单与卫生门见执行清单。
-- **event mode / forced ending / max_interactions**：过渡期保留（恢复后
-  interactionCount 清零、不跨周目累计）；M3.5 由大纲结局驱动替代时整体删除。
+- **v2 剧情图架构：交付版执行清单 P1–P6 全部完成（2026-09-17）**——M5.0 宿主
+  接线 → 记忆审计 Phase A/B（MA-A/MA-B/MA-A2）→ 编剧+大纲+世界生成 → 导演+
+  剪报（M4.1–M4.5）→ 收束+canon+汇流补完+story_line 清理（M3.5/M3.6/M3.7/M2.4）
+  → 图 UI+结算+评分+GC（M5.1–M5.6）；六道完整档卫生门（GH-P1～GH-P6）全部
+  过门（三绿 + 机械检查 + subagent 只读评审，P1/P2 当场修复、P3 记附录 B）。
+  M2.3 汇流端到端真实 LLM 验证归人工清单。剩余技术债见执行清单附录 B
+  （interaction-driver 二分 input/choice、run-graph-coordinator 拆 confluence、
+  game.ts 豁免清偿、若干 P3 记档项）。
 - **PlaybackBuffer 未迁 EventGroup**：采用 §63 展平方案（事件携带 `stage` 字段），
   缓冲仍是展平 `RuntimeBufferEvent[]`；prelude+main 同组提交已由组编译保证。
 - **beat 播放时机**：提交时立即应用（stage_beat_ready），不做缓冲时序。
@@ -140,14 +174,24 @@
   转场/动画系统。
 - **BGM 转场**：直接切换，无淡入淡出；音量/静音有 API，无自动 ducking。
 - **CLI 音频**：`media.audio.synthesis.provider=disabled` 默认纯文本（CLI 不接 TTS 播放；planner 就绪查询为过渡桩，恒立即就绪）。
-- **回溯只到游标（最前沿节点）**：任意祖先节点回溯 + 同选项快进随 M5.3 回溯
-  入口 UI 落地（见执行清单 M5.3 注记）。
 - **seq 播种已按世界最大值统一（M2.1 决议，2026-09-16）**：`nextSeq =
   max(世界最大 seq, 路径末 seq, digest 水位) + 1`，同世界新 root 周目不再从
   1 回绕；跨周目单调是 M2.2 汇流后 `pickLatestInEdge` 与记忆水位过滤的前提。
 
 ## 近期提交锚点
 
+- `fe933c6` GH-P6 门禁：P1 快进透传修复 + 评价喂回/大纲回顾生产接线 + parseJsonl 写序契约
+- `64c0fc7` M5.6 图维护 GC：tombstone + 不可达回收 + 级联幂等
+- `5152769` M5.5 通关评分 reviews + 评价喂回 + 大纲回顾通关解锁
+- `8600e33` M5.4 结算统计 stats.json + 结算/图鉴视图与 API
+- `85fd883` M5.3 retraceFrom 回溯入口 + 同选项快进（零生成）+ 图面板回溯 UI
+- `371a006` M5.1/M5.2 总览图 API + 决策子图 + graph-panel 可视化
+- `7ed0d1a` M3.7 story_line 静态注入删除（只留 per-game 世界文件）
+- `8427147` M3.6 canon 存储 + 跨周目事实晋升管线
+- `6a13532` M3.5 大纲收束压力接线导演 + event mode 整体删除
+- `94615e0` M2.4 末态索引 + 确定性预筛 + 场景间/滞后汇流
+- `ee4fc6d` M4.3 防守节拍 + 相位门接线（P4：M4.1 runner / M4.2 剪报防火墙 /
+  M4.4 PlotPlanner/DirectorPlan/NarrativeBrief 删除 / M4.5 game.ts 拆分同期落地）
 - `fabed3a` M2.2 场景内汇流：后台判定 + 有界改绑 + 互斥链 + 场景节点世界稳定
 - `a6ad549` M2.1 ConfluenceJudge port + LLM adapter + 世界最大 seq 播种
 - `b9f3f8d` M1.5 新周目入口：restart 弃局 + retrace、origin 保留
