@@ -20,6 +20,10 @@ export class EventGroupBuilder {
   private pendingCues: StageCue[] = [];
   private interaction: InteractionBuilder | null = null;
 
+  hasOpenInteraction(): boolean {
+    return this.interaction?.isOpen() === true;
+  }
+
   push(line: DslLine): EventGroupDraft[] {
     switch (line.kind) {
       case "background":
@@ -50,7 +54,11 @@ export class EventGroupBuilder {
         if (this.interaction !== null) {
           throw new DslProtocolError(
             "FORM_ALREADY_OPEN",
-            "A form is already open — finish it with /? before starting another one.",
+            "前一个交互表单还没有关闭，不能开新表单。",
+            {
+              expected: "表单以 @/? 结束后才能开始下一个 @?",
+              fix: "先写 @/? 关闭当前表单，再开新表单",
+            },
           );
         }
         this.interaction = new InteractionBuilder();
@@ -120,7 +128,12 @@ export class EventGroupBuilder {
     if (this.interaction !== null) {
       throw new DslProtocolError(
         "CONTENT_INSIDE_OPEN_FORM",
-        "Content inside an open form. Finish the form with /? before dialogue, narration or beat.",
+        "交互表单还开着，中间不能插入台词、旁白或 beat。",
+        {
+          expected: "@? 之后只能跟 @+ 选项行 / @= 输入行，最后以 @/? 结束",
+          cause: "表单行（@?/@+/=@）和正文行混在了一起",
+          fix: "先写 @/? 关闭表单，再把台词或旁白另起一行写在表单之后",
+        },
       );
     }
   }

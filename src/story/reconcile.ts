@@ -9,10 +9,11 @@
  * 投影规则（确定性）：
  * - scene.location ← 批次内最后一条 `background` stage cue 的 assetId；
  * - characters ← 台词 characterId 与 character_patch cue 的并集（值为空对象，
- *   情绪/目标等字段没有确定性来源，留给未来波）；
- * - recent_summary ← 批次内最后 ≤3 条 narration/dialogue 文本拼接（≤300 字）。
- * canon / open_threads / player_profile 无确定性投影来源，保持原样
- * （剧情线语义已由 NarrativeDirector memory 承担）。
+ *   情绪/目标等字段没有确定性来源，留给未来波）。
+ * canon / open_threads / player_profile 无确定性投影来源，保持原样。
+ * recent_summary 由滚动前情梗概管线（src/story/recap.ts，2026-09-17 上下文
+ * 审计）独占维护——它承载的是"滑出历史窗口的事件"的压缩记录；此处若再
+ * 覆写最近 3 行，会把前情梗概冲掉（且那 3 行本来就重复出现在历史窗口里）。
  */
 import type { StoredEvent } from "../schema.js";
 import type { StoryState } from "./types.js";
@@ -31,14 +32,30 @@ function isCharacterPatchCue(cue: unknown): cue is { type: "character_patch"; ch
   return typeof cue.character === "string";
 }
 
+/**
+ * 故意未登记进 state.characters 的角色 id 过滤：语法坏行造成的幻影发言者
+ * （如 `@6ch raspberry: …` 被当台词）一旦入库，就会经 summarizeState 的
+ * [Characters] 段回流进后续 writer prompt，模型看到坏语法并模仿——上下文
+ * 污染闭环（2026-09-17 会话审计）。已知角色集来自素材目录；不含 @ 或空白
+ * 的额外兜底让旧会话里已污染的条目也停止扩散。
+ */
+function trackableCharacterId(
+  characterId: string,
+  known: ReadonlySet<string> | undefined,
+): boolean {
+  if (/[\s@]/.test(characterId)) return false;
+  return known === undefined || known.has(characterId);
+}
+
 export function reconcileStoryState(
   previous: StoryState,
   committed: readonly StoredEvent[],
+  options?: { knownCharacterIds?: ReadonlySet<string> | undefined },
 ): StoryState {
+  const known = options?.knownCharacterIds;
   let location = previous.scene.location;
   const characters: StoryState["characters"] = { ...previous.characters };
   let charactersChanged = false;
-  const recentLines: string[] = [];
 
   for (const event of committed) {
     if (event.type === "dialogue" || event.type === "narration") {
@@ -48,7 +65,10 @@ export function reconcileStoryState(
             location = cue.assetId;
           }
         } else if (isCharacterPatchCue(cue)) {
-          if (characters[cue.character] === undefined) {
+          if (
+            characters[cue.character] === undefined &&
+            trackableCharacterId(cue.character, known)
+          ) {
             characters[cue.character] = {};
             charactersChanged = true;
           }
@@ -57,34 +77,25 @@ export function reconcileStoryState(
     }
     if (event.type === "dialogue") {
       const characterId = event.characterId;
-      if (characterId !== undefined && characterId !== "" && characters[characterId] === undefined) {
+      if (
+        characterId !== undefined &&
+        characterId !== "" &&
+        characters[characterId] === undefined &&
+        trackableCharacterId(characterId, known)
+      ) {
         characters[characterId] = {};
         charactersChanged = true;
       }
-      recentLines.push(`${event.speaker}: ${event.text}`);
-    } else if (event.type === "narration") {
-      recentLines.push(event.text);
-    }
-  }
-
-  let summaryChanged = false;
-  let recentSummary = previous.recent_summary;
-  if (recentLines.length > 0) {
-    const summary = recentLines.slice(-3).join(" / ").slice(0, 300);
-    if (summary !== previous.recent_summary) {
-      summaryChanged = true;
-      recentSummary = summary;
     }
   }
 
   const locationChanged = location !== previous.scene.location;
-  if (!locationChanged && !charactersChanged && !summaryChanged) {
+  if (!locationChanged && !charactersChanged) {
     return previous;
   }
   return {
     ...previous,
     scene: locationChanged ? { ...previous.scene, location } : previous.scene,
     characters: charactersChanged ? characters : previous.characters,
-    recent_summary: recentSummary,
   };
 }

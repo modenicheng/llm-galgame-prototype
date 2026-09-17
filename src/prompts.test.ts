@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { loadPrompts } from "./prompts.js";
+import { describe, it, expect, afterEach, beforeAll } from "vitest";
+import { loadPrompts, type InstructionSet, type PromptBundle } from "./prompts.js";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -134,65 +134,106 @@ describe("loadPrompts", () => {
     await expect(loadPrompts(dir)).rejects.toThrow();
   });
 
-  it("real instructions.yaml is the DSL task-template set; the protocol spec lives in dsl-protocol.txt", async () => {
-    const repoPrompts = path.join(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "..",
-      "prompts",
-    );
-    const { bundle, instructions } = await loadPrompts(repoPrompts);
+  // ---------------------------------------------------------------------
+  // 真实提示词（prompts/ 目录）的测试策略：只钉"运行时契约"和"身份锚点"，
+  // 不钉文案措辞。
+  // - 写死：占位符（fill() 契约，双向）、哨兵 reason（解析器枚举）、协议
+  //   字面量、人物身份与事实分层锚点。
+  // - 谨慎：踩坑沉淀的行为规则只钉一个关键片段（措辞可调、规则不可删）。
+  // - 不钉：人设细节、看点描述、写作风格等纯文案——它们应可自由迭代。
+  // ---------------------------------------------------------------------
+  describe("real prompts (repo prompts/ directory)", () => {
+    let bundle: PromptBundle;
+    let instructions: InstructionSet;
 
-    // The full DSL protocol spec lives in prompts/dsl-protocol.txt.
-    expect(bundle.dslProtocol).toContain("行式 Gal DSL");
-    expect(bundle.dslProtocol).toContain("hybrid");
-    expect(bundle.dslProtocol).toContain("@end <nonce> <reason>");
+    beforeAll(async () => {
+      const repoPrompts = path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "prompts",
+      );
+      ({ bundle, instructions } = await loadPrompts(repoPrompts));
+    });
 
-    // Input-response additions.
-    expect(instructions.input_response).toContain(
-      "玩家输入只是玩家尝试表达的内容",
-    );
-    expect(instructions.input_response).toContain(
-      "NPC 可以质疑、拒绝、误解或要求证据",
-    );
+    it("dsl-protocol.txt keeps the wire literals that the parser and model both depend on", () => {
+      expect(bundle.dslProtocol).toContain("行式 Gal DSL");
+      // 哨兵格式与 reason 枚举：协议文本必须与解析器认的三个值一一对应。
+      expect(bundle.dslProtocol).toContain("@end <nonce> <reason>");
+      for (const reason of ["buffer", "interaction", "ending"] as const) {
+        expect(bundle.dslProtocol).toContain(reason);
+      }
+      // 表单结束行是逐字解析的字面量。
+      expect(bundle.dslProtocol).toContain("@/?");
+      // @ 前缀总规则是历史事故根因（指令行漏 @ 会被当台词播出）：语义必须保留，措辞可调。
+      expect(bundle.dslProtocol).toMatch(/以 `@` 开头/);
+    });
 
-    // New DSL task templates exist with their placeholders.
-    expect(instructions.input_bridge).toContain("{interaction_prompt}");
-    expect(instructions.input_bridge).toContain("@end {nonce} buffer");
-    expect(instructions.recovery).toContain("{repair_reason}");
-    expect(instructions.ending).toContain("{nonce}");
-  });
+    it("task templates keep the fill() placeholder contract in both directions", () => {
+      // 镜像 openai-compatible-generator.ts 五个 fill() 调用点的变量表。
+      // recovery/ending 模板目前没有运行时消费者，不参与校验。
+      const FILL_VARS: Record<string, readonly string[]> = {
+        opening: ["nonce"],
+        continuation: ["nonce", "target_lines", "prefetched"],
+        branch_prefetch: ["choice_prompt", "option_text", "min_dialogue", "nonce"],
+        input_response: ["interaction_prompt", "player_input", "nonce"],
+        input_bridge: ["interaction_prompt", "nonce"],
+      };
 
-  it("campus branch prompts carry the raspberry persona with layered facts", async () => {
-    const repoPrompts = path.join(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "..",
-      "prompts",
-    );
-    const { bundle, instructions } = await loadPrompts(repoPrompts);
+      for (const [task, vars] of Object.entries(FILL_VARS)) {
+        const template = instructions[task as keyof InstructionSet];
+        for (const name of vars) {
+          expect(
+            template,
+            `${task} 模板缺少占位符 {${name}}（fill() 会静默跳过，对应运行时约束随之失效）`,
+          ).toContain(`{${name}}`);
+        }
+        // 反向：模板里出现 fill() 不替换的占位符，会被模型原样回显（历史事故）。
+        const extras = new Set(
+          [...template.matchAll(/\{(\w+)\}/g)].map((m) => m[1]!),
+        );
+        for (const name of vars) {
+          extras.delete(name);
+        }
+        expect(
+          [...extras],
+          `${task} 模板出现 fill() 不替换的占位符，模型会原样回显`,
+        ).toEqual([]);
+      }
 
-    // 角色人设：树莓娘 + 网协语境，且区分"已核对事实"与"本项目演绎"。
-    expect(bundle.characters).toContain("树莓娘");
-    expect(bundle.characters).toContain("网络开拓者协会");
-    expect(bundle.characters).toContain("已核对事实");
-    expect(bundle.characters).toContain("本项目演绎");
+      // opening 引用的状态块字段名必须与 summarizeState 的输出一致
+      //（story/state.ts 打印 "Purpose:"，中文标签可自由改写）。
+      expect(instructions.opening).toContain("Purpose");
+    });
 
-    // 内容方向：故事看点是人，不是技术排查流程。
-    expect(bundle.characters).toContain("轻微傲娇");
-    expect(bundle.characters).toContain("不是客服，也不是说明书");
-    expect(bundle.storyLine).toContain("校园技术社团");
-    expect(bundle.storyLine).toContain("叙事种子");
-    expect(bundle.storyLine).toContain("看点是人");
-    expect(bundle.guideline).toContain("已经确认的事实");
-    expect(bundle.guideline).toContain("人味");
-    expect(bundle.guideline).toContain("点到为止");
+    it("task templates keep per-task sentinel reasons aligned with the generator", () => {
+      // 与 generator 各任务的 allowedReasons 对应。交互尾两行必须逐字：
+      // 校验器要求表单最后一行是 @/? 且紧跟哨兵。
+      expect(instructions.opening).toContain("@/?\n@end {nonce} interaction");
+      expect(instructions.continuation).toContain("@/?\n@end {nonce} interaction");
+      expect(instructions.continuation).toContain("@end {nonce} buffer");
+      expect(instructions.continuation).toContain("@end {nonce} ending");
+      expect(instructions.branch_prefetch).toContain("@end {nonce} buffer");
+      expect(instructions.input_response).toContain("@end {nonce} buffer");
+      expect(instructions.input_bridge).toContain("@end {nonce} buffer");
 
-    // 开场指令要求尽快点明本局事务；结局指令要求依据已确认事实收束。
-    expect(instructions.opening).toContain("场景目标（Purpose）");
-    expect(instructions.ending).toContain("已经确认的事实");
+      // 反轻信规则（玩家输入≠世界事实）是踩坑沉淀：只钉关键片段，措辞可调。
+      expect(instructions.input_response).toContain("质疑、拒绝、误解");
+    });
 
-    // 旧长线主线（苏遥/林澈/旧终端）不再出现在校园分支提示词中。
-    expect(bundle.characters).not.toContain("苏遥");
-    expect(bundle.characters).not.toContain("林澈");
-    expect(bundle.storyLine).not.toContain("旧终端");
+    it("campus persona keeps identity anchors and stays clear of the old storyline", () => {
+      // 身份锚点：改名属全分支级变更，应当让测试红掉。
+      expect(bundle.characters).toContain("树莓娘");
+      expect(bundle.characters).toContain("网络开拓者协会");
+      // 官方事实与本项目演绎必须分层标注，不可混写。
+      expect(bundle.characters).toContain("已核对事实");
+      expect(bundle.characters).toContain("本项目演绎");
+      // 结局依据已确认事实收束的活载体是 guideline
+      //（instructions.ending 模板当前没有运行时消费者）。
+      expect(bundle.guideline).toContain("已经确认的事实");
+      // 旧长线人物不得回流校园分支。
+      expect(bundle.characters).not.toContain("苏遥");
+      expect(bundle.characters).not.toContain("林澈");
+      expect(bundle.storyLine).not.toContain("旧终端");
+    });
   });
 });

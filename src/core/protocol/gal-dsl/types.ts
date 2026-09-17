@@ -130,9 +130,16 @@ export type MainEventDraft =
  * (docs §36). `prelude` includes the character patches derived from the
  * dialogue header itself (`苏遥[anxious]` → character_patch cue).
  */
+export interface DslSourceLocation {
+  attemptId: string;
+  lineIndex: number;
+}
+
 export interface EventGroupDraft {
   prelude: StageCue[];
   main: MainEventDraft;
+  /** Ephemeral monitor provenance; absent for tests and non-stream producers. */
+  source?: DslSourceLocation;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +180,26 @@ export type DslErrorCode =
   | "SENTINEL_DUPLICATE"
   | "SENTINEL_INVALID_REASON"
   | "SENTINEL_MISSING_REASON"
-  | "UNKNOWN_LINE";
+  | "UNKNOWN_LINE"
+  | "UNKNOWN_COMMAND";
+
+/**
+ * 结构化错误细节（FastAPI 式 detail）：随 DslProtocolError 一并抛出，
+ * 由 formatDslErrorDetail 序列化成修复指令注入下一轮请求。字段全部
+ * 可选——解析器知道多少写多少。
+ */
+export interface DslErrorDetail {
+  /** 期望的行格式或合法指令清单。 */
+  expected?: string;
+  /** 最可能的成因（如“台词行误加 @”“变体槽出现中文”）。 */
+  cause?: string;
+  /** 修复建议，含正确示例。 */
+  fix?: string;
+}
+
+/** 所有指令的 @ 前缀清单——未知 @ 行的报错与提示词都引用它。 */
+export const DSL_COMMAND_LIST =
+  "@bg <背景id>、@bgm <音乐id|stop>、@se <音效id>、@ch <角色内部id>:<立绘变体> [位置]、@ch <id> hide|show|exit、@beat、@? <提示>、@+ <选项>、@= <占位文本>、@/?、@end <nonce> <reason>";
 
 /**
  * A structural violation of the DSL. The message doubles as the repair
@@ -181,11 +207,37 @@ export type DslErrorCode =
  */
 export class DslProtocolError extends Error {
   readonly code: DslErrorCode;
-  constructor(code: DslErrorCode, message: string) {
+  readonly detail?: DslErrorDetail;
+  constructor(code: DslErrorCode, message: string, detail?: DslErrorDetail) {
     super(message);
     this.name = "DslProtocolError";
     this.code = code;
+    if (detail !== undefined) {
+      this.detail = detail;
+    }
   }
+}
+
+/**
+ * Serialize a DSL error into the multi-line repair instruction that rides
+ * into the next request's user prompt (docs §8.5). FastAPI-style: code,
+ * offending line, cause, expected format and a concrete fix — enough for
+ * the model to correct the exact line instead of guessing.
+ */
+export function formatDslErrorDetail(
+  error: DslProtocolError,
+  lineIndex: number,
+  rawLine?: string,
+): string {
+  const lines = [`第 ${lineIndex} 行 DSL 错误 [${error.code}]：${error.message}`];
+  if (rawLine !== undefined && rawLine !== "") {
+    lines.push(`错误行：\`${rawLine}\``);
+  }
+  const detail = error.detail;
+  if (detail?.cause !== undefined) lines.push(`原因：${detail.cause}`);
+  if (detail?.expected !== undefined) lines.push(`期望格式：${detail.expected}`);
+  if (detail?.fix !== undefined) lines.push(`修正：${detail.fix}`);
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------

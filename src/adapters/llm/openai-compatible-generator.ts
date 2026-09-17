@@ -12,15 +12,21 @@ import type { AssetCatalog, ModelAssetCatalog } from "../../core/assets/types.js
 import type { VisualState } from "../../core/presentation/types.js";
 import { StreamLineDecoder } from "../../core/protocol/gal-dsl/stream-decoder.js";
 import { parseDslLine } from "../../core/protocol/gal-dsl/line-parser.js";
+import {
+  repairDslClosingLine,
+  repairSwappedVisualSlots,
+} from "../../core/protocol/gal-dsl/closing-repair.js";
 import { DslSegmentParser } from "../../core/protocol/gal-dsl/segment-validator.js";
 import {
   DslProtocolError,
+  formatDslErrorDetail,
   type DslLine,
   type EventGroupDraft,
   type SegmentEndReason,
   type SegmentEndStatus,
 } from "../../core/protocol/gal-dsl/types.js";
 import type { InstructionSet, PromptBundle } from "../../prompts.js";
+import type { DslStreamObserver } from "../../core/ports/dsl-stream-observer.js";
 import type { LLMRequestType } from "../../runtime/metrics.js";
 import { Metrics } from "../../runtime/metrics.js";
 import { parseLLMUsage, type LLMUsageReading } from "./llm-usage.js";
@@ -67,6 +73,21 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
+/** One-line preview of a committed group for the monitor stream (capped). */
+function monitorGroupSummary(group: EventGroupDraft): string {
+  const main = group.main;
+  switch (main.type) {
+    case "dialogue":
+      return `${main.speaker}：${main.text}`.slice(0, 80);
+    case "narration":
+      return main.text.slice(0, 80);
+    case "interaction":
+      return `${main.interaction.mode} 表单：${main.interaction.prompt}`.slice(0, 80);
+    case "beat":
+      return "beat";
+  }
+}
+
 /**
  * Fresh 4-hex-char generation nonce for the DSL `@end <nonce> <reason>`
  * sentinel (docs/llm-outputs-refactor.md §45). Randomized per request so a
@@ -89,7 +110,14 @@ export function appendEventModeGuidance(
   options?: GenerationStreamOptions,
 ): string {
   let result = extra;
-  if (options?.requestInteraction === true) {
+  // 长回合护栏与收束指令的互斥（2026-09-17 实测发现）：closing/L3 明确
+  // "不要再打开交互表单"，此时再附"尽快打开交互表单"会让同一 prompt
+  // 包含两条相反指令——护栏只在还允许交互的阶段（无收束/仅 L1 wrapup）
+  // 生效。
+  const interactionAllowed = !(
+    options?.endingRequired === true || options?.endingPhase === "closing"
+  );
+  if (interactionAllowed && options?.requestInteraction === true) {
     result +=
       "\n\n本回合已连续输出较长内容：请在合适的位置尽快打开玩家交互表单（`? ... /?`），把话语权交还玩家。";
   }
@@ -176,6 +204,8 @@ export class StoryGenerator {
   /** Registered speaker names (script names + character ids) — gates the
    * full-width-colon dialogue normalization in the DSL line parser. */
   private readonly knownSpeakers: ReadonlySet<string> | undefined;
+  /** Read-only monitor tap (monitor dashboard); absent in tests/CLI. */
+  private readonly observer: DslStreamObserver | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -185,6 +215,7 @@ export class StoryGenerator {
     private readonly authorConfig?: AuthorConfig,
     private readonly metrics?: Metrics,
     catalog?: AssetCatalog,
+    observer?: DslStreamObserver,
   ) {
     this.client = new OpenAI({
       apiKey,
@@ -197,6 +228,7 @@ export class StoryGenerator {
       this.makeCtx(null as unknown as StoryState, []),
     );
     this.modelCatalog = catalog ? toModelCatalog(catalog) : undefined;
+    this.observer = observer;
     if (catalog !== undefined) {
       const speakers = new Set<string>();
       for (const [characterId, binding] of Object.entries(catalog.characters)) {
@@ -434,6 +466,9 @@ export class StoryGenerator {
   ): Promise<GenerationEnvelope> {
     let lastError = "";
     const attempts = this.config.generation.repair_attempts + 1;
+    // Monitor identity: the nonce is unique per request, so `${taskType}-${nonce}`
+    // disambiguates concurrent branch prefetches and successive turns.
+    const requestId = `${taskType}-${nonce}`;
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -470,6 +505,8 @@ export class StoryGenerator {
             .join("\n")}`
         : "";
 
+      const attemptId = `${requestId}#${attempt}`;
+      this.observer?.onAttemptStart({ attemptId, taskId: requestId, taskType, index: attempt });
       const outcome = await this.attemptDslStream(
         type,
         taskType,
@@ -479,9 +516,24 @@ export class StoryGenerator {
         signal,
         options,
         lastError,
+        attemptId,
       );
-      if (outcome.kind === "complete") return outcome.envelope;
-      if (outcome.kind === "fail") throw outcome.error;
+      if (outcome.kind === "complete") {
+        const reason =
+          outcome.envelope.segmentEnd?.kind === "complete"
+            ? outcome.envelope.segmentEnd.reason
+            : undefined;
+        this.observer?.onAttemptEnd(attemptId, {
+          state: "done",
+          ...(reason !== undefined ? { segmentEnd: reason } : {}),
+        });
+        return outcome.envelope;
+      }
+      if (outcome.kind === "fail") {
+        this.observer?.onAttemptEnd(attemptId, { state: "failed", error: outcome.error.message });
+        throw outcome.error;
+      }
+      this.observer?.onAttemptEnd(attemptId, { state: "retried", error: outcome.reason });
       lastError = outcome.reason;
     }
 
@@ -506,11 +558,15 @@ export class StoryGenerator {
     options: GenerationStreamOptions | undefined,
     /** Failure reason of the PREVIOUS attempt — only for the err= log field. */
     priorFailure: string,
+    /** Monitor identity of this attempt (requestId#attemptIndex). */
+    attemptId: string,
   ): Promise<DslAttemptOutcome> {
+    const observer = this.observer;
     const maxTokens = this.config.generation.max_tokens;
     const callStart = Date.now();
     let firstLineMs = 0;
     let lineIndex = 0;
+    let openFormStartLine: number | null = null;
     let streamChars = 0;
     const allGroups: EventGroupDraft[] = [];
     let streamAborted = false;
@@ -571,31 +627,45 @@ export class StoryGenerator {
           if (!content) continue;
           if (firstLineMs === 0) firstLineMs = Date.now();
           streamChars += content.length;
+          observer?.onDelta(attemptId, content);
           yield* decoder.push(content);
         }
       })();
 
-      const emit = (emitted: EventGroupDraft[]): void => {
-        allGroups.push(...emitted);
+      const emit = (emitted: EventGroupDraft[], sourceLineIndex: number): void => {
         for (const group of emitted) {
-          options?.onGroup?.(group);
+          const sourced: EventGroupDraft = {
+            ...group,
+            source: { attemptId, lineIndex: sourceLineIndex },
+          };
+          const groupIndex = allGroups.length;
+          allGroups.push(sourced);
+          observer?.onGroup(attemptId, groupIndex, sourced.main.type, monitorGroupSummary(sourced));
+          options?.onGroup?.(sourced);
         }
       };
 
       // Shared handling for parse/validation rejections: with a forwarded
       // prefix the attempt FAILS (runtime repairs from the committed
       // boundary); without one it is repairable → retry with the reason.
-      // The framing strings reproduce the legacy messages byte-for-byte
-      // (they ride into the model's repair instruction): `第 N 行不是合法
-      // DSL：` has no space after 行, `第 N 行 DSL 校验失败：` has one —
-      // hence the load-bearing leading space below.
-      const rejectLine = (framing: string, error: DslProtocolError): void => {
+      // The reason is the FastAPI-style detail block (code, offending line,
+      // cause, expected format, fix) — it rides into the next request as the
+      // model's repair instruction.
+      // Protocol forensics: the last few raw model lines around a rejection —
+      // without them a mangled-line fix is guesswork (2026-09-17 audit).
+      const recentRawLines: string[] = [];
+
+      const rejectLine = (error: DslProtocolError, rawLine: string): void => {
         streamAborted = true;
+        console.warn(
+          `[LLM] ${type} 校验拒绝，末尾原始行：${JSON.stringify(recentRawLines.concat(rawLine).slice(-4))}`,
+        );
+        const detail = formatDslErrorDetail(error, lineIndex, rawLine);
         if (options?.onGroup && allGroups.length > 0) {
           streamError = error;
-          failureReason = `DSL 流在第 ${lineIndex} 行校验失败：${error.message}`;
+          failureReason = `DSL 流校验失败，已保留前面可播放的内容。${detail}`;
         } else {
-          failureReason = `第 ${lineIndex} 行${framing}：${error.message}`;
+          failureReason = detail;
         }
         controller.abort();
       };
@@ -605,14 +675,44 @@ export class StoryGenerator {
 
         // Tolerate markdown fence markers around the DSL payload.
         const trimmed = rawLine.trim();
-        if (trimmed.startsWith("```") || trimmed.endsWith("```")) continue;
+        if (trimmed.startsWith("```") || trimmed.endsWith("```")) {
+          observer?.onLine(attemptId, lineIndex, { kind: null });
+          continue;
+        }
+
+        recentRawLines.push(trimmed);
+        if (recentRawLines.length > 3) recentRawLines.shift();
+
+        const closingRepair = repairDslClosingLine(trimmed, nonce, allowedReasons);
+        if (closingRepair !== null) {
+          observer?.onRepair?.(attemptId, {
+            kind: closingRepair.kind,
+            lineIndex,
+            message: `已将“${trimmed}”规范化为“${closingRepair.line}”。`,
+          });
+        }
+
+        // Swapped dialogue-header bracket (`树莓娘[raspberry|smug]: …`) — a
+        // registered id in the variant slot is dropped deterministically.
+        const swapRepair = repairSwappedVisualSlots(trimmed, this.knownSpeakers);
+        if (swapRepair !== null) {
+          observer?.onRepair?.(attemptId, {
+            kind: "visual_swap",
+            lineIndex,
+            message: `已将台词头 ${swapRepair.from} 规范化为 ${swapRepair.to}（角色 id 不是立绘变体）。`,
+          });
+        }
 
         let parsed: DslLine;
         try {
-          parsed = parseDslLine(trimmed, this.knownSpeakers);
+          parsed = parseDslLine(
+            swapRepair?.line ?? closingRepair?.line ?? trimmed,
+            this.knownSpeakers,
+          );
         } catch (error) {
           if (error instanceof DslProtocolError) {
-            rejectLine("不是合法 DSL", error);
+            observer?.onLine(attemptId, lineIndex, { kind: null, error: error.message });
+            rejectLine(error, trimmed);
             break;
           }
           throw error;
@@ -620,16 +720,60 @@ export class StoryGenerator {
 
         let emitted: EventGroupDraft[];
         try {
+          if (
+            parsed.kind === "segment_end" &&
+            parsed.reason === "interaction" &&
+            parsed.nonce === nonce &&
+            allowedReasons.includes(parsed.reason) &&
+            parser.hasOpenInteraction()
+          ) {
+            const closed = parser.closeOpenInteraction();
+            observer?.onRepair?.(attemptId, {
+              kind: "form_close",
+              lineIndex,
+              message: "交互表单缺少 @/?，已在 interaction 段尾前补齐。",
+            });
+            if (closed.length > 0) emit(closed, openFormStartLine ?? lineIndex);
+            openFormStartLine = null;
+          }
           emitted = parser.pushLine(parsed);
         } catch (error) {
           if (error instanceof DslProtocolError) {
-            rejectLine(" DSL 校验失败", error);
+            // A bare `@?` with an empty prompt while a form is already open
+            // is almost always a botched `@/?` (observed in the wild,
+            // sim-rambler 2026-09-17) — close the form instead of failing.
+            // Without an open form the same line throws EMPTY_FORM_PROMPT,
+            // which is not inferrable and stays a real error.
+            if (
+              error.code === "FORM_ALREADY_OPEN" &&
+              parsed.kind === "form_start" &&
+              parsed.prompt === "" &&
+              parser.hasOpenInteraction()
+            ) {
+              const closed = parser.closeOpenInteraction();
+              observer?.onRepair?.(attemptId, {
+                kind: "form_close",
+                lineIndex,
+                message: "已将空提示的 @? 视为表单结束 @/?。",
+              });
+              if (closed.length > 0) emit(closed, openFormStartLine ?? lineIndex);
+              openFormStartLine = null;
+              observer?.onLine(attemptId, lineIndex, { kind: "form_end" });
+              continue;
+            }
+            observer?.onLine(attemptId, lineIndex, { kind: parsed.kind, error: error.message });
+            rejectLine(error, trimmed);
             break;
           }
           throw error;
         }
 
-        if (emitted.length > 0) emit(emitted);
+        observer?.onLine(attemptId, lineIndex, { kind: parsed.kind });
+        if (parsed.kind === "form_start") openFormStartLine = lineIndex;
+        if (emitted.length > 0) {
+          emit(emitted, parsed.kind === "form_end" ? (openFormStartLine ?? lineIndex) : lineIndex);
+        }
+        if (parsed.kind === "form_end") openFormStartLine = null;
       }
 
       // Truncated tail without a trailing newline: try it, but drop the
@@ -645,10 +789,56 @@ export class StoryGenerator {
           !trimmed.endsWith("```")
         ) {
           try {
-            const emitted = parser.pushLine(parseDslLine(trimmed, this.knownSpeakers));
-            if (emitted.length > 0) emit(emitted);
+            const tailIndex = lineIndex + 1;
+            const closingRepair = repairDslClosingLine(trimmed, nonce, allowedReasons);
+            if (closingRepair !== null) {
+              observer?.onRepair?.(attemptId, {
+                kind: closingRepair.kind,
+                lineIndex: tailIndex,
+                message: `已将“${trimmed}”规范化为“${closingRepair.line}”。`,
+              });
+            }
+            const tailSwap = repairSwappedVisualSlots(trimmed, this.knownSpeakers);
+            if (tailSwap !== null) {
+              observer?.onRepair?.(attemptId, {
+                kind: "visual_swap",
+                lineIndex: tailIndex,
+                message: `已将台词头 ${tailSwap.from} 规范化为 ${tailSwap.to}（角色 id 不是立绘变体）。`,
+              });
+            }
+            const tailParsed = parseDslLine(
+              tailSwap?.line ?? closingRepair?.line ?? trimmed,
+              this.knownSpeakers,
+            );
+            if (
+              tailParsed.kind === "segment_end" &&
+              tailParsed.reason === "interaction" &&
+              tailParsed.nonce === nonce &&
+              allowedReasons.includes(tailParsed.reason) &&
+              parser.hasOpenInteraction()
+            ) {
+              const closed = parser.closeOpenInteraction();
+              observer?.onRepair?.(attemptId, {
+                kind: "form_close",
+                lineIndex: tailIndex,
+                message: "交互表单缺少 @/?，已在 interaction 段尾前补齐。",
+              });
+              if (closed.length > 0) emit(closed, openFormStartLine ?? tailIndex);
+              openFormStartLine = null;
+            }
+            const emitted = parser.pushLine(tailParsed);
+            observer?.onLine(attemptId, tailIndex, { kind: tailParsed.kind });
+            if (tailParsed.kind === "form_start") openFormStartLine = tailIndex;
+            if (emitted.length > 0) {
+              emit(
+                emitted,
+                tailParsed.kind === "form_end" ? (openFormStartLine ?? tailIndex) : tailIndex,
+              );
+            }
+            if (tailParsed.kind === "form_end") openFormStartLine = null;
           } catch (error) {
             if (error instanceof DslProtocolError) {
+              observer?.onLine(attemptId, lineIndex + 1, { kind: null, error: error.message });
               this.metrics?.recordSchemaValidationFailure();
               console.warn(
                 `[LLM] ${type} 输出在末尾被截断，已丢弃残片（截断于第 ${lineIndex + 1} 行）`,
@@ -672,6 +862,13 @@ export class StoryGenerator {
         // Provider didn't report usage: keep the legacy char-based estimate.
         usage = { input: 0, output: Math.ceil(streamChars / 4) };
       }
+      observer?.onUsage?.(attemptId, {
+        input: usage.input,
+        output: usage.output,
+        cachedInput: usage.cachedInput ?? 0,
+        source: reported ? "api" : "estimated",
+        latencyMs,
+      });
       // err= mirrors the legacy cross-attempt semantics: the failure of the
       // PREVIOUS attempt when this one succeeds — that is how operators
       // identify a successful repair retry in the logs.
@@ -721,11 +918,14 @@ export class StoryGenerator {
         return {
           kind: "fail",
           error: new Error(
-            `DSL 流在第 ${lineIndex} 行校验失败：段结束时没有 @end 哨兵（截断）`,
+            `DSL 流在第 ${lineIndex} 行之后结束但没有 @end 哨兵（输出被截断或漏写）。最后一行必须是 @end ${nonce} <reason>（nonce 原样照抄任务提示，reason 取 ${allowedReasons.join("/")}）`,
           ),
         };
       }
-      return { kind: "retry", reason: "段结束时没有 @end 哨兵（截断）" };
+      return {
+        kind: "retry",
+        reason: `本段缺少结束哨兵 @end：输出可能在末尾被截断，或写完正文就停笔。最后一行必须是 @end ${nonce} <reason>（nonce 原样照抄任务提示，reason 取 ${allowedReasons.join("/")}）`,
+      };
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) throw error;
       this.metrics?.recordLLMRequest(type, usage, Date.now() - callStart);

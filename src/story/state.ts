@@ -57,7 +57,8 @@ export function createInitialState(
  * The output is designed to fit within a small fraction of the context
  * window (typically 300–600 tokens) while conveying the most important
  * structural information: which scene we are in, who is present, what
- * threads are open, and what the player has been doing recently.
+ * threads are open, and the rolling recap of events that already slid
+ * out of the raw history window ([Recap], maintained by src/story/recap.ts).
  */
 export function summarizeState(state: StoryState): string {
   const lines: string[] = [];
@@ -70,10 +71,14 @@ export function summarizeState(state: StoryState): string {
   lines.push(`  Purpose: ${state.scene.purpose}`);
 
   // Characters present
-  const charIds = Object.keys(state.characters);
+  const charIds = Object.keys(state.characters).filter(
+    // 幻影角色（如历史坏行入库的 "@6ch raspberry"）不再回流进 prompt。
+    (id) => !/[\s@]/.test(id),
+  );
   if (charIds.length > 0) {
     lines.push("[Characters]");
-    for (const [id, char] of Object.entries(state.characters)) {
+    for (const id of charIds) {
+      const char = state.characters[id]!;
       const parts: string[] = [id];
       if (char.location) parts.push(`loc:${char.location}`);
       if (char.emotion) parts.push(`mood:${char.emotion}`);
@@ -118,7 +123,7 @@ export function summarizeState(state: StoryState): string {
   }
 
   // Recent summary
-  lines.push(`[Recent] ${state.recent_summary}`);
+  lines.push(`[Recap] ${state.recent_summary}`);
 
   // Player tendencies
   if (state.player_profile.recent_tendencies.length > 0) {

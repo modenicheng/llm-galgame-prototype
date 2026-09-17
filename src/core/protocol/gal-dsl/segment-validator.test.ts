@@ -81,6 +81,35 @@ describe("DslSegmentParser", () => {
     expect(result.groups).toEqual([]);
   });
 
+  it("can explicitly close a valid open form before an interaction sentinel", () => {
+    const p = parser();
+    p.pushLine(line("? 怎么回应？"));
+    p.pushLine(line("+ 先看看纸片"));
+    p.pushLine(line("= 你想说点什么"));
+
+    expect(p.hasOpenInteraction()).toBe(true);
+    const emitted = p.closeOpenInteraction();
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]?.main).toMatchObject({
+      type: "interaction",
+      interaction: { prompt: "怎么回应？", mode: "hybrid" },
+    });
+    expect(p.hasOpenInteraction()).toBe(false);
+
+    p.pushLine(line("@end a81f interaction"));
+    expect(p.finish().status).toEqual({
+      kind: "complete",
+      nonce: "a81f",
+      reason: "interaction",
+    });
+  });
+
+  it("does not invent content for an invalid open form", () => {
+    const p = parser();
+    p.pushLine(line("? 怎么回应？"));
+    expectCode(() => p.closeOpenInteraction(), "EMPTY_FORM");
+  });
+
   it("accepts a correct sentinel and marks the segment complete", () => {
     const p = parser();
     p.pushLine(line("A: 第一行"));

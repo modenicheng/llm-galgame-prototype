@@ -27,6 +27,7 @@ import type {
   EventGroupDraft,
   SegmentEndStatus,
 } from "./core/protocol/gal-dsl/types.js";
+import type { DslStreamObserver } from "./core/ports/dsl-stream-observer.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers — reusable fixtures, no real network calls
@@ -378,7 +379,7 @@ describe("DSL serializers and prompt builder", () => {
     const prompt = buildDslUserPrompt(3, ctx, "请继续推进剧情。");
     expect(prompt).toContain("任务类型：continuation");
     expect(prompt).toContain("生成段 nonce：a81f");
-    expect(prompt).toContain("本次续写目标行数：6");
+    expect(prompt).toContain("本次续写行数上限：6");
     expect(prompt).toContain("当前回合：3");
     expect(prompt).toContain("===== 当前舞台状态 =====");
     expect(prompt).toContain("背景：basement");
@@ -451,6 +452,7 @@ describe("generateNonce", () => {
 describe("DSL mode generation", () => {
   function makeDslGenerator(
     overrides?: Parameters<typeof makeTestConfig>[0],
+    observer?: DslStreamObserver,
   ): StoryGenerator {
     const config = makeTestConfig({
       ...overrides,
@@ -466,6 +468,10 @@ describe("DSL mode generation", () => {
       makeTestPrompts(),
       makeTestInstructions(),
       DUMMY_API_KEY,
+      undefined,
+      undefined,
+      undefined,
+      observer,
     );
   }
 
@@ -524,6 +530,102 @@ describe("DSL mode generation", () => {
     });
   });
 
+  it("repairs a missing end keyword and closes a complete interaction form", async () => {
+    const repairs: Array<{ kind: string; lineIndex: number; message: string }> = [];
+    const observer = {
+      onAttemptStart: vi.fn(),
+      onDelta: vi.fn(),
+      onLine: vi.fn(),
+      onGroup: vi.fn(),
+      onRepair: vi.fn((_attemptId: string, repair: (typeof repairs)[number]) => repairs.push(repair)),
+      onUsage: vi.fn(),
+      onAttemptEnd: vi.fn(),
+    } as DslStreamObserver;
+    const gen = makeDslGenerator(undefined, observer);
+    mockDslClient(gen, (nonce) => [
+      "? 你要怎么接话？",
+      "+ 凑过去看那张纸片，先别撕",
+      "+ 问这挂件是在哪儿捡到的",
+      "= 你想说点什么",
+      `@ ${nonce} interaction`,
+    ]);
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.main).toMatchObject({
+      type: "interaction",
+      interaction: { mode: "hybrid", prompt: "你要怎么接话？" },
+    });
+    expect(received[0]?.source).toEqual({
+      attemptId: expect.stringContaining("opening-"),
+      lineIndex: 1,
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+    expect(repairs.map((repair) => repair.kind)).toEqual(["end_keyword", "form_close"]);
+    expect(repairs.map((repair) => repair.lineIndex)).toEqual([5, 5]);
+    expect(observer.onUsage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ source: "estimated", input: 0, output: expect.any(Number) }),
+    );
+  });
+
+  it("repairs an empty @? into the form end while a form is open", async () => {
+    const repairs: Array<{ kind: string; lineIndex: number; message: string }> = [];
+    const observer = {
+      onAttemptStart: vi.fn(),
+      onDelta: vi.fn(),
+      onLine: vi.fn(),
+      onGroup: vi.fn(),
+      onRepair: vi.fn((_attemptId: string, repair: (typeof repairs)[number]) => repairs.push(repair)),
+      onUsage: vi.fn(),
+      onAttemptEnd: vi.fn(),
+    } as DslStreamObserver;
+    const gen = makeDslGenerator(undefined, observer);
+    mockDslClient(gen, (nonce) => [
+      "? 你要怎么接话？",
+      "+ 凑过去看那张纸片",
+      "@?", // empty prompt with the form open → botched @/?
+      `@end ${nonce} interaction`,
+    ]);
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.main).toMatchObject({
+      type: "interaction",
+      interaction: { mode: "choice", prompt: "你要怎么接话？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+    expect(repairs.map((repair) => repair.kind)).toEqual(["form_close"]);
+    expect(repairs[0]?.message).toContain("空提示");
+  });
+
+  it("does not repair a loose terminal with the wrong nonce", async () => {
+    const observer = {
+      onAttemptStart: vi.fn(),
+      onDelta: vi.fn(),
+      onLine: vi.fn(),
+      onGroup: vi.fn(),
+      onRepair: vi.fn(),
+      onUsage: vi.fn(),
+      onAttemptEnd: vi.fn(),
+    } as DslStreamObserver;
+    const gen = makeDslGenerator(undefined, observer);
+    mockDslClient(gen, () => ["? 怎么回应？", "+ 先看看", "@ dead interaction"]);
+
+    await expect(
+      (gen as any).generateOpening(1, createInitialState()),
+    ).rejects.toThrow(/连续校验失败|CONTENT_INSIDE_OPEN_FORM|open form/);
+    expect(observer.onRepair).not.toHaveBeenCalled();
+  });
+
   it("retries with a repair instruction when a bad line precedes any forwarded group", async () => {
     const gen = makeDslGenerator({ generation: { repair_attempts: 1 } });
     let callCount = 0;
@@ -538,8 +640,12 @@ describe("DSL mode generation", () => {
     expect(create).toHaveBeenCalledTimes(2);
     const retryUser = create.mock.calls[1]![0].messages[1].content as string;
     // Byte-exact: this string rides into the model's repair instruction —
-    // the space between 行 and DSL is load-bearing (legacy parity).
-    expect(retryUser).toContain("第 1 行 DSL 校验失败：Sentinel nonce");
+    // FastAPI-style detail block (code + offending line + expected format).
+    expect(retryUser).toContain(
+      "第 1 行 DSL 错误 [SENTINEL_NONCE_MISMATCH]：哨兵 nonce bbbb 与本次任务要求的",
+    );
+    expect(retryUser).toContain("期望格式：@end");
+    expect(retryUser).toContain("修正：把 nonce 改为");
     expect(envelope.groups).toHaveLength(1);
     expect(envelope.segmentEnd).toEqual({
       kind: "complete",
@@ -561,7 +667,9 @@ describe("DSL mode generation", () => {
     });
 
     await expect(promise).rejects.toMatchObject({
-      message: expect.stringMatching(/^DSL 流在第 2 行校验失败：Sentinel nonce/),
+      message: expect.stringMatching(
+        /^DSL 流校验失败，已保留前面可播放的内容。第 2 行 DSL 错误 \[SENTINEL_NONCE_MISMATCH\]/,
+      ),
       cause: expect.objectContaining({ name: "DslProtocolError" }),
     });
     expect(received).toHaveLength(1);

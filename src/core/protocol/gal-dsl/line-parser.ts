@@ -2,18 +2,24 @@
  * Gal DSL line parser — parses ONE complete, already-trimmed line into a
  * DslLine (docs/llm-outputs-refactor.md §42).
  *
- * Grammar (in check order):
+ * Grammar (in check order). 核心规则：**指令行一律以 @ 开头；不以 @ 开头
+ * 的行只能是台词或旁白**（form 行的 ?/+/=//? 旧写法仍被接受为兼容别名，
+ * 但提示词只教 @ 形式）：
  *   @end <nonce> <reason>        → segment_end
- *   /?                            → form_end
- *   ? <prompt>                    → form_start
- *   + <text>                      → form_option
- *   = <placeholder>               → form_input
- *   beat                          → beat
- *   bg|bgm|se <id>                → background | bgm | sound_effect
- *   ch <id>:<variant> [position]  → character_cue set
- *   ch <id> hide|show             → character_cue hide/show
+ *   @/? (旧 /?)                  → form_end
+ *   @? <prompt> (旧 ?)           → form_start
+ *   @+ <text> (旧 +)             → form_option
+ *   @= <placeholder> (旧 =)      → form_input
+ *   @beat (旧 beat)              → beat
+ *   @bg|@bgm|@se <id> (旧裸词)   → background | bgm | sound_effect
+ *   @ch <id>:<variant> [position]→ character_cue set
+ *   @ch <id> hide|show|exit      → character_cue hide/show/exit
  *   <speaker>[<visual>](<name>): <text> → dialogue
- *   otherwise                     → narration
+ *   otherwise                    → narration
+ *
+ * 以 @ 开头但不匹配任何指令的行**不再静默降级为旁白/台词**（历史事故：
+ * `@¬end 4607 buffer` 被当旁白播出、`@ch raspberry: 台词` 造出幻影发言
+ * 人），而是抛 UNKNOWN_COMMAND，由修复回路带着结构化细节重试。
  *
  * `knownSpeakers` (optional, from the character registry) gates the
  * full-width-colon normalization: 「苏遥：台词」 only converts to dialogue
@@ -23,7 +29,7 @@
  * Pure text → structured data. No runtime, wire, or LLM dependencies.
  */
 import type { CharacterPosition } from "../../presentation/types.js";
-import { DslProtocolError } from "./types.js";
+import { DslProtocolError, DSL_COMMAND_LIST } from "./types.js";
 import type {
   DialogueNameSpec,
   DialogueVisualSpec,
@@ -48,12 +54,50 @@ function hasKeywordPrefix(line: string, keyword: string): boolean {
   return line === keyword || line.startsWith(`${keyword} `) || line.startsWith(`${keyword}\t`);
 }
 
+const STAGE_CUE_EXPECTED =
+  "@bg <背景id>、@bgm <音乐id|stop>、@se <音效id>（背景/BGM/音效 id 逐字取自素材表）";
+
+/** 非 ASCII 资产 id（立绘变体槽出现中文 = 模型把台词写进了 ch 指令）。 */
+function containsHan(text: string): boolean {
+  return /\p{Script=Han}/u.test(text);
+}
+
+const VISUAL_BRACKET_EXPECTED =
+  "台词头只允许 [变体]、[spriteSet:变体]、[|位置]、[spriteSet:变体|位置] 或 []（复位）；位置只能是 far_left|left|center|right|far_right";
+
+function invalidVisualBracket(content: string, why: string): DslProtocolError {
+  return new DslProtocolError(
+    "INVALID_VISUAL_BRACKET",
+    `无效的视觉括号 "[${content}]"：${why}`,
+    {
+      expected: VISUAL_BRACKET_EXPECTED,
+      fix: '例如 "苏遥[anxious|left]: 台词"；不需要变化时整个省略 [ ] 槽',
+    },
+  );
+}
+
+/** 变体槽出现已注册角色 id（如 `[raspberry|thinking]`）：两个槽写反了。 */
+function swappedVisualSlots(content: string, speakerId: string): DslProtocolError {
+  return new DslProtocolError(
+    "INVALID_VISUAL_BRACKET",
+    `无效的视觉括号 "[${content}]"：变体槽放了角色 id "${speakerId}"，它不是立绘变体。`,
+    {
+      expected: VISUAL_BRACKET_EXPECTED,
+      cause: "两个槽写反了：竖线左侧应是立绘变体名（素材表英文 id），右侧应是位置词",
+      fix: `去掉角色 id 槽，写成 "${speakerId}[变体]: 台词" 或 "${speakerId}[变体|位置]: 台词"`,
+    },
+  );
+}
+
 /**
  * Parse the `[ ... ]` visual slot of a dialogue header (docs §8–§9, §12, §15).
  * Undefined → no visual slot. "" (`[]`) → visual reset. Otherwise
  * `[variant]`, `[spriteSet:variant]`, `[|position]`, `[spriteSet:variant|position]`.
  */
-function parseVisual(content: string | undefined): DialogueVisualSpec {
+function parseVisual(
+  content: string | undefined,
+  knownSpeakers?: ReadonlySet<string>,
+): DialogueVisualSpec {
   if (content === undefined) {
     return { hasVisual: false, resetVisual: false };
   }
@@ -64,33 +108,21 @@ function parseVisual(content: string | undefined): DialogueVisualSpec {
   // At most one "|"; a trailing "|" (`[a|]`) or an all-empty slot (`[|]`)
   // is forbidden. `[|position]` is the ONE allowed empty-first form.
   if (segments.length > 2) {
-    throw new DslProtocolError(
-      "INVALID_VISUAL_BRACKET",
-      `无效的视觉括号 "[${content}]"：只允许 [variant]、[spriteSet:variant]、[|position]、[spriteSet:variant|position] 或 []。`,
-    );
+    throw invalidVisualBracket(content, "只允许一个竖线，左侧是立绘、右侧是位置");
   }
   const positionToken = segments[1];
   if (positionToken === "") {
-    throw new DslProtocolError(
-      "INVALID_VISUAL_BRACKET",
-      `无效的视觉括号 "[${content}]"：只允许 [variant]、[spriteSet:variant]、[|position]、[spriteSet:variant|position] 或 []。`,
-    );
+    throw invalidVisualBracket(content, "竖线右侧（位置）不能为空");
   }
   const spec: DialogueVisualSpec = { hasVisual: true, resetVisual: false };
   const first = segments[0]!;
   if (first === "") {
     // `[|position]` — position-only form; positionToken must exist and be valid.
     if (positionToken === undefined || positionToken.includes(":")) {
-      throw new DslProtocolError(
-        "INVALID_VISUAL_BRACKET",
-        `无效的视觉括号 "[${content}]"：位置段不能包含冒号。`,
-      );
+      throw invalidVisualBracket(content, "位置段不能包含冒号");
     }
     if (!isCharacterPosition(positionToken)) {
-      throw new DslProtocolError(
-        "INVALID_VISUAL_BRACKET",
-        `无效的视觉括号 "[${content}]"：位置必须是 far_left|left|center|right|far_right。`,
-      );
+      throw invalidVisualBracket(content, "位置必须是 far_left|left|center|right|far_right");
     }
     spec.position = positionToken;
     return spec;
@@ -100,10 +132,7 @@ function parseVisual(content: string | undefined): DialogueVisualSpec {
     const spriteSet = first.slice(0, colonIndex);
     const variant = first.slice(colonIndex + 1);
     if (spriteSet === "" || variant === "" || variant.includes(":")) {
-      throw new DslProtocolError(
-        "INVALID_VISUAL_BRACKET",
-        `无效的视觉括号 "[${content}]"：spriteSet:variant 中冒号必须恰好一个且两侧非空。`,
-      );
+      throw invalidVisualBracket(content, "spriteSet:variant 中冒号必须恰好一个且两侧非空");
     }
     spec.spriteSet = spriteSet;
     spec.variant = variant;
@@ -112,18 +141,19 @@ function parseVisual(content: string | undefined): DialogueVisualSpec {
   }
   if (positionToken !== undefined) {
     if (positionToken.includes(":")) {
-      throw new DslProtocolError(
-        "INVALID_VISUAL_BRACKET",
-        `无效的视觉括号 "[${content}]"：位置段不能包含冒号。`,
-      );
+      throw invalidVisualBracket(content, "位置段不能包含冒号");
     }
     if (!isCharacterPosition(positionToken)) {
-      throw new DslProtocolError(
-        "INVALID_VISUAL_BRACKET",
-        `无效的视觉括号 "[${content}]"：位置必须是 far_left|left|center|right|far_right。`,
-      );
+      if (knownSpeakers?.has(first) === true) {
+        throw swappedVisualSlots(content, first);
+      }
+      throw invalidVisualBracket(content, "位置必须是 far_left|left|center|right|far_right");
     }
     spec.position = positionToken;
+  } else if (knownSpeakers?.has(first) === true) {
+    // `[raspberry]` — a registered id is never a variant name; catch it here
+    // instead of letting the catalog silently drop the cue later.
+    throw swappedVisualSlots(content, first);
   }
   return spec;
 }
@@ -145,6 +175,10 @@ function parseName(content: string | undefined): DialogueNameSpec {
     throw new DslProtocolError(
       "INVALID_NAME_PAREN",
       `无效的名称括号 "(${content})"：只允许 (显示名) 或 () 复位。`,
+      {
+        expected: "(中文显示名) 覆盖玩家看到的名称；() 恢复默认名",
+        fix: '例如 "苏遥(神秘女子): 台词"；不要把英文 id 放进名称槽',
+      },
     );
   }
   return { hasName: true, resetName: false, displayName };
@@ -173,59 +207,117 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
       throw new DslProtocolError(
         "SENTINEL_MISSING_REASON",
         `@end 缺少 reason（buffer|interaction|ending）："${line}"。`,
+        {
+          expected: "@end <nonce> <reason>，reason 取 buffer|interaction|ending 之一",
+          cause: "end 后面必须跟 nonce 和 reason 两个词",
+          fix: "从任务提示原样照抄 nonce，例如 @end 81ab buffer",
+        },
       );
     }
     if (reasonToken !== "buffer" && reasonToken !== "interaction" && reasonToken !== "ending") {
       throw new DslProtocolError(
         "SENTINEL_INVALID_REASON",
         `@end 的 reason 必须是 buffer|interaction|ending，收到 "${reasonToken}"。`,
+        {
+          expected: "@end <nonce> <reason>，reason 取 buffer|interaction|ending 之一",
+          fix: `把 "${reasonToken}" 换成 buffer、interaction 或 ending`,
+        },
       );
     }
     const reason: SegmentEndReason = reasonToken;
     return { kind: "segment_end", nonce, reason };
   }
 
-  // 2. form end (exact, before the `?` prefix check)
-  if (line === "/?") return { kind: "form_end" };
+  // 2. form end (exact, before the `?` prefix check); @/? is the taught
+  // form, bare /? stays as a legacy alias.
+  if (line === "@/?" || line === "/?") return { kind: "form_end" };
 
-  // 3–5. form prefixes: `?` / `+` / `=` then any whitespace, then the rest.
-  // Empty rest is allowed here; the group builder rejects it later.
+  // 3–5. form prefixes: `@?` (legacy `?`) / `@+` (`+`) / `@=` (`=`) then any
+  // whitespace, then the rest. Empty rest is allowed here; the group builder
+  // rejects it later.
+  if (line.startsWith("@?")) return { kind: "form_start", prompt: line.slice(2).trim() };
   if (line.startsWith("?")) return { kind: "form_start", prompt: line.slice(1).trim() };
+  if (line.startsWith("@+")) return { kind: "form_option", text: line.slice(2).trim() };
   if (line.startsWith("+")) return { kind: "form_option", text: line.slice(1).trim() };
+  if (line.startsWith("@=")) return { kind: "form_input", placeholder: line.slice(2).trim() };
   if (line.startsWith("=")) return { kind: "form_input", placeholder: line.slice(1).trim() };
 
-  // 6. beat
-  if (line === "beat") return { kind: "beat" };
+  // 6. beat (@beat taught; bare `beat` stays as a legacy alias)
+  if (line === "@beat" || line === "beat") return { kind: "beat" };
 
-  // 7. stage cues: bg / bgm / se (bgm stop is a valid assetId "stop")
-  const bgMatch = /^bg\s+(\S+)\s*$/.exec(line);
+  // 7. stage cues: @bg / @bgm / @se (bgm stop is a valid assetId "stop");
+  // bare bg/bgm/se remain as legacy aliases.
+  const bgMatch = /^@?bg\s+(\S+)\s*$/.exec(line);
   if (bgMatch !== null) return { kind: "background", assetId: bgMatch[1]! };
-  const bgmMatch = /^bgm\s+(\S+)\s*$/.exec(line);
+  const bgmMatch = /^@?bgm\s+(\S+)\s*$/.exec(line);
   if (bgmMatch !== null) return { kind: "bgm", assetId: bgmMatch[1]! };
-  const seMatch = /^se\s+(\S+)\s*$/.exec(line);
+  const seMatch = /^@?se\s+(\S+)\s*$/.exec(line);
   if (seMatch !== null) return { kind: "sound_effect", assetId: seMatch[1]! };
   if (
     hasKeywordPrefix(line, "bg") ||
     hasKeywordPrefix(line, "bgm") ||
-    hasKeywordPrefix(line, "se")
+    hasKeywordPrefix(line, "se") ||
+    hasKeywordPrefix(line, "@bg") ||
+    hasKeywordPrefix(line, "@bgm") ||
+    hasKeywordPrefix(line, "@se")
   ) {
     throw new DslProtocolError(
       "UNKNOWN_LINE",
       `无法解析的 bg/bgm/se 指令 "${line}"：缺少资源 id。`,
+      {
+        expected: STAGE_CUE_EXPECTED,
+        cause: "指令与资源 id 之间必须有一个空格，且 id 只能是一个词",
+        fix: '例如 "@bg classroom_morning"、"@bgm stop"',
+      },
     );
   }
 
-  // 8. character cue: ch <id>:<variant> [position] | ch <id> hide|show
-  const chSetMatch = /^ch\s+([^:\s]+):([^:\s]+)(?:\s+(\S+))?\s*$/.exec(line);
+  // 8. character cue: @ch <id>:<variant> [position] | @ch <id> hide|show|exit
+  // (bare `ch` stays as a legacy alias). The colon may carry surrounding
+  // whitespace — a frequent LLM slip (`@ch raspberry: uneasy center`) —
+  // because variant/position can never contain spaces, the tight form is
+  // always recoverable.
+  const chSetMatch = /^@?ch\s+([^:\s]+)\s*:\s*(\S+)(?:\s+(\S+))?\s*$/.exec(line);
   if (chSetMatch !== null) {
     const characterId = chSetMatch[1]!;
     const variant = chSetMatch[2]!;
     const positionToken = chSetMatch[3];
+    if (knownSpeakers?.has(variant) === true || variant === characterId) {
+      // Observed in the wild: `@ch raspberry:raspberry` — same swapped-slot
+      // family as the dialogue-header bracket.
+      throw new DslProtocolError(
+        "INVALID_CH_CUE",
+        `ch 指令的变体槽放了角色 id "${variant}"：它不是立绘变体。`,
+        {
+          expected: "@ch <角色内部id>:<立绘变体> [位置]",
+          cause: "变体槽应是素材表里的英文表情 id（如 smile、angry），不是角色 id",
+          fix: `例如 "@ch ${characterId}:smile"`,
+        },
+      );
+    }
+    if (containsHan(variant)) {
+      // Observed failure: `@ch raspberry: 一句台词` — the model wanted a
+      // dialogue line but reached for the ch command. Fail loudly with the
+      // dialogue format instead of emitting a cue with a garbage variant.
+      throw new DslProtocolError(
+        "INVALID_CH_CUE",
+        `ch 指令的立绘变体槽出现中文 "${variant}"：变体必须是素材表里的英文 id。`,
+        {
+          expected: "@ch <角色内部id>:<立绘变体> [位置]",
+          cause: "这几乎总是一句被写成 ch 指令的台词——台词行不能以 @ 开头",
+          fix: `台词请写成 "角色名[变体]: 台词"（不带 @），例如 "raspberry[smile]: 台词"；若确实是立绘指令，写 "@ch ${characterId}:<变体>"`,
+        },
+      );
+    }
     if (positionToken !== undefined) {
       if (!isCharacterPosition(positionToken)) {
         throw new DslProtocolError(
           "INVALID_CH_CUE",
-          `无效的 ch 位置 "${positionToken}"（ch <id>:<variant> [position]）。`,
+          `无效的 ch 位置 "${positionToken}"（@ch <id>:<variant> [position]）。`,
+          {
+            expected: "位置只能是 far_left|left|center|right|far_right",
+            fix: `例如 "@ch ${characterId}:<变体> left"`,
+          },
         );
       }
       return {
@@ -238,7 +330,7 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
     }
     return { kind: "character_cue", characterId, variant, action: "set" };
   }
-  const chShowMatch = /^ch\s+(\S+)\s+(hide|show|exit)\s*$/.exec(line);
+  const chShowMatch = /^@?ch\s+(\S+)\s+(hide|show|exit)\s*$/.exec(line);
   if (chShowMatch !== null) {
     const characterId = chShowMatch[1]!;
     const actionToken = chShowMatch[2]!;
@@ -248,10 +340,42 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
     const action: "hide" | "show" = actionToken === "hide" ? "hide" : "show";
     return { kind: "character_cue", characterId, action };
   }
-  if (hasKeywordPrefix(line, "ch")) {
+  if (
+    hasKeywordPrefix(line, "ch") ||
+    hasKeywordPrefix(line, "@ch")
+  ) {
     throw new DslProtocolError(
       "INVALID_CH_CUE",
-      `无效的 ch 指令 "${line}"：格式为 ch <id>:<variant> [position] 或 ch <id> hide|show|exit。`,
+      `无效的 ch 指令 "${line}"。`,
+      {
+        expected: "@ch <角色内部id>:<立绘变体> [位置] 或 @ch <id> hide|show|exit",
+        cause: "id 后必须紧跟冒号和变体（变体为素材表英文 id），或跟 hide/show/exit",
+        fix: '例如 "@ch suyao:anxious left"、"@ch suyao exit"',
+      },
+    );
+  }
+
+  // Any other line starting with "@" claims command intent — it must never
+  // degrade into dialogue or narration (historical incidents: `@¬end 4607
+  // buffer` played as narration, `@ch raspberry: …` invented a phantom
+  // speaker). Unknown @ lines fail loudly with the command list instead.
+  if (line.startsWith("@")) {
+    const dialogueShaped =
+      /^@[^：:\s]{1,24}(?:\[[^\]]*\])?(?:\([^)]*\))?[:：]/.exec(line) !== null;
+    throw new DslProtocolError(
+      "UNKNOWN_COMMAND",
+      `无法识别的 @ 指令 "${line}"。`,
+      dialogueShaped
+        ? {
+            expected: DSL_COMMAND_LIST,
+            cause: "台词行不能以 @ 开头——@ 只用于指令行",
+            fix: "去掉行首的 @，写成 角色名[变体]: 台词（普通台词行没有前缀符号）",
+          }
+        : {
+            expected: DSL_COMMAND_LIST,
+            cause: "以 @ 开头的行必须是指令，且指令拼写逐字固定",
+            fix: "核对指令拼写；如果是台词或旁白，去掉行首的 @ 直接写正文",
+          },
     );
   }
 
@@ -290,7 +414,7 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
       kind: "dialogue",
       speaker,
       text,
-      visual: parseVisual(visualSource),
+      visual: parseVisual(visualSource, knownSpeakers),
       name: parseName(nameSource),
     };
   }

@@ -48,7 +48,7 @@ describe("reconcileStoryState", () => {
     expect(next.characters["suyao"]).toEqual({});
   });
 
-  it("builds a rolling recent_summary from the last lines", () => {
+  it("keeps recent_summary untouched — recap pipeline owns it", () => {
     const initial = createInitialState();
     const next = reconcileStoryState(initial, [
       storedNarration(1, "第一句。"),
@@ -56,14 +56,15 @@ describe("reconcileStoryState", () => {
       storedNarration(3, "第三句。"),
       storedNarration(4, "第四句。"),
     ]);
-    expect(next.recent_summary).toBe("苏遥: 第二句。 / 第三句。 / 第四句。");
+    // recent_summary 由滚动前情梗概管线（recap.ts）独占维护：reconcile
+    // 不再把"最近 3 行"覆写进去（那 3 行本就重复出现在历史窗口里）。
+    expect(next.recent_summary).toBe(initial.recent_summary);
   });
 
   it("returns the same reference when nothing changed", () => {
     const initial = createInitialState();
     const next = reconcileStoryState(initial, [storedNarration(1, "纯旁白。")]);
-    // 无 stage、无台词角色 → 只有 recent_summary 变化 → 引用变化；
-    // 再用无内容事件验证引用不变。
+    // 无 stage、无台词角色 → 无投影变化 → 引用不变。
     const untouched = reconcileStoryState(next, [
       { ...storedNarration(2, "纯旁白。"), type: "interaction" } as unknown as StoredEvent,
     ]);
@@ -76,4 +77,42 @@ describe("reconcileStoryState", () => {
     const afterB = reconcileStoryState(afterA, [storedDialogue(2, "linche", "林澈", "嗯。")]);
     expect(Object.keys(afterB.characters)).toEqual(["suyao", "linche"]);
   });
+
+  // 上下文污染闭环（2026-09-17 审计）：坏语法造出的幻影发言者一旦入库，
+  // 就经 summarizeState 的 [Characters] 段回流进 writer prompt，模型看到
+  // 坏语法并模仿。已知角色集把幻影挡在 state 之外。
+  it("does not register dialogue speakers outside knownCharacterIds", () => {
+    const initial = createInitialState();
+    const next = reconcileStoryState(
+      initial,
+      [storedDialogue(1, "@6ch raspberry", "@6ch raspberry", "uneasy center")],
+      { knownCharacterIds: new Set(["raspberry", "female_A"]) },
+    );
+    expect(next.characters["@6ch raspberry"]).toBeUndefined();
+    expect(next).toBe(initial);
+  });
+
+  it("registers known speakers when the known set is supplied", () => {
+    const initial = createInitialState();
+    const next = reconcileStoryState(
+      initial,
+      [storedDialogue(1, "raspberry", "树莓娘", "剪完我自己都笑了。")],
+      { knownCharacterIds: new Set(["raspberry"]) },
+    );
+    expect(next.characters["raspberry"]).toEqual({});
+  });
+
+  it("never tracks ids containing @ or whitespace even without a known set", () => {
+    const initial = createInitialState();
+    const next = reconcileStateUnsafe(initial);
+    expect(next).toBe(initial);
+  });
 });
+
+/** 通过任意（未注册）已知集路径验证兜底过滤。 */
+function reconcileStateUnsafe(initial: ReturnType<typeof createInitialState>) {
+  return reconcileStoryState(initial, [
+    storedDialogue(1, "@ch raspberry", "@ch raspberry", "台词"),
+    storedNarration(2, "动作。", [{ type: "character_patch", character: "weird id" }]),
+  ]);
+}

@@ -358,4 +358,121 @@ describe("parseDslLine", () => {
   it("rejects a malformed se command", () => {
     expectCode("se", "UNKNOWN_LINE");
   });
+  // --- @ 前缀语法（2026-09-17：指令行一律以 @ 开头） ---
+
+  it("parses every @ command form", () => {
+    expect(parseDslLine("@bg basement")).toEqual({ kind: "background", assetId: "basement" });
+    expect(parseDslLine("@bgm stop")).toEqual({ kind: "bgm", assetId: "stop" });
+    expect(parseDslLine("@se terminal_beep")).toEqual({
+      kind: "sound_effect",
+      assetId: "terminal_beep",
+    });
+    expect(parseDslLine("@beat")).toEqual({ kind: "beat" });
+    expect(parseDslLine("@/??".replace("??", "?"))).toEqual({ kind: "form_end" });
+    expect(parseDslLine("@? 你打算怎么回应？")).toEqual({
+      kind: "form_start",
+      prompt: "你打算怎么回应？",
+    });
+    expect(parseDslLine("@+ 先退后一步")).toEqual({ kind: "form_option", text: "先退后一步" });
+    expect(parseDslLine("@= 说出你想说的话")).toEqual({
+      kind: "form_input",
+      placeholder: "说出你想说的话",
+    });
+    expect(parseDslLine("@ch suyao:anxious left")).toEqual({
+      kind: "character_cue",
+      characterId: "suyao",
+      variant: "anxious",
+      position: "left",
+      action: "set",
+    });
+    expect(parseDslLine("@ch suyao exit")).toEqual({
+      kind: "character_cue",
+      characterId: "suyao",
+      action: "exit",
+    });
+  });
+
+  it("tolerates spaces around the ch colon (frequent LLM slip)", () => {
+    expect(parseDslLine("@ch raspberry: uneasy center")).toEqual({
+      kind: "character_cue",
+      characterId: "raspberry",
+      variant: "uneasy",
+      position: "center",
+      action: "set",
+    });
+  });
+
+  it("rejects a ch line whose variant slot holds Chinese dialogue", () => {
+    // Observed failure: `@ch raspberry: 一句台词` — the model wanted a
+    // dialogue line; the parser must fail loudly instead of emitting a cue
+    // with a garbage variant.
+    expectCode("@ch raspberry: 你到底藏了什么", "INVALID_CH_CUE");
+    const err = (() => {
+      try {
+        parseDslLine("@ch raspberry: 你到底藏了什么");
+      } catch (e) {
+        return e as DslProtocolError;
+      }
+    })();
+    expect(err?.detail?.cause).toContain("台词");
+  });
+
+  it("rejects an unrecognized @ line instead of degrading to narration", () => {
+    // Historical incident: `@¬end 4607 buffer` (unrepaired mangle) played as
+    // narration. @ now marks command intent — unknown forms must throw.
+    expectCode("@¬end 4607 buffer", "UNKNOWN_COMMAND");
+    expectCode("@6ch raspberry: uneasy center", "UNKNOWN_COMMAND");
+    expectCode("@bmg relax", "UNKNOWN_COMMAND");
+    expectCode("@", "UNKNOWN_COMMAND");
+  });
+
+  it("rejects an @-prefixed dialogue line with a targeted hint", () => {
+    expectCode("@苏遥: 你不该来这里。", "UNKNOWN_COMMAND");
+    const err = (() => {
+      try {
+        parseDslLine("@苏遥: 你不该来这里。");
+      } catch (e) {
+        return e as DslProtocolError;
+      }
+    })();
+    expect(err?.detail?.cause).toContain("台词行不能以 @ 开头");
+    expect(err?.detail?.fix).toContain("去掉行首的 @");
+  });
+
+  it("diagnoses swapped visual slots when the variant slot holds a registered id", () => {
+    // Observed in the wild: `raspberry[raspberry|thinking]: …` — character id
+    // in the variant slot, variant name in the position slot.
+    const speakers = new Set(["raspberry"]);
+    let caught: unknown;
+    try {
+      parseDslLine("raspberry[raspberry|thinking]: 那走吧。", speakers);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(DslProtocolError);
+    const err = caught as DslProtocolError;
+    expect(err.code).toBe("INVALID_VISUAL_BRACKET");
+    expect(err.detail?.cause).toContain("写反");
+    expect(err.detail?.fix).toContain("去掉角色 id 槽");
+  });
+
+  it("keeps parsing legacy bare commands as aliases", () => {
+    expect(parseDslLine("bg basement")).toEqual({ kind: "background", assetId: "basement" });
+    expect(parseDslLine("beat")).toEqual({ kind: "beat" });
+    expect(parseDslLine("/?")).toEqual({ kind: "form_end" });
+    expect(parseDslLine("? 怎么回应？")).toEqual({ kind: "form_start", prompt: "怎么回应？" });
+    expect(parseDslLine("ch suyao:anxious")).toEqual({
+      kind: "character_cue",
+      characterId: "suyao",
+      variant: "anxious",
+      action: "set",
+    });
+  });
+
+  it("keeps narration starting with ascii letters that merely look wordy", () => {
+    expect(parseDslLine("beatbox 声从隔壁传来。")).toEqual({
+      kind: "narration",
+      text: "beatbox 声从隔壁传来。",
+    });
+  });
 });
