@@ -28,10 +28,22 @@ export interface StageVisualState {
   characters: Record<string, StageCharacterState>;
 }
 
+/** BGM 播放微调（秒）；core BgmPlayback 的 wire 镜像。 */
+export interface BgmPlayback {
+  /** 循环窗口起点（秒，含）。缺省 0。 */
+  start?: number;
+  /** 循环窗口终点（秒，含尾）；到达即回卷 start。缺省播到文件末尾。 */
+  end?: number;
+  /** 曲目开始时的淡入时长（秒）。 */
+  fadeIn?: number;
+  /** 切歌/停止前的淡出时长（秒）。 */
+  fadeOut?: number;
+}
+
 /** Wire mirror of the core PublicAssetManifest (spec §5.2). */
 export interface PublicAssetManifest {
   backgrounds: Record<string, { url: string }>;
-  bgm: Record<string, { url: string }>;
+  bgm: Record<string, { url: string; playback?: BgmPlayback }>;
   soundEffects: Record<string, { url: string }>;
   spriteSets: Record<
     string,

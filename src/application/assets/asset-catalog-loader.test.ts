@@ -8,6 +8,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadAssetCatalog } from "./asset-catalog-loader.js";
+import { buildPublicAssetManifest } from "./asset-manifest.js";
 
 // ---------------------------------------------------------------------------
 // Temp file helpers (same pattern as src/config.test.ts)
@@ -674,5 +675,86 @@ describe("loadAssetCatalog sprite presentation", () => {
         "    base: { src: sprite.png }",
       ]),
     ).rejects.toThrow(/±180/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BGM 播放配置（bgm_playback 全局默认 + 每曲 playback）
+// ---------------------------------------------------------------------------
+
+describe("bgm 播放配置（裁切窗口 + 淡入淡出）", () => {
+  async function loadWithBgm(bgmLines: string[]) {
+    const dir = await makeTempDir();
+    await writeTempAsset(dir, "audio/bgm/relax.mp3");
+    await writeTempAsset(dir, "audio/bgm/calm.mp3");
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds: {}",
+        ...bgmLines,
+        "sound_effects: {}",
+        "sprite_sets: {}",
+        "characters: {}",
+      ].join("\n"),
+      "utf8",
+    );
+    return loadAssetCatalog(path.join(dir, "resources.yaml"));
+  }
+
+  it("每曲 playback 解析为 camelCase 并随公开 manifest 下发", async () => {
+    const catalog = await loadWithBgm([
+      "bgm:",
+      "  relax: { src: audio/bgm/relax.mp3, description: d, playback: { start: 12.5, end: 90, fade_in: 1.5, fade_out: 2 } }",
+    ]);
+    expect(catalog.bgm.relax!.playback).toEqual({ start: 12.5, end: 90, fadeIn: 1.5, fadeOut: 2 });
+    expect(buildPublicAssetManifest(catalog, "/game-assets/").bgm.relax!.playback).toEqual({
+      start: 12.5,
+      end: 90,
+      fadeIn: 1.5,
+      fadeOut: 2,
+    });
+  });
+
+  it("bgm_playback 全局默认生效，每曲同名字段覆盖", async () => {
+    const catalog = await loadWithBgm([
+      "bgm_playback: { fade_in: 1.2, fade_out: 1.8, end: 60 }",
+      "bgm:",
+      "  relax: { src: audio/bgm/relax.mp3, description: d }",
+      "  calm: { src: audio/bgm/calm.mp3, description: d, playback: { fade_in: 0.5 } }",
+    ]);
+    expect(catalog.bgm.relax!.playback).toEqual({ end: 60, fadeIn: 1.2, fadeOut: 1.8 });
+    expect(catalog.bgm.calm!.playback).toEqual({ end: 60, fadeIn: 0.5, fadeOut: 1.8 });
+  });
+
+  it("完全无配置时不产生 playback 字段", async () => {
+    const catalog = await loadWithBgm([
+      "bgm:",
+      "  relax: { src: audio/bgm/relax.mp3, description: d }",
+    ]);
+    expect(catalog.bgm.relax!.playback).toBeUndefined();
+    expect("playback" in buildPublicAssetManifest(catalog, "/p/").bgm.relax!).toBe(false);
+  });
+
+  it("校验：空 playback / 单条 end<=start / 默认合并后窗口倒挂", async () => {
+    await expect(
+      loadWithBgm(["bgm:", "  relax: { src: audio/bgm/relax.mp3, description: d, playback: {} }"]),
+    ).rejects.toThrow(/至少要有一个字段/);
+
+    await expect(
+      loadWithBgm([
+        "bgm:",
+        "  relax: { src: audio/bgm/relax.mp3, description: d, playback: { start: 30, end: 30 } }",
+      ]),
+    ).rejects.toThrow(/end 必须大于 start/);
+
+    // 单条配置合法，与全局默认合并后 end < start 才暴露
+    await expect(
+      loadWithBgm([
+        "bgm_playback: { end: 60 }",
+        "bgm:",
+        "  relax: { src: audio/bgm/relax.mp3, description: d, playback: { start: 90 } }",
+      ]),
+    ).rejects.toThrow(/窗口无效/);
   });
 });

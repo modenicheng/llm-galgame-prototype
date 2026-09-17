@@ -6,6 +6,7 @@ import type {
   AssetCatalog,
   BackgroundAsset,
   BgmAsset,
+  BgmPlayback,
   CharacterAssetBinding,
   SoundEffectAsset,
   SpriteSet,
@@ -21,6 +22,32 @@ const POSITIONS = ["far_left", "left", "center", "right", "far_right"] as const;
 const AssetEntrySchema = z.object({
   src: z.string().min(1),
   description: z.string(),
+});
+
+/**
+ * BGM 播放微调（docs/asset-management.md「BGM 裁切与淡入淡出」）。
+ * 全局默认在顶层 bgm_playback，每曲 playback 覆盖同名字段；单位秒。
+ */
+const BgmPlaybackFieldsSchema = {
+  start: z.number().finite().min(0).optional(),
+  end: z.number().finite().gt(0).optional(),
+  fade_in: z.number().finite().min(0).optional(),
+  fade_out: z.number().finite().min(0).optional(),
+};
+
+const BgmPlaybackSchema = z
+  .object({ ...BgmPlaybackFieldsSchema })
+  .refine(
+    (v) => Object.keys(v).length > 0,
+    "playback 至少要有一个字段（start/end/fade_in/fade_out）",
+  )
+  .refine(
+    (v) => v.end === undefined || v.start === undefined || v.end > v.start,
+    "playback 的 end 必须大于 start",
+  );
+
+const BgmAssetEntrySchema = AssetEntrySchema.extend({
+  playback: BgmPlaybackSchema.optional(),
 });
 
 /**
@@ -87,7 +114,8 @@ const CharacterBindingSchema = z.object({
 const ResourceYamlSchema = z.object({
   guidance: z.string(),
   backgrounds: z.record(z.string(), AssetEntrySchema),
-  bgm: z.record(z.string(), AssetEntrySchema),
+  bgm: z.record(z.string(), BgmAssetEntrySchema),
+  bgm_playback: BgmPlaybackSchema.optional(),
   sound_effects: z.record(z.string(), AssetEntrySchema),
   sprite_sets: z.record(z.string(), SpriteSetSchema),
   characters: z.record(z.string(), CharacterBindingSchema),
@@ -157,6 +185,17 @@ async function validateCatalog(
 ): Promise<void> {
   const rootResolved = resolve(assetRoot);
 
+  for (const [id, asset] of Object.entries(catalog.bgm)) {
+    const { start, end } = asset.playback ?? {};
+    // 单条配置的 start<end 已由 schema 把关；这里拦住「默认合并后」才出现的
+    // 交叉窗口（如全局 end=90、某曲 start=120）。
+    if (start !== undefined && end !== undefined && end <= start) {
+      throw new Error(
+        `资产目录校验失败: bgm.${id}.playback 窗口无效（end ${end} 必须大于 start ${start}）`,
+      );
+    }
+  }
+
   for (const [characterId, binding] of Object.entries(catalog.characters)) {
     // hasOwn: prototype keys (e.g. "constructor") must not satisfy the lookup.
     const set = catalog.spriteSets[binding.spriteSet];
@@ -210,6 +249,24 @@ async function validateCatalog(
 // snake_case → camelCase mapping
 // ---------------------------------------------------------------------------
 
+/** 全局默认（bgm_playback）与每曲 playback 按字段合并，每曲优先；双方都缺省时返回 undefined。 */
+function mergeBgmPlayback(
+  defaults: ResourceYaml["bgm_playback"],
+  perTrack: ResourceYaml["bgm"][string]["playback"],
+): BgmPlayback | undefined {
+  if (defaults === undefined && perTrack === undefined) return undefined;
+  const out: BgmPlayback = {};
+  const start = perTrack?.start ?? defaults?.start;
+  const end = perTrack?.end ?? defaults?.end;
+  const fadeIn = perTrack?.fade_in ?? defaults?.fade_in;
+  const fadeOut = perTrack?.fade_out ?? defaults?.fade_out;
+  if (start !== undefined) out.start = start;
+  if (end !== undefined) out.end = end;
+  if (fadeIn !== undefined) out.fadeIn = fadeIn;
+  if (fadeOut !== undefined) out.fadeOut = fadeOut;
+  return out;
+}
+
 function mapToCatalog(data: ResourceYaml): AssetCatalog {
   const backgrounds: Record<string, BackgroundAsset> = {};
   for (const [id, asset] of Object.entries(data.backgrounds)) {
@@ -222,10 +279,12 @@ function mapToCatalog(data: ResourceYaml): AssetCatalog {
 
   const bgm: Record<string, BgmAsset> = {};
   for (const [id, asset] of Object.entries(data.bgm)) {
+    const playback = mergeBgmPlayback(data.bgm_playback, asset.playback);
     bgm[id] = {
       id,
       src: asset.src,
       description: asset.description.trim(),
+      ...(playback !== undefined ? { playback } : {}),
     };
   }
 

@@ -185,6 +185,18 @@ AI 引擎设备 `CUTOUT_DEVICE=cpu|dml`；DML（DirectML）约 7× 提速但会�
 | `src` | ✔ | 相对 `resources.yaml` 所在目录的路径（即相对 `assets/`），**不得逃逸根目录** |
 | `description` | ✔ | 给模型看的检索描述：画面/听感内容 + 适用场景/情绪 |
 
+### bgm_playback 与每曲 playback（可选，BGM 裁切与淡入淡出）
+
+纯播放表现参数，单位秒；**模型目录不投影**（模型只看 description），随 `PublicAssetManifest` 下发浏览器（§6）。顶层 `bgm_playback` 是全局默认，每曲 `bgm.<id>.playback` 覆盖同名字段；两边都缺省 = 整曲循环、无淡入淡出（与裸 `<audio loop>` 一致）。
+
+| 字段 | 适用层 | 说明 |
+| --- | --- | --- |
+| `start` / `end` | 默认 + 每曲 | 裁切循环窗口（含两端）：到达 `end` 回卷 `start`；只配 `start` 时播到文件尾回卷。`end` 缺省即整曲 |
+| `fade_in` | 默认 + 每曲 | 起曲淡入时长 |
+| `fade_out` | 默认 + 每曲 | 切歌/停止前的淡出时长（顺序式：旧曲淡出完再起新曲） |
+
+校验（fail-fast，§5.3）：单条 `end` 必须大于 `start`、playback 至少一个字段；窗口与全局默认**合并后**仍需 `start < end`。运行期兜底：`end` 超出文件时长自动钳到 duration；窗口被钳得小于 0.05s（如 `start` 越过文件尾）视为坏配置，退回整曲循环。切歌/停止的淡出按**当前装载曲目**的 `fade_out` 执行。改配置需重启（manifest 启动时一次性构建）。
+
 ### sprite_sets（必填）
 
 | 字段 | 必填 | 说明 |
@@ -296,6 +308,7 @@ const assetCatalog = await loadAssetCatalog(config.assets.catalog); // 默认 as
 | `characters.<id>.sprite_set` 必须存在于 `sprite_sets` | `不存在于 sprite_sets` |
 | `default_variant` 必须存在于所属立绘组 | `不存在于 sprite_set` |
 | `allowed_sprite_sets` 必须包含自身 `sprite_set` 且全部存在 | `必须包含自身` / `引用不存在` |
+| bgm playback：至少一个字段、`end` > `start`（含与 `bgm_playback` 默认合并后） | `至少要有一个字段` / `end 必须大于 start` / `窗口无效` |
 | 所有 `src` 解析后**不得逃逸** `assets/` 根目录 | `逃逸素材根目录` |
 | 所有 `src` 文件必须真实存在 | `文件不存在` |
 
@@ -407,6 +420,8 @@ System prompt 侧由 `prompts/dsl-protocol.txt` 定义协议本体（指令语�
 ## 8.2 舞台 cue 的流动
 
 模型 DSL → 编译产出段首 `stage` cues → 玩家实际看到该行时 reducer 归约出 `VisualState`（`bgm` 是状态性的、`se` 是一次性的）→ `playback_ready` 事件携带 presentation 投影 → WebSocket → 浏览器视图模型暂存瞬态 cues → 渲染循环消费。BGM 控制器对未知 id **保持当前曲目**；音效控制器 url 缺失直接跳过。
+
+BGM 控制器（`web/src/stage/bgm-controller.ts`）按 manifest 里的 `playback` 执行裁切与淡入淡出（配置见 §4.1「bgm_playback 与每曲 playback」）：裁切窗口内由帧回调 + `timeupdate` 双路回卷（后者覆盖后台标签页）；淡出在先、起曲淡入在后，无配置时与裸 `<audio loop>` 行为一致。
 
 ## 8.3 语音（TTS）链路与资产目录的关系
 

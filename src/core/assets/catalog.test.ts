@@ -85,6 +85,22 @@ describe("toModelCatalog", () => {
     expect(model.soundEffects.terminal_beep).toEqual({ description: "旧终端提示音。" });
   });
 
+  it("bgm playback（裁切/淡入淡出）是播放表现参数，不进模型目录", () => {
+    const withPlayback: AssetCatalog = {
+      ...catalog,
+      bgm: {
+        relax: {
+          id: "relax",
+          src: "audio/bgm/relax.mp3",
+          description: "来源：andriig-relax。",
+          playback: { start: 12.5, end: 90, fadeIn: 1.5, fadeOut: 2 },
+        },
+      },
+    };
+    const model = toModelCatalog(withPlayback);
+    expect(model.bgm.relax).toEqual({ description: "来源：andriig-relax。" });
+  });
+
   it("keeps sprite variant ids and descriptions", () => {
     const model = toModelCatalog(catalog);
     expect(model.spriteSets.suyao).toEqual({

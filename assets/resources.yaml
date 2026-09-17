@@ -161,9 +161,23 @@ backgrounds:
       桌椅与讲台呈暗色剪影，整体昏暗。
       适合锁门离开前、夜深人静的场面。
 
+# BGM 播放默认（秒；可选项，缺省 = 整曲循环、无淡入淡出）。
+# 每曲在 bgm.<id>.playback 里覆盖同名字段，字段：
+#   start / end   裁切循环窗口（到达 end 回卷 start；end 缺省播到文件尾）
+#   fade_in       起曲淡入时长
+#   fade_out      切歌/停止前的淡出时长
+bgm_playback:
+  fade_in: 1.2
+  fade_out: 1.8
+
 bgm:
   relax:
     src: audio/bgm/relax.mp3
+    # playback:          # 每曲覆写示例（覆盖上面的全局默认）
+    #   start: 0.5       # 跳过文件头的静音/噪声段
+    #   end: 92.0        # 到 92s 回卷，避开后半段
+    #   fade_in: 2.0
+    #   fade_out: 2.5
     description: |
       大调；氛围温暖静谧，适合室内；慢节奏，悠然
       原声吉他做引子；第二把吉他随后进入演奏主题

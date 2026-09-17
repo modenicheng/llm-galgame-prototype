@@ -15,7 +15,12 @@ export function buildPublicAssetManifest(
   }
   const bgm: PublicAssetManifest["bgm"] = {};
   for (const [id, asset] of Object.entries(catalog.bgm)) {
-    bgm[id] = { url: url(asset.src) };
+    // playback（裁切窗口/淡入淡出）与 height 同理：纯展示参数随 manifest 下发，
+    // 不改文件、不进模型目录。
+    bgm[id] = {
+      url: url(asset.src),
+      ...(asset.playback !== undefined ? { playback: asset.playback } : {}),
+    };
   }
   const soundEffects: PublicAssetManifest["soundEffects"] = {};
   for (const [id, asset] of Object.entries(catalog.soundEffects)) {
