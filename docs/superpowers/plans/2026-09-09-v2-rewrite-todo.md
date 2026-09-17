@@ -220,10 +220,11 @@
   验收：retraceFrom 任意祖先节点单测（abandonedAt 记账 + 新边产生 + 图零删除）；快进命中/未命中/结局排除三例；快进时生成器零调用断言。
   落地（2026-09-17）：① `retraceFrom`（coordinator：活跃周目弃局记账→游标改绑目标节点→hydrateFromCursor 返回恢复点）；② `BeginEdgeResult = {kind:"opened"} | {kind:"fast_forward", restore}`（beginEdgeUnsafe 在开新边前查游标节点既有出边，kind+text 严格相等且 to=decision 才命中；hydrate 复用）。③ Game 快进链路：`record` 返回 recorded/fast_forwarded（FF 时归还预分配 seq、不落边不记账），驱动器经 `takePendingFastForward` 取恢复点随 ChoiceSelection/InputCommitOutcome 上交，SegmentOutcome 增 `fast_forward` 形态，运行循环切 `startRestoredSegment`（复用开机恢复机制，零内容生成）。④ 回溯命令：RuntimeCommand/wire schema 增 `retrace`，waitForCommand 抛 `RetraceRequestedError`，Game `prepareRetrace` + run() 荣誉 pendingRestore，web host catch 后同一 Game 重入 run（ws 不换绑）；graph-panel 非游标决策「回溯」按钮 → 确认条「在此分叉开启新周目」→ main.ts 发送命令。测试：coordinator 四例（记账/零删除/新边、快进命中、未命中、结局排除）+ Game 级 retrace→快进零内容生成断言（branchPrefetch 为表单呈现固定环境成本，零生成断言落在 opening/continuation）。
 
-- [ ] **M5.4 结算与图鉴**
+- [x] **M5.4 结算与图鉴**
   前置：M5.1。关联：§6；MA-A ending-report（复用，反重复）。
   要点：① `games/<gameId>/stats.json`：结局达成计数、边通过计数（新 run 首次通过时 +1，重放不重复计）；② 结算页：结局文本 + 伏笔回收率（ending-report 聚合）+ 大纲完成度（realized act / 总 act）；③ 图鉴页：结局列表（未达成显示 "???"，不剧透）；④ API + 页面 + 测试。
   验收：stats 增量与幂等测试；结算聚合单测；图鉴不剧透断言。
+  落地（2026-09-17）：① `StatsStorePort`/`StatsStore`（§9 布局 `stats.json`；`settledRuns` 幂等留痕——同周目重复结算 no-op；结局键 = EndingNode id，边键 = EdgeId 按首次通过的不重复周目计数）；coordinator `reachEnding` 落盘后沿「最近入边」路径回采 traversed 边并调 `recordSettlement`（失败只告警）。② `buildSettlementView`：最新完结周目的结局文本（结局边负载回收）+ payoffRate（`<sessions>/<sessionId>/ending-report.json` best-effort 读取，Game 增 `currentSessionId` 只读访问器）+ 大纲完成度（realized act/总 act）+ 统计。③ `buildGalleryView`：已达成结局给语义名+次数；未达成 outline 结局候选固定「???」（purpose/location 零泄漏，测试断言）。④ API：`GET /api/graph/settlement`、`GET /api/graph/gallery`（graph 通道扩展，未接线 404）。
 
 - [ ] **M5.5 通关打分 + 大纲回顾解锁**
   前置：M5.4。关联：§4 可见性（通关后解锁）；§8（评价喂回编剧）。

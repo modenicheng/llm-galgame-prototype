@@ -149,6 +149,10 @@ export class Game implements InteractionHost {
   /** @internal 交互驱动接缝（M4.5）。 */
   seq = 1;
   private readonly sessionId: string;
+  /** 结算页定位 ending-report 用（M5.4；只读会话 id）。 */
+  get currentSessionId(): string {
+    return this.sessionId;
+  }
   private readonly graph: RunGraphPort;
   /** @internal 交互驱动接缝（M4.5）。 */
   readonly clock: ClockPort;

@@ -15,7 +15,8 @@ import { WorldGenerator } from "../application/world/world-generator.js";
 import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
 import { GameGraphStore } from "../adapters/storage/game-graph-store.js";
 import { OutlineStore } from "../adapters/storage/outline-store.js";
-import { buildGraphView } from "../application/graph/graph-view.js";
+import { buildGraphView, buildSettlementView, buildGalleryView } from "../application/graph/graph-view.js";
+import { StatsStore } from "../adapters/storage/stats-store.js";
 
 function parseArgs(argv: string[]): {
   dev: boolean;
@@ -78,13 +79,29 @@ async function main(): Promise<void> {
         return { gameId, app: nextApp };
       },
     },
-    // M5.1：图视图通道（脱敏装配在 graph-view.ts）。
+    // M5.1：图视图通道（脱敏装配在 graph-view.ts）；M5.4：结算/图鉴。
     graph: {
       build: (gameId) =>
         buildGraphView({
           gameId,
           graph: new GameGraphStore(DEFAULT_GAMES_ROOT, gameId),
           outline: new OutlineStore(DEFAULT_GAMES_ROOT, gameId),
+        }),
+      settlement: (gameId) =>
+        buildSettlementView({
+          gameId,
+          graph: new GameGraphStore(DEFAULT_GAMES_ROOT, gameId),
+          outline: new OutlineStore(DEFAULT_GAMES_ROOT, gameId),
+          stats: new StatsStore(DEFAULT_GAMES_ROOT, gameId),
+          sessionsDir: config.game.sessions_dir,
+          sessionId: app.game.currentSessionId,
+        }),
+      gallery: (gameId) =>
+        buildGalleryView({
+          gameId,
+          graph: new GameGraphStore(DEFAULT_GAMES_ROOT, gameId),
+          outline: new OutlineStore(DEFAULT_GAMES_ROOT, gameId),
+          stats: new StatsStore(DEFAULT_GAMES_ROOT, gameId),
         }),
     },
   });

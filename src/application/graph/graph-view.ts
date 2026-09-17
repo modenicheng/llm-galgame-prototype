@@ -14,6 +14,9 @@
 
 import type { OutlineStorePort } from "../../core/ports/outline-store-port.js";
 import type { GraphStorePort } from "../../core/ports/graph-store-port.js";
+import type { StatsStorePort } from "../../core/ports/stats-store-port.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 /** 单个决策节点视图（M5.2 决策粒度；表单快照原样内联）。 */
 export interface GraphDecisionView {
@@ -169,5 +172,158 @@ export async function buildGraphView(stores: GraphViewStores): Promise<GraphView
     scenes: sceneViews,
     ...(cursor !== null ? { cursor: { runId: cursor.runId, decisionId: cursor.position } } : {}),
     runs: runStats,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 结算与图鉴（执行清单 M5.4 ②③）
+// ---------------------------------------------------------------------------
+
+/** 结算视图：最新完结周目的结局文本 + 伏笔回收率 + 大纲完成度 + 统计。 */
+export interface SettlementView {
+  gameId: string;
+  runId: string;
+  endingId: string;
+  endingText: string | null;
+  /** 伏笔回收率（ending-report 聚合；会话报告缺失时缺省）。 */
+  payoffRate?: number | undefined;
+  /** 大纲完成度：realized act / 总 act（无大纲为 undefined）。 */
+  outlineProgress?: { realized: number; total: number } | undefined;
+  /** 世界级统计（本局已计入）。 */
+  endingsAchieved: number;
+  edgesTraversed: number;
+}
+
+/** 图鉴条目：未达成的结局只给「???」，不带任何 outline 文本（不剧透）。 */
+export interface GalleryEntry {
+  key: string;
+  achieved: boolean;
+  /** 达成 → 结局语义名（去 end_ 前缀）；未达成 → 固定 "???"。 */
+  label: string;
+  count?: number | undefined;
+}
+
+export interface GalleryView {
+  gameId: string;
+  entries: GalleryEntry[];
+  achievedCount: number;
+}
+
+export interface SettlementStores {
+  gameId: string;
+  graph: GraphStorePort;
+  outline?: OutlineStorePort | undefined;
+  stats: StatsStorePort;
+  /** 会话目录（定位 <sessionId>/ending-report.json）；缺省不读回收率。 */
+  sessionsDir?: string | undefined;
+  sessionId?: string | undefined;
+}
+
+/** 大纲完成度：realized act / 总 act（只统计 act；ending 不计完成度）。 */
+async function outlineProgressOf(
+  outline: OutlineStorePort | undefined,
+): Promise<{ realized: number; total: number } | undefined> {
+  if (outline === undefined) return undefined;
+  try {
+    const { nodes } = await outline.load();
+    const acts = nodes.filter((n) => n.kind === "act" && n.status !== "pruned");
+    if (acts.length === 0) return undefined;
+    return {
+      realized: acts.filter((n) => n.status === "realized").length,
+      total: acts.length,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** 结算视图：最新完结周目（runs 末位含 ending 者为准）。 */
+export async function buildSettlementView(stores: SettlementStores): Promise<SettlementView> {
+  const runs = await stores.graph.listRuns();
+  const endedRuns = runs.filter((r) => r.ending !== undefined && r.endedAt !== undefined);
+  if (endedRuns.length === 0) {
+    throw new Error("尚无已完结周目（结算页在通关后可用）");
+  }
+  const last = endedRuns.at(-1)!;
+  const endingId = last.ending!;
+
+  // 结局文本：从指向该结局的边负载回收（开局直落结局无负载 → null）。
+  let endingText: string | null = null;
+  const edges = await stores.graph.listEdges();
+  const endingEdge = [...edges]
+    .reverse()
+    .find((e) => e.to.kind === "ending" && e.to.id === endingId);
+  if (endingEdge !== undefined && endingEdge.payload.eventCount > 0) {
+    const payload = await stores.graph.readPayload(endingEdge.id);
+    const endEvent = [...payload].reverse().find((e) => e.type === "end");
+    if (endEvent !== undefined && "text" in endEvent) {
+      endingText = String(endEvent.text);
+    }
+  }
+
+  // 伏笔回收率：ending-report（会话目录；缺失/损坏 best-effort 缺省）。
+  let payoffRate: number | undefined;
+  if (stores.sessionsDir !== undefined && stores.sessionId !== undefined) {
+    try {
+      const raw = await readFile(
+        join(stores.sessionsDir, stores.sessionId, "ending-report.json"),
+        "utf8",
+      );
+      const report = JSON.parse(raw) as { setups?: { payoffRate?: number } };
+      if (typeof report.setups?.payoffRate === "number") {
+        payoffRate = report.setups.payoffRate;
+      }
+    } catch {
+      payoffRate = undefined;
+    }
+  }
+
+  const stats = await stores.stats.load();
+  const progress = await outlineProgressOf(stores.outline);
+  return {
+    gameId: stores.gameId,
+    runId: last.id,
+    endingId,
+    endingText,
+    ...(payoffRate !== undefined ? { payoffRate } : {}),
+    ...(progress !== undefined ? { outlineProgress: progress } : {}),
+    endingsAchieved: stats.endings.length,
+    edgesTraversed: stats.edges.reduce((sum, e) => sum + e.count, 0),
+  };
+}
+
+/** 图鉴视图：已达成结局给语义名 + 次数；未达成候选一律「???」。 */
+export async function buildGalleryView(stores: SettlementStores): Promise<GalleryView> {
+  const stats = await stores.stats.load();
+  const entries: GalleryEntry[] = stats.endings
+    .slice()
+    .sort((a, b) => b.count - a.count)
+    .map((e) => ({
+      key: e.id,
+      achieved: true,
+      label: e.id.replace(/^end_/, ""),
+      count: e.count,
+    }));
+
+  // 未达成的 outline 结局候选 → 「???」（只暴露数量，不暴露 purpose/location）。
+  if (stores.outline !== undefined) {
+    try {
+      const { nodes } = await stores.outline.load();
+      const endingNodes = nodes.filter((n) => n.kind === "ending" && n.status !== "pruned");
+      for (const node of endingNodes) {
+        const suffix = node.id.replace(/^ol_end_/, "");
+        const matched = stats.endings.some((e) => e.id.replace(/^end_/, "") === suffix);
+        if (!matched) {
+          entries.push({ key: node.id, achieved: false, label: "???" });
+        }
+      }
+    } catch {
+      // outline 缺失 → 只列已达成。
+    }
+  }
+  return {
+    gameId: stores.gameId,
+    entries,
+    achievedCount: stats.endings.length,
   };
 }

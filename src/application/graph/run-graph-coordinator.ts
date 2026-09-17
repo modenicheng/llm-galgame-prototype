@@ -21,6 +21,7 @@ import type {
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { CanonSnapshot, CanonStorePort } from "../../core/ports/canon-store-port.js";
+import type { StatsStorePort } from "../../core/ports/stats-store-port.js";
 import type {
   EdgeChoice,
   RestorePoint,
@@ -130,6 +131,8 @@ export class RunGraphCoordinator implements RunGraphPort {
   /** M3.6 ③：canon 读取（后台维护的约束输入；惰性加载一次）。 */
   private readonly canon: CanonStorePort | undefined;
   private canonLoaded = false;
+  /** M5.4：结算统计（可选装配；失败只告警）。 */
+  private readonly stats: StatsStorePort | undefined;
 
   constructor(
     private readonly store: GraphStorePort,
@@ -140,6 +143,8 @@ export class RunGraphCoordinator implements RunGraphPort {
       diagnostics?: DiagnosticSink;
       outline?: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort };
       canon?: CanonStorePort;
+      /** M5.4：周目完结时的结算统计（结局达成 + 边通过，按周目幂等）。 */
+      stats?: StatsStorePort;
     },
   ) {
     this.location = store.location;
@@ -147,6 +152,7 @@ export class RunGraphCoordinator implements RunGraphPort {
     this.diagnostics = options?.diagnostics ?? silentDiagnosticSink;
     this.outline = options?.outline;
     this.canon = options?.canon;
+    this.stats = options?.stats;
   }
 
   /** 串行执行一次图变更（见 mutationChain）。 */
@@ -672,8 +678,33 @@ export class RunGraphCoordinator implements RunGraphPort {
       endedAt: this.clock.nowIso(),
       ending: endingId,
     });
+    const settledRunId = this.currentRun.id;
     this.currentRun = null;
     await this.store.clearCursor();
+    // M5.4：结算统计（结局达成 + 路径边通过；按周目幂等，失败只告警）。
+    if (this.stats !== undefined) {
+      try {
+        const allEdges = await this.store.listEdges();
+        const traversed: string[] = [];
+        let nodeId: DecisionId | null = null;
+        const endingEdge = allEdges.find((e) => e.to.kind === "ending" && e.to.id === endingId);
+        if (endingEdge !== undefined) {
+          traversed.push(endingEdge.id);
+          nodeId = endingEdge.from;
+        }
+        const visited = new Set<string>();
+        while (nodeId !== null && !visited.has(nodeId)) {
+          visited.add(nodeId);
+          const inEdge = pickLatestInEdge(allEdges, nodeId);
+          if (inEdge === undefined) break;
+          traversed.push(inEdge.id);
+          nodeId = inEdge.from;
+        }
+        await this.stats.recordSettlement(settledRunId, endingId, traversed);
+      } catch (err) {
+        this.diagnostics.warn("RunGraphCoordinator", `结算统计失败（忽略）：${String(err)}`);
+      }
+    }
     return endingId;
   }
 

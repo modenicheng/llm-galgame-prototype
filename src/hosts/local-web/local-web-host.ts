@@ -72,9 +72,12 @@ export interface LocalWebHostOptions {
   /**
    * M5.1 图视图通道：GET /api/graph 时调用 build——实现方（entrypoint）
    * 负责用当前 gameId 装配图存储并产出脱敏视图。缺省时 /api/graph 返回 404。
+   * M5.4：settlement（结算）/gallery（图鉴）同理。
    */
   graph?: {
     build: (gameId: string) => Promise<import("../../application/graph/graph-view.js").GraphView>;
+    settlement?: (gameId: string) => Promise<unknown>;
+    gallery?: (gameId: string) => Promise<unknown>;
   };
 }
 
@@ -404,6 +407,32 @@ export class LocalWebHost {
         return;
       }
       void this.handleWorldCreation(req, res);
+      return;
+    }
+    if (req.method === "GET" && pathname === "/api/graph/settlement") {
+      if (this.graph?.settlement === undefined) {
+        this.sendJson(res, 404, { error: "settlement view unavailable" });
+        return;
+      }
+      this.graph
+        .settlement(this.app.gameId)
+        .then((view) => this.sendJson(res, 200, view))
+        .catch((err: unknown) => {
+          this.sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        });
+      return;
+    }
+    if (req.method === "GET" && pathname === "/api/graph/gallery") {
+      if (this.graph?.gallery === undefined) {
+        this.sendJson(res, 404, { error: "gallery view unavailable" });
+        return;
+      }
+      this.graph
+        .gallery(this.app.gameId)
+        .then((view) => this.sendJson(res, 200, view))
+        .catch((err: unknown) => {
+          this.sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        });
       return;
     }
     if (req.method === "GET" && pathname === "/api/graph") {
