@@ -272,11 +272,25 @@
 }
 
 .writer-repair {
+  display: block;
   color: #d29922;
+  margin-top: 2px;
 }
 
 .writer-request-notice .is-error-text {
+  display: block;
   color: #f85149;
+  white-space: pre-line;
+  word-break: break-all;
+}
+
+.dsl-row.is-repaired .dsl-no {
+  color: #d29922;
+}
+
+.dsl-row.is-repaired .dsl-code::before {
+  content: "a1 ";
+  color: #d29922;
 }
 
 .writer-request-stream {

@@ -1,3 +1,4 @@
+import { normalizeDslCommandPrefix } from "./line-parser.js";
 import type { SegmentEndReason } from "./types.js";
 
 const CHARACTER_POSITIONS: ReadonlySet<string> = new Set([
@@ -45,7 +46,7 @@ export function repairDslClosingLine(
   allowedReasons: readonly SegmentEndReason[],
 ): DslClosingRepair | null {
   if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
+  const trimmed = normalizeDslCommandPrefix(raw.trim());
   if (!trimmed.startsWith("@")) return null;
   // Canonical sentinel: never a repair (it must not emit a repair event);
   // `@ end …` (keyword spaced from the @) deliberately does not match and

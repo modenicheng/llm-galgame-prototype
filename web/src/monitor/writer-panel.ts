@@ -7,7 +7,8 @@ import type { MonitorServerEvent } from "@shared/wire/monitor-message.js";
 import { DslStreamView } from "./dsl-stream-view.js";
 import { el } from "../ui/dom.js";
 
-const TASK_TYPE_LABELS: Record<string, string> = {
+/** Shared with the prompt audit panel (same task-type vocabulary). */
+export const TASK_TYPE_LABELS: Record<string, string> = {
   opening: "开场",
   continuation: "续写",
   branch_prefetch: "分支预取",
@@ -23,6 +24,15 @@ const STATE_LABELS: Record<WriterAttemptModel["state"], string> = {
   failed: "失败",
   retried: "已重试",
   cancelled: "已取消",
+};
+
+/** 修复结果的语义标签——监控端一眼看出修的是什么，不靠读 message 猜。 */
+const REPAIR_KIND_LABELS: Record<string, string> = {
+  end_keyword: "补 end",
+  form_close: "补 @/?",
+  form_prompt_merge: "提示并入",
+  visual_swap: "台词头纠正",
+  strip_continue: "断行续写",
 };
 
 /** Distance from the bottom inside which the panel keeps following. */
@@ -119,6 +129,8 @@ export class WriterPanel {
       existing.renderedText = existing.attempt.text;
     } else if (event.type === "writer.line") {
       existing.view.applyServerLine(event.lineIndex, event.kind, event.error);
+    } else if (event.type === "writer.repair") {
+      existing.view.markRepaired(event.repair.lineIndex);
     } else if (event.type === "writer.end") {
       existing.view.finish();
       existing.finished = true;
@@ -214,6 +226,9 @@ export class WriterPanel {
       if (attempt.state === "streaming") view.append(attempt.text);
       else view.replay(attempt.text);
     }
+    // Repairs ride the attempt model — re-apply their row marks so a
+    // reconnect snapshot or ring-replay keeps showing them.
+    for (const repair of attempt.repairs) view.markRepaired(repair.lineIndex);
     this.sections.set(attempt.attemptId, {
       task,
       attempt,
@@ -240,6 +255,9 @@ export class WriterPanel {
         request.view.reset(this.model.knownSpeakers());
         if (request.attempt.state === "streaming") request.view.append(nextText);
         else request.view.replay(nextText);
+        for (const repair of request.attempt.repairs) {
+          request.view.markRepaired(repair.lineIndex);
+        }
       }
       request.renderedText = nextText;
     }
@@ -291,13 +309,12 @@ export class WriterPanel {
 
     notice.textContent = "";
     if (attempt.repairs.length > 0) {
-      notice.appendChild(
-        el(
-          "span",
-          "writer-repair",
-          `有限修复 ${attempt.repairs.length} 次：${attempt.repairs.map((repair) => repair.message).join("；")}`,
-        ),
-      );
+      for (const repair of attempt.repairs) {
+        const label = REPAIR_KIND_LABELS[repair.kind] ?? repair.kind;
+        notice.appendChild(
+          el("span", "writer-repair", `[${label}] ${repair.message}`),
+        );
+      }
     }
     if (attempt.error !== null) notice.appendChild(el("span", "is-error-text", attempt.error));
   }

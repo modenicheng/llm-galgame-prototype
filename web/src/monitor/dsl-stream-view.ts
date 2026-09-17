@@ -101,6 +101,11 @@ export class DslStreamView {
     row.classList.toggle("has-error", error !== null);
   }
 
+  /** Mark a row that an automatic protocol repair touched (keeps reconnect replays honest). */
+  markRepaired(lineIndex: number): void {
+    this.rows[lineIndex - 1]?.classList.add("is-repaired");
+  }
+
   /** Mark the DSL row (or full interaction form) currently shown to the player. */
   highlight(lineIndex: number | null): HTMLElement | null {
     for (const row of this.rows) {

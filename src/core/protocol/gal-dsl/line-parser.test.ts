@@ -16,6 +16,37 @@ function expectCode(line: string, code: DslErrorCode): void {
 }
 
 describe("parseDslLine", () => {
+  // --- 全角/半角指令前缀兼容 ---
+
+  it("normalizes full-width @ and punctuation in command position", () => {
+    expect(parseDslLine("＠bg basement")).toEqual({ kind: "background", assetId: "basement" });
+    expect(parseDslLine("@？你打算怎么回应？")).toEqual({
+      kind: "form_start",
+      prompt: "你打算怎么回应？",
+    });
+    expect(parseDslLine("＠？你打算怎么回应？")).toEqual({
+      kind: "form_start",
+      prompt: "你打算怎么回应？",
+    });
+    expect(parseDslLine("＠＋ 先退后一步")).toEqual({ kind: "form_option", text: "先退后一步" });
+    expect(parseDslLine("@＝ 说出你想说的话")).toEqual({
+      kind: "form_input",
+      placeholder: "说出你想说的话",
+    });
+    expect(parseDslLine("＠／?")).toEqual({ kind: "form_end" });
+    expect(parseDslLine("＠end 4607 buffer")).toEqual({
+      kind: "segment_end",
+      nonce: "4607",
+      reason: "buffer",
+    });
+  });
+
+  it("keeps a narration line starting with a full-width question mark", () => {
+    // 只有 @/＠ 开头才是指令意图；全角问号开头的正文仍是旁白。
+    expect(parseDslLine("？他愣了一下。")).toEqual({ kind: "narration", text: "？他愣了一下。" });
+  });
+
+
   // --- narration ---
 
   it("parses a plain narration line", () => {

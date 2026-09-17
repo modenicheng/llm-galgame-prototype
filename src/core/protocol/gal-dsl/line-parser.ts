@@ -82,6 +82,27 @@ function containsHan(text: string): boolean {
   return /\p{Script=Han}/u.test(text);
 }
 
+/** @ 后的全角标点 → 半角（@？提示 → @?提示；@／? → @/?）。 */
+const FULLWIDTH_FORM_PUNCT: Readonly<Record<string, string>> = {
+  "？": "?",
+  "＋": "+",
+  "＝": "=",
+  "／": "/",
+};
+
+/**
+ * 全角/半角指令前缀兼容（仅行首指令意图位）：＠→@，@ 后紧跟的全角
+ * ？＋＝／ 转半角。正文行永不以 @/＠ 开头，普通 `？` 开头的旁白不受影响。
+ */
+export function normalizeDslCommandPrefix(line: string): string {
+  if (line.startsWith("＠")) line = `@${line.slice(1)}`;
+  if (line.startsWith("@") && line.length > 1) {
+    const mapped = FULLWIDTH_FORM_PUNCT[line[1]!];
+    if (mapped !== undefined) line = `@${mapped}${line.slice(2)}`;
+  }
+  return line;
+}
+
 const VISUAL_BRACKET_EXPECTED =
   "台词头只允许 [变体]、[spriteSet:变体]、[|位置]、[spriteSet:变体|位置] 或 []（复位）；位置只能是 far_left|left|center|right|far_right";
 
@@ -216,7 +237,7 @@ function parseName(content: string | undefined): DialogueNameSpec {
  */
 export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string>): DslLine {
   // Callers are expected to trim, but be defensive (also strips "\r").
-  const line = rawLine.trim();
+  const line = normalizeDslCommandPrefix(rawLine.trim());
 
   // 1. segment end sentinel: @end <nonce> <reason>
   const endMatch = /^@end\s+(\S+)(?:\s+(\S+))?\s*$/.exec(line);

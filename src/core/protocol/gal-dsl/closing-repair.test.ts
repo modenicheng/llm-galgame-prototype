@@ -28,6 +28,13 @@ describe("repairDslClosingLine", () => {
     });
   });
 
+  it("repairs a full-width at-sign sentinel", () => {
+    expect(repairDslClosingLine("＠ 07b8 buffer", "07b8", allowed)).toEqual({
+      line: "@end 07b8 buffer",
+      kind: "end_keyword",
+    });
+  });
+
   it("accepts surrounding whitespace but preserves the canonical output", () => {
     expect(repairDslClosingLine("  @   07b8   buffer  ", "07b8", allowed)).toEqual({
       line: "@end 07b8 buffer",
