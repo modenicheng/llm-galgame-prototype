@@ -350,11 +350,29 @@ export class StoryGenerator {
       Boolean(reason),
     );
     if (parts.length === 0) return "";
-    return `\n${parts
-      .map(
-        (reason) =>
-          `上一份输出出错：${reason}。请修正该问题后从失败位置继续，不要重复已输出的内容。`,
-      )
+    // Wording matters per path: this request carries no assistant replay,
+    // so for provider-internal retries the model cannot see its previous
+    // output — asking it to "continue from where it failed" would push it
+    // to start mid-segment. Only the Game-level path serializes the failed
+    // segment's playable events into the user prompt, where continuing
+    // from the failure point is meaningful.
+    return `\n${[
+      lastError
+        ? // With a Game-level repairReason the user prompt serializes the
+          // failed segment's playable prefix, so continuing from the
+          // failure point is meaningful for BOTH reasons; without it the
+          // model never saw its previous output and must re-emit whole.
+          `上一份输出出错：${lastError}。请修正该问题${
+            repairReason
+              ? "后从失败位置继续，不要重复已输出的内容。"
+              : "，重新完整输出本段全部内容（不要省略开头）。"
+          }`
+        : "",
+      repairReason
+        ? `上一份输出出错：${repairReason}。请修正该问题后从失败位置继续，不要重复已输出的内容。`
+        : "",
+    ]
+      .filter(Boolean)
       .join("\n")}`;
   }
 
