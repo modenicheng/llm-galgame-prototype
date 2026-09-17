@@ -97,6 +97,60 @@ export function generateNonce(): string {
   return Math.floor(Math.random() * 0x10000).toString(16).padStart(4, "0");
 }
 
+// ---------------------------------------------------------------------------
+// Strip-and-continue 第二层修复（2026-09-17 设计定稿）
+//
+// 原则：任何以 @ 开头的残句都不允许影响玩家可见内容；无法解析的 @ 行不再
+// 直接断流报废，而是把该行从模型输出中剔除，然后利用模型的前缀续写能力
+// 补全后续内容。同一 DslSegmentParser 实例贯穿续写——待提交的舞台提示与
+// 打开中的表单状态原样存活（这是相对 fail→运行时修复链的核心增益）。
+//
+// 预算：每 attempt 最多剔除 1 次，防止模型反复写出同一坏行造成剔除循环；
+// 预算耗尽回退到原有的 rejectLine（retry/fail）路径。首行即坏（无可续写
+// 前缀）也回退原路径——空 assistant 前缀等于整段重发，徒增一跳。
+// ---------------------------------------------------------------------------
+
+/** 允许剔除续写的错误码白名单：@ 锚定的、续写语义可恢复的失败。 */
+const STRIP_CONTINUE_CODES: ReadonlySet<string> = new Set([
+  "UNKNOWN_COMMAND",
+  "INVALID_CH_CUE",
+  "UNKNOWN_LINE",
+  "EMPTY_FORM_PROMPT",
+  "FORM_LINE_OUTSIDE_FORM",
+  "FORM_END_WITHOUT_OPEN",
+  "SENTINEL_MISSING_REASON",
+  "SENTINEL_INVALID_REASON",
+  "SENTINEL_NONCE_MISMATCH",
+]);
+
+/**
+ * Build the user-turn instruction that rides with the assistant raw-prefix
+ * continuation after a line was stripped. The model sees its own exact
+ * output (minus the offending line) and continues from the cut.
+ */
+function buildStripContinueInstruction(
+  error: DslProtocolError,
+  nonce: string,
+  allowedReasons: readonly SegmentEndReason[],
+): string {
+  const parts = [
+    "你上一段输出中有一行无法通过校验，系统已把它从你的输出中删除，输出在删除处中断。",
+    `错误：${error.message}`,
+  ];
+  if (error.detail?.cause !== undefined) parts.push(`原因：${error.detail.cause}`);
+  if (error.detail?.expected !== undefined) parts.push(`期望格式：${error.detail.expected}`);
+  if (error.detail?.fix !== undefined) parts.push(`修正：${error.detail.fix}`);
+  parts.push(
+    [
+      "请从删除位置直接续写：补全该处应有的合法内容，然后完成本段剩余部分。",
+      "若是交互表单：@? 与提示文本必须写在同一行（`@? 提示文本`），随后写 @+ 选项行（2–5 个），最后用 @/? 收尾。",
+      `最后必须逐字输出结束哨兵：@end ${nonce} ${allowedReasons.join("/")}。`,
+      "不要重复删除位置之前已输出的任何内容，也不要再次输出被删除的那一行。",
+    ].join("\n"),
+  );
+  return parts.join("\n");
+}
+
 /**
  * Event mode 收束/节奏指引（docs §70 附加指令）。全部追加在 user prompt
  * 末尾——这些内容逐请求变化，必须位于稳定前缀（素材/历史/状态）之后，
@@ -594,11 +648,30 @@ export class StoryGenerator {
     // null when the gateway strips usage (estimate fallback below). Read via
     // reportedUsage(): assignments happen inside the lines generator below,
     // which TS control-flow analysis cannot see (it would narrow to never).
+    // A strip-continue folds the current reading into `foldedUsage` and starts
+    // over for the continuation stream — the attempt's usage is the sum.
     let apiUsage: LLMUsageReading | null = null;
-    const reportedUsage = (): LLMUsageReading | null => apiUsage;
+    let foldedUsage: LLMUsageReading | null = null;
+    const reportedUsage = (): LLMUsageReading | null => {
+      if (apiUsage === null) return foldedUsage;
+      if (foldedUsage === null) return apiUsage;
+      return {
+        input: foldedUsage.input + apiUsage.input,
+        output: foldedUsage.output + apiUsage.output,
+        cachedInput: (foldedUsage.cachedInput ?? 0) + (apiUsage.cachedInput ?? 0),
+      };
+    };
 
-    const controller = new AbortController();
-    const onAbort = () => controller.abort();
+    // Strip-continue state: the raw model lines consumed so far (the
+    // continuation replays them verbatim as an assistant prefix), a deferred
+    // bare `@?` awaiting its next line, and the per-attempt strip budget.
+    const rawLines: string[] = [];
+    let pendingFormStart: { lineIndex: number; rawIndex: number } | null = null;
+    let stripBudget = 1;
+    // Which SSE stream is currently authoritative; the outer abort signal
+    // always bridges to the active one (a strip-continue swaps controllers).
+    let activeController = new AbortController();
+    const onAbort = () => activeController.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
 
     // Original error behind a mid-stream abort. Chained as the `cause` of
@@ -606,46 +679,107 @@ export class StoryGenerator {
     let streamError: unknown = undefined;
 
     try {
-      const stream = await this.client.chat.completions.create(
-        {
-          model: this.config.api.model,
-          temperature: this.config.generation.temperature,
-          ...(this.config.api.token_limit_field === "max_tokens"
-            ? { max_tokens: maxTokens }
-            : { max_completion_tokens: maxTokens }),
-          // DeepSeek reasoning models: thinking toggle as a TOP-LEVEL field.
-          ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
-          messages: [
-            { role: "system" as const, content: this.systemPrompt },
-            { role: "user" as const, content: userPrompt },
-          ],
-          stream: true,
-          stream_options: { include_usage: true },
-        },
-        { signal: controller.signal },
-      );
+      const createStream = async (
+        messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+      ) =>
+        this.client.chat.completions.create(
+          {
+            model: this.config.api.model,
+            temperature: this.config.generation.temperature,
+            ...(this.config.api.token_limit_field === "max_tokens"
+              ? { max_tokens: maxTokens }
+              : { max_completion_tokens: maxTokens }),
+            // DeepSeek reasoning models: thinking toggle as a TOP-LEVEL field.
+            ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
+            messages,
+            stream: true,
+            stream_options: { include_usage: true },
+          },
+          { signal: activeController.signal },
+        );
 
-      const decoder = new StreamLineDecoder();
+      const stream = await createStream([
+        { role: "system" as const, content: this.systemPrompt },
+        { role: "user" as const, content: userPrompt },
+      ]);
+
       const parser = new DslSegmentParser({ expectedNonce: nonce, allowedReasons });
 
       // SSE chunks → complete lines as a named async-generator transform:
       // usage capture, first-line timing and char counting live here, out of
-      // the parse loop below. The decoder stays outside so the consumer can
-      // flush the truncated tail after the stream ends.
-      const lines = (async function* (): AsyncGenerator<string> {
-        for await (const chunk of stream) {
-          // Usage rides the final chunk, which usually carries empty choices —
-          // capture it before the content check skips empty chunks.
-          const chunkUsage = parseLLMUsage(chunk.usage);
-          if (chunkUsage) apiUsage = chunkUsage;
-          const content = chunk.choices[0]?.delta?.content;
-          if (!content) continue;
-          if (firstLineMs === 0) firstLineMs = Date.now();
-          streamChars += content.length;
-          observer?.onDelta(attemptId, content);
-          yield* decoder.push(content);
-        }
-      })();
+      // the parse loop below. One decoder+generator per stream; a
+      // strip-continue swaps in a fresh pair while the parser (and its
+      // pending cues / open form) carries over.
+      const makeLineStream = (
+        sse: AsyncIterable<{
+          choices?: Array<{ delta?: { content?: string | null } }>;
+          usage?: unknown;
+        }>,
+        lineDecoder: StreamLineDecoder,
+      ): AsyncGenerator<string> =>
+        (async function* (): AsyncGenerator<string> {
+          for await (const chunk of sse) {
+            // Usage rides the final chunk, which usually carries empty choices —
+            // capture it before the content check skips empty chunks.
+            const chunkUsage = parseLLMUsage(chunk.usage);
+            if (chunkUsage) apiUsage = chunkUsage;
+            const content = chunk.choices?.[0]?.delta?.content;
+            if (!content) continue;
+            if (firstLineMs === 0) firstLineMs = Date.now();
+            streamChars += content.length;
+            observer?.onDelta(attemptId, content);
+            yield* lineDecoder.push(content);
+          }
+        })();
+
+      let decoder = new StreamLineDecoder();
+      let lines = makeLineStream(stream, decoder);
+
+      /**
+       * Strip-and-continue: delete the offending line from the model's raw
+       * output and let it continue from the exact cut with the SAME parser
+       * instance (committed groups, pending cues and any open form survive).
+       * Returns false when not eligible (code not whitelisted, budget spent,
+       * or nothing to continue from) — the caller falls back to rejectLine.
+       */
+      const tryStripContinue = async (
+        error: DslProtocolError,
+        rawIndex: number,
+        atLineIndex: number,
+      ): Promise<boolean> => {
+        if (stripBudget <= 0 || !STRIP_CONTINUE_CODES.has(error.code)) return false;
+        const prefix = rawLines.slice(0, rawIndex).join("\n");
+        if (prefix.trim() === "") return false;
+        stripBudget -= 1;
+        this.metrics?.recordSchemaValidationFailure();
+        observer?.onRepair?.(attemptId, {
+          kind: "strip_continue",
+          lineIndex: atLineIndex,
+          message: `第 ${atLineIndex} 行无法解析，已剔除并让模型从断点续写：${error.message.slice(0, 100)}`,
+        });
+        console.warn(
+          `[LLM] ${type} 剔除续写：第 ${atLineIndex} 行 "${rawLines[rawIndex] ?? ""}" [${error.code}]`,
+        );
+        // The canonical output is everything except the deleted line.
+        rawLines.splice(rawIndex, 1);
+        foldedUsage = reportedUsage();
+        apiUsage = null;
+        const previousController = activeController;
+        activeController = new AbortController();
+        previousController.abort();
+        const continuation = await createStream([
+          { role: "system" as const, content: this.systemPrompt },
+          { role: "user" as const, content: userPrompt },
+          { role: "assistant" as const, content: `${prefix}\n` },
+          {
+            role: "user" as const,
+            content: buildStripContinueInstruction(error, nonce, allowedReasons),
+          },
+        ]);
+        decoder = new StreamLineDecoder();
+        lines = makeLineStream(continuation, decoder);
+        return true;
+      };
 
       const emit = (emitted: EventGroupDraft[], sourceLineIndex: number): void => {
         for (const group of emitted) {
@@ -682,191 +816,334 @@ export class StoryGenerator {
         } else {
           failureReason = detail;
         }
-        controller.abort();
+        activeController.abort();
       };
 
-      for await (const rawLine of lines) {
-        lineIndex += 1;
+      // 跨流主循环：strip-continue 会换入一段续写流并从头进入 for-await，
+      // 行号、parser 状态（待提交提示/打开中的表单）与已提交组全部延续。
+      outer: while (true) {
+        for await (const rawLine of lines) {
+          lineIndex += 1;
 
-        // Tolerate markdown fence markers around the DSL payload.
-        const trimmed = rawLine.trim();
-        if (trimmed.startsWith("```") || trimmed.endsWith("```")) {
-          observer?.onLine(attemptId, lineIndex, { kind: null });
-          continue;
-        }
-
-        recentRawLines.push(trimmed);
-        if (recentRawLines.length > 3) recentRawLines.shift();
-
-        const closingRepair = repairDslClosingLine(trimmed, nonce, allowedReasons);
-        if (closingRepair !== null) {
-          observer?.onRepair?.(attemptId, {
-            kind: closingRepair.kind,
-            lineIndex,
-            message: `已将“${trimmed}”规范化为“${closingRepair.line}”。`,
-          });
-        }
-
-        // Swapped dialogue-header bracket (`树莓娘[raspberry|smug]: …`) — a
-        // registered id in the variant slot is dropped deterministically.
-        // @-prefixed lines (@+/@= form rows) carry free text in the same
-        // shape and must never be "repaired".
-        const swapRepair = trimmed.startsWith("@")
-          ? null
-          : repairSwappedVisualSlots(trimmed, this.knownSpeakers);
-        if (swapRepair !== null) {
-          observer?.onRepair?.(attemptId, {
-            kind: "visual_swap",
-            lineIndex,
-            message: `已将台词头 ${swapRepair.from} 规范化为 ${swapRepair.to}（角色 id 不是立绘变体）。`,
-          });
-        }
-
-        let parsed: DslLine;
-        try {
-          parsed = parseDslLine(
-            swapRepair?.line ?? closingRepair?.line ?? trimmed,
-            this.knownSpeakers,
-          );
-        } catch (error) {
-          if (error instanceof DslProtocolError) {
-            observer?.onLine(attemptId, lineIndex, { kind: null, error: error.message });
-            rejectLine(error, trimmed);
-            break;
+          // Tolerate markdown fence markers around the DSL payload.
+          const trimmed = rawLine.trim();
+          if (trimmed.startsWith("```") || trimmed.endsWith("```")) {
+            observer?.onLine(attemptId, lineIndex, { kind: null });
+            continue;
           }
-          throw error;
-        }
+          rawLines.push(rawLine);
 
-        let emitted: EventGroupDraft[];
-        try {
-          if (
-            parsed.kind === "segment_end" &&
-            parsed.reason === "interaction" &&
-            parsed.nonce === nonce &&
-            allowedReasons.includes(parsed.reason) &&
-            parser.hasOpenInteraction()
-          ) {
-            const closed = parser.closeOpenInteraction();
+          recentRawLines.push(trimmed);
+          if (recentRawLines.length > 3) recentRawLines.shift();
+
+          const closingRepair = repairDslClosingLine(trimmed, nonce, allowedReasons);
+          if (closingRepair !== null) {
             observer?.onRepair?.(attemptId, {
-              kind: "form_close",
+              kind: closingRepair.kind,
               lineIndex,
-              message: "交互表单缺少 @/?，已在 interaction 段尾前补齐。",
+              message: `已将“${trimmed}”规范化为“${closingRepair.line}”。`,
             });
-            if (closed.length > 0) emit(closed, openFormStartLine ?? lineIndex);
-            openFormStartLine = null;
           }
-          emitted = parser.pushLine(parsed);
-        } catch (error) {
-          if (error instanceof DslProtocolError) {
-            // A bare `@?` with an empty prompt while a form is already open
-            // is almost always a botched `@/?` (observed in the wild,
-            // sim-rambler 2026-09-17) — close the form instead of failing.
-            // Without an open form the same line throws EMPTY_FORM_PROMPT,
-            // which is not inferrable and stays a real error.
+
+          // Swapped dialogue-header bracket (`树莓娘[raspberry|smug]: …`) — a
+          // registered id in the variant slot is dropped deterministically.
+          // @-prefixed lines (@+/@= form rows) carry free text in the same
+          // shape and must never be "repaired".
+          const swapRepair = trimmed.startsWith("@")
+            ? null
+            : repairSwappedVisualSlots(trimmed, this.knownSpeakers);
+          if (swapRepair !== null) {
+            observer?.onRepair?.(attemptId, {
+              kind: "visual_swap",
+              lineIndex,
+              message: `已将台词头 ${swapRepair.from} 规范化为 ${swapRepair.to}（角色 id 不是立绘变体）。`,
+            });
+          }
+
+          let parsed: DslLine;
+          try {
+            parsed = parseDslLine(
+              swapRepair?.line ?? closingRepair?.line ?? trimmed,
+              this.knownSpeakers,
+            );
+          } catch (error) {
+            if (error instanceof DslProtocolError) {
+              observer?.onLine(attemptId, lineIndex, { kind: null, error: error.message });
+              if (await tryStripContinue(error, rawLines.length - 1, lineIndex)) continue outer;
+              rejectLine(error, trimmed);
+              break;
+            }
+            throw error;
+          }
+
+          // 裸 `@?` 不立刻入 parser：模型高频把表单提示写在下一行（实测
+          // deepseek 每次表单都如此），直接入 parser 会在空提示上炸掉整段。
+          // 延迟一行等待：下一行是旁白 → 合并为 `@? 提示`；否则按空提示
+          // 报错走剔除续写。
+          if (
+            pendingFormStart === null &&
+            parsed.kind === "form_start" &&
+            parsed.prompt === "" &&
+            !parser.hasOpenInteraction()
+          ) {
+            pendingFormStart = { lineIndex, rawIndex: rawLines.length - 1 };
+            observer?.onLine(attemptId, lineIndex, { kind: "form_start" });
+            continue;
+          }
+          if (pendingFormStart !== null) {
+            if (parsed.kind === "narration" && parsed.text.trim() !== "") {
+              const deferred = pendingFormStart;
+              pendingFormStart = null;
+              observer?.onRepair?.(attemptId, {
+                kind: "form_prompt_merge",
+                lineIndex: deferred.lineIndex,
+                message: `表单提示写在了 @? 的下一行，已合并为 "@? ${parsed.text.slice(0, 40)}"。`,
+              });
+              observer?.onLine(attemptId, lineIndex, { kind: "form_start" });
+              parsed = { kind: "form_start", prompt: parsed.text };
+              openFormStartLine = deferred.lineIndex;
+            } else if (parsed.kind !== "form_start" || parsed.prompt !== "") {
+              // 下一行不是旁白：裸 @? 的空提示无从弥补，先推入延迟行，
+              // 让 EMPTY_FORM_PROMPT 触发剔除续写（当前行随后由续写重写）。
+              const deferred = pendingFormStart;
+              pendingFormStart = null;
+              try {
+                parser.pushLine({ kind: "form_start", prompt: "" });
+              } catch (error) {
+                if (error instanceof DslProtocolError) {
+                  observer?.onLine(attemptId, deferred.lineIndex, {
+                    kind: null,
+                    error: error.message,
+                  });
+                  if (await tryStripContinue(error, deferred.rawIndex, deferred.lineIndex)) {
+                    continue outer;
+                  }
+                  rejectLine(error, rawLines[deferred.rawIndex] ?? "");
+                  break;
+                }
+                throw error;
+              }
+            }
+          }
+
+          let emitted: EventGroupDraft[];
+          try {
             if (
-              error.code === "FORM_ALREADY_OPEN" &&
-              parsed.kind === "form_start" &&
-              parsed.prompt === "" &&
+              parsed.kind === "segment_end" &&
+              parsed.reason === "interaction" &&
+              parsed.nonce === nonce &&
+              allowedReasons.includes(parsed.reason) &&
               parser.hasOpenInteraction()
             ) {
               const closed = parser.closeOpenInteraction();
               observer?.onRepair?.(attemptId, {
                 kind: "form_close",
                 lineIndex,
-                message: "已将空提示的 @? 视为表单结束 @/?。",
+                message: "交互表单缺少 @/?，已在 interaction 段尾前补齐。",
               });
               if (closed.length > 0) emit(closed, openFormStartLine ?? lineIndex);
               openFormStartLine = null;
-              observer?.onLine(attemptId, lineIndex, { kind: "form_end" });
-              continue;
             }
-            observer?.onLine(attemptId, lineIndex, { kind: parsed.kind, error: error.message });
-            rejectLine(error, trimmed);
-            break;
-          }
-          throw error;
-        }
-
-        observer?.onLine(attemptId, lineIndex, { kind: parsed.kind });
-        if (parsed.kind === "form_start") openFormStartLine = lineIndex;
-        if (emitted.length > 0) {
-          emit(emitted, parsed.kind === "form_end" ? (openFormStartLine ?? lineIndex) : lineIndex);
-        }
-        if (parsed.kind === "form_end") openFormStartLine = null;
-      }
-
-      // Truncated tail without a trailing newline: try it, but drop the
-      // partial when it is structurally invalid (docs §49–§50). A valid
-      // tail that still lacks the sentinel lands in the incomplete branch
-      // below — never a hard failure with already-forwarded groups.
-      const tail = decoder.flush();
-      if (!streamAborted && tail !== null) {
-        const trimmed = tail.trim();
-        if (
-          trimmed.length > 0 &&
-          !trimmed.startsWith("```") &&
-          !trimmed.endsWith("```")
-        ) {
-          try {
-            const tailIndex = lineIndex + 1;
-            const closingRepair = repairDslClosingLine(trimmed, nonce, allowedReasons);
-            if (closingRepair !== null) {
-              observer?.onRepair?.(attemptId, {
-                kind: closingRepair.kind,
-                lineIndex: tailIndex,
-                message: `已将“${trimmed}”规范化为“${closingRepair.line}”。`,
-              });
-            }
-            const tailSwap = repairSwappedVisualSlots(trimmed, this.knownSpeakers);
-            if (tailSwap !== null) {
-              observer?.onRepair?.(attemptId, {
-                kind: "visual_swap",
-                lineIndex: tailIndex,
-                message: `已将台词头 ${tailSwap.from} 规范化为 ${tailSwap.to}（角色 id 不是立绘变体）。`,
-              });
-            }
-            const tailParsed = parseDslLine(
-              tailSwap?.line ?? closingRepair?.line ?? trimmed,
-              this.knownSpeakers,
-            );
-            if (
-              tailParsed.kind === "segment_end" &&
-              tailParsed.reason === "interaction" &&
-              tailParsed.nonce === nonce &&
-              allowedReasons.includes(tailParsed.reason) &&
-              parser.hasOpenInteraction()
-            ) {
-              const closed = parser.closeOpenInteraction();
-              observer?.onRepair?.(attemptId, {
-                kind: "form_close",
-                lineIndex: tailIndex,
-                message: "交互表单缺少 @/?，已在 interaction 段尾前补齐。",
-              });
-              if (closed.length > 0) emit(closed, openFormStartLine ?? tailIndex);
-              openFormStartLine = null;
-            }
-            const emitted = parser.pushLine(tailParsed);
-            observer?.onLine(attemptId, tailIndex, { kind: tailParsed.kind });
-            if (tailParsed.kind === "form_start") openFormStartLine = tailIndex;
-            if (emitted.length > 0) {
-              emit(
-                emitted,
-                tailParsed.kind === "form_end" ? (openFormStartLine ?? tailIndex) : tailIndex,
-              );
-            }
-            if (tailParsed.kind === "form_end") openFormStartLine = null;
+            emitted = parser.pushLine(parsed);
           } catch (error) {
             if (error instanceof DslProtocolError) {
-              observer?.onLine(attemptId, lineIndex + 1, { kind: null, error: error.message });
-              this.metrics?.recordSchemaValidationFailure();
-              console.warn(
-                `[LLM] ${type} 输出在末尾被截断，已丢弃残片（截断于第 ${lineIndex + 1} 行）`,
-              );
-            } else {
-              throw error;
+              // A bare `@?` with an empty prompt while a form is already open
+              // is almost always a botched `@/?` (observed in the wild,
+              // sim-rambler 2026-09-17) — close the form instead of failing.
+              // Without an open form the same line throws EMPTY_FORM_PROMPT,
+              // which is not inferrable and stays a real error.
+              if (
+                error.code === "FORM_ALREADY_OPEN" &&
+                parsed.kind === "form_start" &&
+                parsed.prompt === "" &&
+                parser.hasOpenInteraction()
+              ) {
+                const closed = parser.closeOpenInteraction();
+                observer?.onRepair?.(attemptId, {
+                  kind: "form_close",
+                  lineIndex,
+                  message: "已将空提示的 @? 视为表单结束 @/?。",
+                });
+                if (closed.length > 0) emit(closed, openFormStartLine ?? lineIndex);
+                openFormStartLine = null;
+                observer?.onLine(attemptId, lineIndex, { kind: "form_end" });
+                continue;
+              }
+              observer?.onLine(attemptId, lineIndex, { kind: parsed.kind, error: error.message });
+              if (await tryStripContinue(error, rawLines.length - 1, lineIndex)) continue outer;
+              rejectLine(error, trimmed);
+              break;
+            }
+            throw error;
+          }
+
+          observer?.onLine(attemptId, lineIndex, { kind: parsed.kind });
+          if (parsed.kind === "form_start") openFormStartLine = lineIndex;
+          if (emitted.length > 0) {
+            emit(emitted, parsed.kind === "form_end" ? (openFormStartLine ?? lineIndex) : lineIndex);
+          }
+          if (parsed.kind === "form_end") openFormStartLine = null;
+        }
+
+        // ---- 当前流结束：处理无换行尾行 + 延迟的裸 @? ----
+        // 尾行处理失败若命中剔除续写，会换入续写流并重走外层循环
+        //（行号与 parser 状态延续），因此整块放在 while 内。
+        const tail = decoder.flush();
+        let tailConsumedByMerge = false;
+        if (!streamAborted && tail !== null) {
+          rawLines.push(tail);
+          const tailIndex = lineIndex + 1;
+          const trimmed = tail.trim();
+          if (
+            trimmed.length > 0 &&
+            !trimmed.startsWith("```") &&
+            !trimmed.endsWith("```")
+          ) {
+            // 流结束仍挂着裸 @?：尾行是旁白 → 合并为表单提示；否则按
+            // 空提示报错走剔除续写（模型停在 @? 的场景）。
+            if (pendingFormStart !== null) {
+              let tailParsed: DslLine | null = null;
+              let tailError: DslProtocolError | null = null;
+              try {
+                tailParsed = parseDslLine(trimmed, this.knownSpeakers);
+              } catch (error) {
+                if (error instanceof DslProtocolError) tailError = error;
+                else throw error;
+              }
+              const deferred = pendingFormStart;
+              if (tailParsed?.kind === "narration" && tailParsed.text.trim() !== "") {
+                pendingFormStart = null;
+                tailConsumedByMerge = true;
+                observer?.onRepair?.(attemptId, {
+                  kind: "form_prompt_merge",
+                  lineIndex: deferred.lineIndex,
+                  message: `表单提示写在了 @? 的下一行，已合并为 "@? ${tailParsed.text.slice(0, 40)}"。`,
+                });
+                observer?.onLine(attemptId, tailIndex, { kind: "form_start" });
+                try {
+                  parser.pushLine({ kind: "form_start", prompt: tailParsed.text });
+                } catch (error) {
+                  if (error instanceof DslProtocolError) {
+                    if (await tryStripContinue(error, deferred.rawIndex, deferred.lineIndex)) {
+                      continue outer;
+                    }
+                    rejectLine(error, rawLines[deferred.rawIndex] ?? "");
+                    break;
+                  }
+                  throw error;
+                }
+                openFormStartLine = deferred.lineIndex;
+              } else if (tailParsed !== null || tailError !== null) {
+                pendingFormStart = null;
+                const emptyPromptError = new DslProtocolError(
+                  "EMPTY_FORM_PROMPT",
+                  "交互表单的提示语不能为空。",
+                  {
+                    expected:
+                      "@? 与提示文本必须写在同一行：`@? 提示文本`（提示不能拆到下一行，也不能为空）",
+                    fix: '例如 "@? 你打算怎么回应？"',
+                  },
+                );
+                observer?.onLine(attemptId, deferred.lineIndex, {
+                  kind: null,
+                  error: emptyPromptError.message,
+                });
+                if (await tryStripContinue(emptyPromptError, deferred.rawIndex, deferred.lineIndex)) {
+                  continue outer;
+                }
+                rejectLine(emptyPromptError, rawLines[deferred.rawIndex] ?? "");
+                break;
+              }
+            }
+            if (!tailConsumedByMerge) {
+              try {
+                const closingRepair = repairDslClosingLine(trimmed, nonce, allowedReasons);
+                if (closingRepair !== null) {
+                  observer?.onRepair?.(attemptId, {
+                    kind: closingRepair.kind,
+                    lineIndex: tailIndex,
+                    message: `已将“${trimmed}”规范化为“${closingRepair.line}”。`,
+                  });
+                }
+                const tailSwap = repairSwappedVisualSlots(trimmed, this.knownSpeakers);
+                if (tailSwap !== null) {
+                  observer?.onRepair?.(attemptId, {
+                    kind: "visual_swap",
+                    lineIndex: tailIndex,
+                    message: `已将台词头 ${tailSwap.from} 规范化为 ${tailSwap.to}（角色 id 不是立绘变体）。`,
+                  });
+                }
+                const tailParsed = parseDslLine(
+                  tailSwap?.line ?? closingRepair?.line ?? trimmed,
+                  this.knownSpeakers,
+                );
+                if (
+                  tailParsed.kind === "segment_end" &&
+                  tailParsed.reason === "interaction" &&
+                  tailParsed.nonce === nonce &&
+                  allowedReasons.includes(tailParsed.reason) &&
+                  parser.hasOpenInteraction()
+                ) {
+                  const closed = parser.closeOpenInteraction();
+                  observer?.onRepair?.(attemptId, {
+                    kind: "form_close",
+                    lineIndex: tailIndex,
+                    message: "交互表单缺少 @/?，已在 interaction 段尾前补齐。",
+                  });
+                  if (closed.length > 0) emit(closed, openFormStartLine ?? tailIndex);
+                  openFormStartLine = null;
+                }
+                const emitted = parser.pushLine(tailParsed);
+                observer?.onLine(attemptId, tailIndex, { kind: tailParsed.kind });
+                if (tailParsed.kind === "form_start") openFormStartLine = tailIndex;
+                if (emitted.length > 0) {
+                  emit(
+                    emitted,
+                    tailParsed.kind === "form_end" ? (openFormStartLine ?? tailIndex) : tailIndex,
+                  );
+                }
+                if (tailParsed.kind === "form_end") openFormStartLine = null;
+                lineIndex = tailIndex;
+              } catch (error) {
+                if (error instanceof DslProtocolError) {
+                  observer?.onLine(attemptId, tailIndex, { kind: null, error: error.message });
+                  if (await tryStripContinue(error, rawLines.length - 1, tailIndex)) continue outer;
+                  this.metrics?.recordSchemaValidationFailure();
+                  console.warn(
+                    `[LLM] ${type} 输出在末尾被截断，已丢弃残片（截断于第 ${tailIndex} 行）`,
+                  );
+                } else {
+                  throw error;
+                }
+              }
             }
           }
         }
+        if (pendingFormStart !== null && !streamAborted) {
+          // 流结束仍挂着裸 @? 且没有尾行可合并：模型在 @? 处停笔。
+          // 剔除该行让模型续写完整表单（EMPTY_FORM_PROMPT 白名单内）。
+          const deferred = pendingFormStart;
+          pendingFormStart = null;
+          const emptyPromptError = new DslProtocolError(
+            "EMPTY_FORM_PROMPT",
+            "交互表单的提示语不能为空。",
+            {
+              expected:
+                "@? 与提示文本必须写在同一行：`@? 提示文本`（提示不能拆到下一行，也不能为空）",
+              fix: '例如 "@? 你打算怎么回应？"',
+            },
+          );
+          observer?.onLine(attemptId, deferred.lineIndex, {
+            kind: null,
+            error: emptyPromptError.message,
+          });
+          if (await tryStripContinue(emptyPromptError, deferred.rawIndex, deferred.lineIndex)) {
+            continue outer;
+          }
+          rejectLine(emptyPromptError, rawLines[deferred.rawIndex] ?? "");
+          break;
+        }
+        break;
       }
 
       const latencyMs = Date.now() - callStart;

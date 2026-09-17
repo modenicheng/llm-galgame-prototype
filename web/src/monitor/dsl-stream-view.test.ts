@@ -29,7 +29,7 @@ describe("DslStreamView", () => {
     const view = new DslStreamView(container);
     view.reset(new Set(["苏遥"]));
 
-    view.append("bg classroom_day\n苏遥[smile](苏遥): 你来了。\n雨点敲在窗");
+    view.append("@bg classroom_day\n苏遥[smile](苏遥): 你来了。\n雨点敲在窗");
     expect(countRows(container)).toBe(2);
     const partial = container.querySelector(".is-partial .dsl-code");
     expect(partial?.textContent).toBe("雨点敲在窗");
@@ -47,7 +47,7 @@ describe("DslStreamView", () => {
     const container = makeContainer();
     const view = new DslStreamView(container);
     view.reset(undefined);
-    view.replay("beat\n? 去哪？\n+ 天台\n+ 机房\n/?\n@end ab12 buffer\n");
+    view.replay("@beat\n@? 去哪？\n@+ 天台\n@+ 机房\n@/?\n@end ab12 buffer\n");
     expect(countRows(container)).toBe(6);
     const badges = [...container.querySelectorAll(".dsl-badge")].map((b) => b.textContent);
     expect(badges).toContain("@end");
@@ -69,7 +69,7 @@ describe("DslStreamView", () => {
     const container = makeContainer();
     const view = new DslStreamView(container);
     view.reset(undefined);
-    view.replay("? 你要怎么接话？\n+ 凑过去看看\n= 你想说点什么\n/?\n");
+    view.replay("@? 你要怎么接话？\n@+ 凑过去看看\n@= 你想说点什么\n@/?\n");
 
     const current = view.highlight(1);
     expect(current?.classList.contains("is-current-player")).toBe(true);
@@ -120,7 +120,7 @@ describe("MonitorModel → WriterPanel live flow", () => {
               ],
             },
           },
-          { type: "writer.delta", attemptId: "continuation-nonce1#0", text: "bg club_room\n苏遥：来了？\n" },
+          { type: "writer.delta", attemptId: "continuation-nonce1#0", text: "@bg club_room\n苏遥：来了？\n" },
           { type: "writer.line", attemptId: "continuation-nonce1#0", lineIndex: 1, kind: "background", error: null },
           { type: "writer.line", attemptId: "continuation-nonce1#0", lineIndex: 2, kind: "dialogue", error: null },
           {
@@ -179,7 +179,7 @@ describe("MonitorModel → WriterPanel live flow", () => {
       expect(container.querySelectorAll(".writer-request")).toHaveLength(2);
       expect(container.querySelector(".writer-request")).toBe(firstRequest);
       expect(countRows(container)).toBe(3);
-      expect(container.textContent?.indexOf("bg club_room")).toBeLessThan(
+      expect(container.textContent?.indexOf("@bg club_room")).toBeLessThan(
         container.textContent?.indexOf("beat") ?? -1,
       );
 
@@ -231,7 +231,7 @@ describe("MonitorModel → WriterPanel live flow", () => {
           {
             type: "writer.delta",
             attemptId: "opening-nonce3#0",
-            text: "? 你要怎么接话？\n+ 先看看\n= 自己说\n/?\n",
+            text: "@? 你要怎么接话？\n@+ 先看看\n@= 自己说\n@/?\n",
           },
         ],
       });
@@ -391,7 +391,7 @@ describe("MonitorModel snapshot", () => {
                   groups: 2,
                   error: null,
                   segmentEnd: "buffer",
-                  text: "bg club_room\n苏遥：开场白。\n",
+                  text: "@bg club_room\n苏遥：开场白。\n",
                   truncated: false,
                 },
               ],

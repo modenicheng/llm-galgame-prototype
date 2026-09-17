@@ -35,7 +35,7 @@ export interface WriterAttemptEnd {
 }
 
 export interface WriterRepair {
-  kind: "end_keyword" | "form_close" | "visual_swap";
+  kind: "end_keyword" | "form_close" | "visual_swap" | "form_prompt_merge" | "strip_continue";
   lineIndex: number;
   message: string;
 }

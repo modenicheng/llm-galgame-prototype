@@ -6,7 +6,8 @@ import {
 
 /**
  * Accumulates a single form: opened by `@?`, fed by `@+` / `@=`, closed by
- * `@/?` (legacy bare `?`/`+`/`=`/`/?` aliases still parse) (docs §24–§28, §43). Mode is derived on finish() — the model never writes
+ * `@/?` (the bare `?`/`+`/`=`/`/?` aliases are retired — the parser rejects
+ * them with RETIRED_ALIAS) (docs §24–§28, §43). Mode is derived on finish() — the model never writes
  * it (docs §28). All texts are stored trimmed.
  */
 export class InteractionBuilder {
@@ -28,7 +29,7 @@ export class InteractionBuilder {
         "EMPTY_FORM_PROMPT",
         "交互表单的提示语不能为空。",
         {
-          expected: "@? 之后必须紧跟一句完整的中文提示（问句或行动引导）",
+          expected: "@? 与提示文本必须写在同一行：`@? 提示文本`（提示不能拆到下一行，也不能为空）",
           fix: '例如 "@? 你打算怎么回应？"',
         },
       );

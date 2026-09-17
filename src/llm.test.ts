@@ -392,7 +392,7 @@ describe("DSL serializers and prompt builder", () => {
 });
 
 const DSL_ACCEPTANCE_TEXT = [
-  "bg basement",
+  "@bg basement",
   "",
   "地下室里只亮着终端的一点蓝光。",
   "",
@@ -400,11 +400,11 @@ const DSL_ACCEPTANCE_TEXT = [
   "",
   "苏遥[anxious]: 别碰那台机器。",
   "",
-  "? 怎么回应？",
-  "+ 追问她为什么知道机器仍能运行",
-  "+ 暂时停手",
-  "= 或说出自己的回答……",
-  "/?",
+  "@? 怎么回应？",
+  "@+ 追问她为什么知道机器仍能运行",
+  "@+ 暂时停手",
+  "@= 或说出自己的回答……",
+  "@/?",
   "",
   "@end a81f interaction",
 ].join("\n");
@@ -530,7 +530,7 @@ describe("DSL mode generation", () => {
   it("streams groups, forwards onGroup/onSegmentEnd, and resolves groups + segmentEnd", async () => {
     const gen = makeDslGenerator();
     mockDslClient(gen, (nonce) => [
-      "bg basement",
+      "@bg basement",
       "地下室里只亮着终端的一点蓝光。",
       "苏遥[normal|left](神秘女子): 你不该来这里。",
       `@end ${nonce} interaction`,
@@ -572,10 +572,10 @@ describe("DSL mode generation", () => {
     } as DslStreamObserver;
     const gen = makeDslGenerator(undefined, observer);
     mockDslClient(gen, (nonce) => [
-      "? 你要怎么接话？",
-      "+ 凑过去看那张纸片，先别撕",
-      "+ 问这挂件是在哪儿捡到的",
-      "= 你想说点什么",
+      "@? 你要怎么接话？",
+      "@+ 凑过去看那张纸片，先别撕",
+      "@+ 问这挂件是在哪儿捡到的",
+      "@= 你想说点什么",
       `@ ${nonce} interaction`,
     ]);
 
@@ -615,8 +615,8 @@ describe("DSL mode generation", () => {
     } as DslStreamObserver;
     const gen = makeDslGenerator(undefined, observer);
     mockDslClient(gen, (nonce) => [
-      "? 你要怎么接话？",
-      "+ 凑过去看那张纸片",
+      "@? 你要怎么接话？",
+      "@+ 凑过去看那张纸片",
       "@?", // empty prompt with the form open → botched @/?
       `@end ${nonce} interaction`,
     ]);
@@ -637,22 +637,26 @@ describe("DSL mode generation", () => {
   });
 
   it("does not repair a loose terminal with the wrong nonce", async () => {
+    const repairs: Array<{ kind: string; lineIndex: number; message: string }> = [];
     const observer = {
       onAttemptStart: vi.fn(),
       onDelta: vi.fn(),
       onLine: vi.fn(),
       onGroup: vi.fn(),
-      onRepair: vi.fn(),
+      onRepair: vi.fn((_attemptId: string, repair: (typeof repairs)[number]) => repairs.push(repair)),
       onUsage: vi.fn(),
       onAttemptEnd: vi.fn(),
     } as DslStreamObserver;
     const gen = makeDslGenerator(undefined, observer);
-    mockDslClient(gen, () => ["? 怎么回应？", "+ 先看看", "@ dead interaction"]);
+    // Continuation replays the same broken content: the budget runs out and
+    // the attempt fails — but no end_keyword repair may ever fire for a
+    // nonce that cannot match.
+    mockDslClient(gen, () => ["@? 怎么回应？", "@+ 先看看", "@ dead interaction"]);
 
     await expect(
       (gen as any).generateOpening(1, createInitialState()),
-    ).rejects.toThrow(/连续校验失败|CONTENT_INSIDE_OPEN_FORM|open form/);
-    expect(observer.onRepair).not.toHaveBeenCalled();
+    ).rejects.toThrow(/连续校验失败|EMPTY_FORM_PROMPT|UNKNOWN_COMMAND/);
+    expect(repairs.map((repair) => repair.kind)).not.toContain("end_keyword");
   });
 
   it("retries with a repair instruction when a bad line precedes any forwarded group", async () => {
@@ -683,11 +687,13 @@ describe("DSL mode generation", () => {
     });
   });
 
-  it("fails with the line framing and cause when a bad line follows forwarded groups", async () => {
+  it("fails preserving the prefix when a non-@ line is structurally invalid", async () => {
+    // INVALID_VISUAL_BRACKET is not @-anchored → not strip-continuable → the
+    // existing fail path keeps the forwarded prefix for the runtime repair.
     const gen = makeDslGenerator();
     mockDslClient(gen, () => [
       "地下室里只亮着终端的一点蓝光。",
-      "@end a81f buffer", // nonce never matches the random request nonce
+      "苏遥[|]: 空段。",
     ]);
 
     const received: EventGroupDraft[] = [];
@@ -697,11 +703,143 @@ describe("DSL mode generation", () => {
 
     await expect(promise).rejects.toMatchObject({
       message: expect.stringMatching(
-        /^DSL 流校验失败，已保留前面可播放的内容。第 2 行 DSL 错误 \[SENTINEL_NONCE_MISMATCH\]/,
+        /^DSL 流校验失败，已保留前面可播放的内容。第 2 行 DSL 错误 \[INVALID_VISUAL_BRACKET\]/,
       ),
       cause: expect.objectContaining({ name: "DslProtocolError" }),
     });
     expect(received).toHaveLength(1);
+  });
+
+  it("merges a split form prompt (bare @? followed by narration) deterministically", async () => {
+    // Observed on deepseek 2026-09-17: the model writes the form prompt on
+    // the NEXT line after a bare `@?`. The lookahead merge folds it into the
+    // same line without any extra LLM round trip.
+    const repairs: Array<{ kind: string; message: string }> = [];
+    const observer = {
+      onAttemptStart: vi.fn(),
+      onDelta: vi.fn(),
+      onLine: vi.fn(),
+      onGroup: vi.fn(),
+      onRepair: vi.fn((_a: string, repair: (typeof repairs)[number]) => repairs.push(repair)),
+      onUsage: vi.fn(),
+      onAttemptEnd: vi.fn(),
+    } as DslStreamObserver;
+    const gen = makeDslGenerator(undefined, observer);
+    mockDslClient(gen, (nonce) => [
+      "树莓娘正等你接话，同学乙拎着包也没动。",
+      "@?",
+      "你打算怎么办？",
+      "@+ 坐树莓娘旁边",
+      "@+ 直接去第一排",
+      `@end ${nonce} interaction`,
+    ]);
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+
+    // No continuation request: the merge is purely deterministic.
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(received).toHaveLength(2);
+    expect(received[0]!.main).toEqual({ type: "narration", text: "树莓娘正等你接话，同学乙拎着包也没动。" });
+    expect(received[1]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { mode: "choice", prompt: "你打算怎么办？" },
+    });
+    expect(repairs.map((repair) => repair.kind)).toContain("form_prompt_merge");
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues when the model stops right after a bare @?", async () => {
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) return ["地下室里只亮着终端的一点蓝光。", "@?"];
+      return [
+        "@? 怎么回应？",
+        "@+ 暂时停手",
+        "@+ 追问她的来历",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+
+    expect(create).toHaveBeenCalledTimes(2);
+    // The continuation replays the good lines as an assistant prefix — the
+    // stripped `@?` must NOT be part of it.
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.role).toBe("assistant");
+    expect(assistant.content).toContain("地下室里只亮着终端的一点蓝光。");
+    expect(assistant.content).not.toContain("@?");
+    // The user turn carries the repair instruction.
+    const repairTurn = create.mock.calls[1]![0].messages[3] as { role: string; content: string };
+    expect(repairTurn.role).toBe("user");
+    expect(repairTurn.content).toContain("交互表单的提示语不能为空");
+    expect(repairTurn.content).toContain("从删除位置直接续写");
+
+    expect(received).toHaveLength(2);
+    expect(received[0]!.main).toEqual({ type: "narration", text: "地下室里只亮着终端的一点蓝光。" });
+    expect(received[1]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { prompt: "怎么回应？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues past a mismatched sentinel and completes with the corrected one", async () => {
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["地下室里只亮着终端的一点蓝光。", "@end a81f buffer"]; // stale nonce
+      }
+      return ["苏遥抬起头。", `@end ${nonce} buffer`];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+
+    expect(create).toHaveBeenCalledTimes(2);
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.content).toBe("地下室里只亮着终端的一点蓝光。\n");
+    expect(received).toHaveLength(2);
+    expect(envelope.segmentEnd).toEqual({
+      kind: "complete",
+      nonce: expect.any(String),
+      reason: "buffer",
+    });
+  });
+
+  it("strip-continue falls back to the fail path once the budget is spent", async () => {
+    const gen = makeDslGenerator();
+    // Same broken sentinel on every stream: strip once, then the second
+    // mismatch hits the exhausted budget → forwarded prefix + fail.
+    mockDslClient(gen, () => [
+      "地下室里只亮着终端的一点蓝光。",
+      "@end a81f buffer",
+    ]);
+
+    const received: EventGroupDraft[] = [];
+    const promise = (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    await expect(promise).rejects.toThrow(/DSL 流校验失败|SENTINEL_NONCE_MISMATCH/);
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    // The continuation's group also arrived before the fail.
+    expect(received).toHaveLength(2);
   });
 
   it("fails preserving the prefix when a truncated segment has forwarded groups", async () => {

@@ -186,19 +186,19 @@ describe("parseDslLine", () => {
   // --- stage cues ---
 
   it("parses a bg cue", () => {
-    expect(parseDslLine("bg basement")).toEqual({ kind: "background", assetId: "basement" });
+    expect(parseDslLine("@bg basement")).toEqual({ kind: "background", assetId: "basement" });
   });
 
   it("parses a bgm cue", () => {
-    expect(parseDslLine("bgm mystery")).toEqual({ kind: "bgm", assetId: "mystery" });
+    expect(parseDslLine("@bgm mystery")).toEqual({ kind: "bgm", assetId: "mystery" });
   });
 
   it("parses a bgm stop cue with assetId 'stop'", () => {
-    expect(parseDslLine("bgm stop")).toEqual({ kind: "bgm", assetId: "stop" });
+    expect(parseDslLine("@bgm stop")).toEqual({ kind: "bgm", assetId: "stop" });
   });
 
   it("parses a se cue", () => {
-    expect(parseDslLine("se terminal_beep")).toEqual({
+    expect(parseDslLine("@se terminal_beep")).toEqual({
       kind: "sound_effect",
       assetId: "terminal_beep",
     });
@@ -207,7 +207,7 @@ describe("parseDslLine", () => {
   // --- character cues ---
 
   it("parses a ch set cue", () => {
-    expect(parseDslLine("ch suyao:anxious")).toEqual({
+    expect(parseDslLine("@ch suyao:anxious")).toEqual({
       kind: "character_cue",
       characterId: "suyao",
       variant: "anxious",
@@ -216,7 +216,7 @@ describe("parseDslLine", () => {
   });
 
   it("parses a ch set cue with a position", () => {
-    expect(parseDslLine("ch suyao:anxious left")).toEqual({
+    expect(parseDslLine("@ch suyao:anxious left")).toEqual({
       kind: "character_cue",
       characterId: "suyao",
       variant: "anxious",
@@ -226,7 +226,7 @@ describe("parseDslLine", () => {
   });
 
   it("parses a ch hide cue", () => {
-    expect(parseDslLine("ch suyao hide")).toEqual({
+    expect(parseDslLine("@ch suyao hide")).toEqual({
       kind: "character_cue",
       characterId: "suyao",
       action: "hide",
@@ -234,7 +234,7 @@ describe("parseDslLine", () => {
   });
 
   it("parses a ch show cue", () => {
-    expect(parseDslLine("ch suyao show")).toEqual({
+    expect(parseDslLine("@ch suyao show")).toEqual({
       kind: "character_cue",
       characterId: "suyao",
       action: "show",
@@ -242,7 +242,7 @@ describe("parseDslLine", () => {
   });
 
   it("parses a ch exit cue", () => {
-    expect(parseDslLine("ch suyao exit")).toEqual({
+    expect(parseDslLine("@ch suyao exit")).toEqual({
       kind: "character_cue",
       characterId: "suyao",
       action: "exit",
@@ -252,42 +252,42 @@ describe("parseDslLine", () => {
   // --- beat / forms ---
 
   it("parses a beat", () => {
-    expect(parseDslLine("beat")).toEqual({ kind: "beat" });
+    expect(parseDslLine("@beat")).toEqual({ kind: "beat" });
   });
 
   it("parses a form start", () => {
-    expect(parseDslLine("? 怎么回应？")).toEqual({ kind: "form_start", prompt: "怎么回应？" });
+    expect(parseDslLine("@? 怎么回应？")).toEqual({ kind: "form_start", prompt: "怎么回应？" });
   });
 
   it("parses a form option", () => {
-    expect(parseDslLine("+ 追问她所谓“启动之后”究竟发生过什么")).toEqual({
+    expect(parseDslLine("@+ 追问她所谓“启动之后”究竟发生过什么")).toEqual({
       kind: "form_option",
       text: "追问她所谓“启动之后”究竟发生过什么",
     });
   });
 
   it("parses a form input", () => {
-    expect(parseDslLine("= 输入你的回答……")).toEqual({
+    expect(parseDslLine("@= 输入你的回答……")).toEqual({
       kind: "form_input",
       placeholder: "输入你的回答……",
     });
   });
 
   it("parses a form end", () => {
-    expect(parseDslLine("/?")).toEqual({ kind: "form_end" });
+    expect(parseDslLine("@/?")).toEqual({ kind: "form_end" });
   });
 
   it("trims whitespace defensively around a line", () => {
-    expect(parseDslLine("  /?  ")).toEqual({ kind: "form_end" });
-    expect(parseDslLine("\tbg basement\r")).toEqual({ kind: "background", assetId: "basement" });
+    expect(parseDslLine("  @/?  ")).toEqual({ kind: "form_end" });
+    expect(parseDslLine("\t@bg basement\r")).toEqual({ kind: "background", assetId: "basement" });
   });
 
   // --- empty form payloads are allowed at parse level ---
 
   it("allows empty payloads for form prefixes (rejected later by the group builder)", () => {
-    expect(parseDslLine("?")).toEqual({ kind: "form_start", prompt: "" });
-    expect(parseDslLine("+")).toEqual({ kind: "form_option", text: "" });
-    expect(parseDslLine("= ")).toEqual({ kind: "form_input", placeholder: "" });
+    expect(parseDslLine("@?")).toEqual({ kind: "form_start", prompt: "" });
+    expect(parseDslLine("@+")).toEqual({ kind: "form_option", text: "" });
+    expect(parseDslLine("@= ")).toEqual({ kind: "form_input", placeholder: "" });
   });
 
   // --- segment end sentinel ---
@@ -331,32 +331,49 @@ describe("parseDslLine", () => {
     expectCode("@end a81f bogus", "SENTINEL_INVALID_REASON");
   });
 
-  it("rejects a bare ch command without a variant", () => {
-    expectCode("ch suyao", "INVALID_CH_CUE");
+  it("rejects retired bare aliases loudly instead of parsing them", () => {
+    // 裸写法已废弃：静默解析会把中文正文误吞成指令，静默降级又会把
+    // `ch suyao:anxious` 之类的残句播成幻影台词——响亮报错是唯一安全去向。
+    expectCode("bg basement", "RETIRED_ALIAS");
+    expectCode("bgm stop", "RETIRED_ALIAS");
+    expectCode("se terminal_beep", "RETIRED_ALIAS");
+    expectCode("ch suyao:anxious", "RETIRED_ALIAS");
+    expectCode("ch suyao hide", "RETIRED_ALIAS");
+    expectCode("beat", "RETIRED_ALIAS");
+    expectCode("/?", "RETIRED_ALIAS");
+    expectCode("? 怎么回应？", "RETIRED_ALIAS");
+    expectCode("+ 选项一", "RETIRED_ALIAS");
+    expectCode("= 说出你想说的话", "RETIRED_ALIAS");
+    expectCode("ch suyao", "RETIRED_ALIAS");
+    expectCode("bg", "RETIRED_ALIAS");
+    const err = (() => {
+      try {
+        parseDslLine("beat");
+      } catch (e) {
+        return e as DslProtocolError;
+      }
+    })();
+    expect(err?.detail?.fix).toContain("@beat");
   });
 
   it("rejects a ch command with an invalid position", () => {
-    expectCode("ch suyao:anxious north", "INVALID_CH_CUE");
+    expectCode("@ch suyao:anxious north", "INVALID_CH_CUE");
   });
 
   it("rejects a ch command with an unknown action", () => {
-    expectCode("ch suyao jump", "INVALID_CH_CUE");
-  });
-
-  it("rejects a bare bg command", () => {
-    expectCode("bg", "UNKNOWN_LINE");
+    expectCode("@ch suyao jump", "INVALID_CH_CUE");
   });
 
   it("rejects a malformed bg command with extra tokens", () => {
-    expectCode("bg foo bar", "UNKNOWN_LINE");
+    expectCode("@bg foo bar", "UNKNOWN_LINE");
   });
 
   it("rejects a malformed bgm command", () => {
-    expectCode("bgm", "UNKNOWN_LINE");
+    expectCode("@bgm", "UNKNOWN_LINE");
   });
 
   it("rejects a malformed se command", () => {
-    expectCode("se", "UNKNOWN_LINE");
+    expectCode("@se", "UNKNOWN_LINE");
   });
   // --- @ 前缀语法（2026-09-17：指令行一律以 @ 开头） ---
 
@@ -456,23 +473,15 @@ describe("parseDslLine", () => {
     expect(err.detail?.fix).toContain("去掉角色 id 槽");
   });
 
-  it("keeps parsing legacy bare commands as aliases", () => {
-    expect(parseDslLine("bg basement")).toEqual({ kind: "background", assetId: "basement" });
-    expect(parseDslLine("beat")).toEqual({ kind: "beat" });
-    expect(parseDslLine("/?")).toEqual({ kind: "form_end" });
-    expect(parseDslLine("? 怎么回应？")).toEqual({ kind: "form_start", prompt: "怎么回应？" });
-    expect(parseDslLine("ch suyao:anxious")).toEqual({
-      kind: "character_cue",
-      characterId: "suyao",
-      variant: "anxious",
-      action: "set",
-    });
-  });
-
   it("keeps narration starting with ascii letters that merely look wordy", () => {
     expect(parseDslLine("beatbox 声从隔壁传来。")).toEqual({
       kind: "narration",
       text: "beatbox 声从隔壁传来。",
+    });
+    // 只有独立的 bg/bgm/se/ch/beat 词头才算指令意图；词内出现不算。
+    expect(parseDslLine("Suyao 会不会来还不一定。")).toEqual({
+      kind: "narration",
+      text: "Suyao 会不会来还不一定。",
     });
   });
 });

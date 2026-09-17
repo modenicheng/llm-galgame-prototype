@@ -3,15 +3,17 @@
  * DslLine (docs/llm-outputs-refactor.md §42).
  *
  * Grammar (in check order). 核心规则：**指令行一律以 @ 开头；不以 @ 开头
- * 的行只能是台词或旁白**（form 行的 ?/+/=//? 旧写法仍被接受为兼容别名，
- * 但提示词只教 @ 形式）：
+ * 的行只能是台词或旁白**。旧裸写法（`?`/`+`/`=`/`/?`/`beat`/`bg`/`bgm`/
+ * `se`/`ch`）已完全废弃：不再被接受为别名，命中即抛 RETIRED_ALIAS——
+ * 静默接受会把中文正文误吞成指令，静默降级成台词又会造出幻影发言人，
+ * 唯一安全的去向是响亮报错。
  *   @end <nonce> <reason>        → segment_end
- *   @/? (旧 /?)                  → form_end
- *   @? <prompt> (旧 ?)           → form_start
- *   @+ <text> (旧 +)             → form_option
- *   @= <placeholder> (旧 =)      → form_input
- *   @beat (旧 beat)              → beat
- *   @bg|@bgm|@se <id> (旧裸词)   → background | bgm | sound_effect
+ *   @/?                          → form_end
+ *   @? <prompt>                  → form_start
+ *   @+ <text>                    → form_option
+ *   @= <placeholder>             → form_input
+ *   @beat                        → beat
+ *   @bg|@bgm|@se <id>            → background | bgm | sound_effect
  *   @ch <id>:<variant> [position]→ character_cue set
  *   @ch <id> hide|show|exit      → character_cue hide/show/exit
  *   <speaker>[<visual>](<name>): <text> → dialogue
@@ -52,6 +54,24 @@ function isCharacterPosition(token: string): token is CharacterPosition {
 /** True when the line looks like `keyword` / `keyword <rest>` (reserved prefix). */
 function hasKeywordPrefix(line: string, keyword: string): boolean {
   return line === keyword || line.startsWith(`${keyword} `) || line.startsWith(`${keyword}\t`);
+}
+
+/**
+ * 旧裸写法（无 @ 前缀的 ?/+/=//?/beat/bg/bgm/se/ch）已废弃：不再解析为
+ * 指令，也不再静默降级为正文——裸 `? 一句问话` 若被当旁白播出、裸
+ * `ch suyao:anxious` 若被当台词解析（说话人变 "ch suyao"）都是玩家可见
+ * 事故。命中即响亮报错，让修复回路带模型改写为 @ 形式。
+ */
+function retiredAlias(line: string, atForm: string): DslProtocolError {
+  return new DslProtocolError(
+    "RETIRED_ALIAS",
+    `旧的无 @ 写法 "${line}" 已废弃：所有指令必须以 @ 开头。`,
+    {
+      expected: "指令一律以 @ 开头；台词和旁白不加任何前缀符号",
+      cause: "这是旧协议的裸写法，新协议只认 @ 形式",
+      fix: `若想表达该指令，写作 ${atForm}；若是台词或旁白，直接写正文，不要以这些符号开头`,
+    },
+  );
 }
 
 const STAGE_CUE_EXPECTED =
@@ -228,35 +248,41 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
     return { kind: "segment_end", nonce, reason };
   }
 
-  // 2. form end (exact, before the `?` prefix check); @/? is the taught
-  // form, bare /? stays as a legacy alias.
-  if (line === "@/?" || line === "/?") return { kind: "form_end" };
+  // 2. form end (exact) — the bare `/?` alias is retired.
+  if (line === "@/?" || line === "/?") {
+    if (line === "/?") throw retiredAlias(line, "`@/?`");
+    return { kind: "form_end" };
+  }
 
-  // 3–5. form prefixes: `@?` (legacy `?`) / `@+` (`+`) / `@=` (`=`) then any
-  // whitespace, then the rest. Empty rest is allowed here; the group builder
-  // rejects it later.
+  // 3–5. form prefixes `@?` / `@+` / `@=`, then any whitespace, then the
+  // rest. Empty rest is allowed here; the group builder rejects it later.
+  // The bare `?`/`+`/`=` aliases are retired.
+  if (line === "?" || hasKeywordPrefix(line, "?")) throw retiredAlias(line, "`@? <提示>`");
+  if (line === "+" || hasKeywordPrefix(line, "+")) throw retiredAlias(line, "`@+ <选项>`");
+  if (line === "=" || hasKeywordPrefix(line, "=")) throw retiredAlias(line, "`@= <占位文本>`");
   if (line.startsWith("@?")) return { kind: "form_start", prompt: line.slice(2).trim() };
-  if (line.startsWith("?")) return { kind: "form_start", prompt: line.slice(1).trim() };
   if (line.startsWith("@+")) return { kind: "form_option", text: line.slice(2).trim() };
-  if (line.startsWith("+")) return { kind: "form_option", text: line.slice(1).trim() };
   if (line.startsWith("@=")) return { kind: "form_input", placeholder: line.slice(2).trim() };
-  if (line.startsWith("=")) return { kind: "form_input", placeholder: line.slice(1).trim() };
 
-  // 6. beat (@beat taught; bare `beat` stays as a legacy alias)
-  if (line === "@beat" || line === "beat") return { kind: "beat" };
+  // 6. beat — the bare `beat` alias is retired (exact word or word+space).
+  if (line === "@beat") return { kind: "beat" };
+  if (line === "beat" || hasKeywordPrefix(line, "beat")) throw retiredAlias(line, "`@beat`");
 
-  // 7. stage cues: @bg / @bgm / @se (bgm stop is a valid assetId "stop");
-  // bare bg/bgm/se remain as legacy aliases.
-  const bgMatch = /^@?bg\s+(\S+)\s*$/.exec(line);
+  // 7. stage cues: @bg / @bgm / @se (bgm stop is a valid assetId "stop").
+  const bgMatch = /^@bg\s+(\S+)\s*$/.exec(line);
   if (bgMatch !== null) return { kind: "background", assetId: bgMatch[1]! };
-  const bgmMatch = /^@?bgm\s+(\S+)\s*$/.exec(line);
+  const bgmMatch = /^@bgm\s+(\S+)\s*$/.exec(line);
   if (bgmMatch !== null) return { kind: "bgm", assetId: bgmMatch[1]! };
-  const seMatch = /^@?se\s+(\S+)\s*$/.exec(line);
+  const seMatch = /^@se\s+(\S+)\s*$/.exec(line);
   if (seMatch !== null) return { kind: "sound_effect", assetId: seMatch[1]! };
   if (
     hasKeywordPrefix(line, "bg") ||
     hasKeywordPrefix(line, "bgm") ||
-    hasKeywordPrefix(line, "se") ||
+    hasKeywordPrefix(line, "se")
+  ) {
+    throw retiredAlias(line, "`@bg <背景id>` / `@bgm <音乐id>` / `@se <音效id>`");
+  }
+  if (
     hasKeywordPrefix(line, "@bg") ||
     hasKeywordPrefix(line, "@bgm") ||
     hasKeywordPrefix(line, "@se")
@@ -272,12 +298,11 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
     );
   }
 
-  // 8. character cue: @ch <id>:<variant> [position] | @ch <id> hide|show|exit
-  // (bare `ch` stays as a legacy alias). The colon may carry surrounding
-  // whitespace — a frequent LLM slip (`@ch raspberry: uneasy center`) —
-  // because variant/position can never contain spaces, the tight form is
-  // always recoverable.
-  const chSetMatch = /^@?ch\s+([^:\s]+)\s*:\s*(\S+)(?:\s+(\S+))?\s*$/.exec(line);
+  // 8. character cue: @ch <id>:<variant> [position] | @ch <id> hide|show|exit.
+  // The colon may carry surrounding whitespace — a frequent LLM slip
+  // (`@ch raspberry: uneasy center`) — because variant/position can never
+  // contain spaces, the tight form is always recoverable.
+  const chSetMatch = /^@ch\s+([^:\s]+)\s*:\s*(\S+)(?:\s+(\S+))?\s*$/.exec(line);
   if (chSetMatch !== null) {
     const characterId = chSetMatch[1]!;
     const variant = chSetMatch[2]!;
@@ -330,7 +355,7 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
     }
     return { kind: "character_cue", characterId, variant, action: "set" };
   }
-  const chShowMatch = /^@?ch\s+(\S+)\s+(hide|show|exit)\s*$/.exec(line);
+  const chShowMatch = /^@ch\s+(\S+)\s+(hide|show|exit)\s*$/.exec(line);
   if (chShowMatch !== null) {
     const characterId = chShowMatch[1]!;
     const actionToken = chShowMatch[2]!;
@@ -340,10 +365,12 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
     const action: "hide" | "show" = actionToken === "hide" ? "hide" : "show";
     return { kind: "character_cue", characterId, action };
   }
-  if (
-    hasKeywordPrefix(line, "ch") ||
-    hasKeywordPrefix(line, "@ch")
-  ) {
+  if (hasKeywordPrefix(line, "ch")) {
+    // Bare `ch …` is a retired alias — never a dialogue speaker, never a
+    // command (the @-less form once produced the phantom speaker "ch suyao").
+    throw retiredAlias(line, "`@ch <角色内部id>:<立绘变体> [位置]`");
+  }
+  if (hasKeywordPrefix(line, "@ch")) {
     throw new DslProtocolError(
       "INVALID_CH_CUE",
       `无效的 ch 指令 "${line}"。`,

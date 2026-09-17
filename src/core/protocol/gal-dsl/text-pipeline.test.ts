@@ -8,7 +8,7 @@ import { parseDslSegmentText } from "./text-pipeline.js";
 import { DslProtocolError } from "./types.js";
 
 const ACCEPTANCE_TEXT = [
-  "bg basement",
+  "@bg basement",
   "",
   "地下室里只亮着终端的一点蓝光。",
   "",
@@ -16,11 +16,11 @@ const ACCEPTANCE_TEXT = [
   "",
   "苏遥[anxious]: 别碰那台机器。",
   "",
-  "? 怎么回应？",
-  "+ 追问她为什么知道机器仍能运行",
-  "+ 暂时停手",
-  "= 或说出自己的回答……",
-  "/?",
+  "@? 怎么回应？",
+  "@+ 追问她为什么知道机器仍能运行",
+  "@+ 暂时停手",
+  "@= 或说出自己的回答……",
+  "@/?",
   "",
   "@end a81f interaction",
 ].join("\n");

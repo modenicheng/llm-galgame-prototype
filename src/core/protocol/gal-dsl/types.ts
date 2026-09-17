@@ -182,7 +182,8 @@ export type DslErrorCode =
   | "SENTINEL_INVALID_REASON"
   | "SENTINEL_MISSING_REASON"
   | "UNKNOWN_LINE"
-  | "UNKNOWN_COMMAND";
+  | "UNKNOWN_COMMAND"
+  | "RETIRED_ALIAS";
 
 /**
  * 结构化错误细节（FastAPI 式 detail）：随 DslProtocolError 一并抛出，

@@ -148,10 +148,10 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
     const streams = new Map<string, (nonce: string) => string[]>();
     streams.set("opening", (nonce) => [
       "苏遥: 别碰那台机器。",
-      "? 怎么回应？",
-      "+ 追问她",
-      "+ 暂时停手",
-      "/?",
+      "@? 怎么回应？",
+      "@+ 追问她",
+      "@+ 暂时停手",
+      "@/?",
       `@end ${nonce} interaction`,
     ]);
     streams.set("branch_prefetch", (nonce) => [
@@ -216,10 +216,10 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
             if (taskType === "opening") {
               return dslStream([
                 "苏遥: 别碰那台机器。",
-                "? 怎么回应？",
-                "+ 追问她",
-                "+ 暂时停手",
-                "/?",
+                "@? 怎么回应？",
+                "@+ 追问她",
+                "@+ 暂时停手",
+                "@/?",
                 `@end ${nonce} interaction`,
               ]);
             }
@@ -286,11 +286,11 @@ describe("hybrid preview-cancel re-arm then select (real generator)", () => {
             if (taskType === "opening") {
               return dslStream([
                 "苏遥: 别碰那台机器。",
-                "? 怎么回应？",
-                "+ 追问她",
-                "+ 暂时停手",
-                "= 或输入……",
-                "/?",
+                "@? 怎么回应？",
+                "@+ 追问她",
+                "@+ 暂时停手",
+                "@= 或输入……",
+                "@/?",
                 `@end ${nonce} interaction`,
               ]);
             }
@@ -365,11 +365,11 @@ describe("aborted streamed input response then branch select (buffer race)", () 
             if (taskType === "opening") {
               return dslStream([
                 "苏遥: 别碰那台机器。",
-                "? 怎么回应？",
-                "+ 追问她",
-                "+ 暂时停手",
-                "= 或输入……",
-                "/?",
+                "@? 怎么回应？",
+                "@+ 追问她",
+                "@+ 暂时停手",
+                "@= 或输入……",
+                "@/?",
                 `@end ${nonce} interaction`,
               ]);
             }
@@ -450,10 +450,10 @@ describe("stray group after the interaction terminal is discarded (docs §50)", 
             if (taskType === "opening") {
               return dslStream([
                 "苏遥: 别碰那台机器。",
-                "? 怎么回应？",
-                "+ 追问她",
-                "+ 暂时停手",
-                "/?",
+                "@? 怎么回应？",
+                "@+ 追问她",
+                "@+ 暂时停手",
+                "@/?",
                 // In-flight tail BEFORE the sentinel: the model streamed a
                 // stray dialogue between the form and @end (legal DSL).
                 "苏遥: 这句不该出现。",

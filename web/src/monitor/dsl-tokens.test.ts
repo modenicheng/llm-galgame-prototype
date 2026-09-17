@@ -30,28 +30,28 @@ describe("renderDslLine", () => {
   });
 
   it("classifies stage cues with the asset id separated", () => {
-    const bg = renderDslLine("bg classroom_day");
+    const bg = renderDslLine("@bg classroom_day");
     expect(bg.kind).toBe("background");
     expect(bg.tokens.map((t) => t.cls)).toEqual(["kw", "dim", "id"]);
 
-    const ch = renderDslLine("ch female_A:smile center");
+    const ch = renderDslLine("@ch female_A:smile center");
     expect(ch.kind).toBe("character_cue");
-    expect(joined(ch)).toBe("ch female_A:smile center");
+    expect(joined(ch)).toBe("@ch female_A:smile center");
 
-    const hide = renderDslLine("ch female_A hide");
+    const hide = renderDslLine("@ch female_A hide");
     expect(hide.kind).toBe("character_cue");
-    expect(joined(hide)).toBe("ch female_A hide");
+    expect(joined(hide)).toBe("@ch female_A hide");
   });
 
   it("classifies interaction form lines", () => {
-    expect(renderDslLine("? 接下来做什么？").kind).toBe("form_start");
-    expect(renderDslLine("+ 去天台看看").kind).toBe("form_option");
-    expect(renderDslLine("= 我想说的是……").kind).toBe("form_input");
-    expect(renderDslLine("/?").kind).toBe("form_end");
+    expect(renderDslLine("@? 接下来做什么？").kind).toBe("form_start");
+    expect(renderDslLine("@+ 去天台看看").kind).toBe("form_option");
+    expect(renderDslLine("@= 我想说的是……").kind).toBe("form_input");
+    expect(renderDslLine("@/?").kind).toBe("form_end");
   });
 
   it("flags an empty-prompt form as an error even though the line parses", () => {
-    for (const raw of ["@?", "?"]) {
+    for (const raw of ["@?"]) {
       const render = renderDslLine(raw);
       expect(render.kind).toBe("form_start");
       expect(render.error).toContain("EMPTY_FORM_PROMPT");
@@ -71,10 +71,10 @@ describe("renderDslLine", () => {
     expect(fence.kind).toBeNull();
     expect(fence.tokens[0]!.cls).toBe("dim");
 
-    const bad = renderDslLine("bg");
+    const bad = renderDslLine("@bgx");
     expect(bad.kind).toBeNull();
     expect(bad.error).toContain("bg");
-    expect(joined(bad)).toBe("bg");
+    expect(joined(bad)).toBe("@bgx");
   });
 
   it("treats plain prose as narration", () => {
