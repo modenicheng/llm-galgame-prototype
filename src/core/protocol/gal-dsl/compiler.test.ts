@@ -785,3 +785,189 @@ describe("compileEventGroup — asset semantic validation (spec §7)", () => {
     expect(group.prelude).toHaveLength(1); // kept verbatim
   });
 });
+
+describe("compileEventGroup — redundant stage-cue guard (REDUNDANT_STAGE_CUE)", () => {
+  it("drops @bgm stop when nothing is playing (the repeated-stop regression)", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx(withBackground("basement")); // bgm already cleared
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [{ type: "bgm", assetId: "stop" }],
+        main: { type: "narration", text: "走廊里只剩下脚步声。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toHaveLength(0);
+    expect(tailState.bgm).toBeUndefined();
+    expect(diagnostics).toEqual([{ code: "REDUNDANT_STAGE_CUE", id: "stop" }]);
+  });
+
+  it("keeps the first stop and drops a second one in the same group", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx({ ...withBackground("basement"), bgm: "mystery" });
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [
+          { type: "bgm", assetId: "stop" },
+          { type: "bgm", assetId: "stop" },
+        ],
+        main: { type: "narration", text: "音乐停下，没有再停一次。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toEqual([{ type: "bgm", assetId: "stop" }]);
+    expect(tailState.bgm).toBeUndefined();
+    expect(diagnostics).toEqual([{ code: "REDUNDANT_STAGE_CUE", id: "stop" }]);
+  });
+
+  it("drops a bgm cue repeating the playing id and an @bg repeating the current background", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx({ background: "basement", bgm: "mystery", characters: {} });
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [
+          { type: "bgm", assetId: "mystery" },
+          { type: "background", assetId: "basement" },
+        ],
+        main: { type: "narration", text: "一切如旧。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toHaveLength(0);
+    expect(tailState).toEqual({ background: "basement", bgm: "mystery", characters: {} });
+    expect(diagnostics).toEqual([
+      { code: "REDUNDANT_STAGE_CUE", id: "mystery" },
+      { code: "REDUNDANT_STAGE_CUE", id: "basement" },
+    ]);
+  });
+
+  it("drops a dialogue header restating the current variant, dialogue still plays", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const start = withCharacter("suyao", {
+      spriteSet: "suyao",
+      variant: "anxious",
+      position: "left",
+      displayName: "苏遥",
+      visible: true,
+    });
+    const ctx = makeCtx(start);
+    const { group, tailState } = compileEventGroup(
+      dialogueWith("苏遥", "我一直在。", { visual: { hasVisual: true, variant: "anxious" } }),
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toHaveLength(0);
+    expect(group.main).toMatchObject({ type: "dialogue", speaker: "苏遥", text: "我一直在。" });
+    expect(tailState).toEqual(start);
+    expect(diagnostics).toEqual([{ code: "REDUNDANT_STAGE_CUE", id: "suyao" }]);
+  });
+
+  it("keeps a genuine variant flip with no diagnostics", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const start = withCharacter("suyao", {
+      spriteSet: "suyao",
+      variant: "normal",
+      position: "left",
+      displayName: "苏遥",
+      visible: true,
+    });
+    const ctx = makeCtx(start);
+    const { group, tailState } = compileEventGroup(
+      dialogueWith("苏遥", "等等。", { visual: { hasVisual: true, variant: "anxious" } }),
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toHaveLength(1);
+    expect(tailState.characters["suyao"]?.variant).toBe("anxious");
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("drops hide on an already-hidden character and exit of an absent character", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const start = withCharacter("suyao", {
+      spriteSet: "suyao",
+      variant: "normal",
+      position: "left",
+      displayName: "苏遥",
+      visible: false,
+    });
+    const ctx = makeCtx(start);
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [
+          { type: "character_patch", character: "suyao", visible: { op: "set", value: false } },
+          { type: "character_patch", character: "yuki", exit: true },
+        ],
+        main: { type: "narration", text: "没有人动。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toHaveLength(0);
+    expect(tailState.characters["suyao"]).toBeDefined();
+    expect(tailState.characters["yuki"]).toBeUndefined();
+    expect(diagnostics).toEqual([
+      { code: "REDUNDANT_STAGE_CUE", id: "suyao" },
+      { code: "REDUNDANT_STAGE_CUE", id: "yuki" },
+    ]);
+  });
+
+  it("keeps a show patch whose occupancy shadows another character (§19 counts as change)", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const start: VisualState = {
+      characters: {
+        suyao: {
+          spriteSet: "suyao",
+          variant: "normal",
+          position: "left",
+          displayName: "苏遥",
+          visible: true,
+        },
+        yuki: {
+          spriteSet: "suyao",
+          variant: "normal",
+          position: "left",
+          displayName: "由纪",
+          visible: false,
+        },
+      },
+    };
+    const ctx = makeCtx(start);
+    const { group, tailState } = compileEventGroup(
+      {
+        prelude: [{ type: "character_patch", character: "yuki", visible: { op: "set", value: true } }],
+        main: { type: "narration", text: "由纪站回了原位。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toHaveLength(1);
+    expect(tailState.characters["yuki"]?.visible).toBe(true);
+    expect(tailState.characters["suyao"]?.visible).toBe(false);
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("never drops sound_effect cues (one-shot, no persistent state)", () => {
+    const diagnostics: AssetDiagnostic[] = [];
+    const ctx = makeCtx(withBackground("basement"));
+    const { group } = compileEventGroup(
+      {
+        prelude: [
+          { type: "sound_effect", assetId: "beep" },
+          { type: "sound_effect", assetId: "beep" },
+        ],
+        main: { type: "narration", text: "终端响了两声。" },
+      },
+      { ...ctx, catalog: CATALOG, diagnostics },
+    );
+
+    expect(group.prelude).toEqual([
+      { type: "sound_effect", assetId: "beep" },
+      { type: "sound_effect", assetId: "beep" },
+    ]);
+    expect(diagnostics).toEqual([]);
+  });
+});

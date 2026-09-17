@@ -211,7 +211,8 @@ export type AssetDiagnosticCode =
   | "UNKNOWN_SOUND_EFFECT"
   | "UNKNOWN_SPRITE_VARIANT"
   | "FORBIDDEN_SPRITE_SET"
-  | "FORBIDDEN_DISPLAY_NAME";
+  | "FORBIDDEN_DISPLAY_NAME"
+  | "REDUNDANT_STAGE_CUE";
 
 /**
  * One dropped-cue diagnostic: which asset kind was unknown and the id

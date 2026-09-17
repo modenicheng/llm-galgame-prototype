@@ -142,21 +142,52 @@ export function serializeStoryContext(events: StoryContextEvent[]): string {
 
 /**
  * Compact text projection of the visual state tail the model must continue
- * from (docs §70 TAIL_VISUAL_STATE). Omitted when the caller has none.
+ * from (docs §70 TAIL_VISUAL_STATE). Every dimension is stated explicitly —
+ * including "nothing is set": an omitted line used to read as "unknown",
+ * which is why the model re-emitted `bgm stop` after the music had already
+ * stopped. `roster` (the registered cast) adds an off-stage line so
+ * entrances and exits stay grounded in the known cast.
  */
-export function serializeVisualContext(state: VisualState): string {
-  const lines: string[] = [];
-  if (state.background !== undefined) lines.push(`背景：${state.background}`);
-  if (state.bgm !== undefined) lines.push(`BGM：${state.bgm}`);
+export function serializeVisualContext(
+  state: VisualState,
+  roster?: ModelAssetCatalog["characters"],
+): string {
+  const lines: string[] = [
+    "以下舞台画面已生效，本段从这一画面继续。只输出发生变化的指令，状态不变时不要重复输出 bg / bgm / ch 或台词头括号。",
+  ];
+  lines.push(
+    state.background !== undefined
+      ? `背景：${state.background}`
+      : "背景：无（尚未设置）",
+  );
+  lines.push(
+    state.bgm !== undefined
+      ? `BGM：${state.bgm}（正在播放）`
+      : "BGM：无（当前没有音乐播放，不要再输出 bgm stop）",
+  );
 
   const characterIds = Object.keys(state.characters);
   if (characterIds.length > 0) {
     lines.push("角色：");
     for (const characterId of characterIds) {
       const character = state.characters[characterId]!;
+      const visibility = character.visible
+        ? "可见"
+        : `隐藏（说话不会自动显示，需 ch ${characterId} show 恢复）`;
       lines.push(
-        `- ${characterId}（显示名：${character.displayName}）：立绘 ${character.spriteSet}/${character.variant}，位置 ${character.position}，${character.visible ? "可见" : "隐藏"}`,
+        `- ${characterId}（显示名：${character.displayName}）：立绘 ${character.spriteSet}/${character.variant}，位置 ${character.position}，${visibility}`,
       );
+    }
+  } else {
+    lines.push("角色：台上无人");
+  }
+
+  if (roster !== undefined) {
+    const offStage = Object.entries(roster)
+      .filter(([id]) => !Object.hasOwn(state.characters, id))
+      .map(([, binding]) => binding.displayName);
+    if (offStage.length > 0) {
+      lines.push(`不在场：${offStage.join("、")}`);
     }
   }
   return lines.join("\n");
@@ -255,7 +286,7 @@ export function buildDslUserPrompt(
 
   if (input.tailVisualState) {
     sections.push("===== 当前舞台状态 =====");
-    sections.push(serializeVisualContext(input.tailVisualState));
+    sections.push(serializeVisualContext(input.tailVisualState, input.modelAssetCatalog?.characters));
   }
 
   sections.push(`任务类型：${input.taskType}`);

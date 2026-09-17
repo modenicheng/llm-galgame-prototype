@@ -278,7 +278,7 @@ describe("DSL serializers and prompt builder", () => {
     expect(out).not.toContain("interaction");
   });
 
-  it("serializeVisualContext formats sections and omits absent ones", () => {
+  it("serializeVisualContext states every dimension explicitly, including empty ones", () => {
     const state: VisualState = {
       ...makeVisualState(),
       characters: {
@@ -300,20 +300,92 @@ describe("DSL serializers and prompt builder", () => {
     };
     expect(serializeVisualContext(state)).toBe(
       [
+        "以下舞台画面已生效，本段从这一画面继续。只输出发生变化的指令，状态不变时不要重复输出 bg / bgm / ch 或台词头括号。",
         "背景：basement",
-        "BGM：mystery",
+        "BGM：mystery（正在播放）",
         "角色：",
         "- suyao（显示名：神秘女子）：立绘 suyao/anxious，位置 left，可见",
-        "- yuki（显示名：由纪）：立绘 yuki/normal，位置 right，隐藏",
+        "- yuki（显示名：由纪）：立绘 yuki/normal，位置 right，隐藏（说话不会自动显示，需 ch yuki show 恢复）",
       ].join("\n"),
     );
 
-    // No background / bgm / characters → empty string.
-    expect(serializeVisualContext({ characters: {} })).toBe("");
-    // BGM omitted when undefined.
-    expect(serializeVisualContext({ background: "basement", characters: {} })).toBe(
-      "背景：basement",
+    // Nothing on stage yet (opening request) — still explicit, so the model
+    // knows it must set the scene up instead of guessing it continues one.
+    expect(serializeVisualContext({ characters: {} })).toBe(
+      [
+        "以下舞台画面已生效，本段从这一画面继续。只输出发生变化的指令，状态不变时不要重复输出 bg / bgm / ch 或台词头括号。",
+        "背景：无（尚未设置）",
+        "BGM：无（当前没有音乐播放，不要再输出 bgm stop）",
+        "角色：台上无人",
+      ].join("\n"),
     );
+  });
+
+  it("serializeVisualContext lists registered characters that are off stage", () => {
+    const roster = {
+      suyao: {
+        scriptName: "苏遥",
+        displayName: "苏遥",
+        spriteSet: "suyao",
+        defaultVariant: "normal",
+        defaultPosition: "left" as const,
+        allowedSpriteSets: ["suyao"],
+      },
+      yuki: {
+        scriptName: "由纪",
+        displayName: "由纪",
+        spriteSet: "yuki",
+        defaultVariant: "normal",
+        defaultPosition: "right" as const,
+        allowedSpriteSets: ["yuki"],
+      },
+      kaito: {
+        scriptName: "海斗",
+        displayName: "海斗",
+        spriteSet: "male_A",
+        defaultVariant: "base",
+        defaultPosition: "far_left" as const,
+        allowedSpriteSets: ["male_A"],
+      },
+    };
+    const state: VisualState = {
+      background: "basement",
+      characters: {
+        suyao: {
+          spriteSet: "suyao",
+          variant: "normal",
+          position: "left",
+          displayName: "苏遥",
+          visible: true,
+        },
+      },
+    };
+    const out = serializeVisualContext(state, roster);
+    expect(out).toContain("不在场：由纪、海斗");
+    expect(out).not.toContain("苏遥、由纪");
+
+    // Everyone on stage → no off-stage line.
+    const allOn: VisualState = {
+      ...state,
+      characters: {
+        suyao: state.characters.suyao!,
+        yuki: {
+          spriteSet: "yuki",
+          variant: "normal",
+          position: "right",
+          displayName: "由纪",
+          visible: true,
+        },
+        kaito: {
+          spriteSet: "male_A",
+          variant: "base",
+          position: "far_left",
+          displayName: "海斗",
+          visible: true,
+        },
+      },
+    };
+    expect(serializeVisualContext(allOn, roster)).not.toContain("不在场");
   });
 
   it("buildDslUserPrompt includes task header, nonce, visual state and asset catalog", () => {
