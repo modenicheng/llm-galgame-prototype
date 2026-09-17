@@ -59,6 +59,10 @@ export interface MonitorTimelineEntry {
   options?: { id: string; text: string }[];
   choiceId?: string;
   endingId?: string;
+  /** @ending 结尾词（结局标题），截断同 text。 */
+  endingTitle?: string;
+  /** @ending 结局档位：TE | HE | NE | BE。 */
+  endingGrade?: string;
 }
 
 export interface GameMonitorState {
@@ -111,7 +115,14 @@ export function toMonitorTimelineEntry(event: StoredEvent): MonitorTimelineEntry
       };
     }
     case "end":
-      return { ...base, kind: "end", endingId: event.ending_id, text: truncate(event.text) };
+      return {
+        ...base,
+        kind: "end",
+        endingId: event.ending_id,
+        text: truncate(event.text),
+        ...(event.title !== undefined ? { endingTitle: truncate(event.title, 48) } : {}),
+        ...(event.grade !== undefined ? { endingGrade: event.grade } : {}),
+      };
     case "player_choice":
       return {
         ...base,

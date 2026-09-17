@@ -1,11 +1,13 @@
 import OpenAI from "openai";
 import type { AppConfig, AuthorConfig } from "../../config.js";
 import {
-  buildDslUserPrompt,
-  buildSystemContext,
+  buildDslUserPromptSegments,
+  buildSystemContextSegments,
+  joinPromptSegments,
   serializeStoryContext,
   type ContextInput,
   type DslContextInput,
+  type PromptSegment,
 } from "../../story/context-builder.js";
 import { toModelCatalog } from "../../core/assets/catalog.js";
 import type { AssetCatalog, ModelAssetCatalog } from "../../core/assets/types.js";
@@ -116,11 +118,17 @@ const STRIP_CONTINUE_CODES: ReadonlySet<string> = new Set([
   "INVALID_CH_CUE",
   "UNKNOWN_LINE",
   "EMPTY_FORM_PROMPT",
+  // closeOpenInteraction 对"开了但零选项/零输入"的表单抛 EMPTY_FORM：
+  // 剔除该行交续写补全表单（2026-09-17 独立审计 G3）。
+  "EMPTY_FORM",
   "FORM_LINE_OUTSIDE_FORM",
   "FORM_END_WITHOUT_OPEN",
   "SENTINEL_MISSING_REASON",
   "SENTINEL_INVALID_REASON",
   "SENTINEL_NONCE_MISMATCH",
+  // @ending 出现在哨兵前（segment-validator 语义：交 strip-continue 剔除）。
+  "ENDING_EPILOGUE_ORPHAN",
+  "RETIRED_ALIAS",
 ]);
 
 /**
@@ -145,6 +153,11 @@ function buildStripContinueInstruction(
       "请从删除位置直接续写：补全该处应有的合法内容，然后完成本段剩余部分。",
       "若是交互表单：@? 与提示文本必须写在同一行（`@? 提示文本`），随后写 @+ 选项行（2–5 个），最后用 @/? 收尾。",
       `最后必须逐字输出结束哨兵：@end ${nonce} ${allowedReasons.join("/")}。`,
+      ...(allowedReasons.includes("ending")
+        ? [
+            "若本段以 ending 收束：哨兵后另起一行写 @ending <档位> <结尾词>（档位 TE|HE|NE|BE，结尾词是本局结局标题）。",
+          ]
+        : []),
       "不要重复删除位置之前已输出的任何内容，也不要再次输出被删除的那一行。",
     ].join("\n"),
   );
@@ -158,12 +171,16 @@ function buildStripContinueInstruction(
  * endingPhase（L1/L2）。`{nonce}` 在此替换为请求的真实 nonce：此前该行
  * 在 fill() 之后以字面量 `{nonce}` 下发，模型回显后哨兵校验必然失败。
  */
-export function appendEventModeGuidance(
-  extra: string,
+/**
+ * Event mode 收束/节奏指引分段（docs §70 附加指令）。每段返回无分隔符
+ * 文本 + 审计标签；字符串路径（appendEventModeGuidance）与监控分段路径
+ * 共用此处，保证两路产出逐字节一致。
+ */
+export function eventModeGuidancePieces(
   nonce: string,
   options?: GenerationStreamOptions,
-): string {
-  let result = extra;
+): { label: string; text: string }[] {
+  const pieces: { label: string; text: string }[] = [];
   // 长回合护栏与收束指令的互斥（2026-09-17 实测发现）：closing/L3 明确
   // "不要再打开交互表单"，此时再附"尽快打开交互表单"会让同一 prompt
   // 包含两条相反指令——护栏只在还允许交互的阶段（无收束/仅 L1 wrapup）
@@ -172,23 +189,49 @@ export function appendEventModeGuidance(
     options?.endingRequired === true || options?.endingPhase === "closing"
   );
   if (interactionAllowed && options?.requestInteraction === true) {
-    result +=
-      "\n\n本回合已连续输出较长内容：请在合适的位置尽快打开玩家交互表单（`@? ... @/?`），把话语权交还玩家。";
+    pieces.push({
+      label: "长回合护栏（催交互表单）",
+      text: "本回合已连续输出较长内容：请在合适的位置尽快打开玩家交互表单（`@? ... @/?`），把话语权交还玩家。",
+    });
   }
   if (options?.endingRequired === true) {
-    result += `\n\n本段必须收束结局：用 @end ${nonce} ending 结束，不得打开新的交互表单。`;
+    pieces.push({
+      label: "收束指令（L3 强制结局）",
+      text: `本段必须收束结局：用 @end ${nonce} ending 结束，不得打开新的交互表单。`,
+    });
   } else if (options?.endingPhase === "closing") {
-    result += `\n\n剧情已进入最后收束阶段：不要再打开新的交互表单，直接收拢当前线索，用 @end ${nonce} ending 结束本段。`;
+    pieces.push({
+      label: "收束指令（L2 closing）",
+      text: `剧情已进入最后收束阶段：不要再打开新的交互表单，直接收拢当前线索，用 @end ${nonce} ending 结束本段。`,
+    });
   } else if (options?.endingPhase === "wrapup") {
     // L1 是软提示：只引导"开始收拢、面向收尾"，把"不得再开表单/必须
     // ending"的硬措辞留给 L2（closing）——否则结局会固定落在 wrapup+1
     // 次交互，分级收束形同虚设（audit 2026-09-17 #3）。
     const { count, target } = options.interactionProgress ?? {};
     if (count !== undefined && target !== undefined && count > target) {
-      result += `\n\n收束阶段提示（交互数 ${count} 已超过收束目标 ${target}）：请加快节奏，把剧情收向本局结局；除非收尾确实需要，不要再打开新的交互表单，也不要引入新话题、新角色或新支线。`;
+      pieces.push({
+        label: "收束指令（L1 wrapup · 已超目标）",
+        text: `收束阶段提示（交互数 ${count} 已超过收束目标 ${target}）：请加快节奏，把剧情收向本局结局；除非收尾确实需要，不要再打开新的交互表单，也不要引入新话题、新角色或新支线。`,
+      });
     } else {
-      result += `\n\n剧情已进入收束阶段（本次游玩时长已经足够）：请开始收拢当前线索，接下来的交互应面向收尾（例如让玩家决定如何结束、和谁道别），而不是新的情节转折；不要再引入新话题、新角色或新支线。`;
+      pieces.push({
+        label: "收束指令（L1 wrapup）",
+        text: "剧情已进入收束阶段（本次游玩时长已经足够）：请开始收拢当前线索，接下来的交互应面向收尾（例如让玩家决定如何结束、和谁道别），而不是新的情节转折；不要再引入新话题、新角色或新支线。",
+      });
     }
+  }
+  return pieces;
+}
+
+export function appendEventModeGuidance(
+  extra: string,
+  nonce: string,
+  options?: GenerationStreamOptions,
+): string {
+  let result = extra;
+  for (const piece of eventModeGuidancePieces(nonce, options)) {
+    result += `\n\n${piece.text}`;
   }
   return result;
 }
@@ -251,6 +294,8 @@ type DslAttemptOutcome =
 export class StoryGenerator {
   private readonly client: OpenAI;
   private readonly systemPrompt: string;
+  /** Labeled segmentation of `systemPrompt` (monitor audit view). */
+  private readonly systemSegments: PromptSegment[];
   private readonly prompts: PromptBundle;
   private readonly instructions: InstructionSet;
   /** Model-facing asset catalog projection (logical ids only, docs §59). */
@@ -278,9 +323,10 @@ export class StoryGenerator {
     });
     this.prompts = prompts;
     this.instructions = instructions;
-    this.systemPrompt = buildSystemContext(
+    this.systemSegments = buildSystemContextSegments(
       this.makeCtx(null as unknown as StoryState, []),
     );
+    this.systemPrompt = joinPromptSegments(this.systemSegments);
     this.modelCatalog = catalog ? toModelCatalog(catalog) : undefined;
     this.observer = observer;
     if (catalog !== undefined) {
@@ -339,6 +385,11 @@ export class StoryGenerator {
     return ctx;
   }
 
+  /** The filled task template as one labeled trailing prompt section. */
+  private templateSegment(taskType: string, text: string): PromptSegment {
+    return { source: `prompts/instructions.yaml#${taskType}`, label: "任务指令模板", text };
+  }
+
   generateOpening(
     turn: number,
     state: StoryState,
@@ -352,7 +403,9 @@ export class StoryGenerator {
       "opening",
       ["buffer", "interaction", "ending"],
       nonce,
-      buildDslUserPrompt(turn, ctx, fill(this.instructions.opening, { nonce })),
+      buildDslUserPromptSegments(turn, ctx, [
+        this.templateSegment("opening", fill(this.instructions.opening, { nonce })),
+      ]),
       signal,
       options,
     );
@@ -381,7 +434,7 @@ export class StoryGenerator {
     const recentHistory = this.boundHistory(history);
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, recentHistory, "branch_prefetch", nonce, options);
-    const extra = fill(this.instructions.branch_prefetch, {
+    const template = fill(this.instructions.branch_prefetch, {
       choice_prompt: choice.prompt,
       option_text: JSON.stringify(option),
       min_dialogue: String(this.config.prefetch.branch_dialogue_lines),
@@ -392,7 +445,7 @@ export class StoryGenerator {
       "branch_prefetch",
       ["buffer"],
       nonce,
-      buildDslUserPrompt(turn, ctx, extra),
+      buildDslUserPromptSegments(turn, ctx, [this.templateSegment("branch_prefetch", template)]),
       signal,
       options,
     ).then((envelope) => {
@@ -420,7 +473,7 @@ export class StoryGenerator {
     const recentHistory = this.boundHistory(history);
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, recentHistory, "input_response", nonce, options);
-    const extra = fill(this.instructions.input_response, {
+    const template = fill(this.instructions.input_response, {
       interaction_prompt: interaction.prompt,
       player_input: playerInput,
       nonce,
@@ -430,7 +483,7 @@ export class StoryGenerator {
       "input_response",
       ["buffer"],
       nonce,
-      buildDslUserPrompt(turn, ctx, extra),
+      buildDslUserPromptSegments(turn, ctx, [this.templateSegment("input_response", template)]),
       signal,
       options,
     ).then((envelope) => {
@@ -458,7 +511,7 @@ export class StoryGenerator {
   ): Promise<GenerationEnvelope> {
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, [], "input_bridge", nonce, options);
-    const extra = fill(this.instructions.input_bridge, {
+    const template = fill(this.instructions.input_bridge, {
       interaction_prompt: interaction.prompt,
       nonce,
     });
@@ -467,7 +520,7 @@ export class StoryGenerator {
       "input_bridge",
       ["buffer"],
       nonce,
-      buildDslUserPrompt(turn, ctx, extra),
+      buildDslUserPromptSegments(turn, ctx, [this.templateSegment("input_bridge", template)]),
       signal,
       options,
     );
@@ -484,18 +537,21 @@ export class StoryGenerator {
     const recentHistory = this.boundHistory(history);
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, recentHistory, "continuation", nonce, options);
-    let extra = fill(this.instructions.continuation, {
+    const template = fill(this.instructions.continuation, {
       nonce,
       target_lines: String(this.config.text_buffer.target_lines),
       prefetched: serializeStoryContext(prefetchedEvents),
     });
-    extra = appendEventModeGuidance(extra, nonce, options);
+    const extra: PromptSegment[] = [this.templateSegment("continuation", template)];
+    for (const piece of eventModeGuidancePieces(nonce, options)) {
+      extra.push({ source: "runtime/event-mode-guidance", label: piece.label, text: piece.text });
+    }
     return this.requestDslEnvelope(
       "continuation",
       "continuation",
       ["buffer", "interaction", "ending"],
       nonce,
-      buildDslUserPrompt(turn, ctx, extra),
+      buildDslUserPromptSegments(turn, ctx, extra),
       signal,
       options,
     );
@@ -514,7 +570,7 @@ export class StoryGenerator {
     taskType: string,
     allowedReasons: readonly SegmentEndReason[],
     nonce: string,
-    userPrompt: string,
+    userSegments: readonly PromptSegment[],
     signal?: AbortSignal,
     options?: GenerationStreamOptions,
   ): Promise<GenerationEnvelope> {
@@ -560,7 +616,26 @@ export class StoryGenerator {
         : "";
 
       const attemptId = `${requestId}#${attempt}`;
+      // The exact user message for this attempt: the base prompt plus the
+      // repair instruction as its own labeled segment (its text already
+      // starts with "\n" — raw append, no "\n\n" section separator).
+      const attemptSegments: PromptSegment[] = [...userSegments];
+      if (repairInstruction !== "") {
+        attemptSegments.push({
+          source: "runtime/repair",
+          label: `修复指令（第 ${attempt} 次重试）`,
+          text: repairInstruction,
+        });
+      }
       this.observer?.onAttemptStart({ attemptId, taskId: requestId, taskType, index: attempt });
+      this.observer?.onPrompt?.({
+        attemptId,
+        requestIndex: 0,
+        messages: [
+          { role: "system", segments: this.systemSegments },
+          { role: "user", segments: attemptSegments },
+        ],
+      });
       let outcome: DslAttemptOutcome;
       try {
         outcome = await this.attemptDslStream(
@@ -568,7 +643,7 @@ export class StoryGenerator {
           taskType,
           allowedReasons,
           nonce,
-          `${userPrompt}${repairInstruction}`,
+          attemptSegments,
           signal,
           options,
           lastError,
@@ -622,7 +697,7 @@ export class StoryGenerator {
     taskType: string,
     allowedReasons: readonly SegmentEndReason[],
     nonce: string,
-    userPrompt: string,
+    userSegments: readonly PromptSegment[],
     signal: AbortSignal | undefined,
     options: GenerationStreamOptions | undefined,
     /** Failure reason of the PREVIOUS attempt — only for the err= log field. */
@@ -630,6 +705,9 @@ export class StoryGenerator {
     /** Monitor identity of this attempt (requestId#attemptIndex). */
     attemptId: string,
   ): Promise<DslAttemptOutcome> {
+    // The exact user message this attempt sends — derived from the labeled
+    // segments so the audit view and the wire bytes cannot diverge.
+    const userPrompt = joinPromptSegments(userSegments);
     const observer = this.observer;
     const maxTokens = this.config.generation.max_tokens;
     const callStart = Date.now();
@@ -650,6 +728,10 @@ export class StoryGenerator {
     // which TS control-flow analysis cannot see (it would narrow to never).
     // A strip-continue folds the current reading into `foldedUsage` and starts
     // over for the continuation stream — the attempt's usage is the sum.
+    // 已知少计（2026-09-17 独立审计 S4）：流 1 的 usage 挂在最终 chunk，
+    // 而 strip 发生时 lines 生成器被提前 return()，final usage chunk 读不到
+    // → foldedUsage 实践中恒为 null，被中止流的 API 计数在指标里缺失。
+    // 接受少计（不崩溃、不重复计）；如需精确，可在 strip 时用字符数估算兜底。
     let apiUsage: LLMUsageReading | null = null;
     let foldedUsage: LLMUsageReading | null = null;
     const reportedUsage = (): LLMUsageReading | null => {
@@ -668,6 +750,10 @@ export class StoryGenerator {
     const rawLines: string[] = [];
     let pendingFormStart: { lineIndex: number; rawIndex: number } | null = null;
     let stripBudget = 1;
+    // ending 哨兵的 epilogue 窗口收齐（@ending 已捕获或窗口被杂行关闭）后
+    // 置位：停止消费模型输出——此后的一切都是结局残留，不解析、不进监控
+    // 行号、不触发修复，也不再烧 token。
+    let endingSettled = false;
     // Which SSE stream is currently authoritative; the outer abort signal
     // always bridges to the active one (a strip-continue swaps controllers).
     let activeController = new AbortController();
@@ -760,20 +846,62 @@ export class StoryGenerator {
         console.warn(
           `[LLM] ${type} 剔除续写：第 ${atLineIndex} 行 "${rawLines[rawIndex] ?? ""}" [${error.code}]`,
         );
-        // The canonical output is everything except the deleted line.
+        // The canonical output is everything except the deleted line. When the
+        // deleted line is NOT the deferred bare `@?` itself, the stale
+        // deferred row must go too: it would otherwise sit at the prefix tail
+        // and turn the model's correct fix (`@? 提示`) into a forced empty
+        // form_start → EMPTY_FORM_PROMPT with the budget already spent →
+        // fail（2026-09-17 独立审计 S1，已实证复现）。
+        if (
+          pendingFormStart !== null &&
+          pendingFormStart.rawIndex !== rawIndex &&
+          pendingFormStart.rawIndex > rawIndex
+        ) {
+          observer?.onRepair?.(attemptId, {
+            kind: "strip_continue",
+            lineIndex: pendingFormStart.lineIndex,
+            message: "连带剔除未合并的裸 @?（其提示缺失，交由续写补全）。",
+          });
+          rawLines.splice(pendingFormStart.rawIndex, 1);
+          pendingFormStart = null;
+        }
         rawLines.splice(rawIndex, 1);
         foldedUsage = reportedUsage();
         apiUsage = null;
         const previousController = activeController;
         activeController = new AbortController();
         previousController.abort();
+        const continuationInstruction = buildStripContinueInstruction(error, nonce, allowedReasons);
+        // Audit: the strip-continue follow-up sends a different message list
+        // (assistant prefix + continuation instruction) — report it as a
+        // second request on the same attempt.
+        observer?.onPrompt?.({
+          attemptId,
+          requestIndex: 1,
+          messages: [
+            { role: "system", segments: this.systemSegments },
+            { role: "user", segments: [...userSegments] },
+            {
+              role: "assistant",
+              segments: [
+                { source: "writer-output/prefix", label: "续写前缀（本 attempt 已输出）", text: `${prefix}\n` },
+              ],
+            },
+            {
+              role: "user",
+              segments: [
+                { source: "runtime/strip-continue", label: "剔除续写指令", text: continuationInstruction },
+              ],
+            },
+          ],
+        });
         const continuation = await createStream([
           { role: "system" as const, content: this.systemPrompt },
           { role: "user" as const, content: userPrompt },
           { role: "assistant" as const, content: `${prefix}\n` },
           {
             role: "user" as const,
-            content: buildStripContinueInstruction(error, nonce, allowedReasons),
+            content: continuationInstruction,
           },
         ]);
         decoder = new StreamLineDecoder();
@@ -804,12 +932,12 @@ export class StoryGenerator {
       // without them a mangled-line fix is guesswork (2026-09-17 audit).
       const recentRawLines: string[] = [];
 
-      const rejectLine = (error: DslProtocolError, rawLine: string): void => {
+      const rejectLine = (error: DslProtocolError, rawLine: string, atLineIndex = lineIndex): void => {
         streamAborted = true;
         console.warn(
           `[LLM] ${type} 校验拒绝，末尾原始行：${JSON.stringify(recentRawLines.concat(rawLine).slice(-4))}`,
         );
-        const detail = formatDslErrorDetail(error, lineIndex, rawLine);
+        const detail = formatDslErrorDetail(error, atLineIndex, rawLine);
         if (options?.onGroup && allGroups.length > 0) {
           streamError = error;
           failureReason = `DSL 流校验失败，已保留前面可播放的内容。${detail}`;
@@ -823,6 +951,7 @@ export class StoryGenerator {
       // 行号、parser 状态（待提交提示/打开中的表单）与已提交组全部延续。
       outer: while (true) {
         for await (const rawLine of lines) {
+          if (endingSettled) break;
           lineIndex += 1;
 
           // Tolerate markdown fence markers around the DSL payload.
@@ -902,7 +1031,25 @@ export class StoryGenerator {
               observer?.onLine(attemptId, lineIndex, { kind: "form_start" });
               parsed = { kind: "form_start", prompt: parsed.text };
               openFormStartLine = deferred.lineIndex;
+            } else if (parsed.kind === "form_start" && parsed.prompt === "") {
+              // 双裸 @?（模型连写两个空提示表单头）：第二个顶替第一个成为
+              // 延迟行，第一个从 rawLines 删除——否则它留在 prefix 尾部，
+              // 续写里模型写出正确的 `@? 提示` 会撞上 stale deferred 被强制
+              // 空提示（2026-09-17 独立审计 S2，已实证复现）。
+              const deferred = pendingFormStart;
+              rawLines.splice(deferred.rawIndex, 1);
+              pendingFormStart = { lineIndex, rawIndex: rawLines.length - 1 };
+              console.warn(
+                `[LLM] ${type} 连续两个裸 @?（第 ${deferred.lineIndex}/${lineIndex} 行），已去重为后者。`,
+              );
+              observer?.onLine(attemptId, lineIndex, { kind: "form_start" });
+              continue;
             } else if (parsed.kind !== "form_start" || parsed.prompt !== "") {
+              // 空白行（parse 成空 narration）不消耗延迟态也不烧剔除预算，
+              // 直接跳过等待下一行。
+              if (parsed.kind === "narration" && parsed.text.trim() === "") {
+                continue;
+              }
               // 下一行不是旁白：裸 @? 的空提示无从弥补，先推入延迟行，
               // 让 EMPTY_FORM_PROMPT 触发剔除续写（当前行随后由续写重写）。
               const deferred = pendingFormStart;
@@ -918,7 +1065,7 @@ export class StoryGenerator {
                   if (await tryStripContinue(error, deferred.rawIndex, deferred.lineIndex)) {
                     continue outer;
                   }
-                  rejectLine(error, rawLines[deferred.rawIndex] ?? "");
+                  rejectLine(error, rawLines[deferred.rawIndex] ?? "", deferred.lineIndex);
                   break;
                 }
                 throw error;
@@ -983,12 +1130,20 @@ export class StoryGenerator {
             emit(emitted, parsed.kind === "form_end" ? (openFormStartLine ?? lineIndex) : lineIndex);
           }
           if (parsed.kind === "form_end") openFormStartLine = null;
+          // epilogue 窗口收齐：@ending 已捕获（或窗口被杂行关闭）。立即停止
+          // 读取——模型在结局之后的任何续写都是残留。
+          if (parser.isEndingSettled()) {
+            endingSettled = true;
+            break;
+          }
         }
 
         // ---- 当前流结束：处理无换行尾行 + 延迟的裸 @? ----
         // 尾行处理失败若命中剔除续写，会换入续写流并重走外层循环
         //（行号与 parser 状态延续），因此整块放在 while 内。
-        const tail = decoder.flush();
+        // 结局残留：epilogue 窗口收齐后，无换行尾行与挂起的裸 @? 都不再
+        // 处理——它们属于被丢弃的模型续写，不修复、不续写。
+        const tail = endingSettled ? null : decoder.flush();
         let tailConsumedByMerge = false;
         if (!streamAborted && tail !== null) {
           rawLines.push(tail);
@@ -1027,12 +1182,14 @@ export class StoryGenerator {
                     if (await tryStripContinue(error, deferred.rawIndex, deferred.lineIndex)) {
                       continue outer;
                     }
-                    rejectLine(error, rawLines[deferred.rawIndex] ?? "");
+                    rejectLine(error, rawLines[deferred.rawIndex] ?? "", deferred.lineIndex);
                     break;
                   }
                   throw error;
                 }
                 openFormStartLine = deferred.lineIndex;
+                // 尾行已消费：行号推进，缺哨兵报错不再少算一行（审计 S6）。
+                lineIndex = tailIndex;
               } else if (tailParsed !== null || tailError !== null) {
                 pendingFormStart = null;
                 const emptyPromptError = new DslProtocolError(
@@ -1051,7 +1208,7 @@ export class StoryGenerator {
                 if (await tryStripContinue(emptyPromptError, deferred.rawIndex, deferred.lineIndex)) {
                   continue outer;
                 }
-                rejectLine(emptyPromptError, rawLines[deferred.rawIndex] ?? "");
+                rejectLine(emptyPromptError, rawLines[deferred.rawIndex] ?? "", deferred.lineIndex);
                 break;
               }
             }
@@ -1119,7 +1276,7 @@ export class StoryGenerator {
             }
           }
         }
-        if (pendingFormStart !== null && !streamAborted) {
+        if (pendingFormStart !== null && !streamAborted && !endingSettled) {
           // 流结束仍挂着裸 @? 且没有尾行可合并：模型在 @? 处停笔。
           // 剔除该行让模型续写完整表单（EMPTY_FORM_PROMPT 白名单内）。
           const deferred = pendingFormStart;
@@ -1140,7 +1297,7 @@ export class StoryGenerator {
           if (await tryStripContinue(emptyPromptError, deferred.rawIndex, deferred.lineIndex)) {
             continue outer;
           }
-          rejectLine(emptyPromptError, rawLines[deferred.rawIndex] ?? "");
+          rejectLine(emptyPromptError, rawLines[deferred.rawIndex] ?? "", deferred.lineIndex);
           break;
         }
         break;

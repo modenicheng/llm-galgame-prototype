@@ -8,6 +8,7 @@
  * 静默接受会把中文正文误吞成指令，静默降级成台词又会造出幻影发言人，
  * 唯一安全的去向是响亮报错。
  *   @end <nonce> <reason>        → segment_end
+ *   @ending <档位> <结尾词>      → ending_epilogue（仅 ending 哨兵后合法）
  *   @/?                          → form_end
  *   @? <prompt>                  → form_start
  *   @+ <text>                    → form_option
@@ -31,12 +32,14 @@
  * Pure text → structured data. No runtime, wire, or LLM dependencies.
  */
 import type { CharacterPosition } from "../../presentation/types.js";
-import { DslProtocolError, DSL_COMMAND_LIST } from "./types.js";
+import { DslProtocolError, DSL_COMMAND_LIST, ENDING_GRADES } from "./types.js";
 import type {
   DialogueNameSpec,
   DialogueVisualSpec,
   DslLine,
+  EndingGrade,
   SegmentEndReason,
+  SegmentEndingEpilogue,
 } from "./types.js";
 
 const CHARACTER_POSITIONS: ReadonlySet<string> = new Set([
@@ -51,9 +54,15 @@ function isCharacterPosition(token: string): token is CharacterPosition {
   return CHARACTER_POSITIONS.has(token);
 }
 
-/** True when the line looks like `keyword` / `keyword <rest>` (reserved prefix). */
+/**
+ * True when the line looks like `keyword` / `keyword <rest>` (reserved prefix).
+ * 词边界用 \s（含全角空格 U+3000/NBSP）：`ch　suyao: 台词` 若只认 ASCII
+ * 空格会绕过废弃守卫、解析出幻影说话人（2026-09-17 独立审计 A1）。
+ */
 function hasKeywordPrefix(line: string, keyword: string): boolean {
-  return line === keyword || line.startsWith(`${keyword} `) || line.startsWith(`${keyword}\t`);
+  if (line === keyword) return true;
+  if (!line.startsWith(keyword)) return false;
+  return /^\s/.test(line.slice(keyword.length));
 }
 
 /**
@@ -269,6 +278,14 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
     return { kind: "segment_end", nonce, reason };
   }
 
+  // 1.5 ending epilogue: `@ending <档位> <结尾词>`。只允许紧跟在 ending
+  // 哨兵之后（状态判定在 segment-validator）；这里只认行形状。前视断言
+  // 保证 `@ending_title`、`@endingHE` 之类粘连写法不误匹配——它们落进
+  // UNKNOWN_COMMAND（在 strip-continue 白名单里，可续写救回）。
+  if (/^@ending(?:\s|$)/.test(line)) {
+    return { kind: "ending_epilogue", raw: line.slice("@ending".length).trim() };
+  }
+
   // 2. form end (exact) — the bare `/?` alias is retired.
   if (line === "@/?" || line === "/?") {
     if (line === "/?") throw retiredAlias(line, "`@/?`");
@@ -389,7 +406,10 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
   if (hasKeywordPrefix(line, "ch")) {
     // Bare `ch …` is a retired alias — never a dialogue speaker, never a
     // command (the @-less form once produced the phantom speaker "ch suyao").
-    throw retiredAlias(line, "`@ch <角色内部id>:<立绘变体> [位置]`");
+    throw retiredAlias(
+      line,
+      "`@ch <角色内部id>:<立绘变体> [位置]` 或 `@ch <角色内部id> hide|show|exit`",
+    );
   }
   if (hasKeywordPrefix(line, "@ch")) {
     throw new DslProtocolError(
@@ -469,4 +489,66 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
 
   // 10. narration
   return { kind: "narration", text: line };
+}
+
+// ---------------------------------------------------------------------------
+// @ending epilogue token walk (结局元数据)
+// ---------------------------------------------------------------------------
+
+/** 结尾词硬上限：超长截断，不报错（元数据永远不炸段）。 */
+export const ENDING_TITLE_MAX_CHARS = 32;
+
+/**
+ * 哨兵 reason 词的回声：模型偶发把整条哨兵格式抄进 @ending 行
+ * （`@ending 81ab ending 樱花`）。在结尾词开始之前，这些词与 nonce
+ * 一样静默跳过。
+ */
+const EPILOGUE_ECHO_TOKENS: ReadonlySet<string> = new Set([
+  "buffer",
+  "interaction",
+  "ending",
+]);
+
+/**
+ * 把 `@ending` 行的剩余原文解析成档位/结尾词（确定性、宽容，永不报错）：
+ *
+ *   @ending HE 樱花与约定的终章   → { grade: "HE", title: "樱花与约定的终章" }
+ *   @ending 樱花与约定的终章      → { title: "…" }（档位走缺省 NE）
+ *   @ending 81ab HE 樱花          → nonce 回声跳过 → { grade: "HE", title: "樱花" }
+ *   @ending HE                    → { grade: "HE" }（结尾词回退「剧终」）
+ *   @ending                       → {}（两项全缺省）
+ *
+ * 从左到右走 token：档位未定时命中词表 → 记档位；结尾词未开始时命中
+ * nonce / reason 回声 → 跳过；第一个其他 token 起，全部（含该 token）
+ * 作为结尾词——结尾词一旦开始就不再吃档位，标题里出现 HE/BE 等词也不会
+ * 被劫走。结尾词超长按码点截断到 ENDING_TITLE_MAX_CHARS。
+ */
+export function interpretEndingEpilogue(
+  raw: string,
+  expectedNonce: string,
+): SegmentEndingEpilogue {
+  const tokens = raw.trim().split(/\s+/).filter((token) => token !== "");
+  let grade: EndingGrade | undefined;
+  const titleTokens: string[] = [];
+  for (const token of tokens) {
+    if (titleTokens.length === 0) {
+      if (grade === undefined && (ENDING_GRADES as readonly string[]).includes(token)) {
+        grade = token as EndingGrade;
+        continue;
+      }
+      if (token === expectedNonce || EPILOGUE_ECHO_TOKENS.has(token)) {
+        continue;
+      }
+    }
+    titleTokens.push(token);
+  }
+  if (titleTokens.length === 0) {
+    return grade !== undefined ? { grade } : {};
+  }
+  const joined = titleTokens.join(" ");
+  const title =
+    [...joined].length > ENDING_TITLE_MAX_CHARS
+      ? [...joined].slice(0, ENDING_TITLE_MAX_CHARS).join("")
+      : joined;
+  return { ...(grade !== undefined ? { grade } : {}), title };
 }

@@ -478,6 +478,29 @@ beat 到来时 pending + main 成组发布；`?` 开表单、`+` 追加选项、
 同时承担 generation complete + story end。Runtime 自动创建内部 EndEvent 和 ending ID，
 不再让模型生成 end 事件。
 
+## 48.1 `@ending` 结局元数据（epilogue）
+
+`ending` 哨兵后允许且仅允许再有一行结局元数据，随后模型必须停笔：
+
+```text
+@end a81f ending
+@ending HE 樱花与约定的终章
+```
+
+- 档位受控词表：`TE`（真结局）/ `HE`（圆满）/ `NE`（平淡）/ `BE`（坏结局），
+  现场活动按档位分发奖品。
+- 结尾词是结局标题（自由文本，解析层截断到 32 码点）；缺省时 UI 回退「剧终」。
+- 解析为确定性、宽容 token walk（`interpretEndingEpilogue`）：首个词表 token 记
+  档位；结尾词开始前，nonce 与 reason 词的回声跳过；结尾词一旦开始不再吃档位。
+- SegmentValidator 状态机：ending 哨兵打开「epilogue 窗口」，至多收一行
+  `@ending`，任何其他行关闭窗口且后续内容全部静默丢弃（不抛错、不烧修复
+  预算）；哨兵前出现 `@ending` 抛 `ENDING_EPILOGUE_ORPHAN`（strip-continue
+  白名单内）。buffer/interaction 哨兵后行为不变（SENTINEL_NOT_LAST）。
+- 生成器在窗口收齐后停止消费模型输出（`isEndingSettled`），残留不烧 token。
+- EndEvent 获得可选 `grade`（缺省 NE：漏写与强制收束兜底局都按 NE 计）与
+  `title`；经 `session_ended` wire、timeline（`endingGrade`/`endingTitle`）
+  与结算画面（档位徽章 + 结尾词）呈现。
+
 ---
 
 # 49. 截断判断

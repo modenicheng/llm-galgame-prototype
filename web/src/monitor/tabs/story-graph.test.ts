@@ -97,8 +97,35 @@ describe("deriveStoryGraph", () => {
     ];
     const graph = deriveStoryGraph(timeline);
     expect(graph.nodes[0]!.pending).toBe(false);
-    expect(graph.ending).toEqual({ seq: 3, endingId: "farewell", text: "灯影散场。" });
+    expect(graph.ending).toEqual({
+      seq: 3,
+      endingId: "farewell",
+      text: "灯影散场。",
+      grade: null,
+      title: null,
+    });
     expect(graph.hasEnding).toBe(true);
+  });
+
+  it("carries the @ending grade and title into the ending node", () => {
+    const timeline = [
+      entry({
+        seq: 1,
+        kind: "end",
+        endingId: "ending_9",
+        text: "故事到此结束。",
+        endingGrade: "HE",
+        endingTitle: "樱花与约定的终章",
+      }),
+    ];
+    const graph = deriveStoryGraph(timeline);
+    expect(graph.ending).toEqual({
+      seq: 1,
+      endingId: "ending_9",
+      text: "故事到此结束。",
+      grade: "HE",
+      title: "樱花与约定的终章",
+    });
   });
 
   it("does not let a later interaction steal an earlier one's answer", () => {

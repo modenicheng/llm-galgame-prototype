@@ -13,6 +13,9 @@ function line(text: string): DslLine {
     const reason = (parts[2] ?? "") as SegmentEndReason;
     return { kind: "segment_end", nonce, reason };
   }
+  if (text.startsWith("@ending")) {
+    return { kind: "ending_epilogue", raw: text.slice("@ending".length).trim() };
+  }
   if (text.startsWith("? ")) return { kind: "form_start", prompt: text.slice(2) };
   if (text.startsWith("+ ")) return { kind: "form_option", text: text.slice(2) };
   if (text.startsWith("= ")) return { kind: "form_input", placeholder: text.slice(2) };
@@ -186,5 +189,95 @@ describe("DslSegmentParser", () => {
     expect(result.groups[0]?.main).toEqual(dialogueMain("A", "第一行"));
     expect(result.groups[1]?.prelude).toEqual([{ type: "background", assetId: "station" }]);
     expect(result.groups[2]?.prelude).toEqual([{ type: "bgm", assetId: "mystery" }]);
+  });
+});
+
+describe("DslSegmentParser ending epilogue", () => {
+  it("captures the @ending line after an ending sentinel and attaches it in finish()", () => {
+    const p = parser();
+    p.pushLine(line("A: 故事的最后。"));
+    p.pushLine(line("@end a81f ending"));
+    p.pushLine(line("@ending HE 樱花与约定的终章"));
+    const result = p.finish();
+    expect(result.status).toEqual({
+      kind: "complete",
+      nonce: "a81f",
+      reason: "ending",
+      epilogue: { grade: "HE", title: "樱花与约定的终章" },
+    });
+  });
+
+  it("accepts a bare @ending (both fields default downstream)", () => {
+    const p = parser();
+    p.pushLine(line("@end a81f ending"));
+    p.pushLine(line("@ending"));
+    expect(p.finish().status).toMatchObject({ kind: "complete", epilogue: {} });
+  });
+
+  it("ignores residue after the epilogue window closes without throwing", () => {
+    const p = parser();
+    p.pushLine(line("@end a81f ending"));
+    p.pushLine(line("@ending NE 灯火熄灭的雨夜"));
+    // 结尾词之后模型又续写了两行残留：窗口已关，静默丢弃。
+    expect(p.pushLine(line("A: 不该播出的残留"))).toEqual([]);
+    expect(p.pushLine(line("@end a81f buffer"))).toEqual([]);
+    const result = p.finish();
+    expect(result.status).toEqual({
+      kind: "complete",
+      nonce: "a81f",
+      reason: "ending",
+      epilogue: { grade: "NE", title: "灯火熄灭的雨夜" },
+    });
+  });
+
+  it("closes the window on junk: a non-epilogue line after the ending sentinel is dropped", () => {
+    const p = parser();
+    p.pushLine(line("@end a81f ending"));
+    expect(p.pushLine(line("A: 模型没停笔的残留"))).toEqual([]);
+    // 窗口关闭后到达的 @ending 也不再捕获。
+    p.pushLine(line("@ending HE 迟到的结尾词"));
+    expect(p.finish().status).toEqual({ kind: "complete", nonce: "a81f", reason: "ending" });
+  });
+
+  it("keeps only the first @ending when the model writes two", () => {
+    const p = parser();
+    p.pushLine(line("@end a81f ending"));
+    p.pushLine(line("@ending BE 走不出的雨夜"));
+    p.pushLine(line("@ending HE 被覆盖的结局"));
+    expect(p.finish().status).toEqual({
+      kind: "complete",
+      nonce: "a81f",
+      reason: "ending",
+      epilogue: { grade: "BE", title: "走不出的雨夜" },
+    });
+  });
+
+  it("throws ENDING_EPILOGUE_ORPHAN when @ending appears before the sentinel", () => {
+    const p = parser();
+    p.pushLine(line("A: 正文"));
+    expectCode(() => p.pushLine(line("@ending HE 过早的结局")), "ENDING_EPILOGUE_ORPHAN");
+  });
+
+  it("keeps SENTINEL_NOT_LAST strictness after a buffer sentinel even for @ending", () => {
+    const p = parser();
+    p.pushLine(line("@end a81f buffer"));
+    expectCode(() => p.pushLine(line("@ending NE 不该出现的结尾词")), "SENTINEL_NOT_LAST");
+  });
+
+  it("reports isEndingSettled only once the window is done", () => {
+    const p = parser();
+    expect(p.isEndingSettled()).toBe(false);
+    p.pushLine(line("@end a81f ending"));
+    // 哨兵已到但模型可能还要写 @ending：窗口开着，不结算。
+    expect(p.isEndingSettled()).toBe(false);
+    p.pushLine(line("@ending HE 樱花与约定的终章"));
+    expect(p.isEndingSettled()).toBe(true);
+  });
+
+  it("stays unsettled when the model stops right after the ending sentinel", () => {
+    const p = parser();
+    p.pushLine(line("@end a81f ending"));
+    expect(p.isEndingSettled()).toBe(false);
+    expect(p.finish().status).toEqual({ kind: "complete", nonce: "a81f", reason: "ending" });
   });
 });

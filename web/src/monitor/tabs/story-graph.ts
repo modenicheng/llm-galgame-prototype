@@ -30,7 +30,15 @@ export interface GraphInteractionNode {
 
 export interface StoryGraphModel {
   nodes: GraphInteractionNode[];
-  ending: { seq: number; endingId: string; text: string } | null;
+  ending: {
+    seq: number;
+    endingId: string;
+    text: string;
+    /** @ending 档位（TE|HE|NE|BE）；未识别/缺省为 null。 */
+    grade: string | null;
+    /** @ending 结尾词（结局标题）；缺省为 null。 */
+    title: string | null;
+  } | null;
   hasEnding: boolean;
 }
 
@@ -45,6 +53,8 @@ export function deriveStoryGraph(timeline: readonly MonitorTimelineEntry[]): Sto
         seq: entry.seq,
         endingId: entry.endingId ?? "",
         text: entry.text ?? "",
+        grade: entry.endingGrade ?? null,
+        title: entry.endingTitle ?? null,
       };
       continue;
     }
@@ -182,11 +192,18 @@ export function renderStoryGraph(
   }
 
   if (graph.ending !== null) {
-    const endNode = el("div", "graph-node is-ending");
+    const grade = graph.ending.grade ?? "NE";
+    // 终局节点按档位换左边框色（.is-ending--te/he/ne/be）。
+    const endNode = el("div", `graph-node is-ending is-ending--${grade.toLowerCase()}`);
     const head = el("div", "node-head");
-    head.appendChild(el("span", undefined, `✦ 结局 #${graph.ending.seq}`));
+    head.appendChild(
+      el("span", undefined, `✦ 结局 #${graph.ending.seq} [${grade}]`),
+    );
     head.appendChild(el("span", undefined, graph.ending.endingId));
     endNode.appendChild(head);
+    if (graph.ending.title !== null) {
+      endNode.appendChild(el("div", "node-ending-title", graph.ending.title));
+    }
     endNode.appendChild(el("div", "prompt", graph.ending.text));
     flow.appendChild(endNode);
   } else if (graph.nodes.length === 0) {

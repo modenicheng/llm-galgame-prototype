@@ -224,6 +224,19 @@ export class StatusBar {
     );
     bar.appendChild(pressureSeg);
 
+    // 结局档位（@ending）：会话出现终局事件后展示档位与结尾词。
+    const endEntry = [...session.timeline].reverse().find((entry) => entry.kind === "end");
+    if (endEntry !== undefined) {
+      const grade = endEntry.endingGrade ?? "NE";
+      const endSeg = el("span", `seg ending-grade ending-grade--${grade.toLowerCase()}`);
+      endSeg.title = `结局 [${grade}] ${endEntry.endingTitle ?? "（无结尾词）"} · ${endEntry.endingId ?? ""}`;
+      endSeg.appendChild(el("span", undefined, `终·${grade}`));
+      if (endEntry.endingTitle !== undefined) {
+        endSeg.appendChild(el("span", undefined, endEntry.endingTitle));
+      }
+      bar.appendChild(endSeg);
+    }
+
     // Token usage.
     const llm = state.metrics.llm;
     const requests = Object.values(llm.requests).reduce((sum, n) => sum + n, 0);

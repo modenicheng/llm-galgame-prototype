@@ -488,6 +488,189 @@
   color: #ffa657;
 }
 
+/* ------------------------------------------------------- prompt audit tab */
+
+/* Compact inline tabs inside the right-top panel head (no extra row).
+ * Doubled class on purpose: must outrank `.mon-tab` defined further down. */
+.mon-head-tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: 4px;
+}
+
+.mon-tab.mon-tab--head {
+  padding: 1px 8px;
+  border: none;
+  border-radius: 4px;
+  color: #8a8a93;
+  font-size: 12px;
+  cursor: pointer;
+  background: transparent;
+  font: inherit;
+}
+
+.mon-tab.mon-tab--head:hover {
+  color: #c9c9d1;
+}
+
+.mon-tab.mon-tab--head.is-active {
+  color: #ffb09e;
+  background: #23232b;
+}
+
+.mon-prompt-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 0 6px;
+}
+
+/* Pinned system block: sticky like the writer panel's request boundaries. */
+.mon-prompt-sys {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: rgba(18, 18, 24, 0.96);
+  border-bottom: 1px solid #26262e;
+}
+
+.mon-prompt-sys-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #8a8a93;
+}
+
+.mon-prompt-sys-tag {
+  color: #79c0ff;
+}
+
+.mon-prompt-sys-body {
+  padding: 0 10px 6px;
+  border-bottom: 1px solid #17171d;
+}
+
+/* Attempt accordion items (narrow heads, like the context panel). */
+.mon-prompt-item {
+  border-bottom: 1px solid #17171d;
+}
+
+.mon-prompt-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.mon-prompt-item-head strong {
+  font-weight: 600;
+  color: #c9c9d1;
+}
+
+.mon-prompt-item-head .mon-prompt-state {
+  color: #8a8a93;
+}
+
+.mon-prompt-followups {
+  color: #ffa657;
+}
+
+.mon-prompt-item-body {
+  padding: 2px 10px 8px;
+}
+
+.mon-prompt-request-sub {
+  margin: 4px 0 2px;
+  color: #6e6e78;
+  font-size: 11px;
+}
+
+.mon-prompt-role {
+  margin: 4px 0 1px;
+  color: #6e6e78;
+  font-size: 11px;
+  font-family: var(--mon-mono, monospace);
+}
+
+/* One labeled prompt segment: source tag + label + size, expandable pre. */
+.mon-prompt-seg {
+  border-left: 2px solid #1c1c23;
+  margin: 2px 0;
+}
+
+.mon-prompt-seg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.mon-prompt-seg-src {
+  font-family: var(--mon-mono, monospace);
+  font-size: 11px;
+}
+
+.mon-prompt-seg-label {
+  color: #c9c9d1;
+}
+
+.mon-prompt-seg-chars {
+  color: #6e6e78;
+  font-size: 11px;
+}
+
+.mon-prompt-caret {
+  color: #6e6e78;
+  font-size: 10px;
+}
+
+.mon-prompt-trunc {
+  color: #f85149;
+  font-size: 11px;
+}
+
+.mon-prompt-seg-body {
+  margin: 2px 0 4px 6px;
+  padding: 6px 8px;
+  background: #0c0c0f;
+  border: 1px solid #1c1c23;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #c9c9d1;
+  font-size: 12px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+/* Source categories: file / runtime / guidance / repair / model output. */
+.psrc-file {
+  color: #79c0ff;
+}
+
+.psrc-runtime {
+  color: #d2a8ff;
+}
+
+.psrc-guidance {
+  color: #ffa657;
+}
+
+.psrc-repair {
+  color: #f85149;
+}
+
+.psrc-output {
+  color: #7ee787;
+}
+
 /* ------------------------------------------------------------------ tabs */
 
 .mon-tabbar {
@@ -586,6 +769,52 @@
 
 .graph-node.is-ending {
   border-left-color: #3fb950;
+}
+
+/* 终局节点按 @ending 档位换色：TE 紫 / HE 金 / NE 绿(缺省)/ BE 朱红。 */
+.graph-node.is-ending.is-ending--te {
+  border-left-color: #c9a2f5;
+}
+
+.graph-node.is-ending.is-ending--he {
+  border-left-color: #e8c064;
+}
+
+.graph-node.is-ending.is-ending--ne {
+  border-left-color: #3fb950;
+}
+
+.graph-node.is-ending.is-ending--be {
+  border-left-color: #f26d6d;
+}
+
+.graph-node .node-ending-title {
+  color: #f0f0f4;
+  margin-top: 2px;
+  font-weight: 600;
+}
+
+/* 状态栏结局档位段（会话结束后出现），配色同终局节点。 */
+.seg.ending-grade {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.seg.ending-grade--te span:first-child {
+  color: #c9a2f5;
+}
+
+.seg.ending-grade--he span:first-child {
+  color: #e8c064;
+}
+
+.seg.ending-grade--ne span:first-child {
+  color: #3fb950;
+}
+
+.seg.ending-grade--be span:first-child {
+  color: #f26d6d;
 }
 
 .graph-node .node-head {

@@ -556,6 +556,8 @@ export class Game {
             type: "end",
             ending_id: this.ids.nextGenerationId("ending"),
             text: "（故事在此落幕。）",
+            // 强制兜底局不评高档：档位固定 NE（现场发中档奖品）。
+            grade: "NE",
           };
           this.restoredEnding = ending;
           await this.store.saveSnapshot({
@@ -610,6 +612,8 @@ export class Game {
                 type: "end",
                 ending_id: this.ids.nextGenerationId("ending"),
                 text: "（故事在此落幕。）",
+                // 强制兜底局不评高档：档位固定 NE（现场发中档奖品）。
+                grade: "NE",
               };
               this.restoredEnding = ending;
               await this.store.saveSnapshot({
@@ -640,6 +644,8 @@ export class Game {
             type: "end",
             ending_id: this.ids.nextGenerationId("ending"),
             text: "（故事在此落幕。）",
+            // 强制兜底局不评高档：档位固定 NE（现场发中档奖品）。
+            grade: "NE",
           };
           this.restoredEnding = ending;
           await this.store.saveSnapshot({
@@ -1799,6 +1805,10 @@ export class Game {
       type: "end",
       ending_id: this.ids.nextGenerationId("ending"),
       text: "故事到此结束。",
+      // @ending epilogue（档位/结尾词）。档位缺省 NE：漏写行与兜底局都不
+      // 评高档，现场按 NE 发中档奖品；结尾词缺省由前端回退「剧终」。
+      grade: status.epilogue?.grade ?? "NE",
+      ...(status.epilogue?.title !== undefined ? { title: status.epilogue.title } : {}),
     };
     segment.terminal = endEvent;
     segment.events.push(endEvent);

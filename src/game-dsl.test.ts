@@ -272,6 +272,39 @@ describe("DSL mode — opening groups", () => {
     const ended = controller.outputs.find((o) => o.type === "session_ended");
     expect(ended && ended.type === "session_ended" ? ended.ending.ending_id : "").toBeTruthy();
   });
+
+  it("carries @ending epilogue grade/title into the EndEvent and defaults the grade to NE", async () => {
+    const config = makeDslConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslDialogue("苏遥", "再见了。"));
+          return {
+            events: [],
+            state_patch: {},
+            groups: [],
+            segmentEnd: {
+              ...complete("ending"),
+              epilogue: { grade: "TE", title: "真相大白之时" },
+            },
+          };
+        }),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const controller = new MemoryController();
+    controller.attach(game);
+    await game.run();
+
+    const ended = controller.outputs.find(
+      (o): o is RuntimeOutput & { type: "session_ended" } => o.type === "session_ended",
+    );
+    expect(ended?.ending).toMatchObject({ grade: "TE", title: "真相大白之时" });
+  });
 });
 
 describe("DSL mode — interaction compile", () => {

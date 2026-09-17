@@ -86,6 +86,13 @@ export type DslLine =
   | { kind: "form_option"; text: string }
   | { kind: "form_input"; placeholder: string }
   | { kind: "form_end" }
+  /**
+   * `@ending <档位> <结尾词>` — 结局元数据行。只允许紧跟在
+   * `@end <nonce> ending` 哨兵之后（合法性由 segment-validator 按状态
+   * 判定）；raw 是 `@ending` 之后的剩余原文，token 解析见
+   * interpretEndingEpilogue。
+   */
+  | { kind: "ending_epilogue"; raw: string }
   | { kind: "segment_end"; nonce: string; reason: SegmentEndReason };
 
 // ---------------------------------------------------------------------------
@@ -148,8 +155,28 @@ export interface EventGroupDraft {
 
 export type SegmentEndReason = "buffer" | "interaction" | "ending";
 
+/**
+ * 结局档位（@ending 指令的受控词表）。现场活动按档位分发奖品：
+ * TE 真结局 / HE 圆满 / NE 平淡 / BE 坏结局。
+ */
+export type EndingGrade = "TE" | "HE" | "NE" | "BE";
+
+export const ENDING_GRADES: readonly EndingGrade[] = ["TE", "HE", "NE", "BE"];
+
+/** @ending 行解析出的结局元数据。两项都可缺省：档位缺省 NE，结尾词 UI 回退「剧终」。 */
+export interface SegmentEndingEpilogue {
+  grade?: EndingGrade;
+  title?: string;
+}
+
 export type SegmentEndStatus =
-  | { kind: "complete"; nonce: string; reason: SegmentEndReason }
+  | {
+      kind: "complete";
+      nonce: string;
+      reason: SegmentEndReason;
+      /** 仅 reason === "ending" 且模型写了 @ending 行时附加。 */
+      epilogue?: SegmentEndingEpilogue;
+    }
   | { kind: "incomplete" };
 
 export interface DslSegmentResult {
@@ -176,6 +203,7 @@ export type DslErrorCode =
   | "EMPTY_INPUT_PLACEHOLDER"
   | "MULTIPLE_INPUT_FIELDS"
   | "FORM_OPEN_AT_SENTINEL"
+  | "ENDING_EPILOGUE_ORPHAN"
   | "SENTINEL_NOT_LAST"
   | "SENTINEL_NONCE_MISMATCH"
   | "SENTINEL_DUPLICATE"
@@ -201,7 +229,7 @@ export interface DslErrorDetail {
 
 /** 所有指令的 @ 前缀清单——未知 @ 行的报错与提示词都引用它。 */
 export const DSL_COMMAND_LIST =
-  "@bg <背景id>、@bgm <音乐id|stop>、@se <音效id>、@ch <角色内部id>:<立绘变体> [位置]、@ch <id> hide|show|exit、@beat、@? <提示>、@+ <选项>、@= <占位文本>、@/?、@end <nonce> <reason>";
+  "@bg <背景id>、@bgm <音乐id|stop>、@se <音效id>、@ch <角色内部id>:<立绘变体> [位置]、@ch <id> hide|show|exit、@beat、@? <提示>、@+ <选项>、@= <占位文本>、@/?、@end <nonce> <reason>、@ending <档位> <结尾词>";
 
 /**
  * A structural violation of the DSL. The message doubles as the repair

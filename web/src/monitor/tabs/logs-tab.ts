@@ -40,7 +40,10 @@ export function renderEvents(container: HTMLElement, timeline: readonly MonitorT
       row.appendChild(el("span", "msg", entry.prompt ?? ""));
     } else {
       const speaker = entry.speaker !== undefined ? `${entry.speaker}：` : "";
-      const text = entry.kind === "end" ? `${entry.endingId ?? ""} ${entry.text ?? ""}` : (entry.text ?? "");
+      const text =
+        entry.kind === "end"
+          ? `[${entry.endingGrade ?? "NE"}] ${entry.endingTitle ?? ""} ${entry.endingId ?? ""} ${entry.text ?? ""}`.replace(/\s+/g, " ").trim()
+          : (entry.text ?? "");
       row.appendChild(el("span", "msg", `${speaker}${text}`));
     }
     list.appendChild(row);

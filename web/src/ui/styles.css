@@ -1064,6 +1064,45 @@ button {
   color: var(--paper);
 }
 
+/* 结局档位徽章（@ending 档位：TE|HE|NE|BE），印章与标题之间的窄条。
+   配色：TE 紫（真结局）/ HE 金（圆满）/ NE 青灰（平淡，缺省）/ BE 朱红（坏结局）。 */
+.end-grade {
+  margin-top: 18px;
+  padding: 4px 14px;
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-indent: 0.22em;
+  color: #9aa7b5;
+  border: 1px solid rgba(154, 167, 181, 0.45);
+  border-radius: 999px;
+  background: rgba(154, 167, 181, 0.08);
+  animation: seal-in 600ms var(--ease-out) 320ms both;
+}
+
+.end-grade--te {
+  color: #c9a2f5;
+  border-color: rgba(201, 162, 245, 0.5);
+  background: rgba(201, 162, 245, 0.08);
+}
+
+.end-grade--he {
+  color: #e8c064;
+  border-color: rgba(232, 192, 100, 0.5);
+  background: rgba(232, 192, 100, 0.08);
+}
+
+.end-grade--ne {
+  color: #8fb3c7;
+  border-color: rgba(143, 179, 199, 0.45);
+  background: rgba(143, 179, 199, 0.08);
+}
+
+.end-grade--be {
+  color: #e07a6a;
+  border-color: rgba(224, 122, 106, 0.5);
+  background: rgba(224, 122, 106, 0.08);
+}
+
 .end-text {
   margin-top: 22px;
   font-size: 17px;

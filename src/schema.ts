@@ -1,4 +1,7 @@
 import type { StageCue } from "./core/presentation/types.js";
+import type { EndingGrade } from "./core/protocol/gal-dsl/types.js";
+/** 结局档位词表类型（@ending 指令）：单一来源在 gal-dsl 协议层，这里转出口。 */
+export type { EndingGrade } from "./core/protocol/gal-dsl/types.js";
 import {
   InteractionEventSchema,
   DialogueDraftEventSchema,
@@ -65,12 +68,18 @@ export interface ChoiceEvent {
 
 /**
  * Terminal produced by the runtime when a DSL segment closes with
- * `@end ... ending` (handleSegmentEnd). Never emitted by the model.
+ * `@end ... ending` (handleSegmentEnd). Never emitted by the model. The
+ * optional metadata comes from the model's `@ending` epilogue line:
+ * 结局档位缺省 NE（现场活动按档位分发奖品），结尾词缺省时 UI 回退「剧终」。
  */
 export interface EndEvent {
   type: "end";
   ending_id: string;
   text: string;
+  /** @ending 行的档位：TE | HE | NE | BE；旧数据/兜底局由运行时填 NE。 */
+  grade?: EndingGrade;
+  /** @ending 行的结尾词（结局标题），超长已由解析层截断。 */
+  title?: string;
 }
 
 export type RuntimeDialogueEvent = DialogueDraftEvent & {

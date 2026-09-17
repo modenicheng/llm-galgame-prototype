@@ -133,4 +133,39 @@ describe("parseDslSegmentText", () => {
       "SENTINEL_NOT_LAST",
     );
   });
+
+  it("captures the @ending epilogue end-to-end and drops post-ending residue", () => {
+    const result = parseDslSegmentText(
+      [
+        "樱花从枝头飘落。",
+        "苏遥[smile]: 那么，明年再见。",
+        "@end a81f ending",
+        "@ending HE 樱花与约定的终章",
+        "（不该播出的残留）",
+      ].join("\n"),
+      {
+        expectedNonce: "a81f",
+        allowedReasons: ["buffer", "interaction", "ending"],
+      },
+    );
+    expect(result.status).toEqual({
+      kind: "complete",
+      nonce: "a81f",
+      reason: "ending",
+      epilogue: { grade: "HE", title: "樱花与约定的终章" },
+    });
+    // 残留不进组：只有正文两行（@end/@ending 都不是组）。
+    expect(result.groups).toHaveLength(2);
+  });
+
+  it("rejects an orphan @ending before the sentinel", () => {
+    expectDslCode(
+      () =>
+        parseDslSegmentText("@ending HE 过早的结局\n@end a81f ending", {
+          expectedNonce: "a81f",
+          allowedReasons: ["buffer", "interaction", "ending"],
+        }),
+      "ENDING_EPILOGUE_ORPHAN",
+    );
+  });
 });

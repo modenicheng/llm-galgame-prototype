@@ -194,6 +194,15 @@ export function renderDslLine(raw: string, knownSpeakers?: ReadonlySet<string>):
     }
     case "dialogue":
       return { kind: parsed.kind, error: null, tokens: tokensFromDialogue(line) };
+    case "ending_epilogue":
+      return {
+        kind: parsed.kind,
+        error: null,
+        tokens: [
+          { cls: "kw", text: "@ending" },
+          { cls: "prompt", text: line.slice("@ending".length).trim() },
+        ],
+      };
     case "narration":
       return { kind: parsed.kind, error: null, tokens: [{ cls: "narr", text: raw }] };
   }

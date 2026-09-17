@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseDslLine } from "./line-parser.js";
+import { parseDslLine, interpretEndingEpilogue } from "./line-parser.js";
 import { DslProtocolError } from "./types.js";
 import type { DslErrorCode } from "./types.js";
 
@@ -514,5 +514,74 @@ describe("parseDslLine", () => {
       kind: "narration",
       text: "Suyao 会不会来还不一定。",
     });
+  });
+});
+
+describe("@ending epilogue line", () => {
+  it("parses grade + title", () => {
+    expect(parseDslLine("@ending HE 樱花与约定的终章")).toEqual({
+      kind: "ending_epilogue",
+      raw: "HE 樱花与约定的终章",
+    });
+  });
+
+  it("parses a bare @ending", () => {
+    expect(parseDslLine("@ending")).toEqual({ kind: "ending_epilogue", raw: "" });
+  });
+
+  it("parses a title-only @ending (grade not in vocabulary)", () => {
+    expect(parseDslLine("@ending 灯火熄灭的雨夜")).toEqual({
+      kind: "ending_epilogue",
+      raw: "灯火熄灭的雨夜",
+    });
+  });
+
+  it("does not match glued spellings (@ending_title / @endingHE)", () => {
+    expectCode("@ending_title 樱花", "UNKNOWN_COMMAND");
+    expectCode("@endingHE 樱花", "UNKNOWN_COMMAND");
+  });
+});
+
+describe("interpretEndingEpilogue", () => {
+  it("splits the leading grade token from the title", () => {
+    expect(interpretEndingEpilogue("HE 樱花与约定的终章", "a81f")).toEqual({
+      grade: "HE",
+      title: "樱花与约定的终章",
+    });
+  });
+
+  it("treats the whole rest as title when no grade token leads", () => {
+    expect(interpretEndingEpilogue("灯火熄灭的雨夜", "a81f")).toEqual({
+      title: "灯火熄灭的雨夜",
+    });
+  });
+
+  it("accepts a grade without a title", () => {
+    expect(interpretEndingEpilogue("BE", "a81f")).toEqual({ grade: "BE" });
+  });
+
+  it("returns empty defaults for a bare @ending", () => {
+    expect(interpretEndingEpilogue("", "a81f")).toEqual({});
+  });
+
+  it("skips nonce and reason echoes before the title starts", () => {
+    expect(interpretEndingEpilogue("a81f ending TE 真相大白之时", "a81f")).toEqual({
+      grade: "TE",
+      title: "真相大白之时",
+    });
+    expect(interpretEndingEpilogue("a81f buffer 樱花", "a81f")).toEqual({ title: "樱花" });
+  });
+
+  it("does not let vocabulary words hijack a started title", () => {
+    expect(interpretEndingEpilogue("HE HE 之下", "a81f")).toEqual({
+      grade: "HE",
+      title: "HE 之下",
+    });
+  });
+
+  it("truncates overlong titles to 32 code points", () => {
+    const long = "樱".repeat(40);
+    const { title } = interpretEndingEpilogue(`NE ${long}`, "a81f");
+    expect([...(title ?? "")]).toHaveLength(32);
   });
 });

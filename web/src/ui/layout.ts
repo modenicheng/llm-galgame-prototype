@@ -140,8 +140,13 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   // End overlay.
   const endRoot = el("section", "overlay overlay--end") as HTMLElement;
   const endInner = el("div", "end-inner") as HTMLDivElement;
+  // 结局档位徽章（TE|HE|NE|BE，配色见 .end-grade--*）：由 EndScreen 按模型
+  // 的 @ending 档位填充；未识别/缺省回退 NE 灰青色。
+  const endGrade = el("span", "end-grade", "") as HTMLElement;
+  endGrade.hidden = true;
   endInner.append(
     el("div", "end-seal", "终"),
+    endGrade,
     el("h2", "end-title", "剧终"),
     el("p", "end-text", ""),
     el("p", "end-session", ""),
