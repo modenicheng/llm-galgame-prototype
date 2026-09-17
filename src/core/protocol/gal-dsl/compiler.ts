@@ -174,15 +174,21 @@ function resolveDialogue(
  * §15 sprite-set 禁令：character_patch 显式换用非该角色 allowed_sprite_sets
  * 内的素材组（如 `苏遥[linche:calm]`）会被丢弃——普通角色
  * 只能使用自己的素材组，换装/伪装需要角色绑定里显式列 allowed_sprite_sets。
+ *
+ * 校验按组内应用顺序链式推进中间状态：variant 的合法性取决于该 cue
+ * 应用时刻的有效素材组（同组内先换 suit 再 ch variant 时，variant 必须在
+ * suit 组里存在），而不是组基态（audit 2026-09-17 #P2-1）。
  */
 function filterInvalidCues(
   cues: StageCue[],
-  state: VisualState,
+  initialState: VisualState,
   catalog: AssetCatalog,
   registry: CharacterRegistry,
   diagnostics: AssetDiagnostic[] | undefined,
+  reduce: (state: VisualState, cues: StageCue[]) => VisualState,
 ): StageCue[] {
   const kept: StageCue[] = [];
+  let state = initialState;
   for (const cue of cues) {
     let keep = true;
     if (cue.type === "background") {
@@ -226,7 +232,12 @@ function filterInvalidCues(
         }
       }
     }
-    if (keep) kept.push(cue);
+    if (keep) {
+      kept.push(cue);
+      // Advance the intermediate state so later cues in the same group are
+      // validated against what the earlier kept cues actually did.
+      state = reduce(state, [cue]);
+    }
   }
   return kept;
 }
@@ -290,7 +301,14 @@ export function compileEventGroup(
   const allCues: StageCue[] = dialogueCue ? [dialogueCue, ...prelude] : prelude;
   const filteredCues =
     options.catalog !== undefined
-      ? filterInvalidCues(allCues, tailState, options.catalog, options.registry, options.diagnostics)
+      ? filterInvalidCues(
+          allCues,
+          tailState,
+          options.catalog,
+          options.registry,
+          options.diagnostics,
+          reduce,
+        )
       : allCues;
   const nextState = reduce(tailState, filteredCues);
 
