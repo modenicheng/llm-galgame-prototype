@@ -253,6 +253,11 @@ characterId 映射，`ch` 没有台词头）：
 
 `@beat` 不要求模型提供 duration_ms，转场时间由 Renderer 决定。
 
+时序契约（2026-09-17 修复）：beat 组前奏里的舞台 cue（`@bg`/`@bgm`/`@ch`/`@se`）
+在**播放到达 beat 位置**时才生效——与台词行 `stage` 载荷同一时机契约（§54–§55、
+§63）。Runtime 把 beat 合成为 `RuntimeBeatEvent` 放进段播放队列；解析只推进预测
+尾部。分支预取 / 输入回应路径没有播放队列，beat cue 折叠进下一可播放行随其生效。
+
 ---
 
 # 24. 表单 DSL
@@ -694,7 +699,8 @@ GameViewModel 保存 `visualState: VisualStateWire`（加入 UiProjection）。
 # 65. RuntimeOutput
 
 保留现有 interaction 生命周期输出；`playback_ready` / `interaction_opened` 携带
-`presentation` delta，纯 `beat` 增加 `stage_beat_ready`。
+`presentation` delta，纯 `beat` 增加 `stage_beat_ready`。`stage_beat_ready` 在播放
+到达 beat 位置时发出（不在解析时——见 §23 的时序契约）。
 不重做 input_preview_opened / canceled / input_committed / interaction_resolved。
 
 ---
@@ -754,6 +760,20 @@ PLAYER_ACTION / AUTHOR_RULES
 
 续写时提供 `TAIL_VISUAL_STATE`（而非仅 renderedVisualState），因为模型在续写缓冲尾部。
 
+**舞台状态序列化契约（2026-09-17 保真化）**：`serializeVisualContext` 对所有维度**显式**
+陈述，包括"无"——背景未设置输出 `背景：无（尚未设置）`，BGM 已停/未播输出
+`BGM：无（当前没有音乐播放，不要再输出 @bgm stop）`，台上无人输出 `角色：台上无人`。
+早期版本对"无"维度整行省略，模型无法区分"已停止"与"从未播放"，是续写段重复输出
+`@bgm stop` 的直接根因之一。块首带一行"只输出发生变化的指令"的现状说明；
+`roster`（注册角色表）追加 `不在场：…` 行，供登台/撤离参照；隐藏角色标注
+`需 @ch <id> show 恢复`。
+
+**冗余 cue 兜底**：compiler `filterInvalidCues` 对合法但应用后舞台状态零变化的
+`background` / `bgm` / `character_patch` cue 静默丢弃并记 `REDUNDANT_STAGE_CUE`
+诊断（`sound_effect` 一次性播放、不留状态，永不判冗余）——与未知素材丢弃同一
+降级风格。first-touch 初始化与同位遮蔽（§19）引发的状态变化不算冗余。
+等价判定用纯函数 `visualStateEquals`（`src/core/presentation/equals.ts`）。
+
 **段落顺序（provider 前缀缓存友好）**：user prompt 按"静态 → 追加式 →
 逐请求易变"排列——可用素材（会话内不变）→ 剧情历史（只增尾巴）→
 导演便签 / 故事状态 / 舞台状态 → 本段任务（任务类型、nonce、回合、
@@ -769,7 +789,7 @@ Game 侧历史窗口（`generationHistory`）≤ `history_events` 时全量传�
 # 71. 模型资源选择原则
 
 ```text
-已有状态不变化 → 不重复输出
+已有状态不变化 → 不重复输出（BGM 正在播放不重发同名 @bgm，已停止不再发 @bgm stop）
 存在理想素材   → 使用 logical asset ID
 没有理想素材   → 保持当前状态或使用最接近的现有资源
 绝不猜测不存在的 asset ID

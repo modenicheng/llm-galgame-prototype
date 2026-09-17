@@ -26,6 +26,7 @@ import type {
   VisualState,
   VisualStateReducer,
 } from "../../presentation/types.js";
+import { visualStateEquals } from "../../presentation/equals.js";
 import type { AssetCatalog } from "../../assets/types.js";
 import type {
   AssetDiagnostic,
@@ -178,6 +179,11 @@ function resolveDialogue(
  * 校验按组内应用顺序链式推进中间状态：variant 的合法性取决于该 cue
  * 应用时刻的有效素材组（同组内先换 suit 再 ch variant 时，variant 必须在
  * suit 组里存在），而不是组基态（audit 2026-09-17 #P2-1）。
+ *
+ * 冗余 cue 兜底：合法但应用后舞台状态零变化的 cue（BGM 已停再发
+ * `@bgm stop`、重发当前背景、台词头重复当前立绘/位置、隐藏已隐藏角色）
+ * 被丢弃并记 REDUNDANT_STAGE_CUE——与未知素材同一静默降级风格；
+ * `sound_effect` 一次性播放、不留状态，永不判冗余。
  */
 function filterInvalidCues(
   cues: StageCue[],
@@ -230,6 +236,20 @@ function filterInvalidCues(
           keep = false;
           diagnostics?.push({ code: "UNKNOWN_SPRITE_VARIANT", id: cue.variant.value });
         }
+      }
+    }
+    if (keep && cue.type !== "sound_effect") {
+      // Redundant-cue guard: pre-apply the cue and drop it when the stage
+      // picture would not change (docs §70 — the model is told to emit only
+      // state deltas; this makes violations harmless instead of replaying
+      // crossfades / restarting audio).
+      const next = reduce(state, [cue]);
+      if (visualStateEquals(state, next)) {
+        keep = false;
+        diagnostics?.push({
+          code: "REDUNDANT_STAGE_CUE",
+          id: cue.type === "character_patch" ? cue.character : cue.assetId,
+        });
       }
     }
     if (keep) {
