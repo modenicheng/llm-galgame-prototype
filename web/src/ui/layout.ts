@@ -3,7 +3,7 @@
  * layout into `#app` and returns handles to every interactive region:
  * a full-viewport atmospheric backdrop, the centered 16:9 stage frame
  * (background layers + StageRenderer layers + dialogue scene, WebGAL-style
- * letterbox), and viewport-anchored chrome (controls, overlays, banner).
+ * letterbox), and viewport-anchored chrome (controls, overlays).
  * All dynamic content lives in the widgets; this file only declares
  * structure and class hooks for the design system in `styles.css`.
  */
@@ -20,7 +20,6 @@ export interface AppDomRefs {
   controlsRoot: HTMLElement;
   startRoot: HTMLElement;
   endRoot: HTMLElement;
-  bannerRoot: HTMLElement;
 }
 
 /** `button` variant: explicit `type="button"` so Enter/Space never submit a form. */
@@ -154,16 +153,9 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   );
   endRoot.append(endInner);
 
-  // Error banner.
-  const bannerRoot = el("div", "banner banner--error") as HTMLDivElement;
-  bannerRoot.append(
-    el("span", "banner__label", "出错了"),
-    el("span", "banner__text", ""),
-    button("banner__action", "重开一局"),
-  );
-  (bannerRoot.querySelector(".banner__action") as HTMLButtonElement).hidden = true;
-
-  root.append(backdrop, stage, controlsRoot, startRoot, endRoot, bannerRoot);
+  // 生成过程的错误/状态一律不上玩家端（操作员看 /monitor）；fatal 时舞台
+  // 停在最后一帧，控制条里的重开按钮承担恢复入口。
+  root.append(backdrop, stage, controlsRoot, startRoot, endRoot);
 
   return {
     stage,
@@ -176,6 +168,5 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     controlsRoot,
     startRoot,
     endRoot,
-    bannerRoot,
   };
 }

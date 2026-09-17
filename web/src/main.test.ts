@@ -571,7 +571,7 @@ describe("session restart (campus booth)", () => {
     await vi.waitFor(() => expect(restartBtn.disabled).toBe(false));
   });
 
-  it("shows the runtime phase message while waiting for generation", async () => {
+  it("keeps generation phase details off the player screen while waiting", async () => {
     await bootStarted();
     feed({ type: "session_started", sessionId: "sess-wait", location: "/sessions/sess-wait" });
     feed({ type: "input_committed", previewId: "pv-1" });
@@ -582,7 +582,8 @@ describe("session restart (campus booth)", () => {
 
     const waiting = document.querySelector(".waiting") as HTMLElement;
     expect(waiting.hasAttribute("hidden")).toBe(false);
+    // 生成痕迹（阶段/任务文案）不上玩家端：等待页保持空白副标题。
     const phase = document.querySelector(".waiting__phase") as HTMLElement;
-    await vi.waitFor(() => expect(phase.textContent).toContain("正在生成回复"));
+    await vi.waitFor(() => expect(phase.textContent).toBe(""));
   });
 });

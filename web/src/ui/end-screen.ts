@@ -1,7 +1,7 @@
 /**
- * EndScreen + ErrorBanner — the terminal overlays. EndScreen renders the
- * ending event (with a 朱砂 seal accent); ErrorBanner is the transient
- * error strip.
+ * EndScreen — the terminal overlay. Renders the ending event (with a 朱砂
+ * seal accent). Player-facing generation errors are deliberately never
+ * rendered: the stage keeps its last picture and the operator watches /monitor.
  */
 import { asRecord, setText, show } from "./dom.js";
 import { ENDING_GRADES } from "@core/protocol/gal-dsl/types.js";
@@ -94,53 +94,5 @@ export class EndScreen {
   setRestartPending(pending: boolean): void {
     this.restartBtn.disabled = pending;
     setText(this.restartBtn, pending ? "正在开启新一局…" : "重新开始");
-  }
-}
-
-/** Optional recovery action attached to an error banner. */
-export interface ErrorBannerAction {
-  label: string;
-  onAction: () => void;
-}
-
-export class ErrorBanner {
-  private readonly root: HTMLElement;
-  private readonly textEl: HTMLElement;
-  private readonly actionBtn: HTMLButtonElement | null;
-  private action: ErrorBannerAction | null = null;
-
-  constructor(root: HTMLElement) {
-    this.root = root;
-    this.textEl = root.querySelector(".banner__text") as HTMLElement;
-    this.actionBtn = root.querySelector(".banner__action") as HTMLButtonElement | null;
-    this.actionBtn?.addEventListener("click", () => {
-      this.action?.onAction();
-    });
-  }
-
-  /** Present the error; an optional action (e.g. 重开一局) offers recovery. */
-  show(message: string, action?: ErrorBannerAction): void {
-    setText(this.textEl, message);
-    this.action = action ?? null;
-    if (this.actionBtn !== null) {
-      if (action !== undefined) {
-        setText(this.actionBtn, action.label);
-        this.actionBtn.disabled = false;
-        this.actionBtn.hidden = false;
-      } else {
-        this.actionBtn.hidden = true;
-      }
-    }
-    show(this.root, true);
-  }
-
-  hide(): void {
-    show(this.root, false);
-  }
-
-  /** Disable the action while its effect is pending (e.g. restart in flight). */
-  setActionPending(pending: boolean): void {
-    if (this.actionBtn === null || this.action === null) return;
-    this.actionBtn.disabled = pending;
   }
 }

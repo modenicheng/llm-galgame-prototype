@@ -17,7 +17,7 @@ import { DialogueBox } from "./ui/dialogue-box.js";
 import { InteractionPanel } from "./ui/interaction-panel.js";
 import { PreviewPanel } from "./ui/input-panel.js";
 import { ControlsBar } from "./ui/controls.js";
-import { EndScreen, ErrorBanner } from "./ui/end-screen.js";
+import { EndScreen } from "./ui/end-screen.js";
 import { installStageUiScale } from "./ui/stage-ui-scale.js";
 import { StageRenderer } from "./stage/stage-renderer.js";
 import { fetchAssetManifest } from "./stage/asset-manifest-client.js";
@@ -73,8 +73,10 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
         await app.start(context); // worklet + cache + WebSocket (+ client.ready)
       } catch (error) {
         // A failed start must not wedge the session (P2): the app has already
-        // reset its gate — surface the reason and let the user retry.
-        errorBanner.show(error instanceof Error ? error.message : String(error));
+        // reset its gate — surface the reason on the start screen and retry.
+        startScreen.setWarning(
+          error instanceof Error ? error.message : String(error),
+        );
         return;
       }
       started = true; // keep the gate closed once the session is underway
@@ -119,7 +121,6 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   const endScreen = new EndScreen(refs.endRoot, {
     onRestart: () => beginRestart(),
   });
-  const errorBanner = new ErrorBanner(refs.bannerRoot);
 
   // ---------------------------------------------------------------------------
   // Session restart (campus booth): ask the host to rebuild the runtime with
@@ -137,14 +138,12 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     }
     endScreen.setRestartPending(false);
     controls.setRestartPending(false);
-    errorBanner.setActionPending(false);
   };
   const beginRestart = (): void => {
     if (restartPending) return;
     restartPending = true;
     endScreen.setRestartPending(true);
     controls.setRestartPending(true);
-    errorBanner.setActionPending(true);
     app.restartSession();
     restartFailsafe = window.setTimeout(endRestartPending, 8000);
   };
@@ -174,7 +173,6 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   let lastMode: FrontendMode | null = null;
   let lastProjectionSeq = 0;
   let lastPreviewText: string | null = null;
-  let lastErrorText: string | null = null;
   // Draft per interaction: a preview stores its text under the interaction id
   // so cancel restores it, while a NEW interaction never reuses an old draft
   // (§11.7).
@@ -210,7 +208,6 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
     show(refs.startRoot, !started && mode === "BOOTSTRAP");
     show(refs.endRoot, mode === "ENDING");
-    show(refs.bannerRoot, mode === "ERROR");
     show(refs.controlsRoot, mode !== "BOOTSTRAP" && mode !== "ENDING");
 
     show(refs.dialogueRoot, mode === "PLAYING");
@@ -219,19 +216,9 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
       refs.waitingEl,
       mode === "CONTENT_WAITING" || (started && mode === "BOOTSTRAP"),
     );
-    // Live generation phase (status snapshots flow during CONTENT_WAITING):
-    // lets staff tell "generating" from "stuck" at the booth.
-    if (mode === "CONTENT_WAITING") {
-      const status = view.status as { message?: unknown } | undefined;
-      setText(
-        refs.waitingPhaseEl,
-        typeof status?.message === "string" && status.message.length > 0
-          ? status.message
-          : "",
-      );
-    } else {
-      setText(refs.waitingPhaseEl, "");
-    }
+    // 生成过程痕迹不上玩家端：等待页只保留静态文案，后台续写/修复链等
+    // 阶段细节属于操作员信息（/monitor 实时流），不在这里露出。
+    setText(refs.waitingPhaseEl, "");
 
     const selectingMode =
       mode === "CHOICE_SELECTING" || mode === "HYBRID_SELECTING" || mode === "INPUT_EDITING";
@@ -285,22 +272,13 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
       }
     } else if (mode === "ENDING" && modeChanged) {
       if (!endScreen.show(view.ending, view.sessionId)) {
-        errorBanner.show("结局数据缺失");
+        console.warn("ending event missing/invalid", view.ending);
       }
-    } else if (mode === "ERROR" && (modeChanged || view.lastError !== lastErrorText)) {
-      // Booth ops: the session id travels with the banner so a problem
-      // report screenshot is self-contained. Re-show on text change too: a
-      // fatal segment error is typically followed by the host-level
-      // "run loop exited" notice, which must replace the first banner.
-      lastErrorText = view.lastError ?? null;
-      const base = view.lastError ?? "未知错误";
-      const sessionId = view.sessionId;
-      errorBanner.show(
-        sessionId !== undefined ? `${base}（会话 ${sessionId.slice(0, 8)}）` : base,
-        // The run loop is dead (API timeout etc.) — same recovery posture
-        // as the end screen: nothing is left to lose, no confirm needed.
-        { label: "重开一局", onAction: () => beginRestart() },
-      );
+    } else if (mode === "ERROR") {
+      // Fatal generation failure: the stage freezes on its last picture and
+      // generation traces stay off the player screen by design — the
+      // operator diagnoses via /monitor. The controls-bar restart button
+      // remains the recovery entry point.
     }
 
     // Stage picture (§86): re-render only when the view model hands us a
