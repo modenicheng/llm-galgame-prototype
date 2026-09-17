@@ -195,6 +195,87 @@ describe("MonitorModel → WriterPanel live flow", () => {
     });
   });
 
+  it("replaces a failed generation in place when its repair shares the slice id", () => {
+    const model = new MonitorModel();
+    const container = makeContainer();
+    const toolbar = document.createElement("div");
+    const foot = document.createElement("div");
+
+    return import("./writer-panel.js").then(({ WriterPanel }) => {
+      new WriterPanel(model, { toolbar, stream: container, foot });
+
+      const start = 1_700_000_000_000;
+      const attempt = (attemptId: string, index: number, state: "streaming" | "failed", startedAt: number) => ({
+        attemptId,
+        index,
+        state,
+        startedAt,
+        endedAt: state === "streaming" ? null : startedAt + 900,
+        chars: 0,
+        lines: 0,
+        groups: 0,
+        error: state === "failed" ? "没有 @end 哨兵" : null,
+        segmentEnd: null,
+        firstTokenMs: 300,
+      });
+      model.applyServerMessage({
+        type: "monitor.event",
+        events: [
+          {
+            type: "writer.start",
+            task: {
+              taskId: "continuation-nonce1",
+              taskType: "continuation",
+              sliceId: "slice-9",
+              startedAt: start,
+              lastActivityAt: start,
+              attempts: [attempt("continuation-nonce1#0", 0, "streaming", start)],
+            },
+          },
+          { type: "writer.delta", attemptId: "continuation-nonce1#0", text: "原始生成第一行。\n原始生成第二行。\n" },
+          {
+            type: "writer.end",
+            taskId: "continuation-nonce1",
+            attemptId: "continuation-nonce1#0",
+            state: "failed",
+            error: "没有 @end 哨兵",
+            segmentEnd: null,
+          },
+          // Game 级修复续写：不同 task（新 nonce），同一生成片。
+          {
+            type: "writer.start",
+            task: {
+              taskId: "continuation-nonce2",
+              taskType: "continuation",
+              sliceId: "slice-9",
+              startedAt: start + 2_000,
+              lastActivityAt: start + 2_000,
+              attempts: [attempt("continuation-nonce2#0", 0, "streaming", start + 2_000)],
+            },
+          },
+          { type: "writer.delta", attemptId: "continuation-nonce2#0", text: "修复续写第一行。\n" },
+        ],
+      });
+
+      // 原位替换：不追加新 section，仍只有一片。
+      const sections = container.querySelectorAll(".writer-request");
+      expect(sections).toHaveLength(1);
+      const section = sections[0]!;
+      // 片边界升计数：生成 #2 + 修复续写 ×1。
+      expect(section.querySelector(".writer-request-boundary")?.textContent).toContain("生成 #2");
+      expect(section.querySelector(".writer-request-boundary")?.textContent).toContain("修复续写 ×1");
+      // 片主体展示的是最新生成（修复续写）的流，不是原始输出。
+      const primaryStream = section.querySelector(":scope > .writer-request-stream") as HTMLElement;
+      expect(primaryStream.textContent).toContain("修复续写第一行。");
+      expect(primaryStream.textContent).not.toContain("原始生成第一行。");
+      // 原始生成折叠进 history，数据保留可审计。
+      const historyItems = section.querySelectorAll(".writer-history-item");
+      expect(historyItems).toHaveLength(1);
+      expect(historyItems[0]!.textContent).toContain("原始生成第一行。");
+      expect(historyItems[0]!.querySelector("summary")?.textContent).toContain("生成 #1");
+    });
+  });
+
   it("tracks the current player line from the game-state frame", () => {
     const model = new MonitorModel();
     const container = makeContainer();

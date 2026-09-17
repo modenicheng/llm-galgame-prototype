@@ -6,6 +6,7 @@ function task(overrides: Partial<WriterTaskModel["attempts"][number]> = {}): Wri
   return {
     taskId: "continuation-nonce",
     taskType: "continuation",
+    sliceId: null,
     startedAt: 1_000,
     lastActivityAt: 1_000,
     firstSeen: 0,

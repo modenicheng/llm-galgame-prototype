@@ -45,6 +45,8 @@ export interface WriterAttemptModel {
 export interface WriterTaskModel {
   taskId: string;
   taskType: string;
+  /** 生成片 id：Game 级修复续写与原段共享同片；null = 独立片。 */
+  sliceId: string | null;
   startedAt: number;
   lastActivityAt: number;
   /** Model-local arrival sequence: stable oldest→newest tiebreak. */
@@ -107,6 +109,7 @@ export class MonitorModel {
         this.writerSystemPrompt = snap.writer.systemPrompt ?? null;
         this.writerTasks = snap.writer.tasks.map((task) => ({
           ...task,
+          sliceId: task.sliceId ?? null,
           firstSeen: this.taskSeq++,
           attempts: task.attempts.map((attempt) => ({
             ...attempt,
@@ -187,6 +190,7 @@ export class MonitorModel {
           const task: WriterTaskModel = {
             taskId: event.task.taskId,
             taskType: event.task.taskType,
+            sliceId: event.task.sliceId ?? null,
             startedAt: event.task.startedAt,
             lastActivityAt: event.task.lastActivityAt,
             firstSeen: this.taskSeq++,
@@ -225,6 +229,9 @@ export class MonitorModel {
             }
           }
           existing.lastActivityAt = event.task.lastActivityAt;
+          if (existing.sliceId === null && event.task.sliceId != null) {
+            existing.sliceId = event.task.sliceId;
+          }
           this.indexTask(existing);
         }
         break;

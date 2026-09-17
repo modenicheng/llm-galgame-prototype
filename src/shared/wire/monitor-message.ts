@@ -79,6 +79,12 @@ export interface MonitorWriterPromptMessage {
 export interface MonitorWriterTask {
   taskId: string;
   taskType: string;
+  /**
+   * 生成片 id：原始生成与其 Game 级修复续写共享同片（修复续写发新
+   * nonce ⇒ taskId 不同）。面板据此把同一生成片的多次生成原位替换
+   * 展示；null = 该任务未携带片 id（按独立片处理）。
+   */
+  sliceId?: string | null;
   startedAt: number;
   lastActivityAt: number;
   attempts: MonitorWriterAttempt[];

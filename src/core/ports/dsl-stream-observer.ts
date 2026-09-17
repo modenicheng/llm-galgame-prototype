@@ -17,6 +17,11 @@ export interface WriterAttemptInfo {
   /** opening | continuation | branch_prefetch | input_response | input_bridge */
   taskType: string;
   index: number;
+  /**
+   * 生成片 id：原始生成与其 Game 级修复续写共享同一片（修复续写发新
+   * nonce ⇒ taskId 不同），监控据此做原位替换展示。非修复生成各占一片。
+   */
+  sliceId?: string;
 }
 
 /** Parse outcome of one complete DSL line; `kind: null` marks fence lines. */

@@ -89,6 +89,60 @@ describe("MonitorHub", () => {
     expect(attempt.text).toBe("苏遥：你来了。\n");
   });
 
+  it("threads the slice id so a repair continuation groups with its original task", async () => {
+    const hub = makeHub(makeGameView());
+    const observer = hub.writerObserver;
+
+    // 原始生成与其 Game 级修复续写是不同 task（修复发新 nonce），但共享
+    // sliceId —— 面板据此做"同片原位替换"展示。
+    observer.onAttemptStart({
+      attemptId: "opening-ab12#0",
+      taskId: "opening-ab12",
+      taskType: "opening",
+      index: 0,
+      sliceId: "slice-7",
+    });
+    observer.onAttemptEnd("opening-ab12#0", { state: "failed", error: "没有 @end 哨兵" });
+    observer.onAttemptStart({
+      attemptId: "continuation-cd34#0",
+      taskId: "continuation-cd34",
+      taskType: "continuation",
+      index: 0,
+      sliceId: "slice-7",
+    });
+    observer.onAttemptStart({
+      attemptId: "input-response-ef56#0",
+      taskId: "input-response-ef56",
+      taskType: "input_response",
+      index: 0,
+    });
+
+    const snapshot = hub.snapshot();
+    const byTask = new Map(snapshot.writer.tasks.map((task) => [task.taskId, task]));
+    expect(byTask.get("opening-ab12")!.sliceId).toBe("slice-7");
+    expect(byTask.get("continuation-cd34")!.sliceId).toBe("slice-7");
+    // 未携带片 id 的任务回退 null（独立片）。
+    expect(byTask.get("input-response-ef56")!.sliceId).toBeNull();
+
+    // writer.start 事件同样携带（增量路径）。合播有 10ms 窗口，等一拍。
+    const events: unknown[] = [];
+    hub.subscribe((message) => {
+      if (message.type === "monitor.event") events.push(...message.events);
+    });
+    observer.onAttemptStart({
+      attemptId: "opening-ab12#1",
+      taskId: "opening-ab12",
+      taskType: "opening",
+      index: 1,
+      sliceId: "slice-7",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const start = events.find(
+      (event) => (event as { type?: string }).type === "writer.start",
+    ) as { task: { sliceId?: string | null } } | undefined;
+    expect(start?.task.sliceId).toBe("slice-7");
+  });
+
   it("records first-token latency exactly once plus request usage and repairs", () => {
     let now = 1_000;
     const hub = makeHubWithClock(makeGameView(), () => now);

@@ -1,5 +1,9 @@
 /**
- * One chronological, auto-following document containing every writer request.
+ * One chronological, auto-following document of writer generations grouped
+ * into slices（生成片）: a failed generation and its Game-level repair
+ * continuations share one slice. The latest generation replaces the original
+ * IN PLACE (原位替换，防平铺追加); superseded generations stay collapsed under
+ * the slice — data and logs are never dropped, click to expand for audit.
  * Request boundaries carry latency, token, repair and parse telemetry.
  */
 import type { MonitorModel, WriterAttemptModel, WriterTaskModel } from "./monitor-model.js";
@@ -59,14 +63,35 @@ function sessionTokenQuery(): string {
 interface RequestSection {
   task: WriterTaskModel;
   attempt: WriterAttemptModel;
-  section: HTMLElement;
+  /** 生成片内第几次生成（1 起，按任务时间序）。 */
+  generation: number;
+  /** 片内修复续写次数（任务数 − 1，展示在片边界上）。 */
+  repairsInSlice: number;
   boundary: HTMLElement;
   title: HTMLElement;
   meta: HTMLElement;
   notice: HTMLElement;
+  /** 历史块折叠头；主生成块为 null（信息直接写在片边界上）。 */
+  summary: HTMLElement | null;
   view: DslStreamView;
   renderedText: string;
   finished: boolean;
+}
+
+interface SliceAttempt {
+  task: WriterTaskModel;
+  attempt: WriterAttemptModel;
+  generation: number;
+}
+
+interface SliceGroup {
+  sliceKey: string;
+  taskType: string;
+  /** 按最早 attempt 时间排序后的全部尝试（末位 = 最新生成，原位展示）。 */
+  attempts: SliceAttempt[];
+  startedAt: number;
+  /** 片内修复续写次数 = 任务数 − 1。 */
+  repairs: number;
 }
 
 export interface WriterPanelRefs {
@@ -77,6 +102,12 @@ export interface WriterPanelRefs {
 
 export class WriterPanel {
   private readonly sections = new Map<string, RequestSection>();
+  /** Live slice sections keyed by sliceKey (incremental document sync). */
+  private readonly sliceSections = new Map<string, {
+    element: HTMLElement;
+    signature: string;
+    attemptIds: string[];
+  }>();
   private followTail = true;
   /** Timestamp until which scroll events are our own programmatic scrolls. */
   private programmaticScrollUntil = 0;
@@ -154,99 +185,230 @@ export class WriterPanel {
     this.scrollToPreferredPosition();
   }
 
-  private orderedAttempts(): { task: WriterTaskModel; attempt: WriterAttemptModel }[] {
-    return this.model.writerTasks
-      .flatMap((task) => task.attempts.map((attempt) => ({ task, attempt })))
-      .sort(
+  // -------------------------------------------------------------------------
+  // Slice grouping（生成片：原始生成 + 其 Game 级修复续写共享同片）
+  // -------------------------------------------------------------------------
+
+  private orderedSlices(): SliceGroup[] {
+    const groups = new Map<string, {
+      sliceKey: string;
+      taskType: string;
+      tasks: WriterTaskModel[];
+      startedAt: number;
+    }>();
+    for (const task of this.model.writerTasks) {
+      // sliceId 缺省（旧事件 / 独立任务）时退化为按任务各占一片。
+      const sliceKey = task.sliceId ?? task.taskId;
+      let group = groups.get(sliceKey);
+      if (group === undefined) {
+        group = {
+          sliceKey,
+          taskType: task.taskType,
+          tasks: [],
+          startedAt: Number.POSITIVE_INFINITY,
+        };
+        groups.set(sliceKey, group);
+      }
+      group.tasks.push(task);
+      const earliest =
+        task.attempts.length > 0
+          ? Math.min(...task.attempts.map((attempt) => attempt.startedAt))
+          : task.startedAt;
+      group.startedAt = Math.min(group.startedAt, earliest);
+    }
+
+    const slices: SliceGroup[] = [];
+    for (const group of groups.values()) {
+      group.tasks.sort(
+        (a, b) => firstStartedAt(a) - firstStartedAt(b) || a.firstSeen - b.firstSeen,
+      );
+      const attempts: SliceAttempt[] = [];
+      group.tasks.forEach((task, taskIndex) => {
+        for (const attempt of task.attempts) {
+          attempts.push({ task, attempt, generation: taskIndex + 1 });
+        }
+      });
+      attempts.sort(
         (a, b) =>
           a.attempt.startedAt - b.attempt.startedAt ||
-          a.attempt.index - b.attempt.index ||
-          a.task.firstSeen - b.task.firstSeen,
+          a.generation - b.generation ||
+          a.attempt.index - b.attempt.index,
       );
+      slices.push({
+        sliceKey: group.sliceKey,
+        taskType: group.taskType,
+        attempts,
+        startedAt: group.startedAt,
+        repairs: group.tasks.length - 1,
+      });
+    }
+    slices.sort((a, b) => a.startedAt - b.startedAt || a.sliceKey.localeCompare(b.sliceKey));
+    return slices;
   }
+
+  // -------------------------------------------------------------------------
+  // Document assembly
+  // -------------------------------------------------------------------------
 
   private syncDocument(): void {
-    const ordered = this.orderedAttempts();
-    const nextIds = ordered.map(({ attempt }) => attempt.attemptId);
-    const currentIds = [...this.sections.keys()];
-    const structureChanged =
-      nextIds.length !== currentIds.length || nextIds.some((id, index) => id !== currentIds[index]);
-
-    if (!structureChanged) {
-      if (ordered.length === 0 && this.refs.stream.childElementCount === 0) {
+    const slices = this.orderedSlices();
+    if (slices.length === 0) {
+      if (this.sliceSections.size > 0) {
+        this.sliceSections.clear();
+        this.sections.clear();
+        this.highlightKey = null;
+        this.highlightView = null;
+        this.refs.stream.textContent = "";
+      }
+      if (this.refs.stream.childElementCount === 0) {
         this.refs.stream.appendChild(el("div", "mon-empty", "暂无生成请求（等待玩家开始）"));
       }
-      for (const { task, attempt } of ordered) {
-        const request = this.sections.get(attempt.attemptId)!;
-        request.task = task;
-        request.attempt = attempt;
-        this.reconcileRequestText(request);
-      }
       return;
     }
+    this.refs.stream.querySelector(":scope > .mon-empty")?.remove();
 
-    const appendOnly = currentIds.every((id, index) => id === nextIds[index]);
-    if (appendOnly) {
-      this.refs.stream.querySelector(":scope > .mon-empty")?.remove();
-      for (const { task, attempt } of ordered.slice(0, currentIds.length)) {
-        const request = this.sections.get(attempt.attemptId)!;
-        request.task = task;
-        request.attempt = attempt;
-        this.reconcileRequestText(request);
+    // Incremental per-slice sync: an unchanged slice keeps its DOM node
+    // (streaming must not rebuild the document under the auditor); a slice
+    // whose attempt list changed (repair continuation joined, retry attempt)
+    // is rebuilt in place; evicted slices (ring) drop out.
+    const seen = new Set<string>();
+    for (const slice of slices) {
+      seen.add(slice.sliceKey);
+      const signature = `${slice.repairs}[${slice.attempts.map((entry) => entry.attempt.attemptId).join(",")}]`;
+      const existing = this.sliceSections.get(slice.sliceKey);
+      if (existing !== undefined && existing.signature === signature) {
+        this.rebindSlice(slice);
+        continue;
       }
-      for (const { task, attempt } of ordered.slice(currentIds.length)) {
-        this.appendRequest(task, attempt);
+      const element = this.buildSliceElement(slice);
+      if (existing !== undefined) {
+        existing.element.replaceWith(element);
+      } else {
+        this.refs.stream.appendChild(element);
       }
-      return;
+      this.sliceSections.set(slice.sliceKey, {
+        element,
+        signature,
+        attemptIds: slice.attempts.map((entry) => entry.attempt.attemptId),
+      });
+      this.highlightKey = null;
+      this.highlightView = null;
     }
 
-    this.refs.stream.textContent = "";
-    this.sections.clear();
-    this.highlightKey = null;
-    this.highlightView = null;
-    if (ordered.length === 0) {
-      this.refs.stream.appendChild(el("div", "mon-empty", "暂无生成请求（等待玩家开始）"));
-      return;
+    for (const [sliceKey, entry] of [...this.sliceSections]) {
+      if (seen.has(sliceKey)) continue;
+      for (const attemptId of entry.attemptIds) this.sections.delete(attemptId);
+      entry.element.remove();
+      this.sliceSections.delete(sliceKey);
+      this.highlightKey = null;
+      this.highlightView = null;
     }
 
-    for (const { task, attempt } of ordered) {
-      this.appendRequest(task, attempt);
+    // Re-affirm chronological slice order (insertions are append-only in
+    // practice; this guards the tiebreak/eviction corner cases).
+    slices.forEach((slice, index) => {
+      const element = this.sliceSections.get(slice.sliceKey)?.element;
+      if (element === undefined) return;
+      const current = this.refs.stream.children[index];
+      if (current !== element) {
+        this.refs.stream.insertBefore(element, current ?? null);
+      }
+    });
+  }
+
+  /** Refresh model bindings + catch up text of an unchanged slice. */
+  private rebindSlice(slice: SliceGroup): void {
+    for (const entry of slice.attempts) {
+      const request = this.sections.get(entry.attempt.attemptId);
+      if (request === undefined) continue;
+      request.task = entry.task;
+      request.attempt = entry.attempt;
+      request.generation = entry.generation;
+      request.repairsInSlice = slice.repairs;
+      this.reconcileRequestText(request);
     }
   }
 
-  private appendRequest(task: WriterTaskModel, attempt: WriterAttemptModel): void {
+  /** Build one slice section element: latest generation in place, history collapsed. */
+  private buildSliceElement(slice: SliceGroup): HTMLElement {
     const section = el("section", "writer-request");
-    section.dataset.attemptId = attempt.attemptId;
+    section.dataset.sliceKey = slice.sliceKey;
+    if (slice.repairs > 0) section.dataset.repairs = String(slice.repairs);
+
+    // 原位替换：片主体永远展示最新生成；早先生成折叠进 history 审计。
+    const primary = slice.attempts[slice.attempts.length - 1]!;
+    const primaryBlock = this.buildBlock(slice, primary, null);
+    section.append(primaryBlock.boundary, primaryBlock.body);
+    this.sections.set(primary.attempt.attemptId, primaryBlock.section);
+
+    if (slice.attempts.length > 1) {
+      const history = el("div", "writer-slice-history");
+      history.appendChild(
+        el(
+          "div",
+          "writer-slice-history-label",
+          `被覆盖的生成 ×${slice.attempts.length - 1}（展开审计，数据未删）`,
+        ),
+      );
+      // Newest-first: the most recently superseded generation is the one an
+      // auditor usually wants (closest to what the player actually saw).
+      for (let i = slice.attempts.length - 2; i >= 0; i -= 1) {
+        const entry = slice.attempts[i]!;
+        const details = el("details", "writer-history-item");
+        const summary = el("summary", "writer-history-summary");
+        details.appendChild(summary);
+        const block = this.buildBlock(slice, entry, summary);
+        details.append(block.boundary, block.body);
+        history.appendChild(details);
+        this.sections.set(entry.attempt.attemptId, block.section);
+      }
+      section.appendChild(history);
+    }
+
+    return section;
+  }
+
+  /** Build one attempt block (boundary header + stream view). */
+  private buildBlock(
+    slice: SliceGroup,
+    entry: SliceAttempt,
+    summary: HTMLElement | null,
+  ): {
+    section: RequestSection;
+    boundary: HTMLElement;
+    body: HTMLElement;
+  } {
     const boundary = el("header", "writer-request-boundary");
     const title = el("div", "writer-request-title");
     const meta = el("div", "writer-request-meta");
     const notice = el("div", "writer-request-notice");
     boundary.append(title, meta, notice);
     const body = el("div", "writer-request-stream");
-    section.append(boundary, body);
-    this.refs.stream.appendChild(section);
-
     const view = new DslStreamView(body);
     view.reset(this.model.knownSpeakers());
-    if (attempt.text.length > 0) {
-      if (attempt.state === "streaming") view.append(attempt.text);
-      else view.replay(attempt.text);
+    if (entry.attempt.text.length > 0) {
+      if (entry.attempt.state === "streaming") view.append(entry.attempt.text);
+      else view.replay(entry.attempt.text);
     }
     // Repairs ride the attempt model — re-apply their row marks so a
     // reconnect snapshot or ring-replay keeps showing them.
-    for (const repair of attempt.repairs) view.markRepaired(repair.lineIndex);
-    this.sections.set(attempt.attemptId, {
-      task,
-      attempt,
-      section,
+    for (const repair of entry.attempt.repairs) view.markRepaired(repair.lineIndex);
+    const section: RequestSection = {
+      task: entry.task,
+      attempt: entry.attempt,
+      generation: entry.generation,
+      repairsInSlice: slice.repairs,
       boundary,
       title,
       meta,
       notice,
+      summary,
       view,
-      renderedText: attempt.text,
-      finished: attempt.state !== "streaming",
-    });
+      renderedText: entry.attempt.text,
+      finished: entry.attempt.state !== "streaming",
+    };
+    this.updateBoundary(section);
+    return { section, boundary, body };
   }
 
   /** Bring an existing section up to date after a reconnect snapshot. */
@@ -278,12 +440,21 @@ export class WriterPanel {
   }
 
   private updateBoundary(request: RequestSection): void {
-    const { task, attempt, boundary, title, meta, notice } = request;
+    const { task, attempt, boundary, title, meta, notice, summary } = request;
     boundary.className = `writer-request-boundary state-${attempt.state}`;
+    const taskLabel = TASK_TYPE_LABELS[task.taskType] ?? task.taskType;
+
     title.textContent = "";
     title.appendChild(el("span", `mon-dot state-${attempt.state}`));
+    // 原位替换语义：同一生成片的修复续写不追加新块，主边界升计数。
     title.appendChild(
-      el("strong", undefined, `${TASK_TYPE_LABELS[task.taskType] ?? task.taskType} · 请求 #${attempt.index + 1}`),
+      el(
+        "strong",
+        undefined,
+        request.repairsInSlice > 0
+          ? `${taskLabel} · 生成 #${request.generation}（修复续写 ×${request.repairsInSlice}）`
+          : `${taskLabel} · 生成 #${request.generation}`,
+      ),
     );
     title.appendChild(el("span", "writer-request-time", fmtTime(attempt.startedAt)));
     title.appendChild(el("span", `writer-request-state state-${attempt.state}`, STATE_LABELS[attempt.state]));
@@ -316,8 +487,13 @@ export class WriterPanel {
     ];
     if (attempt.usage !== null) {
       bits.push(`输入 ${fmtCount(attempt.usage.input)}`, `输出 ${fmtCount(attempt.usage.output)}`);
-      if (attempt.usage.cachedInput > 0) bits.push(`缓存 ${attempt.usage.cachedInput}`);
+      if (attempt.usage.cachedInput > 0) bits.push(`缓存 ${fmtCount(attempt.usage.cachedInput)}`);
       if (attempt.usage.source === "estimated") bits.push("token 估算");
+      if (attempt.usage.reasoningTokens !== undefined) {
+        bits.push(
+          `思考 ${fmtDuration(attempt.usage.thinkingMs ?? 0)}·${fmtCount(attempt.usage.reasoningTokens)}tok`,
+        );
+      }
     }
     if (attempt.segmentEnd !== null) bits.push(`收段 ${attempt.segmentEnd}`);
     if (attempt.truncated) bits.push("文本已截断");
@@ -333,6 +509,18 @@ export class WriterPanel {
       }
     }
     if (attempt.error !== null) notice.appendChild(el("span", "is-error-text", attempt.error));
+
+    // History blocks keep a one-line collapsed summary (audit at a glance).
+    if (summary !== null) {
+      summary.textContent = [
+        `生成 #${request.generation}`,
+        `尝试 ${attempt.index + 1}`,
+        STATE_LABELS[attempt.state],
+        `行 ${attempt.lines}`,
+        fmtTime(attempt.startedAt),
+        ...(attempt.error !== null ? [`错误：${attempt.error.slice(0, 80)}`] : []),
+      ].join(" · ");
+    }
   }
 
   private highlightCurrent(): boolean {
@@ -363,8 +551,12 @@ export class WriterPanel {
   private renderToolbar(): void {
     const bar = this.refs.toolbar;
     bar.textContent = "";
-    bar.appendChild(el("span", "writer-document-label", "连续请求文档"));
-    bar.appendChild(el("span", "writer-document-count", `${this.orderedAttempts().length} 次请求`));
+    const slices = this.orderedSlices();
+    const attempts = slices.reduce((sum, slice) => sum + slice.attempts.length, 0);
+    bar.appendChild(el("span", "writer-document-label", "生成片连续文档"));
+    bar.appendChild(
+      el("span", "writer-document-count", `${slices.length} 片 · ${attempts} 次请求`),
+    );
     const follow = el(
       "button",
       `mon-chip writer-follow${this.followTail ? " is-active" : ""}`,
@@ -381,7 +573,8 @@ export class WriterPanel {
   private renderFoot(): void {
     const foot = this.refs.foot;
     foot.textContent = "";
-    const attempts = this.orderedAttempts().map(({ attempt }) => attempt);
+    const slices = this.orderedSlices();
+    const attempts = slices.flatMap((slice) => slice.attempts.map((entry) => entry.attempt));
     const active = attempts.filter((attempt) => attempt.state === "streaming").length;
     const totals = attempts.reduce(
       (sum, attempt) => ({
@@ -391,7 +584,7 @@ export class WriterPanel {
       }),
       { chars: 0, lines: 0, groups: 0 },
     );
-    foot.appendChild(el("span", undefined, `请求 ${attempts.length}`));
+    foot.appendChild(el("span", undefined, `生成片 ${slices.length} · 请求 ${attempts.length}`));
     foot.appendChild(el("span", undefined, active > 0 ? `进行中 ${active}` : "当前空闲"));
     foot.appendChild(el("span", undefined, `累计 ${totals.chars} 字符 · ${totals.lines} 行 · ${totals.groups} 事件`));
   }
@@ -407,4 +600,8 @@ export class WriterPanel {
     const hasCurrentRow = this.highlightCurrent();
     if (!hasCurrentRow) this.scrollToTail();
   }
+}
+
+function firstStartedAt(task: WriterTaskModel): number {
+  return task.attempts.length > 0 ? task.attempts[0]!.startedAt : task.startedAt;
 }

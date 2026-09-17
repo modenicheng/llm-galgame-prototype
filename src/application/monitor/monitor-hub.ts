@@ -97,6 +97,8 @@ interface WriterAttemptRecord {
 interface WriterTaskRecord {
   taskId: string;
   taskType: string;
+  /** 生成片 id（首 attempt 携带；null = 独立片）。 */
+  sliceId: string | null;
   startedAt: number;
   lastActivityAt: number;
   attempts: WriterAttemptRecord[];
@@ -132,6 +134,7 @@ function serializeTaskWithText(task: WriterTaskRecord): MonitorWriterTaskWithTex
   return {
     taskId: task.taskId,
     taskType: task.taskType,
+    sliceId: task.sliceId,
     startedAt: task.startedAt,
     lastActivityAt: task.lastActivityAt,
     attempts,
@@ -233,6 +236,7 @@ export class MonitorHub {
         task = {
           taskId: info.taskId,
           taskType: info.taskType,
+          sliceId: info.sliceId ?? null,
           startedAt: this.now(),
           lastActivityAt: this.now(),
           attempts: [],

@@ -100,6 +100,20 @@ interface ActiveSegment {
   terminal: RuntimeModelEvent | null;
   schedulerReleased: boolean;
   /**
+   * 生成片 id：原始生成与其 Game 级修复续写共享同片（修复续写发新
+   * nonce ⇒ taskId 不同），监控面板据此做"同片原位替换"展示。
+   */
+  sliceId: string;
+  /**
+   * 修复链内失败段的"丢弃未播"标记（§8.5 防失败级联）：置位后播放循环
+   * 跳过该段队列中剩余的 playable/beat 事件（不 emit、不进正式日志）。
+   * 与 droppedLineIds 同时置位；仅 repairChain>0 的段（失败的修复续写）
+   * 会置位，原始失败段的未播前缀照旧保留播放。
+   */
+  abandonPending: boolean;
+  /** 已从播放缓冲摘除的未播事件 line id（修复基座重建时过滤用）。 */
+  droppedLineIds: ReadonlySet<string> | null;
+  /**
    * DSL mode: set when the segment ends cleanly with `@end ... buffer`
    * (docs §46/§76). A clean buffer end is NOT a failure.
    */
@@ -595,6 +609,9 @@ export class Game {
               [],
               FORCED_ENDING_REPAIR_REASON,
               true,
+              // 同一生成片（监控原位替换）；不传 remainingLines——重试要写
+              // 结局正文，保持全额预算（有意例外，§8.5）。
+              { sliceId: segment.sliceId },
             );
             void retry.done.catch(() => undefined);
             segment = retry;
@@ -861,9 +878,22 @@ export class Game {
     prefetchedEvents: StoryContextEvent[],
     repairReason?: string,
     endingRequired = false,
+    /** 修复续写选项：继承生成片 id 与动态预算（§8.5）。 */
+    repair?: {
+      /** 与原段共享的生成片 id。 */
+      sliceId: string;
+      /**
+       * 剩余行数预算（target_lines − 保留前缀文本行数；≤0 → 收尾模式）。
+       * 缺省 = 全额预算（强制收束重试要写结局正文，属有意例外）。
+       */
+      remainingLines?: number;
+      /** 失败段原始输出尾部（收尾模式补残句）。 */
+      rawTail?: string;
+    },
   ): ActiveSegment {
     const queue = new AsyncEventQueue<RuntimeModelEvent | RuntimeBeatEvent>();
     const taskId = this.ids.nextGenerationId(kind === "opening" ? "opening" : `continuation:${turn}`);
+    const sliceId = repair?.sliceId ?? this.ids.nextGenerationId("slice");
     const segment: ActiveSegment = {
       turn,
       taskId,
@@ -873,6 +903,9 @@ export class Game {
       branchManager: null,
       terminal: null,
       schedulerReleased: false,
+      sliceId,
+      abandonPending: false,
+      droppedLineIds: null,
       endStatus: null,
       failed: false,
       endingRequired,
@@ -908,6 +941,7 @@ export class Game {
               signal: controller.signal,
               ...(brief !== undefined ? { brief } : {}),
               tailVisualState: this.tailVisualState,
+              sliceId,
             })
           : this.generator.generateContinuation({
               turn,
@@ -918,6 +952,11 @@ export class Game {
               ...(brief !== undefined ? { brief } : {}),
               tailVisualState: this.tailVisualState,
               ...(repairReason !== undefined ? { repairReason } : {}),
+              sliceId,
+              ...(repair?.remainingLines !== undefined
+                ? { remainingLines: repair.remainingLines }
+                : {}),
+              ...(repair?.rawTail !== undefined ? { rawTail: repair.rawTail } : {}),
               ...(endingRequired ? { endingRequired: true } : {}),
               ...(endingPhase !== undefined ? { endingPhase } : {}),
               ...(requestInteraction ? { requestInteraction } : {}),
@@ -994,12 +1033,93 @@ export class Game {
     return segment;
   }
 
+  /**
+   * §8.5 修复基座（fail-fast 提前修复与队列耗尽两条路径共用）：
+   *
+   * 1) 丢弃失败段未播事件——仅修复链内（repairChain>0，即失败的修复续写
+   *    段本身）。防失败级联：全额续写失败后再"接在后面"追加下一轮，剧情
+   *    会随失败次数线性膨胀；改为丢弃玩家尚未读到的部分，下一轮修复从
+   *    "玩家实际读到的位置"重新生成。已消费进正式日志的事件保留（玩家
+   *    已经看过，rewind 会造成前后不一致）。原始失败段（repairChain=0）
+   *    的未播前缀照旧保留播放（fail-fast 修复与播放并行的设计不变）。
+   *    幂等：early 与 next.done 两条路径可能先后调用，第二次起复用段上
+   *    已存的 droppedLineIds 重建基座，不再动播放缓冲。
+   * 2) 计算剩余行数预算：target_lines − 保留基座文本行数（dialogue/
+   *    narration 合计），钳到 ≥0。>0 → generator 用剩余预算续写；
+   *    ≤0（前缀已达/超上限）→ 收尾模式（recovery 模板 + rawTail）。
+   */
+  private prepareRepairBase(
+    segment: ActiveSegment,
+    repairChain: number,
+    sliceRemainingLines: number,
+  ): {
+    keptEvents: RuntimeModelEvent[];
+    playable: RuntimePlayableEvent[];
+    dropped: number;
+    remainingLines: number;
+  } {
+    let droppedLineIds = segment.droppedLineIds;
+    if (repairChain > 0 && droppedLineIds === null) {
+      const pendingIds = new Set<string>();
+      for (const event of segment.events) {
+        if (isPlayableEvent(event) && this.buffered.has(event.line_id)) {
+          pendingIds.add(event.line_id);
+        }
+      }
+      if (pendingIds.size > 0) {
+        this.playbackBuffer.removeLineIds(pendingIds);
+        for (const lineId of pendingIds) this.buffered.delete(lineId);
+        this.updateBufferStatus();
+      }
+      // 播放循环据此跳过该段队列中剩余的 playable/beat 事件（未播事件
+      // 可能仍在队列里等待逐行播放，只摘缓冲不跳队列会照常播出）。
+      segment.abandonPending = true;
+      segment.droppedLineIds = pendingIds;
+      droppedLineIds = pendingIds;
+      if (pendingIds.size > 0) {
+        this.diagnostics.info(
+          "Repair",
+          `失败的修复续写段丢弃 ${pendingIds.size} 条未播事件，重试从玩家已读位置重新生成`,
+        );
+      }
+    }
+    const keptEvents =
+      repairChain > 0 && droppedLineIds !== null
+        ? segment.events.filter(
+            (event) =>
+              !(isPlayableEvent(event) && droppedLineIds.has(event.line_id)),
+          )
+        : segment.events;
+    const playable = keptEvents.filter(isPlayableEvent);
+    const keptTextLines = playable.filter(
+      (event) => event.type === "dialogue" || event.type === "narration",
+    ).length;
+    // 片内累计扣减：sliceRemainingLines 是本片启动时的剩余预算（原始段
+    // = target_lines，修复续写 = 上一轮的 remainingLines），本轮再减去
+    // 本段保留的文本行——沿链累计，防"每轮只看本段"的预算回涨。
+    const remainingLines = Math.max(0, sliceRemainingLines - keptTextLines);
+    return {
+      keptEvents,
+      playable,
+      dropped: droppedLineIds?.size ?? 0,
+      remainingLines,
+    };
+  }
+
+  /** 读取生成器 fail 错误附带的原始终部（收尾模式补残句；结构化窄化）。 */
+  private readRawTail(failure: Error): string | undefined {
+    const rawTail = (failure as { rawTail?: unknown }).rawTail;
+    return typeof rawTail === "string" && rawTail.length > 0 ? rawTail : undefined;
+  }
+
   private async consumeActiveSegment(
     segment: ActiveSegment,
     turn: number,
     priorContext: StoryContextEvent[],
     repairBudget = Math.max(1, this.config.generation.repair_attempts),
     repairChain = 0,
+    /** 本生成片剩余行数预算（修复链沿递归累计扣减，非修复段缺省全额）。 */
+    sliceRemainingLines = this.config.text_buffer.target_lines,
   ): Promise<SegmentOutcome> {
     let firstPlayableSeen = false;
     // 供低水位续写计算 nextTurn（当前段 turn + 1）。
@@ -1018,6 +1138,24 @@ export class Game {
       // 单槽，选择后的 startActiveSegment 抛"current status is streaming"
       // 杀死 run()（2026-09-17 独立审计 F1，已实证复现）。
       if (segment.terminal !== null) return;
+      if (segment.endStatus?.kind === "complete") return;
+      // 守卫与"丢弃未播"必须同步完成：本函数在 consumePlayableEvent 返回
+      // 后被同步调用，而播放循环的下一跳（await queue.next()）在微任务层
+      // 就会取到队列中剩余事件——任何 await 之后再置 abandonPending 都晚
+      // 一拍，被丢弃对象会照常播出（失败级联复活）。done 此刻必已落定
+      // （segment.failed 与 done 同拍置位），下列守卫读到的都是终态。
+      if (repairBudget <= 0) return;
+      const maxChain = this.config.generation.max_consecutive_repairs;
+      if (maxChain > 0 && repairChain >= maxChain) return;
+      const playableBeforeDiscard = segment.events.filter(isPlayableEvent);
+      // 致命（无可播前缀且无前文）/策略拒绝等边界场景的处置语义与原路径
+      // 不同（throw / warn / escalate），全部留给原路径，这里只处理普通的
+      // "保留前缀 + 修复续写"。修复链内的段全部未播被丢弃时（kept=0）不
+      // 算致命：前面前缀仍在 priorContext 里，照常修复。
+      if (playableBeforeDiscard.length === 0 && priorContext.length === 0) return;
+      // 同步执行丢弃（链内失败段）+ 标记 abandonPending：播放循环自此跳过
+      // 该段剩余队列事件（幂等，next.done 分支会复用段上缓存的丢弃集）。
+      this.prepareRepairBase(segment, repairChain, sliceRemainingLines);
       earlyRepairPromise = (async (): Promise<ActiveSegment | null> => {
         // done 落定不依赖玩家消费；pump 已排空（I1），events 不会再增长。
         await segment.done.catch(() => undefined);
@@ -1025,14 +1163,6 @@ export class Game {
         // 竞态窗口内 terminal 可能已设置（launch 后、done 落定前到达的
         // 迟到表单组）——同样交还选择链路。
         if (segment.terminal !== null) return null;
-        const playable = segment.events.filter(isPlayableEvent);
-        // 致命（无可播前缀）/预算耗尽/修复链满/策略拒绝等边界场景的处置
-        // 语义与原 next.done 分支不同（throw / warn / escalate），全部留给
-        // 原路径，这里只处理普通的"保留前缀 + 修复续写"。
-        if (playable.length === 0) return null;
-        if (repairBudget <= 0) return null;
-        const maxChain = this.config.generation.max_consecutive_repairs;
-        if (maxChain > 0 && repairChain >= maxChain) return null;
         const failure = await segment.done.then(
           () => new Error("生成段结束时没有收到 choice、interaction 或 end 事件。"),
           (reason: unknown) => (reason instanceof Error ? reason : new Error(String(reason))),
@@ -1048,14 +1178,21 @@ export class Game {
           }
           this.status.clearBranches();
         }
+        // 修复基座：链内失败段丢弃未播事件（防级联）+ 剩余行数预算。
+        const { keptEvents, playable, remainingLines } = this.prepareRepairBase(
+          segment,
+          repairChain,
+          sliceRemainingLines,
+        );
         const fullContext = terminal
-          ? [...priorContext, ...segment.events.filter((event) => event !== terminal)]
-          : [...priorContext, ...segment.events];
+          ? [...priorContext, ...keptEvents.filter((event) => event !== terminal)]
+          : [...priorContext, ...keptEvents];
         this.diagnostics.info(
           "Repair",
-          `生成段失败：${failure.message}，保留 ${playable.length} 条事件，提前启动修复续写（剩余 ${repairBudget - 1} 次）`,
+          `生成段失败：${failure.message}，保留 ${playable.length} 条事件，提前启动修复续写（剩余预算 ${remainingLines} 行，剩余 ${repairBudget - 1} 次）`,
         );
         this.status.setJob(`repair:${segment.taskId}`, "段失败修复续写", "running");
+        const rawTail = this.readRawTail(failure);
         const repaired = this.startActiveSegment(
           "continuation",
           turn,
@@ -1064,6 +1201,11 @@ export class Game {
           failure.message,
           // M1: 强制收束语义必须穿过修复路径（与下方 next.done 分支一致）。
           this.forceEnding,
+          {
+            sliceId: segment.sliceId,
+            remainingLines,
+            ...(rawTail !== undefined ? { rawTail } : {}),
+          },
         );
         void repaired.done.catch(() => undefined);
         return repaired;
@@ -1095,16 +1237,24 @@ export class Game {
           .catch((reason: unknown) =>
             reason instanceof Error ? reason : new Error(String(reason))
           );
-        const playable = segment.events.filter(isPlayableEvent);
+        // 修复基座（与 fail-fast 路径共用，幂等）：链内失败段丢弃未播
+        // 事件防级联；剩余行数预算沿片累计扣减（sliceRemainingLines）。
+        const { keptEvents, playable, remainingLines } = this.prepareRepairBase(
+          segment,
+          repairChain,
+          sliceRemainingLines,
+        );
         // §8.5: a policy rejection is repairable even without any playable
-        // prefix — the model must simply re-emit a legal interaction. Other
-        // failures with nothing playable have no story to continue from and
-        // stay fatal.
+        // prefix — the model must simply re-emit a legal interaction. A
+        // failure with nothing playable is only fatal when there is no story
+        // left to continue from either (no kept prefix AND no prior context —
+        // e.g. the opening died before its first line); with history present
+        // the repair continues from the committed history.
         const policyRejected =
           failure instanceof InteractionPolicyViolationError ||
           failure.cause instanceof InteractionPolicyViolationError ||
           failure.message.includes("InteractionPolicy 拒绝");
-        if (playable.length === 0 && !policyRejected) {
+        if (playable.length === 0 && priorContext.length === 0 && !policyRejected) {
           this.emit({
             type: "runtime_error",
             code: "segment_failed",
@@ -1167,18 +1317,19 @@ export class Game {
         const fullContext = terminal
           ? [
               ...priorContext,
-              ...segment.events.filter((event) => event !== terminal),
+              ...keptEvents.filter((event) => event !== terminal),
             ]
-          : [...priorContext, ...segment.events];
+          : [...priorContext, ...keptEvents];
         // 提前启动路径已记过日志/占过 job 位（避免同一次修复双份噪音）。
         if (earlyRepaired === null) {
           this.diagnostics.info(
             "Repair",
-            `生成段失败：${failure.message}，保留 ${playable.length} 条事件，启动修复续写（剩余 ${repairBudget - 1} 次）`,
+            `生成段失败：${failure.message}，保留 ${playable.length} 条事件，启动修复续写（剩余预算 ${remainingLines} 行，剩余 ${repairBudget - 1} 次）`,
           );
           this.status.setJob(`repair:${segment.taskId}`, "段失败修复续写", "running");
         }
         try {
+          const rawTail = this.readRawTail(failure);
           const repaired =
             earlyRepaired ??
             this.startActiveSegment(
@@ -1191,6 +1342,11 @@ export class Game {
               // 失败后被修复的续写段同样是强制段，否则修复段可以再次打开交互
               // 表单而不消耗 forcedEndingRetries 预算。
               this.forceEnding,
+              {
+                sliceId: segment.sliceId,
+                remainingLines,
+                ...(rawTail !== undefined ? { rawTail } : {}),
+              },
             );
           void repaired.done.catch(() => undefined);
           const outcome = await this.consumeActiveSegment(
@@ -1199,6 +1355,7 @@ export class Game {
             fullContext,
             repairBudget - 1,
             repairChain + 1,
+            remainingLines,
           );
           // The caller (run loop) will wait for the *original* segment's done
           // before adopting a live branch. Fully tear down the repaired
@@ -1213,6 +1370,9 @@ export class Game {
 
       const event = next.value;
       if (event.type === "beat") {
+        // §8.5 丢弃未播：失败修复段的剩余 beat 不再应用（其 cue 属于
+        // 已被丢弃的未播剧情）。
+        if (segment.abandonPending) continue;
         // The beat plays at its queue position: its cues apply exactly when
         // everything before it has been presented — same timing contract as
         // a line's `stage` payload (docs §54–§55, §63). No buffer advance
@@ -1226,6 +1386,10 @@ export class Game {
         continue;
       }
       if (isPlayableEvent(event)) {
+        // §8.5 丢弃未播：失败修复段队列中剩余的 playable 事件跳过——
+        // 不 emit、不进正式日志（prepareRepairBase 已把它们从播放缓冲
+        // 摘除；此处若照常播出会重新引入被丢弃的剧情）。
+        if (segment.abandonPending) continue;
         if (!firstPlayableSeen) {
           firstPlayableSeen = true;
           await this.waitForStartThreshold(segment);
@@ -1625,6 +1789,9 @@ export class Game {
       branchManager: this.createBranchManagerForTerminal(interaction, turn, this.generationHistory()),
       terminal: interaction,
       schedulerReleased: true,
+      sliceId: this.ids.nextGenerationId("slice"),
+      abandonPending: false,
+      droppedLineIds: null,
       endStatus: null,
       failed: false,
       endingRequired: false,

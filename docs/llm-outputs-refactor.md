@@ -947,6 +947,9 @@ generation:
   temperature: 0.9
   max_tokens: 2200        # 1400 常在长段结尾截断（无 @end）；2200 给足预算
   repair_attempts: 2
+  thinking:               # 写手思考链（DeepSeek 顶层 thinking + reasoning_effort）
+    type: disabled        # enabled 时服务端忽略 temperature，reasoning token
+    effort: low           #   计入 max_completion_tokens；effort ∈ low|high|max
 
 text_buffer:               # 见 §74
 assets:
@@ -1099,6 +1102,32 @@ Renderer 负责：
 ```
 
 模型不应该变成一个低级 UI 控制器。
+
+---
+
+# 112a. Game 级修复续写的动态预算与丢弃重试（2026-09-17）
+
+失败段（无哨兵/坏行后断流，已有转发组）走 Game 级修复续写时：
+
+1. **剩余预算而非全额**：`remainingLines = sliceRemainingLines − 保留基座
+   文本行数`（`sliceRemainingLines` 初值 = `text_buffer.target_lines`，
+   沿修复链递归穿透累计扣减）。续写模板与任务头（"本次续写行数上限：N"）
+   都用剩余值，不再每轮全额生成一段等长剧情（失败级联的根源）。
+2. **收尾模式**：剩余 ≤ 0（前缀已达上限）时改走 `recovery` 模板
+   （task_type=recovery）——携带失败段原始尾部 `{raw_tail}`（fail 错误
+   附带，末 3 行）与固定前缀 `{prefetched}`；只允许补全残句（至多一行）
+   后立即以表单/`@end` 常规终止，禁止推进新剧情。
+3. **丢弃重试防级联**：修复续写段自身再失败时，丢弃其**未播**事件
+   （`PlaybackBuffer.removeLineIds` + 播放循环 `abandonPending` 跳过剩余
+   队列事件），已消费进正式日志的事件保留；下一轮修复从"玩家实际读到的
+   位置"重新生成，直到成功或 `repair_attempts`/`max_consecutive_repairs`
+   耗尽（L2/L3 收束压力分级不变）。丢弃必须在 `launchEarlyRepair` 的同步
+   段完成——播放循环下一跳（微任务级）就会取出队列中剩余事件。
+4. **强制收束重试例外**：run loop 的 forced-ending 重试不传剩余预算
+   （要写结局正文），只继承生成片 id。
+5. **生成片 id（`sliceId`）**：原始生成与其全部修复续写共享同片并随
+   `WriterAttemptInfo` 上报监控——面板据此做"同片原位替换"展示（数据
+   全量保留，仅展示替换）。
 
 ---
 

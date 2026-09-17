@@ -101,6 +101,41 @@ describe("PromptPanel", () => {
     expect(list.querySelector(".mon-prompt-sys-head")!.textContent).toContain("系统提示词");
   });
 
+  it("groups a repair continuation with its original generation under one slice header", () => {
+    const { model, list } = mount();
+    // 同片两个任务（原始生成 + 修复续写）+ 一个独立片。
+    apply(model, [
+      {
+        ...startEvent("continuation-a1#0", "continuation-a1", 0, 1_000),
+        task: { ...startEvent("continuation-a1#0", "continuation-a1", 0, 1_000).task, sliceId: "slice-3" },
+      },
+      promptEvent("continuation-a1#0", 0, [SYSTEM_MESSAGE, ...USER_MESSAGES]),
+    ]);
+    apply(model, [
+      {
+        ...startEvent("continuation-a2#0", "continuation-a2", 0, 2_000),
+        task: { ...startEvent("continuation-a2#0", "continuation-a2", 0, 2_000).task, sliceId: "slice-3" },
+      },
+      promptEvent("continuation-a2#0", 0, [SYSTEM_MESSAGE, ...USER_MESSAGES]),
+    ]);
+    const independent = startEvent("input-r3#0", "input-r3", 0, 3_000);
+    independent.task.taskType = "input_response";
+    apply(model, [independent, promptEvent("input-r3#0", 0, [SYSTEM_MESSAGE, ...USER_MESSAGES])]);
+
+    // 组头只出现在多生成的片上。
+    const groups = list.querySelectorAll(".mon-prompt-slice-group");
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.textContent).toContain("修复续写 ×1");
+    // 排序：独立片（最新）在前，随后是同片组——组头之下是生成 #2（当前
+    // 生效）再生成 #1（被覆盖）。片内条目标注生成序号；独立片保持原样。
+    const items = list.querySelectorAll(".mon-prompt-item");
+    expect(items).toHaveLength(3);
+    expect(items[0]!.textContent).toContain("输入回应 · 请求 #1");
+    expect(items[1]!.textContent).toContain("生成 #2");
+    expect(items[2]!.textContent).toContain("生成 #1");
+    expect(items[1]!.previousElementSibling).toBe(groups[0]);
+  });
+
   it("expands a segment's verbatim text on click and keeps it across re-renders", () => {
     const { model, list } = mount();
     apply(model, [

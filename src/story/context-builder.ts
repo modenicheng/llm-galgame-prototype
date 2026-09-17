@@ -393,7 +393,9 @@ export function buildDslUserPromptSegments(
   const taskHeaderLines = [
     `任务类型：${input.taskType}`,
     `生成段 nonce：${input.generationNonce}`,
-    `本次续写行数上限：${input.targetLines}`,
+    input.targetLines > 0
+      ? `本次续写行数上限：${input.targetLines}`
+      : "本次续写行数上限：0（正文预算已用尽，只收尾，不推进剧情）",
     `当前回合：${turn}`,
   ];
   if (input.interactionProgress) {

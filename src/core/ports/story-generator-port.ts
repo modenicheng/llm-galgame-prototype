@@ -26,6 +26,8 @@ export interface OpeningRequest {
   brief?: NarrativeBrief;
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
+  /** 生成片 id（monitor 分组）：开场的修复续写继承它实现原位替换。 */
+  sliceId?: string;
 }
 
 export interface ContinuationRequest {
@@ -37,6 +39,19 @@ export interface ContinuationRequest {
   brief?: NarrativeBrief;
   /** §8.5 修复原因：上一段失败的上下文，嵌入用户 prompt。 */
   repairReason?: string;
+  /**
+   * 修复续写剩余行数预算（target_lines − 已保留前缀文本行数）。仅失败
+   * 修复路径传入：>0 时续写模板用该值而非全额预算；≤0 时进入收尾模式
+   * （recovery 模板：只补残句并立即以 @end/表单收束，不推进剧情）。
+   */
+  remainingLines?: number;
+  /** 失败段原始输出尾部（含被截断的残句）；仅收尾模式使用。 */
+  rawTail?: string;
+  /**
+   * 生成片 id（monitor 分组用）：原始生成与其全部修复续写共享同一 id，
+   * 监控面板据此把同一生成片的多次生成原位替换展示。缺省时铸造新片。
+   */
+  sliceId?: string;
   /** Event mode：本段必须以 @end ending 收束（L3 保险丝，audit P2-10）。 */
   endingRequired?: boolean;
   /** Event mode 分级收束：wrapup = L1 软提示；closing = L2 强提示（endingRequired 优先）。 */

@@ -188,6 +188,8 @@ function buildStripContinueInstruction(
   error: DslProtocolError,
   nonce: string,
   allowedReasons: readonly SegmentEndReason[],
+  /** 修复续写剩余行数预算：动态预算下续写也不得超支（含补写行）。 */
+  remainingLines?: number,
 ): string {
   const parts = [
     "你上一段输出中有一行无法通过校验，系统已把它从你的输出中删除，输出在删除处中断。",
@@ -196,6 +198,13 @@ function buildStripContinueInstruction(
   if (error.detail?.cause !== undefined) parts.push(`原因：${error.detail.cause}`);
   if (error.detail?.expected !== undefined) parts.push(`期望格式：${error.detail.expected}`);
   if (error.detail?.fix !== undefined) parts.push(`修正：${error.detail.fix}`);
+  if (remainingLines !== undefined) {
+    parts.push(
+      remainingLines > 0
+        ? `本段剩余正文行数上限：${remainingLines}（dialogue/narration 合计，含补写行），写完立即收束。`
+        : "本段正文行数预算已用尽：删除处的合法内容补完后立即输出段结束哨兵，不要再写其他正文。",
+    );
+  }
   parts.push(
     [
       "请从删除位置直接续写：补全该处应有的合法内容，然后完成本段剩余部分。",
@@ -210,6 +219,25 @@ function buildStripContinueInstruction(
     ].join("\n"),
   );
   return parts.join("\n");
+}
+
+/** 收尾模式给模型的原始输出尾部行数：含残句即可，无需全文。 */
+const RAW_TAIL_LINES = 3;
+
+/** Game 级 fail 错误形态：附带原始输出尾部（收尾模式补残句用，§8.5）。 */
+export interface DslFailError extends Error {
+  rawTail?: string;
+}
+
+/** 构造带 rawTail 的 fail 错误：Game 层窄化读取后透传进修复收尾请求。 */
+function failWithRawTail(
+  message: string,
+  rawLines: readonly string[],
+  cause?: unknown,
+): Error {
+  const error = new Error(message, ...(cause !== undefined ? [{ cause }] : [])) as DslFailError;
+  error.rawTail = rawLines.slice(-RAW_TAIL_LINES).join("\n");
+  return error;
 }
 
 /**
@@ -301,6 +329,15 @@ export interface GenerationStreamOptions {
    * the user prompt alongside provider-internal retry instructions.
    */
   repairReason?: string;
+  /**
+   * 修复续写剩余行数预算（target_lines − 已保留前缀文本行数）。>0 时
+   * 续写模板与任务头用该值；≤0 时进入收尾模式（recovery 模板）。
+   */
+  remainingLines?: number;
+  /** 失败段原始输出尾部（含残句）；仅收尾模式使用。 */
+  rawTail?: string;
+  /** 生成片 id（monitor 分组）：修复续写与原段共享，缺省各占一片。 */
+  sliceId?: string;
   /**
    * DSL mode: visual state at the tail the model continues from; serialized
    * into the user prompt as TAIL_VISUAL_STATE (docs §70).
@@ -411,12 +448,14 @@ export class StoryGenerator {
     taskType: string,
     nonce: string,
     options?: GenerationStreamOptions,
+    /** 任务头行数上限（修复续写传剩余预算）；缺省全额 target_lines。 */
+    targetLines = this.config.text_buffer.target_lines,
   ): DslContextInput {
     const ctx: DslContextInput = {
       ...this.makeCtx(state, recentEvents),
       taskType,
       generationNonce: nonce,
-      targetLines: this.config.text_buffer.target_lines,
+      targetLines,
     };
     if (options?.tailVisualState) {
       ctx.tailVisualState = options.tailVisualState;
@@ -584,13 +623,36 @@ export class StoryGenerator {
   ): Promise<GenerationEnvelope> {
     const recentHistory = this.boundHistory(history);
     const nonce = generateNonce();
-    const ctx = this.buildDslCtx(state, recentHistory, "continuation", nonce, options);
-    const template = fill(this.instructions.continuation, {
+    // 修复续写动态预算：剩余行数 > 0 只用剩余预算（防失败级联——每次
+    // 全额续写会再造一段等长剧情）；剩余 ≤ 0（前缀已达上限）进入收尾
+    // 模式：改用 recovery 模板，只允许补全残句（至多一行）并立即以
+    // @end/表单收束，不推进新剧情。非修复请求缺省全额 target_lines。
+    const remaining = options?.remainingLines;
+    const wrapUp = remaining !== undefined && remaining <= 0;
+    const effectiveTarget = wrapUp ? 0 : (remaining ?? this.config.text_buffer.target_lines);
+    const ctx = this.buildDslCtx(
+      state,
+      recentHistory,
+      "continuation",
       nonce,
-      target_lines: String(this.config.text_buffer.target_lines),
-      prefetched: serializeStoryContext(prefetchedEvents),
-    });
-    const extra: PromptSegment[] = [this.templateSegment("continuation", template)];
+      options,
+      effectiveTarget,
+    );
+    const template = wrapUp
+      ? fill(this.instructions.recovery, {
+          nonce,
+          repair_reason: options?.repairReason ?? "上一段输出未能正常结束。",
+          prefetched: serializeStoryContext(prefetchedEvents),
+          raw_tail: options?.rawTail ?? "（原始尾部不可用）",
+        })
+      : fill(this.instructions.continuation, {
+          nonce,
+          target_lines: String(effectiveTarget),
+          prefetched: serializeStoryContext(prefetchedEvents),
+        });
+    const extra: PromptSegment[] = [
+      this.templateSegment(wrapUp ? "recovery" : "continuation", template),
+    ];
     for (const piece of eventModeGuidancePieces(nonce, options)) {
       extra.push({ source: "runtime/event-mode-guidance", label: piece.label, text: piece.text });
     }
@@ -675,7 +737,13 @@ export class StoryGenerator {
           text: repairInstruction,
         });
       }
-      this.observer?.onAttemptStart({ attemptId, taskId: requestId, taskType, index: attempt });
+      this.observer?.onAttemptStart({
+        attemptId,
+        taskId: requestId,
+        taskType,
+        index: attempt,
+        ...(options?.sliceId ? { sliceId: options.sliceId } : {}),
+      });
       this.observer?.onPrompt?.({
         attemptId,
         requestIndex: 0,
@@ -946,7 +1014,12 @@ export class StoryGenerator {
         const previousController = activeController;
         activeController = new AbortController();
         previousController.abort();
-        const continuationInstruction = buildStripContinueInstruction(error, nonce, allowedReasons);
+        const continuationInstruction = buildStripContinueInstruction(
+          error,
+          nonce,
+          allowedReasons,
+          options?.remainingLines,
+        );
         // Audit: the strip-continue follow-up sends a different message list
         // (assistant prefix + continuation instruction) — report it as a
         // second request on the same attempt.
@@ -1450,7 +1523,10 @@ export class StoryGenerator {
         this.metrics?.recordLLMRequest(type, usage, latencyMs);
         this.metrics?.recordSchemaValidationFailure();
         if (options?.onGroup && allGroups.length > 0) {
-          return { kind: "fail", error: new Error(failureReason, { cause: streamError }) };
+          return {
+            kind: "fail",
+            error: failWithRawTail(failureReason, rawLines, streamError),
+          };
         }
         return { kind: "retry", reason: failureReason };
       }
@@ -1483,8 +1559,9 @@ export class StoryGenerator {
       if (options?.onGroup && allGroups.length > 0) {
         return {
           kind: "fail",
-          error: new Error(
+          error: failWithRawTail(
             `DSL 流在第 ${lineIndex} 行之后结束但没有 @end 哨兵（输出被截断或漏写）。最后一行必须是 @end ${nonce} <reason>（nonce 原样照抄任务提示，reason 取 ${allowedReasons.join("/")}）`,
+            rawLines,
           ),
         };
       }
@@ -1526,6 +1603,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         ...(request.tailVisualState
           ? { tailVisualState: request.tailVisualState }
           : {}),
+        ...(request.sliceId ? { sliceId: request.sliceId } : {}),
       }),
     );
   }
@@ -1547,6 +1625,11 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
           ...(request.repairReason
             ? { repairReason: request.repairReason }
             : {}),
+          ...(request.remainingLines !== undefined
+            ? { remainingLines: request.remainingLines }
+            : {}),
+          ...(request.rawTail ? { rawTail: request.rawTail } : {}),
+          ...(request.sliceId ? { sliceId: request.sliceId } : {}),
           ...(request.endingRequired
             ? { endingRequired: request.endingRequired }
             : {}),

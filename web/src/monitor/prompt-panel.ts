@@ -9,7 +9,7 @@
  * Subscribes to the dedicated "writerPrompt" topic only: streaming deltas
  * must not re-render (and reset) this panel while the auditor reads it.
  */
-import type { MonitorModel, WriterAttemptModel } from "./monitor-model.js";
+import type { MonitorModel, WriterAttemptModel, WriterTaskModel } from "./monitor-model.js";
 import type {
   MonitorWriterPromptMessage,
   MonitorWriterPromptSegment,
@@ -55,6 +55,12 @@ export interface PromptPanelRefs {
 interface PromptItem {
   attempt: WriterAttemptModel;
   taskType: string;
+  /** 生成片内第几次生成（1 起）；独立片恒为 1。 */
+  generation: number;
+  /** 所属生成片 key（sliceId ?? taskId）。 */
+  sliceKey: string;
+  /** 片内修复续写次数（任务数 − 1）。 */
+  sliceRepairs: number;
 }
 
 export class PromptPanel {
@@ -83,14 +89,45 @@ export class PromptPanel {
       list.appendChild(this.renderSystemBlock(system));
     }
 
-    const items: PromptItem[] = [];
+    // 生成片分组（原始生成 + 其修复续写共享同片）：片按最新 attempt 新→旧
+    // 排列，片内生成也新→旧——审计默认落在"当前生效"的输入上，被覆盖的
+    // 生成紧跟其后（同片标签可见，数据不删）。
+    const slices = new Map<string, { taskType: string; tasks: WriterTaskModel[] }>();
     for (const task of this.model.writerTasks) {
-      for (const attempt of task.attempts) {
-        items.push({ attempt, taskType: task.taskType });
+      const key = task.sliceId ?? task.taskId;
+      let slice = slices.get(key);
+      if (slice === undefined) {
+        slice = { taskType: task.taskType, tasks: [] };
+        slices.set(key, slice);
       }
+      slice.tasks.push(task);
     }
-    // Newest request first (auto-expand target = items[0]).
-    items.sort((a, b) => b.attempt.startedAt - a.attempt.startedAt);
+    const sliceEntries = [...slices.entries()].map(([sliceKey, slice]) => {
+      const tasks = [...slice.tasks].sort(
+        (a, b) =>
+          (a.attempts[0]?.startedAt ?? a.startedAt) -
+          (b.attempts[0]?.startedAt ?? b.startedAt),
+      );
+      const items: PromptItem[] = [];
+      tasks.forEach((task, taskIndex) => {
+        for (const attempt of task.attempts) {
+          items.push({
+            attempt,
+            taskType: task.taskType,
+            generation: taskIndex + 1,
+            sliceKey,
+            sliceRepairs: tasks.length - 1,
+          });
+        }
+      });
+      items.sort((a, b) => b.attempt.startedAt - a.attempt.startedAt);
+      return { sliceKey, taskType: slice.taskType, items, sliceRepairs: tasks.length - 1 };
+    });
+    sliceEntries.sort(
+      (a, b) =>
+        (b.items[0]?.attempt.startedAt ?? 0) - (a.items[0]?.attempt.startedAt ?? 0),
+    );
+    const items: PromptItem[] = sliceEntries.flatMap((slice) => slice.items);
 
     if (items.length === 0) {
       if (system === null) {
@@ -110,8 +147,20 @@ export class PromptPanel {
       this.expandedAttemptId = items[0]!.attempt.attemptId;
     }
 
-    for (const item of items) {
-      list.appendChild(this.renderItem(item));
+    for (const slice of sliceEntries) {
+      if (slice.items.length === 0) continue;
+      if (slice.sliceRepairs > 0) {
+        list.appendChild(
+          el(
+            "div",
+            "mon-prompt-slice-group",
+            `${TASK_TYPE_LABELS[slice.taskType] ?? slice.taskType}生成片 · 修复续写 ×${slice.sliceRepairs}（下方为当前生效与被覆盖生成的输入）`,
+          ),
+        );
+      }
+      for (const item of slice.items) {
+        list.appendChild(this.renderItem(item));
+      }
     }
   }
 
@@ -153,20 +202,19 @@ export class PromptPanel {
   // -------------------------------------------------------------------------
 
   private renderItem(item: PromptItem): HTMLElement {
-    const { attempt, taskType } = item;
+    const { attempt, taskType, generation, sliceRepairs } = item;
     const expanded = attempt.attemptId === this.expandedAttemptId;
     const element = el("div", "mon-prompt-item");
     if (!expanded) element.classList.add("is-collapsed");
 
     const head = el("div", "mon-prompt-item-head");
     head.appendChild(el("span", `mon-dot state-${attempt.state}`));
-    head.appendChild(
-      el(
-        "strong",
-        undefined,
-        `${TASK_TYPE_LABELS[taskType] ?? taskType} · 请求 #${attempt.index + 1}`,
-      ),
-    );
+    // 同片多生成时标注生成序号（原位替换的审计视角）；独立片保持原样。
+    const title =
+      sliceRepairs > 0
+        ? `${TASK_TYPE_LABELS[taskType] ?? taskType} · 生成 #${generation} · 请求 #${attempt.index + 1}`
+        : `${TASK_TYPE_LABELS[taskType] ?? taskType} · 请求 #${attempt.index + 1}`;
+    head.appendChild(el("strong", undefined, title));
     const requests = attempt.promptRequests;
     if (requests.length > 1) {
       head.appendChild(el("span", "mon-prompt-followups", `含续写 ×${requests.length - 1}`));

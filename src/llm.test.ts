@@ -50,9 +50,11 @@ function makeTestInstructions() {
     opening: "请从故事开场开始，生成完整开场剧情，直到第一个 choice、interaction 或 end。",
     branch_prefetch: "当前分支问题：{choice_prompt}\n假设玩家选择：{option_text}\n请只生成至少 {min_dialogue} 条 dialogue 的预取片段。",
     input_response: "当前交互点：{interaction_prompt}\n玩家输入：{player_input}\n请生成 NPC 回应。",
-    continuation: "以下预取片段已固定：\n{prefetched}\n请继续生成完整剧情段。",
+    continuation:
+      "以下预取片段已固定：\n{prefetched}\n请继续生成完整剧情段。长度上限：本次最多输出 {target_lines} 条文本行。",
     input_bridge: "当前交互点：{interaction_prompt}\n生成 1–2 条 narration 作为场景过渡。",
-    recovery: "上一次输出被拒绝：{repair_reason}。请修正后继续。",
+    recovery:
+      "任务：修复收尾（task_type=recovery）。上一次输出被拒绝：{repair_reason}\n你上一段输出的原始尾部：\n{raw_tail}\n已固定前缀：\n{prefetched}\n哨兵：@end {nonce} buffer/interaction/ending。",
     ending: "剧情收束，用 @end {nonce} ending 结束。",
   };
 }
@@ -1294,6 +1296,100 @@ describe("DSL mode generation", () => {
 
     await expect(promise).rejects.toThrow(/没有 @end 哨兵/);
     expect(received).toHaveLength(1);
+  });
+
+  it("attaches the raw output tail to Game-level fail errors (wrap-up input)", async () => {
+    const gen = makeDslGenerator();
+    mockDslClient(gen, () => [
+      "地下室里只亮着终端的一点蓝光。",
+      "她抬起了手，话说到一半",
+      // no sentinel → truncated with forwarded groups
+    ]);
+
+    const promise = (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: () => undefined,
+    });
+    const error = (await promise.catch((failure: unknown) => failure)) as Error & {
+      rawTail?: string;
+    };
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/没有 @end 哨兵/);
+    // 尾部原文逐字保留（收尾模式补残句的模型输入）。
+    expect(error.rawTail).toContain("她抬起了手，话说到一半");
+    expect(error.rawTail).toContain("地下室里只亮着终端的一点蓝光。");
+  });
+
+  it("applies the remaining line budget to the continuation template and task header", async () => {
+    const gen = makeDslGenerator();
+    let capturedUser = "";
+    (gen as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn(async (request: { messages: Array<{ content: string }> }) => {
+            capturedUser = request.messages[1]!.content as string;
+            const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(capturedUser)?.[1] ?? "aaaa";
+            return dslStream(["续写一句。", `@end ${nonce} buffer`]);
+          }),
+        },
+      },
+    };
+    const prefetched = [
+      { type: "narration", text: "已固定前缀句。", line_id: "l-1", seq: 1 },
+    ] as unknown as Parameters<(typeof gen)["generateContinuation"]>[2];
+
+    await (gen as any).generateContinuation(2, createInitialState(), [], prefetched, undefined, {
+      repairReason: "上一段输出被截断。",
+      remainingLines: 3,
+    });
+
+    // 模板与任务头都用剩余预算（3），不用全额 text_buffer.target_lines。
+    expect(capturedUser).toContain("本次最多输出 3 条文本行");
+    expect(capturedUser).toContain("本次续写行数上限：3");
+    // 预算模式仍走 continuation 模板，不进收尾模式。
+    expect(capturedUser).not.toContain("task_type=recovery");
+    expect(capturedUser).not.toContain("本次最多输出 6 条文本行");
+  });
+
+  it("switches to the recovery wrap-up template at zero remaining budget", async () => {
+    const gen = makeDslGenerator();
+    let capturedUser = "";
+    (gen as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn(async (request: { messages: Array<{ content: string }> }) => {
+            capturedUser = request.messages[1]!.content as string;
+            const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(capturedUser)?.[1] ?? "aaaa";
+            return dslStream([
+              "@? 现在怎么办？",
+              "@+ 先离开这里",
+              "@+ 继续追问",
+              "@/?",
+              `@end ${nonce} interaction`,
+            ]);
+          }),
+        },
+      },
+    };
+
+    const envelope = await (gen as any).generateContinuation(
+      2,
+      createInitialState(),
+      [],
+      [],
+      undefined,
+      {
+        repairReason: "上一段输出被截断。",
+        remainingLines: 0,
+        rawTail: "她抬起了手，话说到一半",
+      },
+    );
+
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+    // 收尾模式：recovery 模板 + 原始尾部 + 零预算任务头，不再主动续写。
+    expect(capturedUser).toContain("任务：修复收尾（task_type=recovery）");
+    expect(capturedUser).toContain("她抬起了手，话说到一半");
+    expect(capturedUser).toContain("本次续写行数上限：0（正文预算已用尽，只收尾，不推进剧情）");
+    expect(capturedUser).not.toContain("任务：主动续写");
   });
 
   it("generateInputBridge issues a DSL request (input bridge is a prefetch task)", async () => {

@@ -558,6 +558,165 @@ describe("DSL mode — truncation recovery", () => {
     expect(playbackOf(controller.outputs)).toHaveLength(2);
     expect(controller.ended()).toBe(true);
   });
+
+  it("passes the remaining line budget and inherited slice id to the repair continuation", async () => {
+    const config = makeDslConfig({
+      generation: { repair_attempts: 1, max_consecutive_repairs: 2 },
+      text_buffer: { start_threshold_lines: 1, target_lines: 6, refill_threshold_lines: 3 },
+    });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+
+    let openingSliceId = "";
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: OpeningRequest) => {
+        openingSliceId = request.sliceId ?? "";
+        return dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("第一句。"));
+          onGroup(dslNarration("第二句。"));
+          onGroup(dslNarration("第三句。"));
+          throw new Error("DSL 流截断：段结束时没有 @end 哨兵");
+        });
+      },
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          // 剩余预算 = target 6 − 保留前缀 3 行。
+          expect(request.remainingLines).toBe(3);
+          // 修复续写与原段同一生成片（监控原位替换分组）。
+          expect(request.sliceId).toBe(openingSliceId);
+          onGroup(dslNarration("修复后的续写。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const controller = new MemoryController();
+    controller.attach(game);
+    await game.run();
+
+    // 3 句保留前缀 + 修复续写句；修复只用剩余预算，不再全额生成。
+    expect(playbackOf(controller.outputs)).toHaveLength(4);
+    expect(controller.ended()).toBe(true);
+  });
+
+  it("requests wrap-up mode (remaining 0) with the raw tail when the prefix already meets the target", async () => {
+    const config = makeDslConfig({
+      generation: { repair_attempts: 1, max_consecutive_repairs: 2 },
+      text_buffer: { start_threshold_lines: 1, target_lines: 6, refill_threshold_lines: 3 },
+    });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      dslHandle("opening", async (_signal, onGroup) => {
+        for (let i = 1; i <= 6; i += 1) onGroup(dslNarration(`第${i}句。`));
+        const error = new Error("DSL 流截断：段结束时没有 @end 哨兵") as Error & {
+          rawTail?: string;
+        };
+        error.rawTail = "第六句。@end a81f buf";
+        throw error;
+      }),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal) => {
+          // 前缀 6 行已用尽 target_lines：收尾模式，携带原始尾部补残句。
+          expect(request.remainingLines).toBe(0);
+          expect(request.rawTail).toBe("第六句。@end a81f buf");
+          // 收尾模式不再产出新正文，直接哨兵收束。
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const controller = new MemoryController();
+    controller.attach(game);
+    await game.run();
+
+    // 6 句保留前缀照常播放；收尾请求不再追加剧情。
+    expect(playbackOf(controller.outputs)).toHaveLength(6);
+    expect(controller.ended()).toBe(true);
+  });
+
+  it("discards the failed repair's unplayed lines and retries from the consumed base", async () => {
+    const config = makeDslConfig({
+      generation: { repair_attempts: 2, max_consecutive_repairs: 2 },
+      text_buffer: { start_threshold_lines: 1, target_lines: 6, refill_threshold_lines: 3 },
+    });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      dslHandle("opening", async (_signal, onGroup) => {
+        onGroup(dslNarration("开场句。"));
+        throw new Error("DSL 流截断：段结束时没有 @end 哨兵");
+      }),
+    );
+
+    // cont-1：A/B/C 三行入缓冲后失败。玩家读到 A 停住等它失败——B/C 保持
+    // 未播，验证修复链的"丢弃未播、从已读位置重试"。
+    let releaseCont1Hold: (() => void) | undefined;
+    const cont1Settled = new Promise<void>((resolve) => {
+      releaseCont1Hold = resolve;
+    });
+    let continuationCalls = 0;
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) => {
+        continuationCalls += 1;
+        if (continuationCalls === 1) {
+          return dslHandle("continuation-1", async (_signal, onGroup) => {
+            // 开场保留 1 行 → 剩余预算 5。
+            expect(request.remainingLines).toBe(5);
+            onGroup(dslNarration("修复一行A。"));
+            onGroup(dslNarration("修复一行B。"));
+            onGroup(dslNarration("修复一行C。"));
+            releaseCont1Hold!();
+            throw new Error("修复续写再次截断：段结束时没有 @end 哨兵");
+          });
+        }
+        return dslHandle("continuation-2", async (_signal, onGroup) => {
+          // 重试基座：prefetched 只带本段保留前缀（已消费的 A；开场句在
+          // history 剧情历史里，B/C 未播被丢弃，两处都不得出现）。
+          expect(request.prefetchedEvents.map((event) => (event as { text: string }).text)).toEqual([
+            "修复一行A。",
+          ]);
+          // 剩余预算沿片累计扣减：6 − 开场句 1 − A 1。
+          expect(request.remainingLines).toBe(4);
+          onGroup(dslNarration("重试句D。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        });
+      },
+    );
+
+    let playbackCount = 0;
+    const controller = new MemoryController({
+      onPlaybackReady: (_event, ctrl) => {
+        playbackCount += 1;
+        if (playbackCount === 2) {
+          // 玩家在 cont-1 的首行 A 上停读，等 cont-1 失败落定后才推进：
+          // 此刻 B/C 仍是未播事件，是本轮修复要丢弃的对象。
+          return cont1Settled.then(() => ctrl.advance());
+        }
+        ctrl.advance();
+        return undefined;
+      },
+    });
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    controller.attach(game);
+    await game.run();
+
+    const played = playbackOf(controller.outputs).map(
+      (output) => (output.event as { text: string }).text,
+    );
+    // B/C 被丢弃：玩家永远看不到；重试从已读位置（开场句 + A）继续。
+    expect(played).toEqual(["开场句。", "修复一行A。", "重试句D。"]);
+    expect(controller.ended()).toBe(true);
+  });
 });
 
 describe("DSL mode — visual state", () => {

@@ -314,12 +314,68 @@
 }
 
 .dsl-row.is-repaired .dsl-code::before {
-  content: "a1 ";
+  content: "已修 ";
   color: var(--mon-warn);
 }
 
 .writer-request-stream {
   padding-top: 4px;
+}
+
+/* 生成片历史：同片被覆盖的生成折叠在此（原位替换展示，数据未删）。 */
+.writer-slice-history {
+  margin: 6px 0 0 15px;
+  border-left: 2px solid #292932;
+  padding-left: 10px;
+}
+
+.writer-slice-history-label {
+  font-size: 11px;
+  color: #8a8a93;
+  margin: 2px 0 4px;
+}
+
+.writer-history-item {
+  margin: 4px 0;
+}
+
+.writer-history-item > summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: #8a8a93;
+  list-style: none;
+  user-select: none;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.writer-history-item > summary::-webkit-details-marker {
+  display: none;
+}
+
+.writer-history-item > summary::before {
+  content: "▸ ";
+  color: #6e6e78;
+}
+
+.writer-history-item[open] > summary {
+  color: #b8b8c2;
+}
+
+.writer-history-item[open] > summary::before {
+  content: "▾ ";
+}
+
+.writer-history-item .writer-request-boundary {
+  position: static;
+  margin-top: 6px;
+}
+
+.mon-prompt-slice-group {
+  font-size: 11px;
+  color: var(--mon-warn);
+  margin: 12px 0 4px;
 }
 
 .dsl-row {

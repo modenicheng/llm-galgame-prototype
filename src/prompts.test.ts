@@ -169,11 +169,13 @@ describe("loadPrompts", () => {
     });
 
     it("task templates keep the fill() placeholder contract in both directions", () => {
-      // 镜像 openai-compatible-generator.ts 五个 fill() 调用点的变量表。
-      // recovery/ending 模板目前没有运行时消费者，不参与校验。
+      // 镜像 openai-compatible-generator.ts 各 fill() 调用点的变量表。
+      // recovery 在收尾模式（remainingLines ≤ 0）有运行时消费者；ending
+      // 模板当前仍没有运行时消费者，不参与校验。
       const FILL_VARS: Record<string, readonly string[]> = {
         opening: ["nonce"],
         continuation: ["nonce", "target_lines", "prefetched"],
+        recovery: ["nonce", "repair_reason", "prefetched", "raw_tail"],
         branch_prefetch: ["choice_prompt", "option_text", "min_dialogue", "nonce"],
         input_response: ["interaction_prompt", "player_input", "nonce"],
         input_bridge: ["interaction_prompt", "nonce"],
