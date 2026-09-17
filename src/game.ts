@@ -1002,6 +1002,75 @@ export class Game {
     let firstPlayableSeen = false;
     // 供低水位续写计算 nextTurn（当前段 turn + 1）。
     this.activeSegmentTurn = segment.turn;
+    // fail-fast 修复（2026-09-17）：segment.failed 置位后不再等玩家读空
+    // 队列——done 落定（泵排空、events 定型）即在后台启动修复续写，生成
+    // 与剩余保留事件的播放并行。玩家读完保留前缀时，修复段的前几行通常
+    // 已就绪，消除"耗尽 → 冷启动 TTFT"空窗（原 next.done 分支的行为）。
+    let earlyRepairPromise: Promise<ActiveSegment | null> | null = null;
+    const launchEarlyRepair = (): void => {
+      if (earlyRepairPromise !== null) return;
+      // terminal 已入队（模型写完表单后流才断：表单后缺 @end / 坏行 /
+      // 断流）时不得提前修复：run loop 必将消费 terminal 走 choice/
+      // hybrid/input 返回路径，续写由玩家选择后的
+      // prepareContinuationAfterSelection 负责。此时启动孤儿修复段会占住
+      // 单槽，选择后的 startActiveSegment 抛"current status is streaming"
+      // 杀死 run()（2026-09-17 独立审计 F1，已实证复现）。
+      if (segment.terminal !== null) return;
+      earlyRepairPromise = (async (): Promise<ActiveSegment | null> => {
+        // done 落定不依赖玩家消费；pump 已排空（I1），events 不会再增长。
+        await segment.done.catch(() => undefined);
+        if (segment.endStatus?.kind === "complete") return null;
+        // 竞态窗口内 terminal 可能已设置（launch 后、done 落定前到达的
+        // 迟到表单组）——同样交还选择链路。
+        if (segment.terminal !== null) return null;
+        const playable = segment.events.filter(isPlayableEvent);
+        // 致命（无可播前缀）/预算耗尽/修复链满/策略拒绝等边界场景的处置
+        // 语义与原 next.done 分支不同（throw / warn / escalate），全部留给
+        // 原路径，这里只处理普通的"保留前缀 + 修复续写"。
+        if (playable.length === 0) return null;
+        if (repairBudget <= 0) return null;
+        const maxChain = this.config.generation.max_consecutive_repairs;
+        if (maxChain > 0 && repairChain >= maxChain) return null;
+        const failure = await segment.done.then(
+          () => new Error("生成段结束时没有收到 choice、interaction 或 end 事件。"),
+          (reason: unknown) => (reason instanceof Error ? reason : new Error(String(reason))),
+        );
+        segment.branchManager?.discardAll();
+        await this.reclaimPendingRefill();
+        // terminal 可能由 done 落定前的异步窗口（handleDslGroup）设置——TS
+        // 控制流看不见这种跨协程修改，重新读取原始字段避免被上面的守卫窄化。
+        const terminal = segment.terminal as InteractionEvent | null;
+        if (terminal?.type === "interaction" && terminal.mode !== "input") {
+          for (const option of terminal.options) {
+            this.status.removeJob(`branch:${option.id}`);
+          }
+          this.status.clearBranches();
+        }
+        const fullContext = terminal
+          ? [...priorContext, ...segment.events.filter((event) => event !== terminal)]
+          : [...priorContext, ...segment.events];
+        this.diagnostics.info(
+          "Repair",
+          `生成段失败：${failure.message}，保留 ${playable.length} 条事件，提前启动修复续写（剩余 ${repairBudget - 1} 次）`,
+        );
+        this.status.setJob(`repair:${segment.taskId}`, "段失败修复续写", "running");
+        const repaired = this.startActiveSegment(
+          "continuation",
+          turn,
+          fullContext,
+          playable,
+          failure.message,
+          // M1: 强制收束语义必须穿过修复路径（与下方 next.done 分支一致）。
+          this.forceEnding,
+        );
+        void repaired.done.catch(() => undefined);
+        return repaired;
+      })();
+      // 工厂不变量（同 segment.done）：派生 promise 从出生即带 handler，
+      // 防止 run loop 走交互/关闭等非接管路径时它的拒绝成为
+      // unhandledRejection 杀进程；1129 行的 await 语义不受影响。
+      void earlyRepairPromise.catch(() => undefined);
+    };
     while (true) {
       const next = await segment.queue.next();
       if (next.done) {
@@ -1074,39 +1143,53 @@ export class Game {
         // below, and adopting it afterwards would consume a dead queue
         // against the reset buffer (run-loop-killing order mismatch), while
         // leaving it running would hold the single scheduler slot.
-        segment.branchManager?.discardAll();
-        await this.reclaimPendingRefill();
-        this.playbackBuffer.clear();
-        const terminal = segment.terminal;
-        if (terminal?.type === "interaction" && terminal.mode !== "input") {
-          for (const option of terminal.options) {
-            this.status.removeJob(`branch:${option.id}`);
+        //
+        // fail-fast：播放循环可能已提前启动修复段（launchEarlyRepair），
+        // 其事件此时已按时间序排在保留事件之后进入 playback buffer——
+        // 这种情况下 discard/reclaim/clear 都已由提前启动完成或必须跳过
+        //（clear 会把修复段已注册的事件一并删掉，接管后对账必崩）。
+        const earlyRepaired = earlyRepairPromise !== null ? await earlyRepairPromise : null;
+        if (earlyRepaired === null) {
+          segment.branchManager?.discardAll();
+          await this.reclaimPendingRefill();
+          this.playbackBuffer.clear();
+          const terminal = segment.terminal;
+          if (terminal?.type === "interaction" && terminal.mode !== "input") {
+            for (const option of terminal.options) {
+              this.status.removeJob(`branch:${option.id}`);
+            }
+            this.status.clearBranches();
           }
-          this.status.clearBranches();
         }
+        const terminal = segment.terminal;
         const fullContext = terminal
           ? [
               ...priorContext,
               ...segment.events.filter((event) => event !== terminal),
             ]
           : [...priorContext, ...segment.events];
-        this.diagnostics.info(
-          "Repair",
-          `生成段失败：${failure.message}，保留 ${playable.length} 条事件，启动修复续写（剩余 ${repairBudget - 1} 次）`,
-        );
-        this.status.setJob(`repair:${segment.taskId}`, "段失败修复续写", "running");
-        try {
-          const repaired = this.startActiveSegment(
-            "continuation",
-            turn,
-            fullContext,
-            playable,
-            failure.message,
-            // M1: 强制收束语义必须穿过修复路径——强制段（event mode 已达上限）
-            // 失败后被修复的续写段同样是强制段，否则修复段可以再次打开交互
-            // 表单而不消耗 forcedEndingRetries 预算。
-            this.forceEnding,
+        // 提前启动路径已记过日志/占过 job 位（避免同一次修复双份噪音）。
+        if (earlyRepaired === null) {
+          this.diagnostics.info(
+            "Repair",
+            `生成段失败：${failure.message}，保留 ${playable.length} 条事件，启动修复续写（剩余 ${repairBudget - 1} 次）`,
           );
+          this.status.setJob(`repair:${segment.taskId}`, "段失败修复续写", "running");
+        }
+        try {
+          const repaired =
+            earlyRepaired ??
+            this.startActiveSegment(
+              "continuation",
+              turn,
+              fullContext,
+              playable,
+              failure.message,
+              // M1: 强制收束语义必须穿过修复路径——强制段（event mode 已达上限）
+              // 失败后被修复的续写段同样是强制段，否则修复段可以再次打开交互
+              // 表单而不消耗 forcedEndingRetries 预算。
+              this.forceEnding,
+            );
           void repaired.done.catch(() => undefined);
           const outcome = await this.consumeActiveSegment(
             repaired,
@@ -1133,6 +1216,9 @@ export class Game {
           await this.waitForStartThreshold(segment);
         }
         await this.consumePlayableEvent(event, turn, segment);
+        // fail-fast：失败段的修复续写在首个事件播完后立即启动（后台），
+        // 不等队列耗尽；next.done 分支会接管 earlyRepaired。
+        if (segment.failed) launchEarlyRepair();
         continue;
       }
 

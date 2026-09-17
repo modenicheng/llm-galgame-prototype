@@ -1125,6 +1125,52 @@ describe("JSONL store initialization", () => {
     expect(controller.ended()).toBe(true);
   });
 
+  it("starts the repair continuation while preserved events are still playing (fail-fast)", async () => {
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: OpeningRequest) =>
+        createGenerationHandle("opening", async (_signal, onGroup) => {
+          onGroup(groupFromEvent({ type: "narration", text: "保留一。" }));
+          onGroup(groupFromEvent({ type: "narration", text: "保留二。" }));
+          onGroup(groupFromEvent({ type: "narration", text: "保留三。" }));
+          throw new Error("网络中断");
+        }),
+    );
+    // 记录修复请求到达时玩家已读完的保留事件数：fail-fast 语义要求
+    // 修复段在队列耗尽（3 句全部读完）之前就开始生成。
+    let continuationCalledAfterPlays = -1;
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) => {
+        continuationCalledAfterPlays =
+          controller.countPlayback("narration") + controller.countPlayback("dialogue");
+        return handleFromDrafts("continuation", [
+          narrationEvent("修复后的续句。"),
+          endEvent("end_1", "Fin."),
+        ]);
+      },
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const controller = new MemoryController();
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // 旧行为：修复请求在 3 句保留事件全部耗尽后才发出（=3）。
+    // fail-fast：首个保留事件播完即启动（>=1 且 <3）。
+    expect(continuationCalledAfterPlays).toBeGreaterThanOrEqual(1);
+    expect(continuationCalledAfterPlays).toBeLessThan(3);
+    // 幂等：保留 3 句逐行播放只允许启动一次修复（未防护会启动 3 次并占死
+    // 调度器槽——独立审计 B8）。
+    expect(generator.generateContinuation).toHaveBeenCalledTimes(1);
+    expect(controller.countPlayback("narration")).toBe(4);
+    expect(controller.ended()).toBe(true);
+  });
+
   it("routes a repaired segment's choice into the normal branch flow", async () => {
     const sessionsDir = path.join(tempDir, "sessions");
     const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
@@ -1181,6 +1227,63 @@ describe("JSONL store initialization", () => {
     expect(controller.countPlayback("narration")).toBe(4);
     expect(controller.ended()).toBe(true);
     expect(controller.count("interaction_opened")).toBe(1);
+  });
+
+  it("does not early-repair (and does not kill run) when a segment fails after its interaction terminal", async () => {
+    // 2026-09-17 独立审计 F1：模型写完表单后流失败（表单后缺 @end/坏行/
+    // 断流）。terminal 已入队 ⇒ run loop 会消费它走交互返回路径，续写由
+    // 玩家选择后的 prepareContinuationAfterSelection 负责。此时 fail-fast
+    // 若启动孤儿修复段会占住单槽，选择后的 startActiveSegment 抛
+    // "current status is streaming" 杀死 run()。
+    const sessionsDir = path.join(tempDir, "sessions");
+    const config = makeGameConfig({ game: { sessions_dir: sessionsDir } });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    // opening：旁白 → interaction terminal → 流失败（terminal 后无 @end）。
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: OpeningRequest) =>
+        createGenerationHandle("opening", async (_signal, onGroup) => {
+          onGroup(groupFromEvent({ type: "narration", text: "开场半句。" }));
+          onGroup(
+            groupFromEvent({
+              type: "interaction",
+              interaction_id: "int_f1",
+              prompt: "怎么选？",
+              mode: "choice",
+              options: [
+                { id: "a", text: "选项A" },
+                { id: "b", text: "选项B" },
+              ],
+            }),
+          );
+          throw new Error("表单后流中断");
+        }),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("选择后续写。"), endEvent("end_1", "Fin.")]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ store: new NodeJsonlSessionStore(sessionsDir) }));
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        controller.select(output.interactionId, first.id);
+      },
+    });
+    controller.attach(game);
+    // F1 修复前：run() 以 "Cannot start active-path generation" reject。
+    await expect(game.run()).resolves.toBeUndefined();
+
+    // 交互正常打开并被选择；选择后由 prepareContinuationAfterSelection
+    // 启动续写（唯一的 continuation 请求），没有孤儿修复段。
+    expect(controller.count("interaction_opened")).toBe(1);
+    expect(generator.generateContinuation).toHaveBeenCalledTimes(1);
+    expect(controller.ended()).toBe(true);
   });
 
   it("does not crash when the continuation segment fails while the preview is still playing", async () => {
