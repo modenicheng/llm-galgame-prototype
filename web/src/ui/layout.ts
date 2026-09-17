@@ -35,9 +35,14 @@ function button(className: string, text?: string, ariaLabel?: string): HTMLButto
 export function buildAppDom(root: HTMLElement): AppDomRefs {
   root.textContent = "";
 
-  // 全屏氛围背景层（letterbox 区域也是它的一部分）。
+  // 全屏纯黑底：16:9 舞台框之外的 letterbox 区域（WebGAL 式黑边）。
   const backdrop = el("div", "stage") as HTMLDivElement;
-  backdrop.append(
+
+  // 16:9 舞台框（WebGAL 式 letterbox）：氛围层只存在于框内（背景图
+  // 加载前/占位时的底），StageRenderer 的背景/立绘层随后叠加其上，
+  // scene 内的对白/选项/输入面板随框底对齐——任何窗口比例下构图一致。
+  const stage = el("div", "stage-frame") as HTMLDivElement;
+  stage.append(
     el("div", "stage__mesh"),
     el("div", "stage__grain"),
     el("div", "stage__shafts"),
@@ -45,11 +50,6 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     el("div", "stage__orb stage__orb--lantern"),
     el("div", "stage__vig"),
   );
-
-  // 16:9 舞台框（WebGAL 式 letterbox）：背景图、立绘与对白 UI 全部锚定
-  // 在同一个 16:9 区域内，任何窗口比例下构图一致（StageRenderer 渲染进
-  // `stage`，scene 内的对白/选项/输入面板随框底对齐）。
-  const stage = el("div", "stage-frame") as HTMLDivElement;
   const scene = el("section", "scene") as HTMLElement;
 
   // Dialogue box — nameplate tab + paper panel.

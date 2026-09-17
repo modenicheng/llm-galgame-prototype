@@ -95,8 +95,9 @@ button {
 }
 
 /* --------------------------------------------------------------------------
-   Stage backdrop — full-viewport atmospheric background (letterbox region
-   included)
+   Stage backdrop — full-viewport solid black: the letterbox region outside
+   the 16:9 stage frame stays pure black (the atmospheric layers now live
+   INSIDE .stage-frame).
    -------------------------------------------------------------------------- */
 
 .stage {
@@ -104,11 +105,7 @@ button {
   inset: 0;
   z-index: -2;
   overflow: hidden;
-  background:
-    radial-gradient(120% 90% at 18% 12%, rgba(38, 48, 78, 0.55), transparent 55%),
-    radial-gradient(90% 70% at 85% 88%, rgba(122, 82, 40, 0.28), transparent 60%),
-    radial-gradient(70% 55% at 62% 42%, rgba(28, 46, 58, 0.4), transparent 70%),
-    linear-gradient(168deg, #0a0e16 0%, #0d1119 42%, #090c12 78%, #05070b 100%);
+  background: #000;
 }
 
 /* gradient mesh — a second, finer layer of drift */
