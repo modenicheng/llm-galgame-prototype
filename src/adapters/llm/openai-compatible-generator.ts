@@ -103,6 +103,20 @@ export interface GenerationStreamOptions {
   briefing?: string;
 }
 
+/**
+ * Terminal state of ONE streaming attempt. The retry policy (repair
+ * instruction synthesis, attempt budget) lives one level up in
+ * requestDslEnvelope; the mapping is:
+ * - complete → resolve with the envelope;
+ * - retry    → nothing forwarded yet, next attempt gets `reason` embedded;
+ * - fail     → a forwarded prefix exists, the runtime repairs from the
+ *   committed boundary (docs §8.5, §49).
+ */
+type DslAttemptOutcome =
+  | { kind: "complete"; envelope: GenerationEnvelope }
+  | { kind: "retry"; reason: string }
+  | { kind: "fail"; error: Error };
+
 // ---------------------------------------------------------------------------
 // StoryGenerator
 // ---------------------------------------------------------------------------
@@ -366,13 +380,11 @@ export class StoryGenerator {
 
   /**
    * DSL-mode streaming request (docs §40–§51).
-   * retry/abort/metrics skeleton, but each line is parsed by the Gal DSL
-   * pipeline: fence markers are skipped, parseDslLine + DslSegmentParser
-   * validate incrementally, and committed EventGroupDrafts are forwarded via
-   * options.onGroup. A structurally invalid line with already-forwarded
-   * groups fails the request (the runtime preserves the prefix); otherwise
-   * the attempt is repaired and retried. A truncated tail without a trailing
-   * newline is dropped (docs §49–§50).
+   *
+   * Retry-policy layer: drives per-attempt `attemptDslStream` and decides
+   * between repair-and-retry, fail-preserving-prefix, and success. All
+   * error strings are load-bearing — they double as the repair instruction
+   * for the next attempt and are asserted by tests verbatim.
    */
   private async requestDslEnvelope(
     type: LLMRequestCounts extends Record<infer K, number> ? K : never,
@@ -385,7 +397,6 @@ export class StoryGenerator {
   ): Promise<GenerationEnvelope> {
     let lastError = "";
     const attempts = this.config.generation.repair_attempts + 1;
-    const maxTokens = this.config.generation.max_tokens;
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -394,194 +405,239 @@ export class StoryGenerator {
       // (provider-internal `lastError` and/or Game-level options.repairReason).
       const repairInstruction = this.buildRepairInstruction(lastError, options?.repairReason);
 
-      const callStart = Date.now();
-      let firstLineMs = 0;
-      let lineIndex = 0;
-      let streamChars = 0;
-      const allGroups: EventGroupDraft[] = [];
-      let streamAborted = false;
-      let usage = { input: 0, output: 0 };
+      const outcome = await this.attemptDslStream(
+        type,
+        taskType,
+        allowedReasons,
+        nonce,
+        `${userPrompt}${repairInstruction}`,
+        signal,
+        options,
+        lastError,
+      );
+      if (outcome.kind === "complete") return outcome.envelope;
+      if (outcome.kind === "fail") throw outcome.error;
+      lastError = outcome.reason;
+    }
 
-      const controller = new AbortController();
-      const signalCleanup = signal
-        ? (() => {
-            const onAbort = () => controller.abort();
-            signal.addEventListener("abort", onAbort, { once: true });
-            return () => signal.removeEventListener("abort", onAbort);
-          })()
-        : () => {};
+    throw new Error(`模型输出连续校验失败：${lastError}`);
+  }
 
-      // Original error behind a mid-stream abort. Chained as the `cause` of
-      // the wrap thrown to the runtime so error-class detection survives it.
-      let streamError: unknown = undefined;
+  /**
+   * One streaming attempt: send the request, decode SSE chunks into
+   * complete DSL lines, parse/validate incrementally, and forward committed
+   * EventGroupDrafts via options.onGroup. A structurally invalid line with
+   * already-forwarded groups fails the request (the runtime preserves the
+   * prefix); otherwise the outcome is repairable. A truncated tail without
+   * a trailing newline is dropped (docs §49–§50).
+   */
+  private async attemptDslStream(
+    type: LLMRequestCounts extends Record<infer K, number> ? K : never,
+    taskType: string,
+    allowedReasons: readonly SegmentEndReason[],
+    nonce: string,
+    userPrompt: string,
+    signal: AbortSignal | undefined,
+    options: GenerationStreamOptions | undefined,
+    /** Failure reason of the PREVIOUS attempt — only for the err= log field. */
+    priorFailure: string,
+  ): Promise<DslAttemptOutcome> {
+    const maxTokens = this.config.generation.max_tokens;
+    const callStart = Date.now();
+    let firstLineMs = 0;
+    let lineIndex = 0;
+    let streamChars = 0;
+    const allGroups: EventGroupDraft[] = [];
+    let streamAborted = false;
+    let failureReason = "";
+    let usage = { input: 0, output: 0 };
 
-      // 行级 DSL 失败（解析失败 / 组校验失败同构）的统一收束：已转发组
-      // （流式消费）→ 保留已转发前缀、以流错误中止（循环后转 throw，交给
-      // 运行时修复路径）；尚无转发 → 记为可重试的 lastError。非协议错误
-      // 原样上抛。
-      const onDslLineFailure = (error: DslProtocolError, kind: string): void => {
-        streamAborted = true;
-        if (options?.onGroup && allGroups.length > 0) {
-          streamError = error;
-          lastError = `DSL 流在第 ${lineIndex} 行校验失败：${error.message}`;
-        } else {
-          lastError = `第 ${lineIndex} 行${kind}：${error.message}`;
-        }
-        controller.abort();
-      };
-      const forwardGroups = (groups: readonly EventGroupDraft[]): void => {
-        for (const group of groups) options?.onGroup?.(group);
-      };
+    const controller = new AbortController();
+    const signalCleanup = signal
+      ? (() => {
+          const onAbort = () => controller.abort();
+          signal.addEventListener("abort", onAbort, { once: true });
+          return () => signal.removeEventListener("abort", onAbort);
+        })()
+      : () => {};
+
+    // Original error behind a mid-stream abort. Chained as the `cause` of
+    // the wrap thrown to the runtime so error-class detection survives it.
+    let streamError: unknown = undefined;
+
+    try {
+      const stream = await this.client.chat.completions.create(
+        this.buildStreamRequest(maxTokens, userPrompt),
+        { signal: controller.signal },
+      );
 
       const decoder = new StreamLineDecoder();
       const parser = new DslSegmentParser({ expectedNonce: nonce, allowedReasons });
 
-      /** 解码一行为事件组；返回 false 表示该行校验失败、流必须停止。 */
-      const processDslLine = (rawLine: string): boolean => {
+      // SSE chunks → complete lines as a named async-generator transform:
+      // first-line timing and char counting live here, out of the parse
+      // loop below. The decoder stays outside so the consumer can flush
+      // the truncated tail after the stream ends.
+      const lines = (async function* (): AsyncGenerator<string> {
+        for await (const chunk of stream) {
+          const content = chunk.choices[0]?.delta?.content;
+          if (!content) continue;
+          if (firstLineMs === 0) firstLineMs = Date.now();
+          streamChars += content.length;
+          yield* decoder.push(content);
+        }
+      })();
+
+      const emit = (emitted: EventGroupDraft[]): void => {
+        allGroups.push(...emitted);
+        for (const group of emitted) {
+          options?.onGroup?.(group);
+        }
+      };
+
+      // Shared handling for parse/validation rejections: with a forwarded
+      // prefix the attempt FAILS (runtime repairs from the committed
+      // boundary); without one it is repairable → retry with the reason.
+      // The framing strings reproduce the legacy messages byte-for-byte
+      // (they ride into the model's repair instruction): `第 N 行不是合法
+      // DSL：` has no space after 行, `第 N 行 DSL 校验失败：` has one —
+      // hence the load-bearing leading space below.
+      const rejectLine = (framing: string, error: DslProtocolError): void => {
+        streamAborted = true;
+        if (options?.onGroup && allGroups.length > 0) {
+          streamError = error;
+          failureReason = `DSL 流在第 ${lineIndex} 行校验失败：${error.message}`;
+        } else {
+          failureReason = `第 ${lineIndex} 行${framing}：${error.message}`;
+        }
+        controller.abort();
+      };
+
+      for await (const rawLine of lines) {
+        lineIndex += 1;
+
         // Tolerate markdown fence markers around the DSL payload.
         const trimmed = rawLine.trim();
-        if (trimmed.startsWith("```") || trimmed.endsWith("```")) return true;
+        if (trimmed.startsWith("```") || trimmed.endsWith("```")) continue;
 
         let parsed: DslLine;
         try {
           parsed = parseDslLine(trimmed);
         } catch (error) {
-          if (!(error instanceof DslProtocolError)) throw error;
-          onDslLineFailure(error, "不是合法 DSL");
-          return false;
+          if (error instanceof DslProtocolError) {
+            rejectLine("不是合法 DSL", error);
+            break;
+          }
+          throw error;
         }
 
         let emitted: EventGroupDraft[];
         try {
           emitted = parser.pushLine(parsed);
         } catch (error) {
-          if (!(error instanceof DslProtocolError)) throw error;
-          onDslLineFailure(error, "DSL 校验失败");
-          return false;
+          if (error instanceof DslProtocolError) {
+            rejectLine(" DSL 校验失败", error);
+            break;
+          }
+          throw error;
         }
 
-        if (emitted.length > 0) {
-          allGroups.push(...emitted);
-          forwardGroups(emitted);
-        }
-        return true;
-      };
+        if (emitted.length > 0) emit(emitted);
+      }
 
       // Truncated tail without a trailing newline: try it, but drop the
       // partial when it is structurally invalid (docs §49–§50). A valid
       // tail that still lacks the sentinel lands in the incomplete branch
       // below — never a hard failure with already-forwarded groups.
-      const flushTruncatedTail = (): void => {
-        if (streamAborted) return;
-        const tail = decoder.flush();
-        if (tail === null) return;
+      const tail = decoder.flush();
+      if (!streamAborted && tail !== null) {
         const trimmed = tail.trim();
-        if (trimmed.length === 0 || trimmed.startsWith("```") || trimmed.endsWith("```")) {
-          return;
-        }
-        try {
-          const emitted = parser.pushLine(parseDslLine(trimmed));
-          if (emitted.length > 0) {
-            allGroups.push(...emitted);
-            forwardGroups(emitted);
+        if (
+          trimmed.length > 0 &&
+          !trimmed.startsWith("```") &&
+          !trimmed.endsWith("```")
+        ) {
+          try {
+            const emitted = parser.pushLine(parseDslLine(trimmed));
+            if (emitted.length > 0) emit(emitted);
+          } catch (error) {
+            if (error instanceof DslProtocolError) {
+              this.metrics?.recordSchemaValidationFailure();
+              console.warn(
+                `[LLM] ${type} 输出在末尾被截断，已丢弃残片（截断于第 ${lineIndex + 1} 行）`,
+              );
+            } else {
+              throw error;
+            }
           }
-        } catch (error) {
-          if (!(error instanceof DslProtocolError)) throw error;
-          this.metrics?.recordSchemaValidationFailure();
-          console.warn(
-            `[LLM] ${type} 输出在末尾被截断，已丢弃残片（截断于第 ${lineIndex + 1} 行）`,
-          );
         }
-      };
+      }
 
-      // 流收束（无异常路径）：complete → 返回 envelope；可重试失败 → 记入
-      // lastError 并返回 null（外层进入下一轮 attempt）；已转发前缀不完整
-      // → 抛出，交给运行时修复路径。
-      const finalizeAttempt = (): GenerationEnvelope | null => {
-        const latencyMs = Date.now() - callStart;
-        usage = { input: 0, output: Math.ceil(streamChars / 4) };
-        console.log(
-          `[LLM] ${type}(${taskType}) ${latencyMs}ms lines=${lineIndex} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${lastError || "ok"}`,
-        );
+      const latencyMs = Date.now() - callStart;
+      usage = { input: 0, output: Math.ceil(streamChars / 4) };
+      // err= mirrors the legacy cross-attempt semantics: the failure of the
+      // PREVIOUS attempt when this one succeeds — that is how operators
+      // identify a successful repair retry in the logs.
+      console.log(
+        `[LLM] ${type}(${taskType}) ${latencyMs}ms lines=${lineIndex} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${failureReason || priorFailure || "ok"}`,
+      );
 
-        // Structurally invalid line with nothing forwarded yet → retry with
-        // the repair instruction; with forwarded groups → fail and preserve
-        // the prefix for the runtime's repair path. `lastError` already
-        // carries the "DSL 流在第 N 行校验失败：…" framing in that case.
-        if (streamAborted) {
-          this.metrics?.recordLLMRequest(type, usage, latencyMs);
-          this.metrics?.recordSchemaValidationFailure();
-          if (options?.onGroup && allGroups.length > 0) {
-            throw new Error(lastError, { cause: streamError });
-          }
-          return null;
-        }
-
-        // Empty output — nothing at all (fences alone do not count).
-        if (lineIndex === 0 && allGroups.length === 0) {
-          this.metrics?.recordLLMRequest(type, usage, latencyMs);
-          lastError = "模型返回空内容。";
-          return null;
-        }
-
-        const result = parser.finish();
-        if (result.status.kind === "complete") {
-          this.metrics?.recordLLMRequest(type, usage, latencyMs);
-          options?.onSegmentEnd?.(result.status);
+      // Structurally invalid line with nothing forwarded yet → retry with
+      // the repair instruction; with forwarded groups → fail and preserve
+      // the prefix for the runtime's repair path. `failureReason` already
+      // carries the "DSL 流在第 N 行校验失败：…" framing in that case.
+      if (streamAborted) {
+        this.metrics?.recordLLMRequest(type, usage, latencyMs);
+        this.metrics?.recordSchemaValidationFailure();
+        if (options?.onGroup && allGroups.length > 0) {
           return {
+            kind: "fail",
+            error: new Error(failureReason, { cause: streamError }),
+          };
+        }
+        return { kind: "retry", reason: failureReason };
+      }
+
+      // Empty output — nothing at all (fences alone do not count).
+      if (lineIndex === 0 && allGroups.length === 0) {
+        this.metrics?.recordLLMRequest(type, usage, latencyMs);
+        return { kind: "retry", reason: "模型返回空内容。" };
+      }
+
+      const result = parser.finish();
+      if (result.status.kind === "complete") {
+        this.metrics?.recordLLMRequest(type, usage, latencyMs);
+        options?.onSegmentEnd?.(result.status);
+        return {
+          kind: "complete",
+          envelope: {
             events: [],
             groups: allGroups,
             segmentEnd: result.status,
-          };
-        }
-
-        // No @end sentinel → truncated segment (docs §49). With forwarded
-        // groups the prefix is playable: fail so the Game repairs from the
-        // committed boundary. Otherwise retry from scratch.
-        this.metrics?.recordLLMRequest(type, usage, latencyMs);
-        if (options?.onGroup && allGroups.length > 0) {
-          throw new Error(
-            `DSL 流在第 ${lineIndex} 行校验失败：段结束时没有 @end 哨兵（截断）`,
-          );
-        }
-        lastError = "段结束时没有 @end 哨兵（截断）";
-        return null;
-      };
-
-      try {
-        const stream = await this.client.chat.completions.create(
-          this.buildStreamRequest(maxTokens, `${userPrompt}${repairInstruction}`),
-          { signal: controller.signal },
-        );
-
-        for await (const chunk of stream) {
-          const content = chunk.choices[0]?.delta?.content;
-          if (!content) continue;
-          if (firstLineMs === 0) firstLineMs = Date.now();
-          streamChars += content.length;
-
-          for (const rawLine of decoder.push(content)) {
-            lineIndex += 1;
-            if (!processDslLine(rawLine)) break;
-          }
-          if (streamAborted) break;
-        }
-
-        signalCleanup();
-        flushTruncatedTail();
-
-        const envelope = finalizeAttempt();
-        if (envelope !== null) return envelope;
-      } catch (error) {
-        signalCleanup();
-        if (signal?.aborted || isAbortError(error)) throw error;
-        const latencyMs = Date.now() - callStart;
-        this.metrics?.recordLLMRequest(type, usage, latencyMs);
-        throw error;
+          },
+        };
       }
-    }
 
-    throw new Error(`模型输出连续校验失败：${lastError}`);
+      // No @end sentinel → truncated segment (docs §49). With forwarded
+      // groups the prefix is playable: fail so the Game repairs from the
+      // committed boundary. Otherwise retry from scratch.
+      this.metrics?.recordLLMRequest(type, usage, latencyMs);
+      if (options?.onGroup && allGroups.length > 0) {
+        return {
+          kind: "fail",
+          error: new Error(
+            `DSL 流在第 ${lineIndex} 行校验失败：段结束时没有 @end 哨兵（截断）`,
+          ),
+        };
+      }
+      return { kind: "retry", reason: "段结束时没有 @end 哨兵（截断）" };
+    } catch (error) {
+      if (signal?.aborted || isAbortError(error)) throw error;
+      this.metrics?.recordLLMRequest(type, usage, Date.now() - callStart);
+      throw error;
+    } finally {
+      signalCleanup();
+    }
   }
 }
 

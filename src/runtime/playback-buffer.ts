@@ -12,15 +12,45 @@ import type { RuntimeBufferEvent } from "../schema.js";
 export class PlaybackBuffer {
   private events: RuntimeBufferEvent[] = [];
   private cursor = 0;
+  /** Shared change signal; null while nobody waits. See changed(). */
+  private nextChange: Promise<void> | null = null;
+  private resolveNextChange: (() => void) | undefined;
+
+  /**
+   * Resolve when the buffer next mutates (enqueue / advance / clear).
+   * All concurrent waiters share ONE promise, and a waiter that arrives
+   * after a mutation waits for the NEXT one — no accumulation of stale
+   * race losers. Lets callers await buffer levels event-driven instead
+   * of polling (e.g. the start-threshold gate).
+   */
+  changed(): Promise<void> {
+    if (this.nextChange === null) {
+      this.nextChange = new Promise<void>((resolve) => {
+        this.resolveNextChange = resolve;
+      });
+    }
+    return this.nextChange;
+  }
+
+  private fireChange(): void {
+    if (this.nextChange === null) return;
+    const resolve = this.resolveNextChange;
+    this.nextChange = null;
+    this.resolveNextChange = undefined;
+    resolve?.();
+  }
 
   /** Append a single event to the end of the buffer. */
   enqueue(event: RuntimeBufferEvent): void {
     this.events.push(event);
+    this.fireChange();
   }
 
   /** Append multiple events to the end of the buffer. */
   enqueueMany(events: RuntimeBufferEvent[]): void {
+    if (events.length === 0) return;
     for (const event of events) this.events.push(event);
+    this.fireChange();
   }
 
   /** Return the next event and advance the cursor. */
@@ -28,6 +58,7 @@ export class PlaybackBuffer {
     if (this.cursor >= this.events.length) return undefined;
     const event = this.events[this.cursor]!;
     this.cursor += 1;
+    this.fireChange();
     return event;
   }
 
@@ -91,5 +122,6 @@ export class PlaybackBuffer {
   clear(): void {
     this.events = [];
     this.cursor = 0;
+    this.fireChange();
   }
 }

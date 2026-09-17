@@ -27,8 +27,11 @@ export class AsyncEventQueue<T> implements AsyncIterable<T> {
   }
 
     next(): Promise<IteratorResult<T>> {
-    const value = this.values.shift();
-    if (value !== undefined) return Promise.resolve({ value, done: false });
+    // Length check, not `shift() !== undefined`: the value type must be free
+    // to include undefined without silently ending the stream.
+    if (this.values.length > 0) {
+      return Promise.resolve({ value: this.values.shift()!, done: false });
+    }
     if (this.closed) return Promise.resolve({ value: undefined as T, done: true });
     return new Promise((resolve) => this.waiters.push(resolve));
   }

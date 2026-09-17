@@ -514,7 +514,9 @@ describe("DSL mode generation", () => {
     const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
     expect(create).toHaveBeenCalledTimes(2);
     const retryUser = create.mock.calls[1]![0].messages[1].content as string;
-    expect(retryUser).toContain("DSL 校验失败");
+    // 逐字断言：该文案进入发给模型的修复指令，行与「DSL」之间的空格是
+    // load-bearing（64599a8），不允许再被统一收束吞掉。
+    expect(retryUser).toContain("第 1 行 DSL 校验失败：Sentinel nonce");
     expect(envelope.groups).toHaveLength(1);
     expect(envelope.segmentEnd).toEqual({
       kind: "complete",
