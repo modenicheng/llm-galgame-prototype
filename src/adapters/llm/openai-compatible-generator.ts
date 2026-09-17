@@ -173,6 +173,9 @@ export class StoryGenerator {
   private readonly instructions: InstructionSet;
   /** Model-facing asset catalog projection (logical ids only, docs §59). */
   private readonly modelCatalog: ModelAssetCatalog | undefined;
+  /** Registered speaker names (script names + character ids) — gates the
+   * full-width-colon dialogue normalization in the DSL line parser. */
+  private readonly knownSpeakers: ReadonlySet<string> | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -194,6 +197,14 @@ export class StoryGenerator {
       this.makeCtx(null as unknown as StoryState, []),
     );
     this.modelCatalog = catalog ? toModelCatalog(catalog) : undefined;
+    if (catalog !== undefined) {
+      const speakers = new Set<string>();
+      for (const [characterId, binding] of Object.entries(catalog.characters)) {
+        speakers.add(binding.scriptName);
+        speakers.add(characterId);
+      }
+      this.knownSpeakers = speakers;
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -598,7 +609,7 @@ export class StoryGenerator {
 
         let parsed: DslLine;
         try {
-          parsed = parseDslLine(trimmed);
+          parsed = parseDslLine(trimmed, this.knownSpeakers);
         } catch (error) {
           if (error instanceof DslProtocolError) {
             rejectLine("不是合法 DSL", error);
@@ -634,7 +645,7 @@ export class StoryGenerator {
           !trimmed.endsWith("```")
         ) {
           try {
-            const emitted = parser.pushLine(parseDslLine(trimmed));
+            const emitted = parser.pushLine(parseDslLine(trimmed, this.knownSpeakers));
             if (emitted.length > 0) emit(emitted);
           } catch (error) {
             if (error instanceof DslProtocolError) {

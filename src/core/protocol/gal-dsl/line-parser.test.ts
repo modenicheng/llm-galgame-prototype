@@ -33,31 +33,44 @@ describe("parseDslLine", () => {
     });
   });
 
-  it("normalizes a full-width colon in the delimiter position into dialogue", () => {
-    // Chinese LLM output frequently writes 「苏遥：台词」. A short
-    // punctuation-free speaker followed by ： is the dialogue delimiter —
-    // normalizing prevents silent degradation to narration (and the
-    // speaker/[visual] syntax leaking into player-visible text).
-    expect(parseDslLine("苏遥：你不该来这里。")).toEqual({
+  it("normalizes a full-width colon into dialogue only for registered speakers", () => {
+    // Chinese LLM output frequently writes 「苏遥：台词」. With the registry's
+    // speaker set the delimiter-position ： converts and the
+    // speaker/[visual] syntax no longer leaks into player-visible text.
+    const speakers = new Set(["苏遥", "林澈"]);
+    expect(parseDslLine("苏遥：你不该来这里。", speakers)).toEqual({
       kind: "dialogue",
       speaker: "苏遥",
       text: "你不该来这里。",
       visual: { hasVisual: false, resetVisual: false },
       name: { hasName: false, resetName: false },
     });
-    expect(parseDslLine("苏遥[anxious]：你好")).toEqual({
+    expect(parseDslLine("苏遥[anxious]：你好", speakers)).toEqual({
       kind: "dialogue",
       speaker: "苏遥",
       text: "你好",
       visual: { hasVisual: true, resetVisual: false, variant: "anxious" },
       name: { hasName: false, resetName: false },
     });
+    // Unregistered prefixes in delimiter shape are narration — no heuristic
+    // guessing about "does this look like a name" (「警告：危险」 etc.).
+    expect(parseDslLine("警告：危险。", speakers)).toEqual({
+      kind: "narration",
+      text: "警告：危险。",
+    });
+    // Without a speaker set the normalization is disabled entirely
+    // (conservative — callers that cannot know the cast never reclassify).
+    expect(parseDslLine("苏遥：你不该来这里。", undefined)).toEqual({
+      kind: "narration",
+      text: "苏遥：你不该来这里。",
+    });
   });
 
   it("replaces only the delimiter-position full-width colon (bracket-internal colons survive)", () => {
+    const speakers = new Set(["苏遥"]);
     // The ： inside [visual] must not block normalization nor tear the line;
     // it is normalized separately so the spriteSet:variant split still works.
-    const line = parseDslLine("苏遥[suit：calm]：你好");
+    const line = parseDslLine("苏遥[suit：calm]：你好", speakers);
     expect(line.kind).toBe("dialogue");
     if (line.kind === "dialogue") {
       expect(line.speaker).toBe("苏遥");
@@ -69,7 +82,7 @@ describe("parseDslLine", () => {
         variant: "calm",
       });
     }
-    const paren = parseDslLine("苏遥(化名：小遥)：你好");
+    const paren = parseDslLine("苏遥(化名：小遥)：你好", speakers);
     expect(paren.kind).toBe("dialogue");
     if (paren.kind === "dialogue") {
       expect(paren.speaker).toBe("苏遥");
