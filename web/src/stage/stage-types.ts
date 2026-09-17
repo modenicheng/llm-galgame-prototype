@@ -33,7 +33,14 @@ export interface PublicAssetManifest {
   backgrounds: Record<string, { url: string }>;
   bgm: Record<string, { url: string }>;
   soundEffects: Record<string, { url: string }>;
-  spriteSets: Record<string, { variants: Record<string, { url: string }> }>;
+  spriteSets: Record<
+    string,
+    {
+      variants: Record<string, { url: string }>;
+      /** 舞台显示高度占比（0–1]；缺省用样式默认值 0.92。 */
+      presentation?: { height?: number };
+    }
+  >;
 }
 
 /** 瞬态演出 cue 的 wire 镜像（spec §6.4）；SE 是瞬时效果，不入 VisualState。 */

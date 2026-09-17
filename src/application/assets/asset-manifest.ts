@@ -27,7 +27,13 @@ export function buildPublicAssetManifest(
     for (const [variantId, variant] of Object.entries(set.variants)) {
       variants[variantId] = { url: url(variant.src) };
     }
-    spriteSets[id] = { variants };
+    // 只有 height 需要到达浏览器（舞台显示占比）；rotate/crop/normalize
+    // 由 host 派生时烘焙进文件，浏览器不重复处理。
+    const height = set.presentation?.height;
+    spriteSets[id] = {
+      variants,
+      ...(height !== undefined ? { presentation: { height } } : {}),
+    };
   }
   return { backgrounds, bgm, soundEffects, spriteSets };
 }

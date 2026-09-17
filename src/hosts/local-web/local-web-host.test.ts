@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
+import { PNG } from "pngjs";
 import { makeTestConfig } from "../../test-helpers.js";
 import type { RuntimeApplication } from "../../application/runtime-application.js";
 import { makeAssetCatalog } from "../../application/assets/asset-manifest.fixtures.js";
@@ -87,6 +88,7 @@ interface HttpResult {
   status: number;
   headers: http.IncomingHttpHeaders;
   text: string;
+  buffer: Buffer;
 }
 
 function request(
@@ -100,12 +102,13 @@ function request(
   const req = http.request({ host: "127.0.0.1", port, path: pathname, method, headers }, (res) => {
     const chunks: Buffer[] = [];
     res.on("data", (c: Buffer) => chunks.push(c));
-    res.on("end", () =>
-      resolve({ status: res.statusCode ?? 0, headers: res.headers, text: Buffer.concat(chunks).toString("utf8") }),
-    );
+    res.on("end", () => {
+      const buffer = Buffer.concat(chunks);
+      resolve({ status: res.statusCode ?? 0, headers: res.headers, text: buffer.toString("utf8"), buffer });
+    });
   });
   req.on("error", (error) => {
-    resolve({ status: 0, headers: {}, text: String(error) });
+    resolve({ status: 0, headers: {}, text: String(error), buffer: Buffer.alloc(0) });
   });
   if (body !== undefined) req.end(body);
   else req.end();
@@ -332,6 +335,72 @@ describe("LocalWebHost", () => {
     it("non-GET /game-assets/... is rejected with 405", async () => {
       const result = await request(assetPort, "POST", "/game-assets/backgrounds/basement.jpg");
       expect(result.status).toBe(405);
+    });
+  });
+
+  describe("sprite presentation derivation (with derivedAssetRoot override)", () => {
+    let assetDir: string;
+    let derivedDir: string;
+    let deriveHost: LocalWebHost;
+    let derivePort: number;
+
+    beforeEach(async () => {
+      assetDir = mkdtempSync(path.join(tmpdir(), "derive-asset-root-"));
+      derivedDir = mkdtempSync(path.join(tmpdir(), "derive-out-"));
+      mkdirSync(path.join(assetDir, "characters", "cast"), { recursive: true });
+      // 4×4 不透明 PNG（真字节，会被解码+重编码）。
+      const png = new PNG({ width: 4, height: 4 });
+      for (let i = 0; i < 4 * 4; i += 1) {
+        png.data[i * 4] = 200;
+        png.data[i * 4 + 1] = 100;
+        png.data[i * 4 + 2] = 50;
+        png.data[i * 4 + 3] = 255;
+      }
+      writeFileSync(path.join(assetDir, "characters", "cast", "base.png"), PNG.sync.write(png));
+
+      const catalog = makeAssetCatalog();
+      catalog.spriteSets.cast = {
+        id: "cast",
+        presentation: { normalize: true },
+        variants: { base: { id: "base", src: "characters/cast/base.png" } },
+      };
+      deriveHost = new LocalWebHost({
+        config: makeConfig({ assets: { catalog: path.join(assetDir, "resources.yaml") } }),
+        app,
+        dev: false,
+        logger: () => {},
+        assetCatalog: catalog,
+        derivedAssetRoot: derivedDir,
+      });
+      const started = await deriveHost.start();
+      derivePort = started.port;
+    });
+
+    afterEach(async () => {
+      await deriveHost.shutdown();
+      rmSync(assetDir, { recursive: true, force: true });
+      rmSync(derivedDir, { recursive: true, force: true });
+    });
+
+    it("manifest URL 重写为派生路径，派生文件可经 /game-assets 取到", async () => {
+      const manifest = await request(derivePort, "GET", "/api/assets/manifest");
+      const body = JSON.parse(manifest.text) as {
+        spriteSets: Record<string, { variants: Record<string, { url: string }> }>;
+      };
+      expect(body.spriteSets.cast!.variants.base!.url).toBe("/game-assets/__derived__/cast/base.png");
+
+      const derived = await request(derivePort, "GET", "/game-assets/__derived__/cast/base.png");
+      expect(derived.status).toBe(200);
+      expect(derived.headers["content-type"]).toBe("image/png");
+      const image = PNG.sync.read(derived.buffer);
+      // normalize 裁掉透明边后 = 原图（整图不透明 → 尺寸不变）。
+      expect(image.width).toBe(4);
+      expect(image.height).toBe(4);
+    });
+
+    it("派生路径同样拒绝目录逃逸", async () => {
+      const result = await request(derivePort, "GET", "/game-assets/__derived__/../secrets.txt");
+      expect(result.status).toBe(403);
     });
   });
 

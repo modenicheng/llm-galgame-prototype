@@ -158,6 +158,15 @@ export class StageRenderer {
       }
     }
 
+    // 舞台显示高度随 sprite set 的 presentation.height（归一画布的
+    // 人物实际身高比例），未配置回落 CSS 默认 0.92。
+    const figureHeight = this.resolver.spriteHeight(character.spriteSet);
+    if (figureHeight !== undefined) {
+      node.root.style.setProperty("--figure-height", String(figureHeight));
+    } else {
+      node.root.style.removeProperty("--figure-height");
+    }
+
     for (const slot of SLOT_CLASSES) node.root.classList.remove(slot);
     node.root.classList.add(`stage__char--${character.position}`);
 

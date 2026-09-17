@@ -468,6 +468,39 @@ pnpm dev                            # 启动冒烟：加载失败会当场抛错
 
 删掉或改名 `resources.yaml` 条目（文件可留可删）。**没有引用计数**：模型不会再用旧 id（素材表已不含它），历史存档回放时旧 id 走占位/保持现状降级。替换文件内容而 id 不变则无需改 YAML，但浏览器 `no-store`，刷新即生效。
 
+## 9.8 立绘 presentation（裁切 / 旋转 / 统一规格）
+
+立绘源图的取景规格常常不一（透明留白、倾斜、裁切松紧不同），直接上台会导致同套差分跳动、不同角色视觉身高失衡。`sprite_sets.<组>.presentation` 把这类修正做成配置，由 host 在启动时派生处理，**原始文件永不改动**：
+
+```yaml
+sprite_sets:
+  <组>:
+    presentation:
+      rotate: -6        # 可选。顺时针度数（±180），扶正倾斜立绘；90° 倍数无损重排
+      crop:             # 可选。旋转后按源图像素硬裁切
+        left: 0
+        top: 120
+        width: 1152
+        height: 1600
+      normalize: true   # 可选。裁掉透明边 + 同套所有变体归一到统一画布
+      height: 0.92      # 可选。舞台显示高度占比（0–1.2），仅前端展示元数据
+    variants:
+      base: { src: ... }
+      special:          # 变体级可覆写 rotate/crop/normalize（height 只能在 set 级）
+        src: ...
+        presentation: { rotate: 0 }
+```
+
+处理规则：
+
+- **顺序固定**：rotate → crop → 裁透明边 → 同套统一画布。最后一部把全套变体贴到同一个 union 画布，保证「同一套立绘裁切后规格一致」且表情差分逐像素对齐；
+- 任一 `rotate`/`crop`/`normalize` 出现即触发整套派生（含未配置的变体，保证画布统一）；只配 `height` 不动文件，仅把占比投影进 manifest；
+- 派生产物写 `output/derived-game-assets/<组>/<变体>.png`（gitignore 内），manifest URL 重写为 `/game-assets/__derived__/<组>/<变体>.png`，原始路径照常服务；
+- 磁盘缓存：`.meta.json` 记录参数指纹 + 源 mtime，任一变化自动重derive（冷启动全套约 10s，命中后毫秒级）；
+- 失败即启动失败（fail-fast，与 §9 校验同纪律）；**树莓娘派生产物继承「仅限内部流通」约束**（§10），不入库不上传。
+
+前端呈现（`web/src/stage/`）：立绘按 gal 惯例**全身贴底**（脚底压舞台下缘，小腿由对话框遮挡），按 manifest 里的 `presentation.height` 缩放（缺省 0.92）；整个舞台（背景/立绘/对白 UI）锚定在 16:9 舞台框内，非 16:9 窗口 letterbox，构图恒定。
+
 ---
 
 # 10. 授权与合规红线
@@ -501,7 +534,8 @@ pnpm dev                            # 启动冒烟：加载失败会当场抛错
 | DSL 协议（含素材指令与选择原则） | `prompts/dsl-protocol.txt` |
 | 语义校验与诊断码 | `src/core/protocol/gal-dsl/compiler.ts`（`filterInvalidCues`） |
 | Game 侧角色注册表/过滤接线 | `src/game.ts` |
-| web 路由（manifest + /game-assets/） | `src/hosts/local-web/local-web-host.ts` |
+| web 路由（manifest + /game-assets/ + 派生服务） | `src/hosts/local-web/local-web-host.ts` |
+| 立绘 presentation 派生（§9.8） | `src/application/assets/sprite-normalize.ts` |
 | 浏览器渲染/音频消费 | `web/src/stage/`（asset-manifest-client / browser-asset-resolver / stage-renderer / bgm-controller / sound-effect-controller） |
 | 图像生成工具 | `src/tools/image-gen/`（README 为权威用法） |
 | 新角色基准图/差分批量生成 | `scripts/gen-cast-bases.mjs` |
@@ -516,6 +550,7 @@ pnpm dev                            # 启动冒烟：加载失败会当场抛错
 | 运行时降级（未知 id 丢 cue 保状态） | `src/core/protocol/gal-dsl/compiler.test.ts` |
 | cue 端到端传递 | `src/game-dsl.test.ts`、`src/game.test.ts` |
 | host 路由安全（403/404/405、manifest 投影） | `src/hosts/local-web/local-web-host.test.ts` |
+| 派生管线（旋转/裁切/union 统一画布/缓存） | `src/application/assets/sprite-normalize.test.ts` |
 | 浏览器占位降级 | `web/src/stage/*.test.ts` |
 | image-gen 工具 | `src/tools/image-gen/*.test.ts`（`pnpm exec vitest run src/tools/image-gen`） |
 

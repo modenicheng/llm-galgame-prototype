@@ -1,9 +1,11 @@
 /**
  * The static DOM skeleton of the game screen. `buildAppDom` injects the full
- * layout (background layers, HUD, scene panels, overlays) into `#app` and
- * returns handles to every interactive region. All dynamic content lives in
- * the widgets; this file only declares structure and class hooks for the
- * design system in `styles.css`.
+ * layout into `#app` and returns handles to every interactive region:
+ * a full-viewport atmospheric backdrop, the centered 16:9 stage frame
+ * (background layers + StageRenderer layers + dialogue scene, WebGAL-style
+ * letterbox), and viewport-anchored chrome (HUD, controls, overlays, banner).
+ * All dynamic content lives in the widgets; this file only declares
+ * structure and class hooks for the design system in `styles.css`.
  */
 import { el } from "./dom.js";
 
@@ -33,8 +35,9 @@ function button(className: string, text?: string, ariaLabel?: string): HTMLButto
 export function buildAppDom(root: HTMLElement): AppDomRefs {
   root.textContent = "";
 
-  const stage = el("div", "stage") as HTMLDivElement;
-  stage.append(
+  // 全屏氛围背景层（letterbox 区域也是它的一部分）。
+  const backdrop = el("div", "stage") as HTMLDivElement;
+  backdrop.append(
     el("div", "stage__mesh"),
     el("div", "stage__grain"),
     el("div", "stage__shafts"),
@@ -43,14 +46,10 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     el("div", "stage__vig"),
   );
 
-  const hud = el("div", "hud") as HTMLDivElement;
-  const brand = el("div", "hud__brand") as HTMLDivElement;
-  brand.append(
-    el("span", "hud__brand-mark", "灯影夜话"),
-    el("span", "hud__brand-sub", "· 本地 AI 视觉小说 ·"),
-  );
-  hud.append(brand);
-
+  // 16:9 舞台框（WebGAL 式 letterbox）：背景图、立绘与对白 UI 全部锚定
+  // 在同一个 16:9 区域内，任何窗口比例下构图一致（StageRenderer 渲染进
+  // `stage`，scene 内的对白/选项/输入面板随框底对齐）。
+  const stage = el("div", "stage-frame") as HTMLDivElement;
   const scene = el("section", "scene") as HTMLElement;
 
   // Dialogue box — nameplate tab + paper panel.
@@ -112,6 +111,17 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   waitingEl.append(dots, el("span", "waiting__label", "故事正在书写"), waitingPhaseEl);
   scene.append(waitingEl);
 
+  // 对白 UI 挂进 16:9 舞台框（构图随框缩放，见上方 stage-frame 注释）。
+  stage.append(scene);
+
+  const hud = el("div", "hud") as HTMLDivElement;
+  const brand = el("div", "hud__brand") as HTMLDivElement;
+  brand.append(
+    el("span", "hud__brand-mark", "灯影夜话"),
+    el("span", "hud__brand-sub", "· 本地 AI 视觉小说 ·"),
+  );
+  hud.append(brand);
+
   const controlsRoot = el("section", "controls") as HTMLElement;
 
   // Start overlay (autoplay unlock, §10.5).
@@ -157,7 +167,7 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   );
   (bannerRoot.querySelector(".banner__action") as HTMLButtonElement).hidden = true;
 
-  root.append(stage, hud, scene, controlsRoot, startRoot, endRoot, bannerRoot);
+  root.append(backdrop, stage, hud, controlsRoot, startRoot, endRoot, bannerRoot);
 
   return {
     stage,

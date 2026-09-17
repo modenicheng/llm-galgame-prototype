@@ -33,12 +33,34 @@ export interface SpriteVariant {
   id: string;
   src: string;
   description?: string;
+  /** 变体级覆写，浅合并到 sprite set 级 presentation 之上。 */
+  presentation?: SpritePresentation;
+}
+
+/**
+ * 立绘呈现参数（docs/asset-management.md「立绘 presentation」一节）。
+ *
+ * `rotate`/`crop`/`normalize` 触发服务端派生：host 启动时把处理后的
+ * PNG 写入派生目录并重写 manifest URL，原始文件永不改动；同一套立绘
+ * 的所有变体输出到同一规格画布（差分对齐、规格一致）。
+ * `height` 是纯前端展示元数据（舞台高度占比），不触发文件处理。
+ */
+export interface SpritePresentation {
+  /** 顺时针旋转角度（度）；90 的倍数走无损重排，任意角双线性采样。 */
+  rotate?: number | undefined;
+  /** 旋转后按源图像素硬裁切。 */
+  crop?: { left: number; top: number; width: number; height: number } | undefined;
+  /** 裁掉透明边并把整套变体归一到统一画布。 */
+  normalize?: boolean | undefined;
+  /** 舞台显示高度占比（0–1]，缺省由前端样式定（92%）。 */
+  height?: number | undefined;
 }
 
 export interface SpriteSet {
   id: string;
   description?: string;
   variants: Record<string, SpriteVariant>;
+  presentation?: SpritePresentation;
 }
 
 export interface CharacterAssetBinding {
@@ -94,13 +116,19 @@ export interface ModelAssetCatalog {
 /**
  * Browser-facing projection: logical id → controlled URL (spec §5.2).
  * No filesystem paths are exposed; `url` is always a root-relative
- * path under the /game-assets/ prefix.
+ * path under the /game-assets/ prefix. Sprite sets carrying a
+ * `presentation.height` mirror it here so the stage renderer can size
+ * figures per set; rotate/crop/normalize are already baked into the
+ * served files and never re-applied client-side.
  */
 export interface PublicAssetManifest {
   backgrounds: Record<string, { url: string }>;
   bgm: Record<string, { url: string }>;
   soundEffects: Record<string, { url: string }>;
-  spriteSets: Record<string, { variants: Record<string, { url: string }> }>;
+  spriteSets: Record<
+    string,
+    { variants: Record<string, { url: string }>; presentation?: { height?: number } }
+  >;
 }
 
 export interface AssetResolver {

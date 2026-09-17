@@ -28,4 +28,15 @@ describe("buildPublicAssetManifest", () => {
     const empty = buildPublicAssetManifest({ ...makeAssetCatalog(), bgm: {} }, "/game-assets/");
     expect(empty.bgm).toEqual({});
   });
+
+  it("sprite set 的 presentation.height 投影给浏览器；无配置时不带该字段", () => {
+    const catalogWithHeight = makeAssetCatalog();
+    catalogWithHeight.spriteSets.suyao!.presentation = { height: 0.88 };
+    const manifest = buildPublicAssetManifest(catalogWithHeight, "/game-assets/");
+    expect(manifest.spriteSets.suyao!.presentation).toEqual({ height: 0.88 });
+    for (const [id, set] of Object.entries(manifest.spriteSets)) {
+      if (id === "suyao") continue;
+      expect(set.presentation).toBeUndefined();
+    }
+  });
 });

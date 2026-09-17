@@ -23,13 +23,55 @@ const AssetEntrySchema = z.object({
   description: z.string(),
 });
 
+/**
+ * 立绘呈现参数（docs/asset-management.md「立绘 presentation」）。
+ * height 是整套立绘的舞台显示占比：变体之间身高必须一致，所以只在
+ * set 级开放，变体级 schema 不含 height（避免差分切换时跳变）。
+ */
+const SpritePresentationCoreSchema = {
+  rotate: z
+    .number()
+    .finite()
+    .refine((v) => Math.abs(v) <= 180, "rotate 取值范围 ±180 度")
+    .optional(),
+  crop: z
+    .object({
+      left: z.number().int().min(0),
+      top: z.number().int().min(0),
+      width: z.number().int().min(1),
+      height: z.number().int().min(1),
+    })
+    .optional(),
+  normalize: z.boolean().optional(),
+};
+
+const SpritePresentationSchema = z
+  .object({ ...SpritePresentationCoreSchema, height: z.number().finite().gt(0).lte(1.2).optional() })
+  .refine(
+    (v) =>
+      v.rotate !== undefined ||
+      v.crop !== undefined ||
+      v.normalize !== undefined ||
+      v.height !== undefined,
+    "presentation 至少要有一个字段（rotate/crop/normalize/height）",
+  );
+
+const SpriteVariantPresentationSchema = z
+  .object({ ...SpritePresentationCoreSchema })
+  .refine(
+    (v) => v.rotate !== undefined || v.crop !== undefined || v.normalize !== undefined,
+    "变体级 presentation 至少要有一个字段（rotate/crop/normalize；height 只能在 set 级配置）",
+  );
+
 const SpriteVariantSchema = z.object({
   src: z.string().min(1),
   description: z.string().optional(),
+  presentation: SpriteVariantPresentationSchema.optional(),
 });
 
 const SpriteSetSchema = z.object({
   description: z.string().optional(),
+  presentation: SpritePresentationSchema.optional(),
   variants: z.record(z.string(), SpriteVariantSchema),
 });
 
@@ -206,11 +248,15 @@ function mapToCatalog(data: ResourceYaml): AssetCatalog {
         ...(variant.description !== undefined
           ? { description: variant.description.trim() }
           : {}),
+        ...(variant.presentation !== undefined
+          ? { presentation: variant.presentation }
+          : {}),
       };
     }
     spriteSets[id] = {
       id,
       ...(set.description !== undefined ? { description: set.description.trim() } : {}),
+      ...(set.presentation !== undefined ? { presentation: set.presentation } : {}),
       variants,
     };
   }

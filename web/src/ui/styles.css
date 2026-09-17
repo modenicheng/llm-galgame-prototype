@@ -95,7 +95,8 @@ button {
 }
 
 /* --------------------------------------------------------------------------
-   Stage — layered atmospheric background
+   Stage backdrop — full-viewport atmospheric background (letterbox region
+   included)
    -------------------------------------------------------------------------- */
 
 .stage {
@@ -183,9 +184,29 @@ button {
 }
 
 /* --------------------------------------------------------------------------
-   Stage renderer layers (StageRenderer) — placeholder picture of the wire
-   visualState: a tinted background slab + per-character silhouettes on the
-   five positional slots. Appended after the decorative layers (§86).
+   16:9 stage frame (WebGAL-style letterbox)
+
+   背景、立绘与对白 UI 全部锚定在这个居中的 16:9 区域内：窗口比 16:9 宽
+   时上下出黑边，比 16:9 窄时左右出黑边 —— 任何窗口比例下构图（站位、
+   对话框位置、背景取景）都与设计一致，避免各类适配问题。
+   -------------------------------------------------------------------------- */
+
+.stage-frame {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(100vw, calc(100vh * 16 / 9));
+  height: min(100vh, calc(100vw * 9 / 16));
+  overflow: hidden;
+}
+
+/* --------------------------------------------------------------------------
+   Stage renderer layers (StageRenderer)
+   background: a tinted slab or a 16:9 photo (object-fit cover 恰好满铺);
+   characters: full-body 立绘贴底站立（gal 惯例——脚底压在舞台下缘，
+   小腿由对话框自然遮挡），同一套立绘经 presentation 归一后画布一致，
+   figure 实际高度由 --figure-height（manifest presentation.height）控制。
    -------------------------------------------------------------------------- */
 
 .stage__bg {
@@ -226,16 +247,17 @@ button {
 .stage__char {
   position: absolute;
   bottom: 0;
-  height: 92%;
+  height: calc(var(--figure-height, 0.92) * 100%);
   width: auto;
   margin: 0;
   opacity: 1;
-  transition: opacity 0.4s ease;
+  transition: opacity 0.4s ease, left 0.45s var(--ease-out);
 }
 .stage__char img {
   height: 100%;
   width: auto;
   object-fit: contain;
+  filter: drop-shadow(0 18px 22px rgba(0, 0, 0, 0.45));
 }
 .stage__char figcaption {
   position: absolute;
@@ -251,15 +273,22 @@ button {
   opacity: 0;
   display: block !important; /* 保留布局以让淡出生效 */
 }
+/* 占位（manifest 缺失/图挂）：显式宽度的色块立柱，不再依赖 img 撑宽。 */
+.stage__char--placeholder {
+  width: clamp(90px, 11%, 190px);
+  border-radius: 12px 12px 0 0;
+}
 .stage__char--placeholder img {
   display: none;
 }
+/* 五个互斥站位（舞台宽度百分比，全部完整可见；center 居中）。
+   gal 惯例：两人同场用 left/right，center 留给主角/独场。 */
 .stage__char--far_left {
-  left: 0%;
-  transform: translateX(-15%);
+  left: 13%;
+  transform: translateX(-50%);
 }
 .stage__char--left {
-  left: 20%;
+  left: 30%;
   transform: translateX(-50%);
 }
 .stage__char--center {
@@ -267,12 +296,12 @@ button {
   transform: translateX(-50%);
 }
 .stage__char--right {
-  left: 80%;
+  left: 70%;
   transform: translateX(-50%);
 }
 .stage__char--far_right {
-  left: 100%;
-  transform: translateX(-85%);
+  left: 87%;
+  transform: translateX(-50%);
 }
 
 /* --------------------------------------------------------------------------
@@ -372,6 +401,8 @@ button {
 
 /* --------------------------------------------------------------------------
    Scene — dialogue / choices / input / waiting
+   挂在 16:9 舞台框内（见 .stage-frame）：inset/百分比都以框为基准，
+   对话框永远贴着舞台下缘、与立绘同框构图。
    -------------------------------------------------------------------------- */
 
 .scene {
@@ -381,7 +412,7 @@ button {
   flex-direction: column;
   justify-content: flex-end;
   align-items: center;
-  padding: 0 4vw 34px;
+  padding: 0 3% 30px;
   z-index: 2;
   pointer-events: none;
 }
@@ -393,7 +424,7 @@ button {
 /* ---- dialogue box ---- */
 
 .dialogue {
-  width: min(980px, 96vw);
+  width: min(980px, 96%);
   animation: rise-in 420ms var(--ease-out) both;
 }
 
@@ -499,7 +530,7 @@ button {
 /* ---- interaction panel (choice / hybrid / input) ---- */
 
 .interaction-panel {
-  width: min(820px, 96vw);
+  width: min(820px, 92%);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -657,7 +688,7 @@ button {
 /* ---- preview ---- */
 
 .preview {
-  width: min(820px, 96vw);
+  width: min(820px, 92%);
   text-align: center;
   animation: rise-in 420ms var(--ease-out) both;
 }
@@ -704,7 +735,7 @@ button {
   flex-direction: column;
   align-items: center;
   gap: 16px;
-  padding-bottom: 12vh;
+  padding-bottom: 72px;
   color: var(--paper-dim);
 }
 

@@ -590,3 +590,89 @@ describe("loadAssetCatalog failures", () => {
     await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/不存在|missing/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sprite presentation 参数（rotate/crop/normalize/height）
+// ---------------------------------------------------------------------------
+
+describe("loadAssetCatalog sprite presentation", () => {
+  async function loadWithSpriteSets(spriteSetsYaml: string[]): Promise<Awaited<ReturnType<typeof loadAssetCatalog>>> {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds: {}",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets:",
+        ...spriteSetsYaml.map((line) => `  ${line}`),
+        "characters: {}",
+      ].join("\n"),
+    );
+    return loadAssetCatalog(path.join(dir, "resources.yaml"));
+  }
+
+  it("解析 set 级 presentation（含 height）与变体级覆写", async () => {
+    const dir = await makeTempDir();
+    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
+    await writeFile(
+      path.join(dir, "resources.yaml"),
+      [
+        "guidance: x",
+        "backgrounds: {}",
+        "bgm: {}",
+        "sound_effects: {}",
+        "sprite_sets:",
+        "  styled:",
+        "    presentation:",
+        "      rotate: -6",
+        "      normalize: true",
+        "      height: 0.92",
+        "    variants:",
+        "      base: { src: sprite.png }",
+        "      tilted:",
+        "        src: sprite.png",
+        "        presentation:",
+        "          rotate: 0",
+        "  plain:",
+        "    variants:",
+        "      base: { src: sprite.png }",
+        "characters: {}",
+      ].join("\n"),
+    );
+    const catalog = await loadAssetCatalog(path.join(dir, "resources.yaml"));
+    const styled = catalog.spriteSets.styled!;
+    expect(styled.presentation).toEqual({ rotate: -6, normalize: true, height: 0.92 });
+    expect(styled.variants.base!.presentation).toBeUndefined();
+    expect(styled.variants.tilted!.presentation).toEqual({ rotate: 0 });
+    expect(catalog.spriteSets.plain!.presentation).toBeUndefined();
+  });
+
+  it("拒绝变体级 height（身高必须整套一致）", async () => {
+    await expect(
+      loadWithSpriteSets([
+        "bad:",
+        "  variants:",
+        "    base:",
+        "      src: sprite.png",
+      "      presentation: { height: 0.9 }",
+      ]),
+    ).rejects.toThrow(/height/);
+  });
+
+  it("拒绝空 presentation 与越界 rotate", async () => {
+    await expect(
+      loadWithSpriteSets(["bad:", "  presentation: {}", "  variants:", "    base: { src: sprite.png }"]),
+    ).rejects.toThrow(/至少要有一个字段/);
+    await expect(
+      loadWithSpriteSets([
+        "bad:",
+        "  presentation: { rotate: 360 }",
+        "  variants:",
+        "    base: { src: sprite.png }",
+      ]),
+    ).rejects.toThrow(/±180/);
+  });
+});

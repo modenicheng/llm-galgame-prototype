@@ -110,6 +110,32 @@ describe("StageRenderer", () => {
     expect(container.querySelectorAll("figure.stage__char").length).toBe(0);
   });
 
+  it("presentation.height 写入 --figure-height，未配置则移除（回落样式默认）", () => {
+    const manifestWithHeight: PublicAssetManifest = {
+      ...manifest,
+      spriteSets: {
+        suyao: {
+          presentation: { height: 0.88 },
+          variants: manifest.spriteSets.suyao!.variants,
+        },
+      },
+    };
+    const container = document.createElement("div");
+    document.body.append(container);
+    const renderer = new StageRenderer(container, new BrowserAssetResolver(manifestWithHeight));
+    renderer.apply(makeState());
+    const figure = container.querySelector<HTMLElement>("figure.stage__char")!;
+    expect(figure.style.getPropertyValue("--figure-height")).toBe("0.88");
+
+    // 换到未配置 height 的 manifest（独立容器）：不写内联变量，回落 CSS 默认。
+    const container2 = document.createElement("div");
+    document.body.append(container2);
+    const renderer2 = new StageRenderer(container2, new BrowserAssetResolver(manifest));
+    renderer2.apply(makeState());
+    const figure2 = container2.querySelector<HTMLElement>("figure.stage__char")!;
+    expect(figure2.style.getPropertyValue("--figure-height")).toBe("");
+  });
+
   it("重复 apply 幂等：不重复创建层", () => {
     const { container, renderer } = setup();
     renderer.apply(makeState());

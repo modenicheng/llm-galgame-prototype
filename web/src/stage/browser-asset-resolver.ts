@@ -23,4 +23,9 @@ export class BrowserAssetResolver {
   resolveSprite(spriteSet: string, variant: string): string | undefined {
     return this.manifestData?.spriteSets[spriteSet]?.variants[variant]?.url;
   }
+
+  /** 该 sprite set 的舞台显示高度占比（presentation.height），未配置返回 undefined。 */
+  spriteHeight(spriteSet: string): number | undefined {
+    return this.manifestData?.spriteSets[spriteSet]?.presentation?.height;
+  }
 }

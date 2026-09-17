@@ -153,6 +153,10 @@ sprite_sets:
     description: |
       树莓娘差分立绘（基于负责人提供的官方分层原稿加工，仅限内部流通）。
       base 为基准形态，其余为表情/情绪差分与剪影，全身图、透明背景。
+    presentation:
+      # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
+      # 前端按归一画布贴底缩放（派生文件见 docs/asset-management.md）。
+      normalize: true
 
     variants:
       base:
@@ -224,6 +228,10 @@ sprite_sets:
       女生A：温柔娴静的女大学生学姐形象。亚麻棕色齐颈波波头短发、
       奶白色发卡，米白色V领针织开衫配白衬衫、暗红格纹百褶及膝裙。
       base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
+    presentation:
+      # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
+      # 前端按归一画布贴底缩放（派生文件见 docs/asset-management.md）。
+      normalize: true
     variants:
       base:
         src: characters/female_A/base.png
@@ -255,6 +263,10 @@ sprite_sets:
       女生B：活力四射的女高中生后辈形象。焦糖色低双马尾、珍珠发饰，
       奶油色水手服配深绿领结与百褶裙、白色过膝袜。
       base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
+    presentation:
+      # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
+      # 前端按归一画布贴底缩放（派生文件见 docs/asset-management.md）。
+      normalize: true
     variants:
       base:
         src: characters/female_B/base.png
@@ -286,6 +298,10 @@ sprite_sets:
       男生A：开朗阳光的男高中生形象。栗色蓬松短碎发，
       白短袖衬衫外罩浅灰V领针织背心、深灰长裤、白色运动鞋。
       base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
+    presentation:
+      # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
+      # 前端按归一画布贴底缩放（派生文件见 docs/asset-management.md）。
+      normalize: true
     variants:
       base:
         src: characters/male_A/base.png
@@ -317,6 +333,10 @@ sprite_sets:
       男生B：沉稳安静的男性学长形象。黑色清爽短发、银灰色细框眼镜，
       燕麦色圆领毛衣内搭白衬衫、深炭灰长裤、棕色皮鞋。
       base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
+    presentation:
+      # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
+      # 前端按归一画布贴底缩放（派生文件见 docs/asset-management.md）。
+      normalize: true
     variants:
       base:
         src: characters/male_B/base.png

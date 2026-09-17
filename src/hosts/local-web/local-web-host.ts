@@ -19,6 +19,7 @@ import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
 import type { RuntimeApplication } from "../../application/runtime-application.js";
 import type { AssetCatalog, PublicAssetManifest } from "../../core/assets/types.js";
 import { buildPublicAssetManifest } from "../../application/assets/asset-manifest.js";
+import { normalizeSprites } from "../../application/assets/sprite-normalize.js";
 import { RestartRequestedError, RuntimeShutdownError } from "../../game.js";
 import {
   countLegacyLogFiles,
@@ -51,6 +52,14 @@ const PROJECT_ROOT = findProjectRoot();
 const DEFAULT_WEB_DIST_DIR = path.join(PROJECT_ROOT, "dist", "web");
 /** Test seam: point the prod static handler at a different dist directory. */
 const WEB_DIST_DIR_ENV = "LLM_GALGAME_WEB_DIST_DIR";
+/**
+ * 立绘 presentation 派生目录（output/ 已 gitignore；树莓娘资产不入库的
+ * 约定同样覆盖派生产物，见 assets/ATTRIBUTION.md）。测试可经 options 覆写。
+ */
+const DEFAULT_DERIVED_ASSET_ROOT = path.join(PROJECT_ROOT, "output", "derived-game-assets");
+/** manifest 里派生 URL 的保留段：/game-assets/__derived__/<set>/<variant>.png */
+const DERIVED_URL_PREFIX = "/game-assets/__derived__/";
+const DERIVED_PATH_MARKER = "__derived__/";
 
 export interface LocalWebHostOptions {
   config: AppConfig;
@@ -59,6 +68,8 @@ export interface LocalWebHostOptions {
   logger?: (line: string) => void;
   /** Asset catalog for manifest + /game-assets serving. 缺省时不启用资源服务。 */
   assetCatalog?: AssetCatalog;
+  /** 立绘派生输出目录；默认 <repo>/output/derived-game-assets（测试覆写用）。 */
+  derivedAssetRoot?: string;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -92,7 +103,9 @@ export class LocalWebHost {
   private readonly audioRoute: AudioStreamRoute;
   private readonly distRoot: string;
   private readonly assetRoot: string | null;
-  private readonly assetManifest: PublicAssetManifest | null;
+  private readonly assetCatalog: AssetCatalog | null;
+  private readonly derivedAssetRoot: string;
+  private assetManifest: PublicAssetManifest | null;
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private devMiddleware: ViteDevMiddleware | null = null;
@@ -113,6 +126,10 @@ export class LocalWebHost {
     // web.ts entrypoint (config/app/dev/logger only) keeps working
     // unchanged — app.assetCatalog is provided by createRuntimeApplication.
     const assetCatalog = options.assetCatalog ?? this.app.assetCatalog;
+    this.assetCatalog = assetCatalog ?? null;
+    this.derivedAssetRoot = path.resolve(
+      options.derivedAssetRoot ?? DEFAULT_DERIVED_ASSET_ROOT,
+    );
     this.assetRoot =
       assetCatalog !== undefined
         ? path.dirname(path.resolve(this.config.assets.catalog))
@@ -149,6 +166,8 @@ export class LocalWebHost {
   }
 
   async start(): Promise<{ url: string; port: number }> {
+    await this.deriveSpriteAssets();
+
     const host = this.config.local_web.host;
     const configuredPort = this.config.local_web.port > 0 ? this.config.local_web.port : 0;
 
@@ -201,6 +220,42 @@ export class LocalWebHost {
       this.logger(`open the game manually: ${tokenUrl}`);
     }
     return { url, port: actualPort };
+  }
+
+  /**
+   * 立绘 presentation 派生（docs/asset-management.md「立绘 presentation」）。
+   * 配置了 rotate/crop/normalize 的 sprite set 在监听前落盘到派生目录并
+   * 重写 manifest URL；未配置的 set 原样透传。缓存命中时近乎零开销。
+   * 派生失败属于资产错误：与 catalog 校验同纪律，启动即失败（fail fast）。
+   */
+  private async deriveSpriteAssets(): Promise<void> {
+    if (this.assetRoot === null || this.assetCatalog === null || this.assetManifest === null) {
+      return;
+    }
+    const result = await normalizeSprites(this.assetCatalog, {
+      assetRoot: this.assetRoot,
+      derivedRoot: this.derivedAssetRoot,
+      urlPrefix: DERIVED_URL_PREFIX,
+    });
+    for (const [setId, variants] of Object.entries(result.urls)) {
+      const set = this.assetManifest.spriteSets[setId];
+      if (set === undefined) continue;
+      for (const [variantId, derivedUrl] of Object.entries(variants)) {
+        const variant = set.variants[variantId];
+        if (variant !== undefined) variant.url = derivedUrl;
+      }
+      const spec = result.specs[setId];
+      if (spec !== undefined) {
+        this.logger(
+          `[assets] 立绘派生 ${setId}: ${Object.keys(variants).length} 变体 → ${spec.width}×${spec.height}`,
+        );
+      }
+    }
+    for (const [setId, height] of Object.entries(result.heights)) {
+      const set = this.assetManifest.spriteSets[setId];
+      if (set === undefined) continue;
+      set.presentation = { ...(set.presentation ?? {}), height };
+    }
   }
 
   /**
@@ -351,7 +406,7 @@ export class LocalWebHost {
         this.sendJson(res, 404, { error: "asset catalog unavailable" });
         return;
       }
-      void serveAssetFile(this.assetRoot, req, res, pathname);
+      void serveAssetFile(this.assetRoot, this.derivedAssetRoot, req, res, pathname);
       return;
     }
     if (pathname.startsWith("/api/")) {
@@ -463,9 +518,13 @@ const ASSET_MIME_TYPES: Record<string, string> = {
  * Serve one asset file from the catalog root (spec §5.2). Same shape as
  * serveFile but with NO SPA fallback: an asset id always maps to a real
  * file or 404. Traversal (raw or percent-encoded) → 403.
+ *
+ * `__derived__/` 开头的路径改从立绘派生目录解析（presentation 管线产物），
+ * 同样带目录逃逸防护；两个根之间互不越界。
  */
 async function serveAssetFile(
   assetRoot: string,
+  derivedRoot: string,
   req: IncomingMessage,
   res: ServerResponse,
   pathname: string,
@@ -483,8 +542,13 @@ async function serveAssetFile(
     res.end("bad request");
     return;
   }
-  const filePath = path.resolve(assetRoot, relative);
-  const rootResolved = path.resolve(assetRoot);
+  let root = assetRoot;
+  if (relative.startsWith(DERIVED_PATH_MARKER)) {
+    root = derivedRoot;
+    relative = relative.slice(DERIVED_PATH_MARKER.length);
+  }
+  const filePath = path.resolve(root, relative);
+  const rootResolved = path.resolve(root);
   if (filePath !== rootResolved && !filePath.startsWith(rootResolved + path.sep)) {
     res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("forbidden");
