@@ -29,6 +29,7 @@ import {
 import { isAllowedOrigin } from "./origin-guard.js";
 import { AudioStreamRoute } from "./audio-stream-route.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";
+import { MonitorWebSocket } from "./monitor-websocket.js";
 import { createViteDevMiddleware, type ViteDevMiddleware } from "./vite-middleware.js";
 import { openBrowser } from "./open-browser.js";
 
@@ -100,6 +101,7 @@ export class LocalWebHost {
   private readonly token: string;
   private readonly publicConfig: PublicWebConfig;
   private readonly runtimeWs: RuntimeWebSocket;
+  private readonly monitorWs: MonitorWebSocket;
   private readonly audioRoute: AudioStreamRoute;
   private readonly distRoot: string;
   private readonly assetRoot: string | null;
@@ -158,6 +160,11 @@ export class LocalWebHost {
       catalog: this.app.audioCatalog,
       token: this.token,
     });
+    this.monitorWs = new MonitorWebSocket({
+      hub: this.app.monitor,
+      token: this.token,
+      originGuard: (origin) => isAllowedOrigin(origin, host, port),
+    });
   }
 
   /** The Local Session Token the browser must echo on WS and TTS requests. */
@@ -183,6 +190,10 @@ export class LocalWebHost {
       if (pathname === "/ws/runtime") {
         wss.handleUpgrade(req, socket, head, (ws) => {
           this.runtimeWs.handle(ws, req);
+        });
+      } else if (pathname === "/ws/monitor") {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          this.monitorWs.handle(ws, req);
         });
       } else {
         socket.destroy();
@@ -211,6 +222,7 @@ export class LocalWebHost {
     // back on WS connect and TTS POSTs (§8.3). If auto-open is disabled or
     // fails, surface the token-bearing URL so the app stays reachable.
     const tokenUrl = `${url}?token=${this.token}`;
+    const monitorUrl = `${url}monitor?token=${this.token}`;
     if (this.config.local_web.open_browser) {
       void openBrowser(tokenUrl).catch(() => {
         this.logger("could not open a browser; continuing without one");
@@ -219,6 +231,7 @@ export class LocalWebHost {
     } else {
       this.logger(`open the game manually: ${tokenUrl}`);
     }
+    this.logger(`monitor dashboard: ${monitorUrl}`);
     return { url, port: actualPort };
   }
 
@@ -346,7 +359,8 @@ export class LocalWebHost {
     // 2) abort active LLM/TTS and persist state (app dispatches shutdown)
     await this.app.shutdown();
 
-    // 3) close WebSocket clients
+    // 3) close WebSocket clients (runtime controllers + monitor dashboards)
+    this.monitorWs.close();
     const wss = this.wss;
     if (wss) {
       for (const client of wss.clients) {

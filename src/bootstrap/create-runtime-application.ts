@@ -19,6 +19,14 @@ import { SystemClock } from "../adapters/platform/system-clock.js";
 import { loadPrompts } from "../prompts.js";
 import { Metrics } from "../runtime/metrics.js";
 import { RuntimeStatus } from "../status.js";
+import { MonitorHub } from "../application/monitor/monitor-hub.js";
+import type { DslStreamObserver } from "../core/ports/dsl-stream-observer.js";
+import {
+  instrumentMemoryConsolidator,
+  instrumentPlotPlanner,
+  instrumentRecapSummarizer,
+} from "../application/monitor/instrumented-context-ports.js";
+import { BroadcastDiagnosticSink } from "../adapters/platform/broadcast-diagnostic-sink.js";
 import { UiProjectionStoreImpl } from "../application/ui/ui-projection-store.js";
 import { AudioCatalogServiceImpl } from "../application/audio/audio-catalog-service.js";
 import { AudioDescriptorFactory } from "../application/audio/audio-descriptor-factory.js";
@@ -40,6 +48,7 @@ import { NarrativeDirectorService } from "../application/narrative/narrative-dir
 import { JsonNarrativeMemoryStore } from "../adapters/storage/json-narrative-memory-store.js";
 import { NarrativeConsolidatorAdapter } from "../adapters/llm/narrative-consolidator-adapter.js";
 import { PlotPlannerAdapter } from "../adapters/llm/plot-planner-adapter.js";
+import { RecapSummarizerAdapter } from "../adapters/llm/recap-summarizer-adapter.js";
 import { loadStoryPlan } from "../adapters/static/story-plan-loader.js";
 import type { NarrativeDirectorPort } from "../core/ports/narrative-director-port.js";
 import {
@@ -82,6 +91,34 @@ export async function createRuntimeApplication(
 
   const status = new RuntimeStatus();
   const metrics = new Metrics();
+  // Monitor dashboard hub (docs/monitor-dashboard.md): app-level so it
+  // survives session restarts; `game` is read through a closure so restart
+  // rebases the polled view without re-wiring.
+  const monitor = new MonitorHub({
+    status,
+    metrics,
+    info: {
+      model: config.api.model,
+      narrativeMode: config.narrative.mode,
+      apiBaseUrl: config.api.base_url ?? "",
+      knownSpeakers: Object.entries(assetCatalog.characters).flatMap(([characterId, binding]) => [
+        binding.scriptName,
+        characterId,
+      ]),
+      textBuffer: {
+        startThresholdLines: config.text_buffer.start_threshold_lines,
+        targetLines: config.text_buffer.target_lines,
+        refillThresholdLines: config.text_buffer.refill_threshold_lines,
+      },
+      eventMode: {
+        // 测试会用缺 event 块的窄 config 组装；0 = 该级禁用，与语义一致。
+        wrapupInteractions: config.narrative.event?.wrapup_interactions ?? 0,
+        closingPushInteractions: config.narrative.event?.closing_push_interactions ?? 0,
+        maxInteractions: config.narrative.event?.max_interactions ?? 0,
+      },
+    },
+    game: () => game,
+  });
   const generator = new StoryGenerator(
     config,
     bundle,
@@ -90,6 +127,8 @@ export async function createRuntimeApplication(
     authorConfig,
     metrics,
     assetCatalog,
+    // 系统级保证：观察者异常不得影响生成主路径（设计 §错误处理）。
+    safeDslStreamObserver(monitor.writerObserver),
   );
 
   // TTS provider wiring (§7.6): dashscope → real provider, mock → the
@@ -174,7 +213,11 @@ export async function createRuntimeApplication(
   ): Promise<Game> => {
     const store = new NodeJsonlSessionStore(options.sessionDir ?? config.game.sessions_dir);
     // --- Narrative director assembly (§7.1) ---
-    const diagnostics = new ConsoleDiagnosticSink();
+    // Diagnostics fan out to the console AND the monitor hub (dashboard log).
+    const diagnostics = new BroadcastDiagnosticSink(
+      new ConsoleDiagnosticSink(),
+      (level, scope, message) => monitor.pushDiagnostic(level, scope, message),
+    );
     let narrativeDirector: NarrativeDirectorPort | undefined;
     if (config.narrative.mode === "longform") {
       const plan = await loadStoryPlan(
@@ -185,20 +228,26 @@ export async function createRuntimeApplication(
         options.sessionDir ?? config.game.sessions_dir,
         sessionId,
       );
-      const consolidator = new NarrativeConsolidatorAdapter({
-        apiKey,
-        api: config.api,
-        config: config.narrative,
-        diagnostics,
-        metrics,
-      });
-      const planner = new PlotPlannerAdapter({
-        apiKey,
-        api: config.api,
-        config: config.narrative,
-        diagnostics,
-        metrics,
-      });
+      const consolidator = instrumentMemoryConsolidator(
+        new NarrativeConsolidatorAdapter({
+          apiKey,
+          api: config.api,
+          config: config.narrative,
+          diagnostics,
+          metrics,
+        }),
+        monitor,
+      );
+      const planner = instrumentPlotPlanner(
+        new PlotPlannerAdapter({
+          apiKey,
+          api: config.api,
+          config: config.narrative,
+          diagnostics,
+          metrics,
+        }),
+        monitor,
+      );
       const service = new NarrativeDirectorService({
         config: config.narrative,
         store: narrativeStore,
@@ -226,12 +275,26 @@ export async function createRuntimeApplication(
       initialStoryState = scenarioSeedToInitialState(seed);
     }
 
+    // 滚动前情梗概压缩器（2026-09-17 上下文审计）：滑出历史窗口的事件
+    // 压缩进 [Recap]；失败时 Game 内部回退确定性摘要。包装器把生命周期
+    // 报告给监控后台（context LLM 面板）。
+    const recapSummarizer = instrumentRecapSummarizer(
+      new RecapSummarizerAdapter({
+        apiKey,
+        api: config.api,
+        diagnostics,
+        metrics,
+      }),
+      monitor,
+    );
+
     return new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {
       store,
       clock: new SystemClock(),
       ids: new SessionIdGenerator(),
       sessionId,
       diagnostics,
+      recapSummarizer,
       ...(initialStoryState !== undefined ? { initialStoryState } : {}),
       ...(narrativeDirector ? { narrativeDirector } : {}),
     }, assetCatalog);
@@ -257,6 +320,7 @@ export async function createRuntimeApplication(
     config,
     metrics,
     assetCatalog,
+    monitor,
     taskStatusSubscribe: (listener) => {
       taskStatusListeners.add(listener);
       return () => taskStatusListeners.delete(listener);
@@ -287,6 +351,8 @@ export async function createRuntimeApplication(
       // session_started 在 run() 内才发射，晚于宿主的 ws rebase 推快照——
       // 投影必须在这里显式重置，浏览器重连/重挂才能拿到干净的新会话快照。
       projection.reset(freshSessionId);
+      // 监控 ring 同步换局：旧会话的 writer/context 任务不落入新会话文档。
+      monitor.clearWriterHistory();
       // 原地替换 game 字段并返回同一 app 对象：宿主持有的 app 引用保持有效，
       // 只需重新调用 app.game.run()。
       app.game = game;
@@ -294,4 +360,34 @@ export async function createRuntimeApplication(
     },
   };
   return app;
+}
+
+
+/**
+ * Wrap every observer hook so a broken monitor can never take the
+ * generation main path down (design: 监控观察者异常不得影响生成主路径).
+ */
+function safeDslStreamObserver(observer: DslStreamObserver): DslStreamObserver {
+  const safe = <A extends unknown[]>(name: string, call: (...args: A) => void) =>
+    (...args: A): void => {
+      try {
+        call(...args);
+      } catch (error) {
+        console.warn(`[monitor] observer ${name} failed`, error);
+      }
+    };
+  const wrapped: DslStreamObserver = {
+    onAttemptStart: safe("onAttemptStart", observer.onAttemptStart.bind(observer)),
+    onDelta: safe("onDelta", observer.onDelta.bind(observer)),
+    onLine: safe("onLine", observer.onLine.bind(observer)),
+    onGroup: safe("onGroup", observer.onGroup.bind(observer)),
+    onAttemptEnd: safe("onAttemptEnd", observer.onAttemptEnd.bind(observer)),
+  };
+  if (observer.onRepair !== undefined) {
+    wrapped.onRepair = safe("onRepair", observer.onRepair.bind(observer));
+  }
+  if (observer.onUsage !== undefined) {
+    wrapped.onUsage = safe("onUsage", observer.onUsage.bind(observer));
+  }
+  return wrapped;
 }

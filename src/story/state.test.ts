@@ -239,12 +239,12 @@ describe("summarizeState", () => {
     expect(summary).toContain("has_key=true");
   });
 
-  it("should include the recent summary", () => {
+  it("should include the rolling recap", () => {
     const state = createInitialState({
       recent_summary: "The player narrowly escaped the dragon.",
     });
     const summary = summarizeState(state);
-    expect(summary).toContain("[Recent]");
+    expect(summary).toContain("[Recap]");
     expect(summary).toContain("The player narrowly escaped the dragon.");
   });
 

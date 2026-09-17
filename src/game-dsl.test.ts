@@ -914,6 +914,90 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
   });
 });
 
+describe("DSL mode — advance 幂等（卡顿期间连点不堆积成跳行）", () => {
+  it("drops clicks that arrive while no line is awaiting its advance (stalled continuation)", async () => {
+    const config = makeDslConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    game.subscribe((o) => outputs.push(o));
+
+    // 开场段：2 句旁白后 @end buffer。
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("第一句。"));
+          onGroup(dslNarration("第二句。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+        }),
+    );
+    // 续写段：首行被闸门挂起（模拟中转站卡顿），释放后一口气给 3 句 +
+    // ending。若无幂等门控，卡顿期间的连点会在恢复后被逐条消费，3 句
+    // 在一次点击内全部闪过。
+    let releaseStall!: () => void;
+    const stalled = new Promise<void>((resolve) => {
+      releaseStall = resolve;
+    });
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) =>
+        dslHandle("continuation", async (_signal, onGroup) => {
+          await stalled;
+          onGroup(dslNarration("第三句。"));
+          onGroup(dslNarration("第四句。"));
+          onGroup(dslNarration("第五句。"));
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        }),
+    );
+
+    const runPromise = game.run();
+    // 手动推进：onPlaybackReady 不自动 advance。
+    const controller = new MemoryController({ onPlaybackReady: () => {} });
+    controller.attach(game);
+
+    await controller.advanceUntilPlayed(1);
+    controller.advance(); // 读完第一句 → 合法推进（有等待者在场，必须被接受）
+    await controller.advanceUntilPlayed(2);
+    controller.advance(); // 读完第二句 → run loop 进入续写段并被闸门挂起
+
+    // 同一宏任务内突发连点 3 下：本窗口已接受一击，其余丢弃。
+    for (let i = 0; i < 3; i += 1) controller.advance();
+    // 卡顿期间的迟到点击（此时合法推进早已被消费、无人在等）：同样丢弃。
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (let i = 0; i < 3; i += 1) controller.advance();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseStall();
+
+    // 恢复后只有续写首句呈现；若堆积命令被消费，此处会瞬间连跳到 4-5 句。
+    await controller.advanceUntilPlayed(3);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(playbackOf(outputs).map((o) => o.event.text)).toEqual([
+      "第一句。",
+      "第二句。",
+      "第三句。",
+    ]);
+
+    // 后续每句仍需一次新点击（一一点击逐句呈现，ending 正常收束）。
+    controller.advance();
+    await controller.advanceUntilPlayed(4);
+    controller.advance();
+    await controller.advanceUntilPlayed(5);
+    controller.advance(); // 放行 ending 事件
+    await controller.advanceUntilInteractionOrEnd();
+    await runPromise;
+
+    expect(controller.ended()).toBe(true);
+    expect(playbackOf(outputs).map((o) => o.event.text)).toEqual([
+      "第一句。",
+      "第二句。",
+      "第三句。",
+      "第四句。",
+      "第五句。",
+    ]);
+  });
+});
+
 describe("DSL mode — event mode max interactions (forced ending)", () => {
   function eventConfig(max: number) {
     return makeTestConfig({

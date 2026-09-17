@@ -14,6 +14,7 @@ import type { TaskStatusEvent } from "./audio/tts-task-service.js";
 import type { AppConfig } from "../config.js";
 import type { Metrics } from "../runtime/metrics.js";
 import type { AssetCatalog } from "../core/assets/types.js";
+import type { MonitorHub } from "./monitor/monitor-hub.js";
 
 export interface RuntimeApplication {
   game: Game;
@@ -26,6 +27,8 @@ export interface RuntimeApplication {
   metrics: Metrics;
   /** Loaded asset catalog (docs §57–§60); hosts expose it via manifest + /game-assets. */
   assetCatalog: AssetCatalog;
+  /** Monitor dashboard hub (docs/monitor-dashboard.md); hosts bridge it to /ws/monitor. */
+  monitor: MonitorHub;
   shutdown(): Promise<void>;
   /**
    * 结束当前会话并重建整个运行时（新 session id、新开场）。

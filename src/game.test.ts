@@ -279,6 +279,69 @@ describe("Game construction", () => {
     const game = new Game(config, generator, status, media, metrics, makeTestPorts());
     expect(game.getMetrics().prefetch.branches_requested).toBe(7);
   });
+
+  it("exposes the sourced DSL row while a playable line waits for the player", async () => {
+    const source = { attemptId: "opening-ab12#0", lineIndex: 3 };
+    const group: EventGroupDraft = {
+      prelude: [],
+      main: { type: "narration", text: "纸片背后露出半个字。" },
+      source,
+    };
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      createGenerationHandle("opening", async (_signal, onGroup) => {
+        onGroup(group);
+        return {
+          events: [],
+          state_patch: {},
+          groups: [group],
+          segmentEnd: { kind: "complete", nonce: "ab12", reason: "ending" },
+        };
+      }),
+    );
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    let observed = null;
+    new MemoryController({
+      onPlaybackReady: (_event, controller) => {
+        observed = game.getMonitorState().currentDsl;
+        controller.advance();
+      },
+    }).attach(game);
+
+    await expect(game.run()).resolves.toBeUndefined();
+    expect(observed).toEqual(source);
+  });
+
+  it("exposes the form-start DSL row while an interaction waits", async () => {
+    const source = { attemptId: "opening-cd34#0", lineIndex: 6 };
+    const group: EventGroupDraft = {
+      ...groupFromEvent({
+        type: "interaction",
+        interaction_id: "ignored-draft-id",
+        prompt: "你要怎么接话？",
+        mode: "choice",
+        options: [{ id: "a", text: "先看看" }, { id: "b", text: "问来处" }],
+      }),
+      source,
+    };
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      createGenerationHandle("opening", async (_signal, onGroup) => {
+        onGroup(group);
+        return {
+          events: [],
+          state_patch: {},
+          groups: [group],
+          segmentEnd: { kind: "complete", nonce: "cd34", reason: "interaction" },
+        };
+      }),
+    );
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts());
+    new MemoryController({ onInteractionOpened: () => undefined }).attach(game);
+
+    const run = game.run();
+    await vi.waitFor(() => expect(game.getMonitorState().currentDsl).toEqual(source));
+    game.dispatch({ type: "shutdown" });
+    await expect(run).rejects.toThrow("运行时已收到关闭指令");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1937,7 +2000,8 @@ describe("Input response streaming", () => {
         controller.confirm(output.previewId);
         // The envelope arrives AFTER the confirm, but its state_patch is
         // legacy protocol (removed 2026-08-09, docs/changelog.md §115):
-        // never applied. Only committed events project StoryState.
+        // never applied. recent_summary is owned by the recap pipeline
+        // (src/story/recap.ts) — the unconfirmed patch never lands there.
         resolveResponse(
           envelope([narrationEvent("回应。")], { recent_summary: "玩家说了你好" }),
         );
@@ -1946,7 +2010,7 @@ describe("Input response streaming", () => {
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
-    expect((game as any).storyState.recent_summary).toBe("结尾。");
+    expect((game as any).storyState.recent_summary).not.toBe("玩家说了你好");
   });
 
   it("never applies envelope patches; state reflects committed events only", async () => {
@@ -1970,18 +2034,18 @@ describe("Input response streaming", () => {
       onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你好"),
       onInputPreviewOpened: async (output) => {
         // Let the request finish while the preview is still open: its
-        // envelope patch is never applied — only committed events project.
+        // envelope patch is never applied — recent_summary stays with the
+        // recap pipeline's value until it folds a window slide.
         await new Promise((resolve) => setTimeout(resolve, 5));
-        expect((game as any).storyState.recent_summary).toBe("开场。");
+        expect((game as any).storyState.recent_summary).not.toBe("未确认的摘要");
         controller.confirm(output.previewId);
       },
     });
     controller.attach(game);
     await expect(game.run()).resolves.toBeUndefined();
 
-    // The unconfirmed envelope's patch is discarded forever; the summary
-    // comes from the last committed line.
-    expect((game as any).storyState.recent_summary).toBe("结尾。");
+    // The unconfirmed envelope's patch is discarded forever.
+    expect((game as any).storyState.recent_summary).not.toBe("未确认的摘要");
   });
 
   it("keeps the arrived prefix when a confirmed stream fails", async () => {

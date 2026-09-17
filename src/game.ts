@@ -34,6 +34,7 @@ import { PlaybackBuffer } from "./runtime/playback-buffer.js";
 import { compileEventGroup } from "./core/protocol/gal-dsl/compiler.js";
 import type {
   AssetDiagnostic,
+  DslSourceLocation,
   DslInteractionDraft,
   EventGroupDraft,
   SegmentEndStatus,
@@ -76,11 +77,15 @@ import { isPlayableEvent } from "./schema.js";
 import { InteractionPolicy } from "./story/interaction-policy.js";
 import type { InteractionMode, InputSpec } from "./story/types.js";
 import { reconcileStoryState } from "./story/reconcile.js";
+import { appendRecap, deterministicRecapDigest } from "./story/recap.js";
 import { createInitialState } from "./story/state.js";
 import type {
   GeneratedEvent,
   StoryState,
 } from "./story/types.js";
+import type { RecapSummarizerPort } from "./core/ports/recap-summarizer-port.js";
+import type { GameMonitorState } from "./core/runtime/monitor-state.js";
+import { toMonitorTimelineEntry } from "./core/runtime/monitor-state.js";
 import type { RuntimeStatus } from "./status.js";
 
 interface ActiveSegment {
@@ -182,6 +187,12 @@ export interface GamePorts {
    * a blank initial state.
    */
   initialStoryState?: StoryState;
+  /**
+   * Rolling-recap compressor for history events that slid out of the
+   * window (2026-09-17 context audit). Omitted → deterministic digest
+   * only (serializeStoryContext-based, no LLM).
+   */
+  recapSummarizer?: RecapSummarizerPort;
 }
 
 /** Raised when the driver sends `shutdown`. */
@@ -288,6 +299,14 @@ export class Game {
   private activeSegmentTurn = 1;
   /** 已提交的 interaction 数量（event mode 收束分级计数）。 */
   private interactionCount = 0;
+  /**
+   * 滚动前情梗概（recap）覆盖水位：seq ≤ 该值的事件已折进
+   * storyState.recent_summary（提示词中的 [Recap]）。
+   */
+  private recapThroughSeq = 0;
+  /** 在飞的 recap 压缩（单飞）；flush 等待它落定后再写快照。 */
+  private recapInFlight: Promise<void> | null = null;
+  private readonly recapSummarizer: RecapSummarizerPort | undefined;
   /** 分级收束级别：0 无 / 1 wrapup（L1 软提示）/ 2 closing（L2 强提示）。 */
   private endingLevel: EndingLevel = 0;
   /** L3 保险丝：已达最大互动次数 → 后续生成强制收束结局。 */
@@ -298,6 +317,18 @@ export class Game {
   private forcedEndingRetries = 0;
   private readonly commands = new AsyncEventQueue<RuntimeCommand>();
   private readonly deferredCommands: RuntimeCommand[] = [];
+  /**
+   * advance 幂等门控：当前是否有"一行已呈现、正等待推进"的需求。
+   * 呈现 playback_ready 前计 +1，推进命令被消费或等待因关闭/重启退出时
+   * 计 -1。dispatch 据此丢弃无人在等时到达的 advance——生成卡顿期间
+   * 的连点不允许入队堆积，否则恢复后会被逐条消费、连跳多行未读内容。
+   */
+  private advanceDemand = 0;
+  /**
+   * 当前呈现窗口内是否已接受过一次 advance。一个窗口只接受一击：
+   * 已接受未消费期间的重复点击（同宏任务突发）也一并丢弃。
+   */
+  private advanceAccepted = false;
 
   // ------------------------------------------------------------------
   // DSL visual state (docs §52–§56)
@@ -318,6 +349,10 @@ export class Game {
   private renderedVisualState: VisualState = createInitialVisualState();
   /** Stage cues of interaction groups, applied when the form opens. */
   private readonly pendingInteractionStage = new Map<string, StageCue[]>();
+  /** Live-only writer provenance; intentionally never enters snapshots. */
+  private readonly dslSourceByLineId = new Map<string, DslSourceLocation>();
+  private readonly dslSourceByInteractionId = new Map<string, DslSourceLocation>();
+  private currentDsl: DslSourceLocation | null = null;
   /** Per-branch tail state (docs §56): keyed by option id. */
   private readonly branchTailStates = new Map<string, VisualState>();
   /** Input-bridge prefetch controllers, keyed by interaction id. */
@@ -355,6 +390,7 @@ export class Game {
     this.ids = ports.ids;
     this.diagnostics = ports.diagnostics ?? silentDiagnosticSink;
     this.narrativeDirector = ports.narrativeDirector;
+    this.recapSummarizer = ports.recapSummarizer;
     this.sessionId = ports.sessionId ?? this.ids.nextSessionId();
     this.interactionPolicy = new InteractionPolicy(config.interaction);
     this.storyState = ports.initialStoryState ?? createInitialState();
@@ -374,6 +410,15 @@ export class Game {
     // covers commands dispatched before this scope check observed the
     // resolution (e.g. two submissions in the same tick).
     if (this.isStaleInteractionCommand(command)) return;
+    // advance 的语义是"读完了当前呈现的行"：无人在等时（生成卡顿、表单
+    // 打开、媒体等待期间）到达的点击不携带这个语义，入队只会在下一段
+    // 呈现后被逐条消费、连跳多行未读内容——直接丢弃，保持点击幂等。
+    // 一个呈现窗口最多接受一击（advanceAccepted）：已接受未消费期间的
+    // 重复点击（同宏任务突发）同样丢弃。
+    if (command.type === "advance") {
+      if (this.advanceDemand === 0 || this.advanceAccepted) return;
+      this.advanceAccepted = true;
+    }
     this.commands.push(command);
   }
 
@@ -401,6 +446,46 @@ export class Game {
   /** Return an immutable snapshot of all collected runtime metrics. */
   getMetrics(): MetricsSnapshot {
     return this.metrics.snapshot();
+  }
+
+  /**
+   * 监控后台只读快照（docs/monitor-dashboard.md）：播放缓冲、生成调度、
+   * 分级收束读数、剧情状态与已提交事件时间线。纯投影——不推动任何运行
+   * 时行为；MonitorHub 轮询本方法并在内容变化时推送浏览器。
+   */
+  getMonitorState(): GameMonitorState {
+    const owner = this.generationScheduler.getOwner();
+    const lastEvent = this.events.length > 0 ? this.events[this.events.length - 1] : undefined;
+    return {
+      sessionId: this.sessionId,
+      currentDsl: this.currentDsl,
+      buffer: {
+        pending: this.playbackBuffer.pendingCount(),
+        total: this.playbackBuffer.totalCount(),
+        textLinesAhead: this.playbackBuffer.countTextLinesAhead(),
+      },
+      scheduler: {
+        active: this.generationScheduler.getActivePathStatus() !== "idle",
+        status: this.generationScheduler.getActivePathStatus(),
+        owner:
+          owner === null || owner === "active_path"
+            ? "active_path"
+            : `branch:${owner.branchId}`,
+      },
+      endingPressure: {
+        interactionCount: this.interactionCount,
+        level: this.endingLevel,
+        forceEnding: this.forceEnding,
+        textEventsSinceInteraction: this.textEventsSinceInteraction,
+        wrapupAt: this.config.narrative.event?.wrapup_interactions ?? 0,
+        closingPushAt: this.config.narrative.event?.closing_push_interactions ?? 0,
+        maxAt: this.config.narrative.event?.max_interactions ?? 0,
+      },
+      storyState: this.storyState,
+      eventCount: this.events.length,
+      lastSeq: lastEvent !== undefined ? lastEvent.seq : 0,
+      timeline: this.events.map(toMonitorTimelineEntry),
+    };
   }
 
   async run(): Promise<void> {
@@ -1112,6 +1197,11 @@ export class Game {
     this.pendingReconcile = [];
     this.resumeInteraction = undefined;
     this.restoredEnding = undefined;
+    // DSL 来源映射只服务当前实时会话（不写入存档）：恢复的旧事件没有
+    // 来源，清空防止旧会话的 attemptId 复活成错误的 currentDsl 高亮。
+    this.dslSourceByLineId.clear();
+    this.dslSourceByInteractionId.clear();
+    this.currentDsl = null;
     this.events.push(...restored.events);
     const lastSeq = restored.events.reduce((max, event) => Math.max(max, event.seq), 0);
     this.seq = lastSeq + 1;
@@ -1133,6 +1223,15 @@ export class Game {
 
     if (restored.snapshot !== undefined) {
       this.storyState = restored.snapshot.state;
+      // recap 水位：优先快照成对恢复（与 recent_summary 同源）；无标记的
+      // 旧快照按"当前窗口起点已覆盖"处理——不回补旧事件（会与既有文本
+      // 重复），从当前窗口边界起继续推进。注意用无副作用的 windowStartFor：
+      // 此时水位尚未恢复，若走 currentWindowStart 会先调度一次错误折叠。
+      const fallbackStart = this.windowStartFor(restored.events.length);
+      this.recapThroughSeq = Math.min(
+        restored.snapshot.recapThroughSeq ?? fallbackStart,
+        lastSeq,
+      );
       this.tailVisualState = restored.snapshot.visualState ?? this.replayVisualState(restored.events);
       this.renderedVisualState = this.tailVisualState;
       this.nextResumeTurn = restored.snapshot.nextTurn ?? this.nextTurnAfter(restored.events);
@@ -1143,12 +1242,16 @@ export class Game {
       const snapshotSeq = restored.snapshot.lastEventSeq ?? 0;
       if (snapshotSeq < lastSeq) {
         const suffix = restored.events.filter((event) => event.seq > snapshotSeq);
-        this.storyState = reconcileStoryState(this.storyState, suffix);
+        this.storyState = reconcileStoryState(this.storyState, suffix, {
+          knownCharacterIds: this.knownCharacterIds(),
+        });
       }
     } else {
       // 无快照：以构造时的初始状态（可能由组合根预置，如叙事种子）为基底，
       // 重放已提交事件的状态补丁。
-      this.storyState = reconcileStoryState(this.storyState, restored.events);
+      this.storyState = reconcileStoryState(this.storyState, restored.events, {
+        knownCharacterIds: this.knownCharacterIds(),
+      });
       this.tailVisualState = this.replayVisualState(restored.events);
       this.renderedVisualState = this.tailVisualState;
       this.nextResumeTurn = this.nextTurnAfter(restored.events);
@@ -1202,11 +1305,78 @@ export class Game {
    */
   private generationHistory(): StoryContextEvent[] {
     const cap = this.config.game.history_events;
-    const chunk = 20;
     const total = this.events.length;
     if (total <= cap) return this.events.slice();
-    const start = Math.floor((total - cap) / chunk) * chunk;
-    return this.events.slice(start);
+    return this.events.slice(this.currentWindowStart(total));
+  }
+
+  /** 滑窗起点（事件条数索引）：超限后按 chunk（20 条）对齐。纯计算，无副作用。 */
+  private windowStartFor(totalEvents: number): number {
+    const cap = this.config.game.history_events;
+    const chunk = 20;
+    if (totalEvents <= cap) return 0;
+    return Math.floor((totalEvents - cap) / chunk) * chunk;
+  }
+
+  private currentWindowStart(totalEvents: number): number {
+    const start = this.windowStartFor(totalEvents);
+    this.maybeUpdateRecap(start);
+    return start;
+  }
+
+  // ------------------------------------------------------------------
+  // 滚动前情梗概（recap）
+  // ------------------------------------------------------------------
+
+  /**
+   * 窗口向前跳后压缩被丢弃的事件（seq ∈ (recapThroughSeq, windowStart]）。
+   *
+   * 单飞后台任务：压缩期间新到的窗口跳跃由下一次调用追平；LLM 端口
+   * 失败/缺席时回退确定性摘要；digest 为空（无文本事件）只推进水位。
+   * recent_summary 与水位成对原子交换，且只在快照中成对持久化——
+   * 崩溃恢复得到的一定是同一对。
+   */
+  private maybeUpdateRecap(windowStart: number): void {
+    if (windowStart <= this.recapThroughSeq) return;
+    if (this.recapInFlight !== null) return;
+
+    const targetSeq = windowStart; // seqs 1..windowStart 已滑出窗口
+    const batch = this.events.filter(
+      (event) => event.seq > this.recapThroughSeq && event.seq <= targetSeq,
+    );
+    const throughBefore = this.recapThroughSeq;
+
+    this.recapInFlight = (async () => {
+      try {
+        let digest = "";
+        if (this.recapSummarizer !== undefined && batch.length > 0) {
+          try {
+            digest = (await this.recapSummarizer.summarize(batch)) ?? "";
+          } catch (error) {
+            this.diagnostics.warn(
+              "Game",
+              `recap 压缩异常，回退确定性摘要：${String(error)}`,
+            );
+          }
+        }
+        if (digest.trim() === "") {
+          digest = deterministicRecapDigest(batch);
+        }
+        if (digest.trim() !== "") {
+          this.storyState = {
+            ...this.storyState,
+            recent_summary: appendRecap(this.storyState.recent_summary, digest.trim()),
+          };
+        }
+        this.recapThroughSeq = Math.max(throughBefore, targetSeq);
+        this.diagnostics.info(
+          "Game",
+          `recap 已覆盖事件 1-${targetSeq}（本批 ${batch.length} 条，${digest.trim() !== "" ? "已压缩" : "无文本，仅推进水位"}）`,
+        );
+      } finally {
+        this.recapInFlight = null;
+      }
+    })();
   }
 
   // ------------------------------------------------------------------
@@ -1504,6 +1674,7 @@ export class Game {
         line_id: this.nextLineId(),
         ...(compiled.group.prelude.length > 0 ? { stage: compiled.group.prelude } : {}),
       };
+      if (draft.source !== undefined) this.dslSourceByLineId.set(event.line_id, draft.source);
       return { playable: event, interaction: null, cues: compiled.group.prelude, tailState: compiled.tailState };
     }
     if (main.type === "narration") {
@@ -1513,10 +1684,14 @@ export class Game {
         line_id: this.nextLineId(),
         ...(compiled.group.prelude.length > 0 ? { stage: compiled.group.prelude } : {}),
       };
+      if (draft.source !== undefined) this.dslSourceByLineId.set(event.line_id, draft.source);
       return { playable: event, interaction: null, cues: compiled.group.prelude, tailState: compiled.tailState };
     }
     if (main.type === "interaction") {
       const interaction = this.buildRuntimeInteraction(main.interaction, turn);
+      if (draft.source !== undefined) {
+        this.dslSourceByInteractionId.set(interaction.interaction_id, draft.source);
+      }
       return { playable: null, interaction, cues: compiled.group.prelude, tailState: compiled.tailState };
     }
     // beat — pure stage node, no main event.
@@ -1870,6 +2045,7 @@ export class Game {
     // `interaction_opened` until it resolves.
     this.activeInteractionId = scopeId;
     const presentation = this.openInteractionStage(scopeId);
+    this.currentDsl = this.dslSourceByInteractionId.get(scopeId) ?? null;
     this.emit({
       type: "interaction_opened",
       interactionId: scopeId,
@@ -2167,6 +2343,11 @@ export class Game {
     // (docs §54–§55, §63).
     const stage = (event as { stage?: StageCue[] }).stage;
     const presentation = stage ? this.applyPlayableStage(stage) : undefined;
+    this.currentDsl = this.dslSourceByLineId.get(event.line_id) ?? null;
+    // 幂等门控在 emit 前武装（waitForAdvance 的 finally 释放）：此后到达的
+    // advance 才是"读完本行"的合法推进。同步监听者（进程内自动推进）在
+    // emit 回调里 dispatch 也必须被接受，故不能等 waitForAdvance 挂起后再武装。
+    this.advanceDemand += 1;
     this.emit({
       type: "playback_ready",
       event,
@@ -2176,15 +2357,20 @@ export class Game {
   }
 
   private async waitForAdvance(segment?: ActiveSegment): Promise<void> {
-    const command = await this.waitForCommand(
-      (c) => c.type === "advance",
-    );
-    if (command.type !== "advance") throw new RuntimeShutdownError();
-    // §75：玩家推进后重新评估低水位（任务已结束而玩家仍有余量时，
-    // 在"剩 refill 句"处提前启动续写）。当前段已失败时跳过：修复路径即将
-    // 接管单槽调度器，杂散续写会让 startActivePath 抛错杀死 run()。
-    if (segment?.failed) return;
-    this.reconcileTextBuffer(this.activeSegmentTurn + 1);
+    try {
+      const command = await this.waitForCommand(
+        (c) => c.type === "advance",
+      );
+      if (command.type !== "advance") throw new RuntimeShutdownError();
+      // §75：玩家推进后重新评估低水位（任务已结束而玩家仍有余量时，
+      // 在"剩 refill 句"处提前启动续写）。当前段已失败时跳过：修复路径即将
+      // 接管单槽调度器，杂散续写会让 startActivePath 抛错杀死 run()。
+      if (segment?.failed) return;
+      this.reconcileTextBuffer(this.activeSegmentTurn + 1);
+    } finally {
+      this.advanceDemand -= 1;
+      this.advanceAccepted = false;
+    }
   }
 
   /**
@@ -2460,6 +2646,7 @@ export class Game {
         // scope; the id survives preview cancels.
         this.activeInteractionId = interactionId;
         const presentation = this.openInteractionStage(interactionId);
+        this.currentDsl = this.dslSourceByInteractionId.get(interactionId) ?? null;
         this.emit({
           type: "interaction_opened",
           interactionId,
@@ -2811,6 +2998,7 @@ export class Game {
       this.status.setPhase("等待选择", "可选择预设选项，或自由输入");
       this.activeInteractionId = interactionId;
       const presentation = this.openInteractionStage(interactionId);
+      this.currentDsl = this.dslSourceByInteractionId.get(interactionId) ?? null;
       this.emit({
         type: "interaction_opened",
         interactionId,
@@ -3029,8 +3217,15 @@ export class Game {
       if (this.pendingReconcile.length === 0) return;
       const batch = this.pendingReconcile;
       this.pendingReconcile = [];
-      this.storyState = reconcileStoryState(this.storyState, batch);
+      this.storyState = reconcileStoryState(this.storyState, batch, {
+        knownCharacterIds: this.knownCharacterIds(),
+      });
     });
+  }
+
+  /** 已注册角色 id 集合——reconcile 用它挡住幻影发言者入库（上下文污染）。 */
+  private knownCharacterIds(): ReadonlySet<string> | undefined {
+    return this.catalog !== undefined ? new Set(Object.keys(this.catalog.characters)) : undefined;
   }
 
   private makeBrief(turn: number): NarrativeBrief | undefined {
@@ -3055,6 +3250,7 @@ export class Game {
       // 于已提交事件（现场快照曾出现 nextTurn=4 而事件已到 turn 8）。
       nextTurn: this.nextTurnAfter(this.events),
       lastEventSeq: this.seq - 1,
+      recapThroughSeq: this.recapThroughSeq,
       ...(this.resumeInteraction !== undefined
         ? { resumeInteraction: this.resumeInteraction }
         : {}),
@@ -3067,6 +3263,10 @@ export class Game {
   async flush(): Promise<void> {
     if (this.narrativeDirector !== undefined) {
       await this.narrativeDirector.flush();
+    }
+    // 在飞的 recap 压缩落定后再写快照：recent_summary 与水位成对入盘。
+    if (this.recapInFlight !== null) {
+      await this.recapInFlight;
     }
     await this.saveCurrentStateSnapshot();
   }
