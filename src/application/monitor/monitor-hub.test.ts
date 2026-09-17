@@ -133,6 +133,37 @@ describe("MonitorHub", () => {
     ]);
   });
 
+  it("carries thinking usage fields through the attempt record", () => {
+    const hub = makeHub(makeGameView());
+    const observer = hub.writerObserver as any;
+
+    observer.onAttemptStart({
+      attemptId: "continuation-think#0",
+      taskId: "continuation-think",
+      taskType: "continuation",
+      index: 0,
+    });
+    observer.onDelta("continuation-think#0", "苏遥：你来了。\n");
+    observer.onUsage("continuation-think#0", {
+      input: 2_481,
+      output: 316,
+      cachedInput: 2_048,
+      source: "api",
+      latencyMs: 4_320,
+      reasoningTokens: 189,
+      thinkingMs: 2_100,
+      reasoningChars: 742,
+    });
+    observer.onAttemptEnd("continuation-think#0", { state: "done", segmentEnd: "buffer" });
+
+    const attempt = hub.snapshot().writer.tasks[0]!.attempts[0]!;
+    expect(attempt.usage).toMatchObject({
+      reasoningTokens: 189,
+      thinkingMs: 2_100,
+      reasoningChars: 742,
+    });
+  });
+
   it("files repair retries as new attempts on the same task", () => {
     const hub = makeHub(makeGameView());
     const observer = hub.writerObserver;

@@ -18,6 +18,11 @@ generation:
   temperature: 0.7
   # 1400 常在长段结尾截断（2048 给模型足够预算
   max_tokens: 2048
+  # 写手思考链（DeepSeek 顶层 thinking + reasoning_effort）。
+  # 开启时：temperature 被服务端忽略；reasoning token 计入 max_completion_tokens。
+  # 2026-09-18 用户指示：不开思考（实测出错率高达 35%）。
+  thinking:
+    type: disabled
   repair_attempts: 4
   # 同一段连续修复链上限：链耗尽后续写转入末段收束提示（L2），
   # 仍连续失败再启用强制收束保险丝（L3）。0 = 不设上限（旧行为）。

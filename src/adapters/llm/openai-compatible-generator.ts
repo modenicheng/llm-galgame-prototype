@@ -75,6 +75,54 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
+/**
+ * DeepSeek thinking fragment for the chat-completions body: a TOP-LEVEL
+ * `thinking` toggle plus an optional `reasoning_effort` ("low" | "high" |
+ * "max"; server default is high). Returned as an opaque record because the
+ * OpenAI SDK schema does not know provider extensions. Caveats when enabled:
+ * the server ignores `temperature`, and reasoning tokens bill into the
+ * completion-token budget.
+ */
+function thinkingRequestBody(
+  thinking: AppConfig["generation"]["thinking"] | undefined,
+): Record<string, unknown> {
+  // `thinking` is schema-guaranteed in production; the ?. tolerates
+  // hand-built test fixtures that omit the section.
+  const type = thinking?.type ?? "disabled";
+  const body: Record<string, unknown> = { thinking: { type } };
+  if (type === "enabled" && thinking?.effort) {
+    body.reasoning_effort = thinking.effort;
+  }
+  return body;
+}
+
+/**
+ * Metrics tap around the monitor observer: counts DSL repairs and attempt
+ * outcomes in one place instead of at every call site. Recording happens
+ * before the (safe-wrapped) observer hooks, so monitor-side exceptions can
+ * never skip a counter.
+ */
+function withMetricsTap(observer: DslStreamObserver, metrics?: Metrics): DslStreamObserver {
+  if (!metrics) return observer;
+  return {
+    onAttemptStart: (info) => observer.onAttemptStart(info),
+    onPrompt: (report) => observer.onPrompt?.(report),
+    onDelta: (attemptId, text) => observer.onDelta(attemptId, text),
+    onLine: (attemptId, lineIndex, parse) => observer.onLine(attemptId, lineIndex, parse),
+    onGroup: (attemptId, groupIndex, kind, summary) =>
+      observer.onGroup(attemptId, groupIndex, kind, summary),
+    onRepair: (attemptId, repair) => {
+      metrics.recordDslRepair(repair.kind);
+      observer.onRepair?.(attemptId, repair);
+    },
+    onUsage: (attemptId, usage) => observer.onUsage?.(attemptId, usage),
+    onAttemptEnd: (attemptId, outcome) => {
+      metrics.recordWriterOutcome(outcome.state);
+      observer.onAttemptEnd(attemptId, outcome);
+    },
+  };
+}
+
 /** One-line preview of a committed group for the monitor stream (capped). */
 function monitorGroupSummary(group: EventGroupDraft): string {
   const main = group.main;
@@ -328,7 +376,7 @@ export class StoryGenerator {
     );
     this.systemPrompt = joinPromptSegments(this.systemSegments);
     this.modelCatalog = catalog ? toModelCatalog(catalog) : undefined;
-    this.observer = observer;
+    this.observer = observer ? withMetricsTap(observer, this.metrics) : observer;
     if (catalog !== undefined) {
       const speakers = new Set<string>();
       for (const [characterId, binding] of Object.entries(catalog.characters)) {
@@ -709,16 +757,19 @@ export class StoryGenerator {
     // segments so the audit view and the wire bytes cannot diverge.
     const userPrompt = joinPromptSegments(userSegments);
     const observer = this.observer;
+    const metrics = this.metrics;
     const maxTokens = this.config.generation.max_tokens;
     const callStart = Date.now();
     let firstLineMs = 0;
+    let firstReasoningMs = 0;
+    let reasoningChars = 0;
     let lineIndex = 0;
     let openFormStartLine: number | null = null;
     let streamChars = 0;
     const allGroups: EventGroupDraft[] = [];
     let streamAborted = false;
     let failureReason = "";
-    let usage: { input: number; output: number; cachedInput?: number } = {
+    let usage: { input: number; output: number; cachedInput?: number; reasoningTokens?: number } = {
       input: 0,
       output: 0,
     };
@@ -737,10 +788,15 @@ export class StoryGenerator {
     const reportedUsage = (): LLMUsageReading | null => {
       if (apiUsage === null) return foldedUsage;
       if (foldedUsage === null) return apiUsage;
+      const reasoning =
+        foldedUsage.reasoningTokens !== undefined || apiUsage.reasoningTokens !== undefined
+          ? (foldedUsage.reasoningTokens ?? 0) + (apiUsage.reasoningTokens ?? 0)
+          : undefined;
       return {
         input: foldedUsage.input + apiUsage.input,
         output: foldedUsage.output + apiUsage.output,
         cachedInput: (foldedUsage.cachedInput ?? 0) + (apiUsage.cachedInput ?? 0),
+        ...(reasoning !== undefined ? { reasoningTokens: reasoning } : {}),
       };
     };
 
@@ -775,8 +831,8 @@ export class StoryGenerator {
             ...(this.config.api.token_limit_field === "max_tokens"
               ? { max_tokens: maxTokens }
               : { max_completion_tokens: maxTokens }),
-            // DeepSeek reasoning models: thinking toggle as a TOP-LEVEL field.
-            ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
+            // DeepSeek thinking toggle (+ optional effort) as TOP-LEVEL fields.
+            ...thinkingRequestBody(this.config.generation.thinking),
             messages,
             stream: true,
             stream_options: { include_usage: true },
@@ -798,7 +854,9 @@ export class StoryGenerator {
       // pending cues / open form) carries over.
       const makeLineStream = (
         sse: AsyncIterable<{
-          choices?: Array<{ delta?: { content?: string | null } }>;
+          choices?: Array<{
+            delta?: { content?: string | null; reasoning_content?: string | null };
+          }>;
           usage?: unknown;
         }>,
         lineDecoder: StreamLineDecoder,
@@ -809,9 +867,20 @@ export class StoryGenerator {
             // capture it before the content check skips empty chunks.
             const chunkUsage = parseLLMUsage(chunk.usage);
             if (chunkUsage) apiUsage = chunkUsage;
+            // Thinking deltas ride a sibling field (DeepSeek reasoning_content);
+            // they must never reach the line decoder (DSL grammar) — counted
+            // here for the usage report only.
+            const reasoning = chunk.choices?.[0]?.delta?.reasoning_content;
+            if (reasoning) {
+              if (firstReasoningMs === 0) firstReasoningMs = Date.now();
+              reasoningChars += reasoning.length;
+            }
             const content = chunk.choices?.[0]?.delta?.content;
             if (!content) continue;
-            if (firstLineMs === 0) firstLineMs = Date.now();
+            if (firstLineMs === 0) {
+              firstLineMs = Date.now();
+              metrics?.recordFirstToken(firstLineMs - callStart);
+            }
             streamChars += content.length;
             observer?.onDelta(attemptId, content);
             yield* lineDecoder.push(content);
@@ -1331,11 +1400,20 @@ export class StoryGenerator {
 
       const latencyMs = Date.now() - callStart;
       const reported = reportedUsage();
+      // Thinking observability: duration spans the first reasoning delta to
+      // the first content delta; tokens prefer the api-reported breakdown
+      // and fall back to the legacy ~4 chars/token estimate.
+      const thinkingMs =
+        firstReasoningMs > 0 && firstLineMs > 0 ? firstLineMs - firstReasoningMs : undefined;
+      if (thinkingMs !== undefined) metrics?.recordThinkingMs(thinkingMs);
+      const reasoningTokens =
+        reported?.reasoningTokens ?? (reasoningChars > 0 ? Math.ceil(reasoningChars / 4) : undefined);
       if (reported) {
         usage = {
           input: reported.input,
           output: reported.output,
           cachedInput: reported.cachedInput,
+          ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
         };
       } else {
         // Provider didn't report usage: keep the legacy char-based estimate.
@@ -1344,6 +1422,7 @@ export class StoryGenerator {
         usage = {
           input: Math.ceil(userPrompt.length / 4),
           output: Math.ceil(streamChars / 4),
+          ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
         };
       }
       observer?.onUsage?.(attemptId, {
@@ -1352,12 +1431,15 @@ export class StoryGenerator {
         cachedInput: usage.cachedInput ?? 0,
         source: reported ? "api" : "estimated",
         latencyMs,
+        ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+        ...(thinkingMs !== undefined ? { thinkingMs } : {}),
+        ...(reasoningChars > 0 ? { reasoningChars } : {}),
       });
       // err= mirrors the legacy cross-attempt semantics: the failure of the
       // PREVIOUS attempt when this one succeeds — that is how operators
       // identify a successful repair retry in the logs.
       console.log(
-        `[LLM] ${type}(${taskType}) ${latencyMs}ms lines=${lineIndex} in=${usage.input} out=${usage.output} cached=${usage.cachedInput ?? 0} src=${reported ? "api" : "est"} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${failureReason || priorFailure || "ok"}`,
+        `[LLM] ${type}(${taskType}) ${latencyMs}ms lines=${lineIndex} in=${usage.input} out=${usage.output} cached=${usage.cachedInput ?? 0} src=${reported ? "api" : "est"} first=${firstLineMs ? firstLineMs - callStart : "?"}ms${reasoningTokens !== undefined ? ` think=${thinkingMs ?? "?"}ms/${reasoningTokens}tok` : ""} err=${failureReason || priorFailure || "ok"}`,
       );
 
       // Structurally invalid line with nothing forwarded yet → retry with

@@ -101,4 +101,34 @@ describe("parseLLMUsage", () => {
     expect(parseLLMUsage("usage")).toBeNull();
     expect(parseLLMUsage(42)).toBeNull();
   });
+
+  it("reads completion_tokens_details.reasoning_tokens (DeepSeek thinking mode)", () => {
+    expect(
+      parseLLMUsage({
+        prompt_tokens: 36,
+        completion_tokens: 209,
+        completion_tokens_details: { reasoning_tokens: 189 },
+      }),
+    ).toEqual({ input: 36, output: 209, cachedInput: 0, reasoningTokens: 189 });
+  });
+
+  it("omits reasoningTokens when the breakdown is absent (thinking off)", () => {
+    const reading = parseLLMUsage({
+      prompt_tokens: 10,
+      completion_tokens: 12,
+      completion_tokens_details: {},
+    });
+    expect(reading).toEqual({ input: 10, output: 12, cachedInput: 0 });
+    expect(reading?.reasoningTokens).toBeUndefined();
+  });
+
+  it("ignores non-finite reasoning_tokens values", () => {
+    expect(
+      parseLLMUsage({
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        completion_tokens_details: { reasoning_tokens: "many" },
+      }),
+    ).toEqual({ input: 10, output: 5, cachedInput: 0 });
+  });
 });

@@ -576,3 +576,76 @@ describe("Metrics reset", () => {
     expect(after.player.choice_to_next_line_ms).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Thinking / TTFT / writer repair counters
+// ---------------------------------------------------------------------------
+
+describe("Metrics thinking and writer counters", () => {
+  let m: Metrics;
+
+  beforeEach(() => {
+    m = freshMetrics();
+  });
+
+  it("should accumulate reasoning tokens separately from output", () => {
+    m.recordLLMRequest("continuation", { input: 100, output: 300, reasoningTokens: 120 }, 2000);
+    m.recordLLMRequest("continuation", { input: 100, output: 200 }, 1500);
+    const snap = m.snapshot();
+    expect(snap.llm.tokens.output).toBe(500);
+    expect(snap.llm.tokens.reasoning).toBe(120);
+  });
+
+  it("should aggregate ttft_ms and thinking_ms percentiles", () => {
+    for (const ttft of [100, 200, 300, 400]) m.recordFirstToken(ttft);
+    m.recordThinkingMs(90);
+    m.recordThinkingMs(190);
+    const snap = m.snapshot();
+    expect(snap.llm.ttft_ms.samples).toBe(4);
+    expect(snap.llm.ttft_ms.p50).toBe(250);
+    expect(snap.llm.ttft_ms.max).toBe(400);
+    expect(snap.llm.thinking_ms.samples).toBe(2);
+    expect(snap.llm.thinking_ms.p50).toBe(140);
+  });
+
+  it("should read zero samples when thinking never ran", () => {
+    const snap = m.snapshot();
+    expect(snap.llm.ttft_ms.samples).toBe(0);
+    expect(snap.llm.thinking_ms.samples).toBe(0);
+    expect(snap.llm.thinking_ms.p50).toBe(0);
+  });
+
+  it("should count DSL repairs by kind and total", () => {
+    m.recordDslRepair("strip_continue");
+    m.recordDslRepair("strip_continue");
+    m.recordDslRepair("end_keyword");
+    const snap = m.snapshot();
+    expect(snap.writer.repairs.total).toBe(3);
+    expect(snap.writer.repairs.by_kind).toEqual({ strip_continue: 2, end_keyword: 1 });
+  });
+
+  it("should count writer attempt outcomes", () => {
+    m.recordWriterOutcome("done");
+    m.recordWriterOutcome("done");
+    m.recordWriterOutcome("retried");
+    m.recordWriterOutcome("failed");
+    const snap = m.snapshot();
+    expect(snap.writer.outcomes).toEqual({ done: 2, failed: 1, retried: 1, cancelled: 0 });
+  });
+
+  it("reset clears thinking/ttft/writer counters", () => {
+    m.recordFirstToken(10);
+    m.recordThinkingMs(5);
+    m.recordDslRepair("form_close");
+    m.recordWriterOutcome("done");
+    m.recordLLMRequest("opening", { input: 1, output: 2, reasoningTokens: 1 }, 10);
+    m.reset();
+    const after = m.snapshot();
+    expect(after.llm.ttft_ms.samples).toBe(0);
+    expect(after.llm.thinking_ms.samples).toBe(0);
+    expect(after.llm.tokens.reasoning).toBe(0);
+    expect(after.writer.repairs.total).toBe(0);
+    expect(after.writer.repairs.by_kind).toEqual({});
+    expect(after.writer.outcomes).toEqual({ done: 0, failed: 0, retried: 0, cancelled: 0 });
+  });
+});

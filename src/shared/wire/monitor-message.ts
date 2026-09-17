@@ -42,6 +42,12 @@ export interface MonitorWriterUsage {
   cachedInput: number;
   source: "api" | "estimated";
   latencyMs: number;
+  /** Thinking tokens (subset of output); present when thinking ran. */
+  reasoningTokens?: number;
+  /** First reasoning delta → first content delta; thinking runs only. */
+  thinkingMs?: number;
+  /** Raw reasoning character count streamed via reasoning_content. */
+  reasoningChars?: number;
 }
 
 export interface MonitorWriterRepair {

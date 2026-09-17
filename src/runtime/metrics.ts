@@ -40,6 +40,8 @@ export interface LLMTokenStats {
   output: number;
   /** Input tokens served from the provider prefix cache (subset of input). */
   cached_input: number;
+  /** Output tokens spent on thinking (subset of output). */
+  reasoning: number;
 }
 
 /** Aggregated end-to-end generation latency (milliseconds). */
@@ -48,6 +50,20 @@ export interface LLMLatencyStats {
   p95: number;
   max: number;
   samples: number;
+}
+
+/** Deterministic DSL repair counters (kind → occurrences). */
+export interface WriterRepairStats {
+  total: number;
+  by_kind: Record<string, number>;
+}
+
+/** Writer attempt outcome counters (one per settled attempt). */
+export interface WriterOutcomeStats {
+  done: number;
+  failed: number;
+  retried: number;
+  cancelled: number;
 }
 
 /** Branch prefetch hit-rate tracking. */
@@ -105,12 +121,22 @@ export interface MetricsSnapshot {
     /** tokens.cached_input / tokens.input, or 0 when no input was billed. */
     cache_hit_rate: number;
     latency_ms: LLMLatencyStats;
+    /** Request start → first CONTENT delta (thinking time included). */
+    ttft_ms: LLMLatencyStats;
+    /** First reasoning delta → first content delta; samples only when
+     * thinking ran (thinking off → samples: 0). */
+    thinking_ms: LLMLatencyStats;
   };
   prefetch: PrefetchStats;
   waste: WasteStats;
   input: InputStats;
   errors: ErrorStats;
   player: PlayerTimingStats;
+  /** Writer DSL repair / attempt-outcome counters (monitor dashboard). */
+  writer: {
+    repairs: WriterRepairStats;
+    outcomes: WriterOutcomeStats;
+  };
   /** Asset diagnostic counts (spec §7), code → occurrences. */
   asset_diagnostics?: Record<string, number>;
 }
@@ -150,7 +176,20 @@ export class Metrics {
   private inputTokens = 0;
   private outputTokens = 0;
   private cachedInputTokens = 0;
+  private reasoningTokens = 0;
   private latencySamples: number[] = [];
+  private ttftSamples: number[] = [];
+  private thinkingMsSamples: number[] = [];
+
+  // --- Writer repairs / outcomes ---
+  private repairCounts = new Map<string, number>();
+  private repairTotal = 0;
+  private outcomeCounts: WriterOutcomeStats = {
+    done: 0,
+    failed: 0,
+    retried: 0,
+    cancelled: 0,
+  };
 
   // --- Prefetch ---
   private branchesRequested = 0;
@@ -187,14 +226,36 @@ export class Metrics {
   /** Record a completed LLM generation request. */
   recordLLMRequest(
     type: LLMRequestType,
-    tokens: { input: number; output: number; cachedInput?: number },
+    tokens: { input: number; output: number; cachedInput?: number; reasoningTokens?: number },
     latencyMs: number,
   ): void {
     this.requestCounts[type] += 1;
     this.inputTokens += tokens.input;
     this.outputTokens += tokens.output;
     this.cachedInputTokens += tokens.cachedInput ?? 0;
+    this.reasoningTokens += tokens.reasoningTokens ?? 0;
     this.latencySamples.push(latencyMs);
+  }
+
+  /** Record request start → first CONTENT delta (thinking time included). */
+  recordFirstToken(ms: number): void {
+    this.ttftSamples.push(ms);
+  }
+
+  /** Record first reasoning delta → first content delta (thinking runs only). */
+  recordThinkingMs(ms: number): void {
+    this.thinkingMsSamples.push(ms);
+  }
+
+  /** Count one deterministic DSL repair applied to the writer's output. */
+  recordDslRepair(kind: string): void {
+    this.repairCounts.set(kind, (this.repairCounts.get(kind) ?? 0) + 1);
+    this.repairTotal += 1;
+  }
+
+  /** Count one settled writer attempt outcome. */
+  recordWriterOutcome(state: "done" | "failed" | "retried" | "cancelled"): void {
+    this.outcomeCounts[state] += 1;
   }
 
   /** Call when a branch prefetch is queued / started. */
@@ -307,6 +368,8 @@ export class Metrics {
    */
   snapshot(): MetricsSnapshot {
     const sortedLatency = [...this.latencySamples].sort((a, b) => a - b);
+    const sortedTtft = [...this.ttftSamples].sort((a, b) => a - b);
+    const sortedThinking = [...this.thinkingMsSamples].sort((a, b) => a - b);
 
     return {
       llm: {
@@ -315,6 +378,7 @@ export class Metrics {
           input: this.inputTokens,
           output: this.outputTokens,
           cached_input: this.cachedInputTokens,
+          reasoning: this.reasoningTokens,
         },
         cache_hit_rate: this.computeRate(
           this.cachedInputTokens,
@@ -325,6 +389,20 @@ export class Metrics {
           p95: percentile(sortedLatency, 0.95),
           max: sortedLatency.length > 0 ? sortedLatency[sortedLatency.length - 1]! : 0,
           samples: sortedLatency.length,
+        },
+        ttft_ms: {
+          p50: percentile(sortedTtft, 0.5),
+          p95: percentile(sortedTtft, 0.95),
+          max: sortedTtft.length > 0 ? sortedTtft[sortedTtft.length - 1]! : 0,
+          samples: sortedTtft.length,
+        },
+        thinking_ms: {
+          p50: percentile(sortedThinking, 0.5),
+          p95: percentile(sortedThinking, 0.95),
+          max: sortedThinking.length > 0
+            ? sortedThinking[sortedThinking.length - 1]!
+            : 0,
+          samples: sortedThinking.length,
         },
       },
       prefetch: {
@@ -357,6 +435,13 @@ export class Metrics {
       player: {
         choice_to_next_line_ms: [...this.choiceToNextLineSamples],
       },
+      writer: {
+        repairs: {
+          total: this.repairTotal,
+          by_kind: Object.fromEntries(this.repairCounts),
+        },
+        outcomes: { ...this.outcomeCounts },
+      },
       asset_diagnostics: this.assetDiagnosticCounts(),
     };
   }
@@ -377,7 +462,13 @@ export class Metrics {
     this.inputTokens = 0;
     this.outputTokens = 0;
     this.cachedInputTokens = 0;
+    this.reasoningTokens = 0;
     this.latencySamples = [];
+    this.ttftSamples = [];
+    this.thinkingMsSamples = [];
+    this.repairCounts.clear();
+    this.repairTotal = 0;
+    this.outcomeCounts = { done: 0, failed: 0, retried: 0, cancelled: 0 };
     this.branchesRequested = 0;
     this.branchesHit = 0;
     this.branchesMissed = 0;

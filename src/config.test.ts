@@ -71,6 +71,7 @@ describe("loadConfig defaults", () => {
     expect(config.generation.temperature).toBe(1.0); // explicit in yaml
     expect(config.generation.max_tokens).toBe(2200); // default
     expect(config.generation.repair_attempts).toBe(2); // default
+    expect(config.generation.thinking).toEqual({ type: "disabled" }); // default
 
     // Text buffer defaults (docs §74)
     expect(config.text_buffer.start_threshold_lines).toBe(2);
@@ -125,11 +126,14 @@ describe("loadConfig with all fields", () => {
       "  timeout_ms: 30000",
       "  token_limit_field: max_tokens",
       "",
-      "generation:",
-      "  temperature: 1.2",
-      "  max_tokens: 2000",
-      "  repair_attempts: 3",
-      "",
+        "generation:",
+        "  temperature: 1.2",
+        "  max_tokens: 2000",
+        "  repair_attempts: 3",
+        "  thinking:",
+        "    type: enabled",
+        "    effort: low",
+        "",
       "text_buffer:",
       "  start_threshold_lines: 1",
       "  target_lines: 8",
@@ -198,6 +202,7 @@ describe("loadConfig with all fields", () => {
     expect(config.generation.temperature).toBe(1.2);
     expect(config.generation.max_tokens).toBe(2000);
     expect(config.generation.repair_attempts).toBe(3);
+    expect(config.generation.thinking).toEqual({ type: "enabled", effort: "low" });
 
     // Text buffer
     expect(config.text_buffer.start_threshold_lines).toBe(1);

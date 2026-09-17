@@ -28,6 +28,7 @@ import type {
   SegmentEndStatus,
 } from "./core/protocol/gal-dsl/types.js";
 import type { DslStreamObserver, WriterPromptReport } from "./core/ports/dsl-stream-observer.js";
+import { Metrics } from "./runtime/metrics.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers — reusable fixtures, no real network calls
@@ -1318,5 +1319,150 @@ describe("DSL mode generation", () => {
       nonce: expect.any(String),
       reason: "buffer",
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Thinking mode (DeepSeek reasoning_content / reasoning_effort)
+  // -------------------------------------------------------------------------
+
+  it("keeps reasoning_content deltas out of the DSL stream and reports thinking usage", async () => {
+    const onDelta = vi.fn();
+    const onUsage = vi.fn();
+    const reasoningA = "先想一下场景。";
+    const reasoningB = "再想一下语法。";
+    const gen = makeDslGenerator(
+      {
+        generation: {
+          temperature: 1.0,
+          max_tokens: 500,
+          repair_attempts: 0,
+          thinking: { type: "enabled", effort: "low" },
+        },
+      },
+      {
+        onAttemptStart: vi.fn(),
+        onDelta,
+        onLine: vi.fn(),
+        onGroup: vi.fn(),
+        onAttemptEnd: vi.fn(),
+        onUsage,
+      } as DslStreamObserver,
+    );
+    (gen as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn(async (request: { messages: Array<{ content: string }> }) => {
+            const user = request.messages[1]!.content as string;
+            const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(user)?.[1] ?? "aaaa";
+            return (async function* () {
+              yield { choices: [{ delta: { reasoning_content: reasoningA } }] };
+              yield { choices: [{ delta: { reasoning_content: reasoningB } }] };
+              for (const line of ["她静静地看着你。", `@end ${nonce} buffer`]) {
+                yield { choices: [{ delta: { content: `${line}\n` } }] };
+              }
+              yield {
+                choices: [],
+                usage: {
+                  prompt_tokens: 36,
+                  completion_tokens: 209,
+                  completion_tokens_details: { reasoning_tokens: 189 },
+                },
+              };
+            })();
+          }),
+        },
+      },
+    };
+
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: vi.fn(),
+    });
+    expect(envelope.groups.length).toBe(1);
+    // Reasoning never leaks into the content deltas (DSL grammar safety).
+    const deltaText = onDelta.mock.calls.map((call) => call[1]).join("");
+    expect(deltaText).not.toContain("先想一下");
+    expect(deltaText).toContain("她静静地看着你。");
+    // Usage carries the api-reported thinking numbers.
+    expect(onUsage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        reasoningTokens: 189,
+        reasoningChars: reasoningA.length + reasoningB.length,
+        thinkingMs: expect.any(Number),
+      }),
+    );
+  });
+
+  it("maps thinking config onto top-level request-body fields", async () => {
+    const disabled = makeDslGenerator();
+    mockDslClient(disabled, (nonce) => ["她静静地看着你。", `@end ${nonce} buffer`]);
+    await (disabled as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: vi.fn(),
+    });
+    const disabledBody = ((disabled as any).client.chat.completions.create as ReturnType<
+      typeof vi.fn
+    >).mock.calls[0]![0] as Record<string, unknown>;
+    expect(disabledBody.thinking).toEqual({ type: "disabled" });
+    expect("reasoning_effort" in disabledBody).toBe(false);
+
+    const enabled = makeDslGenerator({
+      generation: { temperature: 1.0, max_tokens: 500, repair_attempts: 0, thinking: { type: "enabled", effort: "low" } },
+    });
+    mockDslClient(enabled, (nonce) => ["她静静地看着你。", `@end ${nonce} buffer`]);
+    await (enabled as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: vi.fn(),
+    });
+    const enabledBody = ((enabled as any).client.chat.completions.create as ReturnType<
+      typeof vi.fn
+    >).mock.calls[0]![0] as Record<string, unknown>;
+    expect(enabledBody.thinking).toEqual({ type: "enabled" });
+    expect(enabledBody.reasoning_effort).toBe("low");
+  });
+
+  it("counts DSL repairs and attempt outcomes into Metrics via the observer tap", async () => {
+    const metrics = new Metrics();
+    const config = makeTestConfig({
+      generation: {
+        temperature: 1.0,
+        max_tokens: 500,
+        repair_attempts: 0,
+        max_consecutive_repairs: 2,
+        thinking: { type: "disabled" },
+      },
+    });
+    const gen = new StoryGenerator(
+      config,
+      makeTestPrompts(),
+      makeTestInstructions(),
+      DUMMY_API_KEY,
+      undefined,
+      metrics,
+      undefined,
+      {
+        onAttemptStart: vi.fn(),
+        onDelta: vi.fn(),
+        onLine: vi.fn(),
+        onGroup: vi.fn(),
+        onAttemptEnd: vi.fn(),
+      } as DslStreamObserver,
+    );
+    // Missing "end" keyword + missing @/? → end_keyword + form_close repairs.
+    mockDslClient(gen, (nonce) => [
+      "@? 你要怎么接话？",
+      "@+ 凑过去看那张纸片，先别撕",
+      "@+ 问这挂件是在哪儿捡到的",
+      "@= 你想说点什么",
+      `@ ${nonce} interaction`,
+    ]);
+
+    await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: vi.fn(),
+    });
+
+    const snap = metrics.snapshot();
+    expect(snap.writer.repairs.total).toBe(2);
+    expect(snap.writer.repairs.by_kind).toEqual({ end_keyword: 1, form_close: 1 });
+    expect(snap.writer.outcomes.done).toBe(1);
+    expect(snap.llm.ttft_ms.samples).toBe(1);
   });
 });

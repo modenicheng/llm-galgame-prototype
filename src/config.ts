@@ -150,6 +150,14 @@ export interface AppConfig {
     repair_attempts: number;
     /** 同一段的连续修复链上限（修复段再失败累计计数）；0 = 不设上限（旧行为）。 */
     max_consecutive_repairs: number;
+    /** 写手模型的思考链开关与强度（DeepSeek 顶层 thinking / reasoning_effort）。
+     * 注意：thinking 开启时 DeepSeek 忽略 temperature；reasoning token 计入
+     * max_completion_tokens 预算。只作用于主写手，背景 LLM 不跟随。 */
+    thinking: {
+      type: "enabled" | "disabled";
+      /** low | high | max；缺省 = 服务端默认档（DeepSeek 文档为 high）。 */
+      effort?: "low" | "high" | "max";
+    };
   };
   /** Text buffering thresholds (docs §74): when to start/refill playback. */
   text_buffer: {
@@ -506,6 +514,12 @@ const ConfigSchema = z.object({
     repair_attempts: z.number().int().min(0).max(5).default(2),
     // 连续修复链上限：0 = 不设上限（旧行为）。
     max_consecutive_repairs: z.number().int().min(0).max(10).default(2),
+    thinking: z
+      .object({
+        type: z.enum(["enabled", "disabled"]).default("disabled"),
+        effort: z.enum(["low", "high", "max"]).optional(),
+      })
+      .default({ type: "disabled" }),
   }),
   text_buffer: z
     .object({

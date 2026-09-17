@@ -46,6 +46,12 @@ export interface WriterAttemptUsage {
   cachedInput: number;
   source: "api" | "estimated";
   latencyMs: number;
+  /** Thinking tokens (subset of output); api-reported or char-estimated. */
+  reasoningTokens?: number;
+  /** First reasoning delta → first content delta; only when thinking ran. */
+  thinkingMs?: number;
+  /** Raw reasoning character count streamed via reasoning_content. */
+  reasoningChars?: number;
 }
 
 /** One labeled slice of a prompt message (monitor audit view). */

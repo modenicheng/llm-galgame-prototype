@@ -41,6 +41,7 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
       max_tokens: 500,
       repair_attempts: 0,
       max_consecutive_repairs: 2,
+      thinking: { type: "disabled" },
     },
     text_buffer: {
       start_threshold_lines: 2,
