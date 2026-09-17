@@ -782,6 +782,11 @@ export class GameApp {
     this.client?.sendCommand(crypto.randomUUID(), command);
   }
 
+  /** M5.3 回溯：在指定决策节点开启新周目（服务器端弃局记账，图零删除）。 */
+  retrace(decisionId: string): void {
+    this.sendCommand({ type: "retrace", decisionId });
+  }
+
   private sendCacheReport(lineId: string, cacheKey: string, result: "hit" | "miss" | "partial" | "corrupt"): void {
     this.client?.send({ type: "audio.cache_report", lineId, cacheKey, result });
   }

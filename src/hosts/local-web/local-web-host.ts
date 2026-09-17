@@ -19,7 +19,7 @@ import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
 import type { RuntimeApplication } from "../../application/runtime-application.js";
 import type { AssetCatalog, PublicAssetManifest } from "../../core/assets/types.js";
 import { buildPublicAssetManifest } from "../../application/assets/asset-manifest.js";
-import { RestartRequestedError, RuntimeShutdownError } from "../../core/runtime/errors.js";
+import { RestartRequestedError, RetraceRequestedError, RuntimeShutdownError } from "../../core/runtime/errors.js";
 import { isAllowedOrigin } from "./origin-guard.js";
 import { AudioStreamRoute } from "./audio-stream-route.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";
@@ -242,9 +242,31 @@ export class LocalWebHost {
         void this.handleRestart();
         return;
       }
+      if (error instanceof RetraceRequestedError) {
+        void this.handleRetrace(error.decisionId);
+        return;
+      }
       this.logger(
         `game run loop exited: ${error instanceof Error ? error.message : String(error)}`,
       );
+    });
+  }
+
+  /**
+   * M5.3 回溯：同一 Game 实例在目标节点重入 run 循环（图零删除；旧周目
+   * 已弃局记账）。ws 不换绑——客户端通过 session_started/表单重放观察。
+   */
+  private async handleRetrace(decisionId: string): Promise<void> {
+    this.logger(`retracing to ${decisionId}…`);
+    try {
+      await this.app.game.prepareRetrace(decisionId);
+    } catch (error: unknown) {
+      this.logger(`retrace failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    void this.app.game.run().catch((error: unknown) => {
+      if (error instanceof RuntimeShutdownError) return;
+      this.logger(`game run loop exited after retrace: ${String(error)}`);
     });
   }
 

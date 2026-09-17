@@ -22,6 +22,17 @@ export class RestartRequestedError extends Error {
   }
 }
 
+/**
+ * Raised when the driver sends `retrace`（M5.3）——宿主在目标节点回溯后
+ * 重入 run 循环（同一 Game 实例，ws 不换绑）。
+ */
+export class RetraceRequestedError extends Error {
+  constructor(readonly decisionId: string) {
+    super(`运行时已收到回溯指令：${decisionId}`);
+    this.name = "RetraceRequestedError";
+  }
+}
+
 /** Raised when a generated interaction violates InteractionPolicy (§8.5). */
 export class InteractionPolicyViolationError extends Error {
   constructor(reason: string) {

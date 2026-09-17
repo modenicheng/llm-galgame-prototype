@@ -8,6 +8,7 @@ import type {
   EdgeChoice,
   RunGraphPort,
   RunResume,
+  RestorePoint,
 } from "./core/ports/run-graph-port.js";
 import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
 import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
@@ -101,6 +102,7 @@ export class MemoryRunGraph implements RunGraphPort {
   readonly location = "memory-graph";
   rootRunsStarted = 0;
   readonly begunEdges: EdgeChoice[] = [];
+  readonly retracedFrom: string[] = [];
   readonly appendedBatches: StoredEvent[][] = [];
   readonly decisions: Array<{
     modelSceneId: string;
@@ -123,8 +125,14 @@ export class MemoryRunGraph implements RunGraphPort {
     return `run_test${this.idCounter}`;
   }
 
-  async beginEdge(choice: EdgeChoice): Promise<void> {
+  async beginEdge(choice: EdgeChoice): Promise<{ kind: "opened" }> {
     this.begunEdges.push(structuredClone(choice));
+    return { kind: "opened" };
+  }
+
+  async retraceFrom(decisionId: string): Promise<RestorePoint> {
+    this.retracedFrom.push(decisionId);
+    return this.resume.kind === "active" ? this.resume.restore : ({} as RestorePoint);
   }
 
   async appendEdgeEvents(events: readonly StoredEvent[]): Promise<void> {

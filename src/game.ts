@@ -9,6 +9,7 @@ import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
 import {
   InteractionPolicyViolationError,
   RestartRequestedError,
+  RetraceRequestedError,
   RuntimeShutdownError,
 } from "./core/runtime/errors.js";
 import type {
@@ -21,7 +22,7 @@ import {
   type DiagnosticSink,
 } from "./core/ports/diagnostic-sink.js";
 import type { IdGeneratorPort } from "./core/ports/id-generator-port.js";
-import type { RunGraphPort } from "./core/ports/run-graph-port.js";
+import type { RunGraphPort, RunResume } from "./core/ports/run-graph-port.js";
 import type { RestorePoint } from "./core/ports/run-graph-port.js";
 import { EMPTY_MEMORY_DIGEST } from "./core/graph/memory-digest.js";
 import {
@@ -190,6 +191,19 @@ export class Game implements InteractionHost {
    * §75：低水位触发时已启动、待 run loop 接管的续写段。
    */
   private pendingRefillSegment: ActiveSegment | null = null;
+  /** M5.3：同选项快进的待取恢复点（驱动器提交路径上取走）。 */
+  private pendingFastForward: RestorePoint | null = null;
+  /** M5.3：宿主回溯预备的恢复点（下一次 run() 直接走恢复路径）。 */
+  private pendingRestore: RestorePoint | null = null;
+
+  /**
+   * M5.3 回溯入口（宿主调用）：在目标决策节点开启 retrace 新周目（活跃
+   * 周目弃局记账、图零删除）。调用前 run 循环已因 RetraceRequestedError
+   * 退出；调用后宿主重新 await game.run() 即从目标节点恢复表单。
+   */
+  async prepareRetrace(decisionId: string): Promise<void> {
+    this.pendingRestore = await this.graph.retraceFrom(decisionId);
+  }
   /** 当前正在播放的段 turn（reconcileTextBuffer 计算续写 turn 用）。 */
   private activeSegmentTurn = 1;
   private readonly commands = new AsyncEventQueue<RuntimeCommand>();
@@ -314,7 +328,14 @@ export class Game implements InteractionHost {
     // 「继续游戏」统一入口（M1.4/M1.5）：有游标 → 入口快照重建运行时并
     // 重放表单（restart 模式则先弃局旧周目、开 retrace 新周目）；周目已
     // 完结 → 只补发结局（restart 模式改开新 root 周目）；否则全新开局。
-    const resume = await this.graph.restoreOrCreateRun({ restart: this.runMode === "restart" });
+    // M5.3：宿主回溯（prepareRetrace）已备好恢复点 → 直接走恢复路径。
+    let resume: RunResume;
+    if (this.pendingRestore !== null) {
+      resume = { kind: "active", restore: this.pendingRestore };
+      this.pendingRestore = null;
+    } else {
+      resume = await this.graph.restoreOrCreateRun({ restart: this.runMode === "restart" });
+    }
     if (resume.kind === "ended") {
       this.status.setPhase("结束", "剧情已经结束");
       this.emit({
@@ -331,6 +352,7 @@ export class Game implements InteractionHost {
     let segment: ActiveSegment;
     let outcome: SegmentOutcome;
     if (resume.kind === "active") {
+      this.events.length = 0;
       segment = this.startRestoredSegment(resume.restore);
       outcome = await this.resumeRestoredInteraction(segment);
     } else {
@@ -343,6 +365,16 @@ export class Game implements InteractionHost {
     }
 
     while (outcome.type !== "end") {
+      // M5.3 同选项快进：跳过生成，直接恢复既有后继节点的表单（与开机恢复
+      // 同一机制；会话内累积历史由恢复点路径重放重建）。
+      if (outcome.type === "fast_forward") {
+        this.activeInteractionId = null;
+        this.activePreviewId = null;
+        this.events.length = 0;
+        segment = this.startRestoredSegment(outcome.restore);
+        outcome = await this.resumeRestoredInteraction(segment);
+        continue;
+      }
       // DSL mode: the segment ended cleanly with `@end ... buffer`. Its
       // events were already buffered and played while streaming; start a
       // low-water refill continuation from the committed history (docs
@@ -498,6 +530,10 @@ export class Game implements InteractionHost {
         context,
         interaction.interaction_id,
       );
+      // M5.3：恢复表单上再次选择同一选项 → 级联快进（零生成）。
+      if (result.fastForward !== undefined) {
+        return { type: "fast_forward", restore: result.fastForward, nextTurn: turn + 1 };
+      }
       return { type: "choice", nextTurn: turn + 1, ...result };
     }
     if (interaction.mode === "hybrid") {
@@ -891,17 +927,28 @@ export class Game implements InteractionHost {
           options: event.options.map((option) => ({ id: option.id, text: option.text })),
         };
         const preview = await this.interactionDriver.handleChoice(syntheticChoice, turn, segment.branchManager, context, event.interaction_id);
+        // M5.3 同选项快进：驱动器命中既有出边 → 零生成，运行循环切恢复表单。
+        if (preview.fastForward !== undefined) {
+          return { type: "fast_forward", restore: preview.fastForward, nextTurn: turn + 1 };
+        }
         return { type: "choice", nextTurn: turn + 1, ...preview };
       }
 
       if (event.mode === "hybrid") {
-        return this.interactionDriver.handleHybridInteraction(event, turn, segment.branchManager, context);
+        const hybridOutcome = await this.interactionDriver.handleHybridInteraction(event, turn, segment.branchManager, context);
+        if (hybridOutcome.type === "choice" && hybridOutcome.fastForward !== undefined) {
+          return { type: "fast_forward", restore: hybridOutcome.fastForward, nextTurn: turn + 1 };
+        }
+        return hybridOutcome;
       }
 
       const committed = await this.interactionDriver.handleInteractionInput(event, turn, segment.branchManager);
       // A pure input never cancels back out of the commit loop; only the
       // hybrid path returns the canceled sentinel.
       if (committed.type !== "committed") throw new RuntimeShutdownError();
+      if (committed.fastForward !== undefined) {
+        return { type: "fast_forward", restore: committed.fastForward, nextTurn: turn + 1 };
+      }
       return {
         type: "choice",
         nextTurn: turn + 1,
@@ -947,6 +994,7 @@ export class Game implements InteractionHost {
       const command = next.value;
       if (command.type === "shutdown") throw new RuntimeShutdownError();
       if (command.type === "restart_session") throw new RestartRequestedError();
+      if (command.type === "retrace") throw new RetraceRequestedError(command.decisionId);
       if (predicate(command)) return command;
       // The final judgment lives here: a stale interaction command is
       // dropped instead of parked in deferredCommands.
@@ -1342,14 +1390,25 @@ export class Game implements InteractionHost {
   /**
    * Stage one response event, measuring the confirm → first-line window.
    */
-  async record(event: StoredEvent): Promise<void> {
+  async record(event: StoredEvent): Promise<"recorded" | "fast_forwarded"> {
     this.events.push(event);
-    // 玩家解决事件先行开边：解决事件本身成为新边首条负载（边负载完整
-    // 覆盖「选择 → 后果」全程，回放语义成立）。
+    // M5.3 同选项快进：玩家解决事件先与图对账——若与游标节点既有出边
+    // 完全一致（kind+text 严格相等、指向决策节点），协调器不开新边而是
+    // 直接前移到既有后继；Game 跳过生成，恢复后继表单。
     if (event.type === "player_choice") {
-      await this.graph.beginEdge({ kind: "option", text: event.text });
+      const result = await this.graph.beginEdge({ kind: "option", text: event.text });
+      if (result.kind === "fast_forward") {
+        this.seq -= 1; // 归还预分配槽位：选择事件不入新边（历史负载已有）
+        this.pendingFastForward = result.restore;
+        return "fast_forwarded";
+      }
     } else if (event.type === "player_input") {
-      await this.graph.beginEdge({ kind: "free_input", text: event.text });
+      const result = await this.graph.beginEdge({ kind: "free_input", text: event.text });
+      if (result.kind === "fast_forward") {
+        this.seq -= 1;
+        this.pendingFastForward = result.restore;
+        return "fast_forwarded";
+      }
       // M4.3 防守节拍：评估与生成并行（滞后一拍——本段按既有 directive
       // 播出，引回写入下一段 directive），绝不阻塞演出。
       void this.director
@@ -1366,6 +1425,14 @@ export class Game implements InteractionHost {
     await this.graph.appendEdgeEvents([event]);
     this.narrativeDirector?.observeCommitted([event]);
     this.scheduleReconcile(event);
+    return "recorded";
+  }
+
+  /** M5.3：驱动器在提交路径上取走快进恢复点（一次）。 */
+  takePendingFastForward(): RestorePoint | undefined {
+    const restore = this.pendingFastForward;
+    this.pendingFastForward = null;
+    return restore ?? undefined;
   }
 
   /**

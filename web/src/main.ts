@@ -117,8 +117,11 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   const errorBanner = new ErrorBanner(refs.bannerRoot);
 
   // M5.1/M5.2：剧情图入口（总览 + 决策子图）。拉取失败在面板内提示。
+  // M5.3：非游标决策「回溯」→ 确认后发送 retrace 命令（在此分叉开启新周目）。
   const graphOverlay = el("div", "graph-overlay-root") as HTMLDivElement;
-  const graphPanel = new GraphPanel(graphOverlay);
+  const graphPanel = new GraphPanel(graphOverlay, {
+    onRetrace: (decisionId) => app.retrace(decisionId),
+  });
   const graphBtn = el("button", "btn btn--ghost graph-toggle", "剧情图") as HTMLButtonElement;
   graphBtn.type = "button";
   graphBtn.addEventListener("click", () => {

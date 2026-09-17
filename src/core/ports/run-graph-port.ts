@@ -73,6 +73,17 @@ export type RunResume =
     }
   | { kind: "active"; restore: RestorePoint };
 
+/** 玩家解决交互时 beginEdge 的结果（M5.3 快进判别联合）。 */
+export type BeginEdgeResult =
+  /** 常规：新边已开放，后续事件进入其负载。 */
+  | { kind: "opened" }
+  /**
+   * 同选项快进命中：选择与该节点的某条既有出边（kind+text 严格相等）
+   * 完全一致且指向决策节点（结局端点不参与）。协调器已把游标与状态机
+   * 前移到既有后继节点；Game 据此跳过生成、直接恢复后继表单。
+   */
+  | { kind: "fast_forward"; restore: RestorePoint };
+
 export interface RunGraphPort {
   /** Human-readable root of this game's storage. */
   readonly location: string;
@@ -89,14 +100,23 @@ export interface RunGraphPort {
    */
   restoreOrCreateRun(options?: { restart?: boolean }): Promise<RunResume>;
 
+  /**
+   * M5.3 回溯入口：从任意决策节点开启 retrace 新周目。活跃周目（若有）
+   * 记 abandonedAt（= 其游标位）——仅流水记账，图零删除（决议 D7）；
+   * 随后游标改绑目标节点并返回其恢复点（表单重放 + 路径事件回放材料）。
+   */
+  retraceFrom(decisionId: DecisionId): Promise<RestorePoint>;
+
   /** 全新开局：登记 root 周目（游标在首个决策点出现前不落盘）。 */
   startRootRun(): Promise<RunId>;
 
   /**
    * 玩家解决交互 → 开放新边（此后已提交事件进边负载）。必须在解决事件
    * 自身入负载之前调用，使选择事件成为新边首条负载。
+   * M5.3：与游标节点既有出边（kind+text 严格相等、指向决策节点）完全
+   * 一致时命中同选项快进——不开新边，返回后继节点恢复点。
    */
-  beginEdge(choice: EdgeChoice): Promise<void>;
+  beginEdge(choice: EdgeChoice): Promise<BeginEdgeResult>;
 
   /** 已提交事件追加进当前开放边负载；无开放边（开局段）时忽略。 */
   appendEdgeEvents(events: readonly StoredEvent[]): Promise<void>;

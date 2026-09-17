@@ -36,8 +36,13 @@ export interface GraphPanelView {
 export class GraphPanel {
   private readonly root: HTMLElement;
   private readonly content: HTMLElement;
+  private readonly confirmBar: HTMLElement;
+  private pendingRetraceId: string | null = null;
 
-  constructor(root: HTMLElement) {
+  constructor(
+    root: HTMLElement,
+    private readonly hooks?: { onRetrace?: (decisionId: string) => void },
+  ) {
     this.root = root;
     this.root.classList.add("graph-overlay");
     this.root.hidden = true;
@@ -47,7 +52,26 @@ export class GraphPanel {
     const header = el("div", "graph-panel__header") as HTMLDivElement;
     header.append(el("h2", "graph-panel__title", "剧情图"), closeBtn);
     this.content = el("div", "graph-panel__content") as HTMLDivElement;
-    this.root.append(header, this.content);
+    // M5.3 回溯确认条：文案强调「新周目」——旧周目内容仍是既定事实
+    //（导演/编剧继续读取），不用「放弃/删除」措辞（决议 D7）。
+    this.confirmBar = el("div", "graph-confirm") as HTMLDivElement;
+    this.confirmBar.hidden = true;
+    const confirmBtn = el("button", "btn btn--primary graph-confirm__yes", "在此分叉开启新周目") as HTMLButtonElement;
+    confirmBtn.type = "button";
+    confirmBtn.addEventListener("click", () => {
+      if (this.pendingRetraceId !== null) this.hooks?.onRetrace?.(this.pendingRetraceId);
+      this.cancelConfirm();
+      this.hide();
+    });
+    const cancelBtn = el("button", "btn btn--ghost graph-confirm__no", "取消") as HTMLButtonElement;
+    cancelBtn.type = "button";
+    cancelBtn.addEventListener("click", () => this.cancelConfirm());
+    this.confirmBar.append(
+      el("span", "graph-confirm__text", ""),
+      confirmBtn,
+      cancelBtn,
+    );
+    this.root.append(header, this.content, this.confirmBar);
   }
 
   get isVisible(): boolean {
@@ -60,6 +84,22 @@ export class GraphPanel {
 
   hide(): void {
     this.root.hidden = true;
+    this.cancelConfirm();
+  }
+
+  private cancelConfirm(): void {
+    this.pendingRetraceId = null;
+    this.confirmBar.hidden = true;
+  }
+
+  /** M5.3：请求在某个决策节点回溯（弹出确认条；由宿主注入的回调执行）。 */
+  private requestRetrace(decisionId: string, prompt: string): void {
+    this.pendingRetraceId = decisionId;
+    const text = this.confirmBar.querySelector<HTMLSpanElement>(".graph-confirm__text");
+    if (text !== null) {
+      text.textContent = `在「${prompt}」${decisionId} 在此分叉开启新周目？`;
+    }
+    this.confirmBar.hidden = false;
   }
 
   /** 拉取并渲染（fetch 由调用方注入，便于测试）。失败不抛出、只显示提示。 */
@@ -126,6 +166,13 @@ export class GraphPanel {
         el("span", "graph-decision__prompt", formPrompt),
         isCursor ? el("span", "graph-decision__cursor-mark", "◀ 当前") : el("span", "", ""),
       );
+      // M5.3 回溯入口：非游标决策可点选 → 确认后在此分叉开启新周目。
+      if (!isCursor && decision.id !== undefined && this.hooks?.onRetrace !== undefined) {
+        const retraceBtn = el("button", "btn btn--ghost graph-decision__retrace", "回溯") as HTMLButtonElement;
+        retraceBtn.type = "button";
+        retraceBtn.addEventListener("click", () => this.requestRetrace(decision.id!, formPrompt));
+        node.append(retraceBtn);
+      }
       card.append(node);
     }
     // 出边按决策分组的轻量替代：边列表直接挂在场景卡尾部。

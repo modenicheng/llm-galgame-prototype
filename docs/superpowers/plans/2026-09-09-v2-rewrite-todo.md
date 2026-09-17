@@ -214,10 +214,11 @@
   验收：子图渲染测试；未实现前沿不出现。
   落地（2026-09-17）：决策粒度并入 M5.1 API（GraphSceneView.decisions 表单快照 + outEdges 选择文本/指向/汇流标注），前端场景卡内直接展开决策子图（无二级交互——数据即场景内全量，API 一次性提供）；graph-panel 渲染断言决策/边/未实现前沿不出现（脱敏由 graph-view 测试锁定）。
 
-- [ ] **M5.3 回溯入口 + 同选项快进**
+- [x] **M5.3 回溯入口 + 同选项快进**
   前置：M5.2。关联：§6；决议 D7；附录 A「M1.5 快进推迟」决议（含 beginEdge 返回形状）。
   要点：① `RunGraphPort` 增 `retraceFrom(decisionId)`（= M1.5 restart 的任意节点版：活跃周目记 `abandonedAt`——**仅流水记账，图零删除**（决议 D7）——并在该节点开 retrace 新周目）；② `beginEdge` 返回判别联合 `{opened} | {fast_forward: RestorePoint}`：选择与既有出边完全一致（kind+text 严格相等）时命中快进；**结局端点不参与**（重选结局选项走新生成，如实留第二条边）；③ Game 快进处理：跳过生成，直接恢复后继节点表单；④ UI：图节点点选 → 回溯确认，文案为「在此分叉开启新周目」（旧周目内容仍是既定事实、导演/编剧继续读取——不用「放弃/删除」措辞）。
   验收：retraceFrom 任意祖先节点单测（abandonedAt 记账 + 新边产生 + 图零删除）；快进命中/未命中/结局排除三例；快进时生成器零调用断言。
+  落地（2026-09-17）：① `retraceFrom`（coordinator：活跃周目弃局记账→游标改绑目标节点→hydrateFromCursor 返回恢复点）；② `BeginEdgeResult = {kind:"opened"} | {kind:"fast_forward", restore}`（beginEdgeUnsafe 在开新边前查游标节点既有出边，kind+text 严格相等且 to=decision 才命中；hydrate 复用）。③ Game 快进链路：`record` 返回 recorded/fast_forwarded（FF 时归还预分配 seq、不落边不记账），驱动器经 `takePendingFastForward` 取恢复点随 ChoiceSelection/InputCommitOutcome 上交，SegmentOutcome 增 `fast_forward` 形态，运行循环切 `startRestoredSegment`（复用开机恢复机制，零内容生成）。④ 回溯命令：RuntimeCommand/wire schema 增 `retrace`，waitForCommand 抛 `RetraceRequestedError`，Game `prepareRetrace` + run() 荣誉 pendingRestore，web host catch 后同一 Game 重入 run（ws 不换绑）；graph-panel 非游标决策「回溯」按钮 → 确认条「在此分叉开启新周目」→ main.ts 发送命令。测试：coordinator 四例（记账/零删除/新边、快进命中、未命中、结局排除）+ Game 级 retrace→快进零内容生成断言（branchPrefetch 为表单呈现固定环境成本，零生成断言落在 opening/continuation）。
 
 - [ ] **M5.4 结算与图鉴**
   前置：M5.1。关联：§6；MA-A ending-report（复用，反重复）。

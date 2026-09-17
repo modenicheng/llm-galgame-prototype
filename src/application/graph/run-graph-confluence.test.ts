@@ -232,26 +232,28 @@ describe("RunGraphCoordinator confluence (M2.2)", () => {
       expect(run2EdgeA.endState).not.toEqual(decision!.entryState);
       expect((await store.loadCursor())?.position).toBe(d2);
 
-      // 改绑后周目 2 继续推进：新边从 D2 出发；候选面里 D2 已是祖先被排除
-      //（尽管判定员对 state-D2 必命中，也不许出现 D2→D2 自环）
-      await c2.beginEdge({ kind: "option", text: "B" });
-      await c2.appendEdgeEvents([makeStoredEvent(10)]);
-      await c2.openDecision({ modelSceneId: SCENE_A, form: makeForm({ prompt: "三" }), moment: makeMoment("state-D3-run2") });
-      await judge.waitCalls(5);
-      expect(judge.candidateMarkers.slice(3)).toEqual(["state-D1", "state-D3"]);
-      await vi.waitFor(async () => {
-        const afterEdges = await store.listEdges();
-        const run2EdgeB = afterEdges.find((edge) => edge.payload.lastSeq === 10)!;
-        expect(run2EdgeB.from).toBe(d2);
-        expect(run2EdgeB.confluence).toBeUndefined();
-      });
+      // 改绑后周目 2 继续推进：游标停在 D2（周目 1 节点）。M5.3 同选项
+      // 快进：重选与既有出边（D2 -B→ D3）完全一致的「B」→ 零新边、零生成，
+      // 游标直接前移到既有后继 D3（路径事件 = 到 D2 的重放 + 该边负载）。
+      const edgesBeforeFF = (await store.listEdges()).length;
+      const ff = await c2.beginEdge({ kind: "option", text: "B" });
+      expect(ff.kind).toBe("fast_forward");
+      const d3 = (await store.listEdges()).find((edge) => edge.payload.lastSeq === 6)!.to;
+      expect(ff.kind === "fast_forward" ? ff.restore.decision.id : "").toBe(
+        d3.kind === "decision" ? d3.id : "",
+      );
+      expect(ff.kind === "fast_forward" ? ff.restore.pathEvents.map((event) => event.seq) : []).toEqual([
+        8, 9, 6,
+      ]);
+      expect((await store.listEdges()).length).toBe(edgesBeforeFF); // 图零新增
+      expect((await store.loadCursor())?.position).toBe(d3.kind === "decision" ? d3.id : "");
 
       // 恢复：路径沿最近入边走过 D2（周目 2 的边 seq 更大——M2.1 播种），
-      // 负载为周目 2 的事件
+      // 再沿周目 1 的 B 边到 D3（跨周目路径按「最近走过」拼接）。
       const { coordinator: c3 } = await harness.reopen();
       const restored = await c3.restoreOrCreateRun();
       if (restored.kind !== "active") throw new Error(`expected active, got ${restored.kind}`);
-      expect(restored.restore.pathEvents.map((event) => event.seq)).toEqual([8, 9, 10]);
+      expect(restored.restore.pathEvents.map((event) => event.seq)).toEqual([8, 9, 6]);
     } finally {
       await rm(harness.root, { recursive: true, force: true });
     }

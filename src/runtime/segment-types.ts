@@ -8,6 +8,7 @@ import type { BranchManager } from "./branch-manager.js";
 import type { RuntimeModelEvent, RuntimePlayableEvent } from "../schema.js";
 import type { InputResponseSession } from "../core/interaction/input-session.js";
 import type { LiveBranchSelection } from "./prefetch.js";
+import type { RestorePoint } from "../core/ports/run-graph-port.js";
 
 export interface ActiveSegment {
   turn: number;
@@ -43,9 +44,17 @@ export interface ChoiceOutcome {
   liveSelection?: LiveBranchSelection;
   /** Response stream still running after input confirm (live promotion). */
   liveResponse?: InputResponseSession;
+  /**
+   * M5.3 同选项快进命中：选择与既有出边一致 → 跳过生成，Game 直接恢复
+   * 后继节点表单（restore 由驱动器从宿主取走后随结果上交运行循环）。
+   */
+  fastForward?: RestorePoint;
 }
 
-export type ChoiceSelection = Pick<ChoiceOutcome, "preview" | "liveSelection">;
+export type ChoiceSelection = Pick<ChoiceOutcome, "preview" | "liveSelection"> & {
+  /** M5.3：快进命中时的恢复点；非空时 preview 为空、无任何生成分支。 */
+  fastForward?: RestorePoint;
+};
 
 /**
  * Result of committing an input: the committed prefix plus optional live
@@ -57,6 +66,8 @@ export type InputCommitOutcome =
       type: "committed";
       preview: RuntimePlayableEvent[];
       liveResponse?: InputResponseSession;
+      /** M5.3：快进命中（与既有出边文本一致）→ 零生成，恢复后继表单。 */
+      fastForward?: RestorePoint;
     }
   | { type: "canceled" };
 
@@ -80,4 +91,11 @@ export interface BufferOutcome {
   nextTurn: number;
 }
 
-export type SegmentOutcome = ChoiceOutcome | EndOutcome | BufferOutcome;
+/** M5.3 同选项快进：零生成，运行循环据此切换到后继节点的恢复表单。 */
+export interface FastForwardOutcome {
+  type: "fast_forward";
+  restore: RestorePoint;
+  nextTurn: number;
+}
+
+export type SegmentOutcome = ChoiceOutcome | EndOutcome | BufferOutcome | FastForwardOutcome;

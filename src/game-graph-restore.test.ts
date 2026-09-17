@@ -7,6 +7,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Game } from "./game.js";
+import { RetraceRequestedError } from "./core/runtime/errors.js";
 
 import { GameGraphStore } from "./adapters/storage/game-graph-store.js";
 import { RunGraphCoordinator } from "./application/graph/run-graph-coordinator.js";
@@ -632,6 +633,117 @@ describe("M1.4 游标恢复（真存储跨重启）", () => {
     expect(edges[1]?.choice).toEqual({ kind: "option", text: "留下" });
     const scenesText = await readFile(path.join(store2.location, "graph/scenes.jsonl"), "utf8");
     expect(scenesText.trim().split("\n")).toHaveLength(1);
+  });
+
+  it("M5.3 retrace + identical choice fast-forwards to the successor with zero generation", async () => {
+    const make = makeGraphs();
+    const { graph, store } = make();
+
+    // —— run1：推进到第三个决策表单后中断（D2 已有出边「留下」）——
+    const gen1 = makeMockGenerator();
+    (gen1.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
+        narrationEvent("开场叙事。"),
+        {
+          type: "choice",
+          prompt: "第一次选择：",
+          options: [{ id: "a", text: "救她" }, { id: "b", text: "离开" }],
+        },
+      ]),
+    );
+    (gen1.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [
+        narrationEvent("续写叙事。"),
+        {
+          type: "choice",
+          prompt: "第二次选择：",
+          options: [{ id: "c", text: "追上去" }, { id: "d", text: "留下" }],
+        },
+      ]),
+    );
+    let opens1 = 0;
+    const controller1 = new MemoryController({
+      onInteractionOpened: (output) => {
+        opens1 += 1;
+        const options = (output.interaction as { options?: Array<{ id: string }> }).options ?? [];
+        if (opens1 === 1) controller1.select(output.interactionId, options[0]!.id);
+        if (opens1 === 2) controller1.select(output.interactionId, options[1]!.id); // 留下
+      },
+    });
+    const game1 = new Game(
+      makeGameConfig(), gen1, makeMockStatus(), makeMockMedia(), undefined,
+      { ...makeTestPorts({ graph }), sessionId: "run1" },
+    );
+    controller1.attach(game1);
+    const run1 = game1.run();
+    await vi.waitFor(() => expect(opens1).toBe(3));
+    game1.dispatch({ type: "shutdown" });
+    await expect(run1).rejects.toThrow("运行时已收到关闭指令");
+
+    // 图：D1 -救她→ D2 -留下→ D3（游标停驻 D3 的表单）。
+    const decisions = await store.listDecisions();
+    expect(decisions).toHaveLength(3);
+    const d2 = decisions[1]!.id;
+    const { graph: graph2, store: store2 } = make();
+    void graph2;
+
+    // —— game2：resume 恢复在 D3 表单 → 发送 retrace 命令回溯到 D2 ——
+    const gen2 = makeMockGenerator();
+    let opens2 = 0;
+    const controller2 = new MemoryController({
+      onInteractionOpened: (output) => {
+        opens2 += 1;
+        const options = (output.interaction as { options?: Array<{ id: string; text?: string }> }).options ?? [];
+        if (opens2 === 1) {
+          // 恢复表单（第三次选择）：由测试主体发送 retrace 命令，不作答。
+          return;
+        }
+        if (opens2 === 2) {
+          // D2 重放表单（第二次选择）：重选同一选项「留下」→ 快进命中。
+          const leave = options.find((o) => o.text === "留下")!;
+          controller2.select(output.interactionId, leave.id);
+        }
+        // opens2 === 3：快进后的 D3 表单重放——零生成，等待断言即可。
+      },
+    });
+    const game2 = new Game(
+      makeGameConfig(), gen2, makeMockStatus(), makeMockMedia(), undefined,
+      { ...makeTestPorts({ graph: graph2 }), sessionId: "run2" },
+    );
+    controller2.attach(game2);
+    const run2 = game2.run();
+    // 等恢复表单打开（第三次选择 → opens 计数在 game2 上独立）
+    await vi.waitFor(() => expect(controller2.count("interaction_opened")).toBe(1));
+    game2.dispatch({ type: "retrace", decisionId: d2 });
+    await expect(run2).rejects.toThrow(RetraceRequestedError);
+    await game2.prepareRetrace(d2);
+    const run2b = game2.run();
+
+    // 回溯 → D2 表单重放（第二次选择）→ 选「留下」→ 快进到 D3 表单。
+    await vi.waitFor(() => expect(controller2.count("interaction_opened")).toBe(2));
+    const lastOpened = [...controller2.outputs]
+      .reverse()
+      .find((output): output is RuntimeOutput & { type: "interaction_opened" } =>
+        output.type === "interaction_opened");
+    expect(lastOpened?.interaction.prompt).toBe("第二次选择：");
+
+    // 快进零生成：D3 表单重放不经过任何内容生成（后继剧情直接来自既有边
+    // 负载）。generateBranchPrefetch 是表单呈现的固定环境成本（每个重放表单
+    // 每选项一次），与快进选择本身无关——零生成断言落在内容生成上。
+    await vi.waitFor(() => expect(controller2.count("interaction_opened")).toBe(3));
+    expect(gen2.generateOpening).not.toHaveBeenCalled();
+    expect(gen2.generateContinuation).not.toHaveBeenCalled();
+    // 快进落点：游标前移到既有后继 D3。
+    expect((await store2.loadCursor())?.position).toBe(decisions[2]!.id);
+
+    // 记账：run1 弃局于 D3；新 retrace run 从 D2 开启；图零删除。
+    const runs = await store2.listRuns();
+    expect(runs[0]?.abandonedAt).toBe(decisions[2]!.id);
+    expect(runs.at(-1)?.origin).toEqual({ kind: "retrace", from: d2 });
+    expect(await store2.listDecisions()).toHaveLength(3);
+    expect(await store2.listEdges()).toHaveLength(2);
+    game2.dispatch({ type: "shutdown" });
+    await expect(run2b).rejects.toThrow("运行时已收到关闭指令");
   });
 });
 

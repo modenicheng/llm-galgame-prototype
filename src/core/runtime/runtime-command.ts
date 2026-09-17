@@ -33,4 +33,6 @@ export type RuntimeCommand =
   /** Abort the whole run loop. */
   | { type: "shutdown" }
   /** 结束当前会话并重建运行时（新 session id、新开场）。 */
-  | { type: "restart_session" };
+  | { type: "restart_session" }
+  /** M5.3 回溯：在指定决策节点开启新周目（图零删除，仅流水记账）。 */
+  | { type: "retrace"; decisionId: string };

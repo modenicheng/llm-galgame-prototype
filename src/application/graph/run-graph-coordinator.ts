@@ -27,6 +27,7 @@ import type {
   RunResume,
   RuntimeMoment,
   RunGraphPort,
+  BeginEdgeResult,
 } from "../../core/ports/run-graph-port.js";
 import type {
   ActiveCursor,
@@ -213,6 +214,44 @@ export class RunGraphCoordinator implements RunGraphPort {
   }
 
   /**
+   * M5.3 回溯入口：从任意决策节点开启 retrace 新周目。活跃周目弃局记账
+   * （abandonedAt = 游标位，仅流水记账——图零删除，决议 D7），游标改绑
+   * 目标节点，返回其恢复点。
+   */
+  async retraceFrom(decisionId: DecisionId): Promise<RestorePoint> {
+    return this.enqueue(() => this.retraceFromUnsafe(decisionId));
+  }
+
+  private async retraceFromUnsafe(decisionId: DecisionId): Promise<RestorePoint> {
+    await this.store.initialize();
+    const target = await this.store.getDecision(decisionId);
+    if (target === null) {
+      throw new Error(`retraceFrom：目标决策节点不存在：${decisionId}`);
+    }
+    // 活跃周目弃局留痕（记账；节点、边、负载一概不动——D7）。
+    const cursor = await this.store.loadCursor();
+    if (cursor !== null) {
+      const previous = await this.store.getRun(cursor.runId);
+      if (previous !== null && previous.endedAt === undefined) {
+        await this.store.putRun({ ...previous, abandonedAt: cursor.position });
+      }
+    }
+    const run: CurrentRun = {
+      id: this.newId(RUN_ID_PREFIX) as RunId,
+      startedAt: this.clock.nowIso(),
+      origin: { kind: "retrace", from: decisionId },
+    };
+    this.currentRun = run;
+    await this.store.putRun({
+      id: run.id,
+      origin: { kind: "retrace", from: decisionId },
+      startedAt: run.startedAt,
+    });
+    await this.store.saveCursor({ runId: run.id, position: decisionId });
+    return this.hydrateFromCursor({ runId: run.id, position: decisionId });
+  }
+
+  /**
    * M1.5（重来）：活跃周目弃局留痕（abandonedAt = 游标位），在游标节点
    * 开启 retrace 新周目并改绑游标。图如实记录两次周目；快进/回溯到祖先
    * 节点随 M5.3 回溯入口接入（游标节点恒为前沿、无出边，同选项快进在此
@@ -311,11 +350,11 @@ export class RunGraphCoordinator implements RunGraphPort {
     return null;
   }
 
-  async beginEdge(choice: EdgeChoice): Promise<void> {
+  async beginEdge(choice: EdgeChoice): Promise<BeginEdgeResult> {
     return this.enqueue(() => this.beginEdgeUnsafe(choice));
   }
 
-  private async beginEdgeUnsafe(choice: EdgeChoice): Promise<void> {
+  private async beginEdgeUnsafe(choice: EdgeChoice): Promise<BeginEdgeResult> {
     if (this.currentRun === null) {
       throw new Error("beginEdge：无活动周目（startRootRun 未调用）");
     }
@@ -325,6 +364,26 @@ export class RunGraphCoordinator implements RunGraphPort {
     if (this.openEdge !== null) {
       throw new Error(`beginEdge：边 ${this.openEdge.id} 尚未收束（演员管线时序被破坏）`);
     }
+    // M5.3 同选项快进：与游标节点既有出边（kind+text 严格相等）完全一致且
+    // 指向决策节点时命中——结局端点不参与（重选结局选项走新生成，如实留
+    // 第二条边）。不开新边，游标/状态机前移到既有后继。
+    const edges = await this.store.listEdges();
+    const matched = edges.find(
+      (edge) =>
+        edge.from === this.lastDecisionId &&
+        edge.to.kind === "decision" &&
+        edge.choice.kind === choice.kind &&
+        edge.choice.text === choice.text,
+    );
+    if (matched !== undefined) {
+      const successorId = matched.to.id;
+      await this.store.saveCursor({ runId: this.currentRun.id, position: successorId });
+      const restore = await this.hydrateFromCursor({
+        runId: this.currentRun.id,
+        position: successorId,
+      });
+      return { kind: "fast_forward", restore };
+    }
     this.openEdge = {
       id: this.newId(EDGE_ID_PREFIX) as EdgeId,
       from: this.lastDecisionId,
@@ -333,6 +392,7 @@ export class RunGraphCoordinator implements RunGraphPort {
       firstSeq: 0,
       lastSeq: 0,
     };
+    return { kind: "opened" };
   }
 
   async appendEdgeEvents(events: readonly StoredEvent[]): Promise<void> {

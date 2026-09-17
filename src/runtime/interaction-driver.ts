@@ -95,7 +95,9 @@ export interface InteractionHost {
     interactionId: string,
     acceptedTypes: Readonly<Partial<Record<"select_choice" | "preview_input", true>>>,
   ): Promise<Extract<RuntimeCommand, { type: "select_choice" | "preview_input" }>>;
-  record(event: StoredEvent): Promise<void>;
+  record(event: StoredEvent): Promise<"recorded" | "fast_forwarded">;
+  /** M5.3：提交路径上取走同选项快进的恢复点（一次）。 */
+  takePendingFastForward(): import("../core/ports/run-graph-port.js").RestorePoint | undefined;
   nextLineId(): string;
   materializeDslGroups(
     groups: EventGroupDraft[],
@@ -342,6 +344,17 @@ export class InteractionDriver {
     // event (audit finding 5).
     this.host.narrativeDirector?.checkpoint("interaction_completed");
     this.host.diagnostics.info("player", `你选择了：${selected.text}`);
+
+    // M5.3 同选项快进：命中既有出边 → 零生成，直接把恢复点交给运行循环
+    //（运行循环据此切到后继节点的恢复表单）。
+    const fastForward = this.host.takePendingFastForward();
+    if (fastForward !== undefined) {
+      for (const option of choice.options) {
+        this.host.status.removeJob(`branch:${option.id}`);
+      }
+      this.host.status.clearBranches();
+      return { preview: [], fastForward };
+    }
 
     const { preview, liveSelection } = await this.adoptSelectedBranch(
       selected,
@@ -624,6 +637,13 @@ export class InteractionDriver {
         `玩家输入：${text.slice(0, 50)}`
       );
 
+      // M5.3 同选项快进（free_input 与既有出边文本严格相等）：命中即零生成。
+      const fastForward = this.host.takePendingFastForward();
+      if (fastForward !== undefined) {
+        this.host.status.removeJob("input-response");
+        return { type: "committed", preview: [], fastForward };
+      }
+
       if (!liveSession) {
         // Response finished before/during confirm: return the fixed prefix.
         await responseSession.done;
@@ -878,6 +898,12 @@ export class InteractionDriver {
       this.host.choiceTimestamp = this.host.clock.nowMs();
       this.host.diagnostics.info("player", `你选择了：${selected.text}`);
 
+      // M5.3 同选项快进（混合表单的预设选项路径）。
+      const hybridFastForward = this.host.takePendingFastForward();
+      if (hybridFastForward !== undefined) {
+        return { type: "choice", nextTurn: turn + 1, preview: [], fastForward: hybridFastForward };
+      }
+
       let preview: RuntimePlayableEvent[];
       let liveSelection: LiveBranchSelection | undefined;
 
@@ -954,7 +980,7 @@ export class InteractionDriver {
   }
 
   
-  async recordPlayerChoice(option: ChoiceOption, turn: number): Promise<void> {
+  async recordPlayerChoice(option: ChoiceOption, turn: number): Promise<"recorded" | "fast_forwarded"> {
     const stored: StoredPlayerChoiceEvent = {
       type: "player_choice",
       choice_id: option.id,
@@ -965,7 +991,7 @@ export class InteractionDriver {
       source: "player"
     };
     this.host.seq += 1;
-    await this.host.record(stored);
+    return this.host.record(stored);
   }
 
   
