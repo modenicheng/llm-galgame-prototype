@@ -455,7 +455,7 @@ describe("loadConfig narrative section", () => {
       wrapup_interactions: 6,
       closing_push_interactions: 8,
       max_interactions: 10,
-      max_events_between_interactions: 24,
+      max_events_between_interactions: 10,
     });
   });
 

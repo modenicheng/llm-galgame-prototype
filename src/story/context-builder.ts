@@ -276,7 +276,7 @@ export function buildDslUserPrompt(
   sections.push("===== 本段任务 =====");
   sections.push(`任务类型：${input.taskType}`);
   sections.push(`生成段 nonce：${input.generationNonce}`);
-  sections.push(`本次续写目标行数：${input.targetLines}`);
+  sections.push(`本次续写行数上限：${input.targetLines}`);
   sections.push(`当前回合：${turn}`);
   if (input.interactionProgress) {
     const { count, target } = input.interactionProgress;

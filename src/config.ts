@@ -122,7 +122,7 @@ export const DEFAULT_NARRATIVE_CONFIG: NarrativeConfig = {
     wrapup_interactions: 6,
     closing_push_interactions: 8,
     max_interactions: 10,
-    max_events_between_interactions: 24,
+    max_events_between_interactions: 10,
   },
   threads: { max_major_active: 2, max_minor_active: 3 },
   setups: { max_active: 6 },
@@ -396,13 +396,13 @@ const NarrativeConfigSchema = z
         // L3 保险丝：0 = 不限制；>0 = 故事最多出现这么多次交互，之后强制收束结局。
         max_interactions: z.number().int().min(0).default(10),
         // 长回合护栏：单回合模型文本事件上限，超过后续写附"尽快交互"软提示；0 = 禁用。
-        max_events_between_interactions: z.number().int().min(0).default(24),
+        max_events_between_interactions: z.number().int().min(0).default(10),
       })
       .default({
         wrapup_interactions: 6,
         closing_push_interactions: 8,
         max_interactions: 10,
-        max_events_between_interactions: 24,
+        max_events_between_interactions: 10,
       }),
     threads: z
       .object({

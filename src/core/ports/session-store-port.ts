@@ -26,6 +26,12 @@ export interface RuntimeSnapshot {
   nextTurn?: number;
   /** The last committed event included in this snapshot. */
   lastEventSeq?: number;
+  /**
+   * Rolling recap coverage watermark: events with seq ≤ this value are
+   * already folded into `state.recent_summary` ([Recap]). Missing on old
+   * snapshots — callers treat it as unknown.
+   */
+  recapThroughSeq?: number;
   /** The terminal ending, when this snapshot represents an ended session. */
   ending?: EndEvent;
   /** A form that was open when the process was interrupted. */

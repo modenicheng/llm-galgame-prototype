@@ -26,6 +26,8 @@ export interface LLMRequestCounts {
   plot_plan: number;
   /** Longform mode: memory consolidation. */
   narrative_consolidation: number;
+  /** Rolling recap of history events that slid out of the window. */
+  recap_summarization: number;
   speculative: number;
 }
 
@@ -142,6 +144,7 @@ export class Metrics {
     input_response: 0,
     plot_plan: 0,
     narrative_consolidation: 0,
+    recap_summarization: 0,
     speculative: 0,
   };
   private inputTokens = 0;
@@ -368,6 +371,7 @@ export class Metrics {
       input_response: 0,
       plot_plan: 0,
       narrative_consolidation: 0,
+      recap_summarization: 0,
       speculative: 0,
     };
     this.inputTokens = 0;

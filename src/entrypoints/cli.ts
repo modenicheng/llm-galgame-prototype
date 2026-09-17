@@ -177,6 +177,9 @@ function printMetrics(game: Game, metrics: Metrics): void {
     console.log(`  导演规划：     ${snap.llm.requests.plot_plan}`);
     console.log(`  记忆整理：     ${snap.llm.requests.narrative_consolidation}`);
   }
+  if (snap.llm.requests.recap_summarization > 0) {
+    console.log(`  前情压缩：     ${snap.llm.requests.recap_summarization}`);
+  }
 
   console.log("\n── Token 用量 ──");
   console.log(`  输入 token：   ${snap.llm.tokens.input}`);

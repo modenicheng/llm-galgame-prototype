@@ -122,6 +122,7 @@ export class NodeJsonlSessionStore implements SessionStorePort {
         phase?: RuntimeSnapshot["phase"];
         nextTurn?: number;
         lastEventSeq?: number;
+        recapThroughSeq?: number;
         ending?: EndEvent;
         resumeInteraction?: { turn: number; interaction: InteractionEvent; stage?: StageCue[] };
       };
@@ -137,6 +138,9 @@ export class NodeJsonlSessionStore implements SessionStorePort {
             : {}),
           ...(typeof parsed.lastEventSeq === "number" && Number.isInteger(parsed.lastEventSeq) && parsed.lastEventSeq >= 0
             ? { lastEventSeq: parsed.lastEventSeq }
+            : {}),
+          ...(typeof parsed.recapThroughSeq === "number" && Number.isInteger(parsed.recapThroughSeq) && parsed.recapThroughSeq >= 0
+            ? { recapThroughSeq: parsed.recapThroughSeq }
             : {}),
           ...(isEndEvent(parsed.ending) ? { ending: parsed.ending } : {}),
           ...(isResumeInteraction(parsed.resumeInteraction) ? { resumeInteraction: parsed.resumeInteraction } : {}),
