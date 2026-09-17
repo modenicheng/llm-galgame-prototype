@@ -33,6 +33,13 @@ export async function createViteDevMiddleware(): Promise<ViteDevMiddleware> {
   });
   const indexHtmlPath = path.join(PROJECT_ROOT, "web", "index.html");
 
+  // appType "custom" disables Vite's HTML fallback middleware, so the SPA's
+  // client-side routes must be listed here: each serves the transformed
+  // index.html. Extensionless Vite-internal URLs (/@vite/client, /@fs/…)
+  // must keep falling through to vite.middlewares — never broaden this into
+  // an "any extensionless path" rewrite.
+  const SPA_ROUTES = new Set(["/", "/index.html", "/monitor", "/monitor/"]);
+
   return {
     middleware: (req, res, next) => {
       // WebSocket upgrades never reach the request middleware; guard anyway
@@ -41,8 +48,8 @@ export async function createViteDevMiddleware(): Promise<ViteDevMiddleware> {
         next();
         return;
       }
-      const pathname = (req.url ?? "/").split("?")[0];
-      if (pathname === "/" || pathname === "/index.html") {
+      const pathname = (req.url ?? "/").split("?")[0] ?? "/";
+      if (SPA_ROUTES.has(pathname)) {
         void (async () => {
           try {
             const raw = await readFile(indexHtmlPath, "utf8");

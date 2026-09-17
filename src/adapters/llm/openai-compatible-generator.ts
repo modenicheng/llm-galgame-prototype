@@ -119,7 +119,7 @@ export function appendEventModeGuidance(
   );
   if (interactionAllowed && options?.requestInteraction === true) {
     result +=
-      "\n\n本回合已连续输出较长内容：请在合适的位置尽快打开玩家交互表单（`? ... /?`），把话语权交还玩家。";
+      "\n\n本回合已连续输出较长内容：请在合适的位置尽快打开玩家交互表单（`@? ... @/?`），把话语权交还玩家。";
   }
   if (options?.endingRequired === true) {
     result += `\n\n本段必须收束结局：用 @end ${nonce} ending 结束，不得打开新的交互表单。`;
@@ -507,17 +507,32 @@ export class StoryGenerator {
 
       const attemptId = `${requestId}#${attempt}`;
       this.observer?.onAttemptStart({ attemptId, taskId: requestId, taskType, index: attempt });
-      const outcome = await this.attemptDslStream(
-        type,
-        taskType,
-        allowedReasons,
-        nonce,
-        `${userPrompt}${repairInstruction}`,
-        signal,
-        options,
-        lastError,
-        attemptId,
-      );
+      let outcome: DslAttemptOutcome;
+      try {
+        outcome = await this.attemptDslStream(
+          type,
+          taskType,
+          allowedReasons,
+          nonce,
+          `${userPrompt}${repairInstruction}`,
+          signal,
+          options,
+          lastError,
+          attemptId,
+        );
+      } catch (error) {
+        // Cancellation (branch discarded / active path replaced / restart)
+        // and transport errors used to skip onAttemptEnd, leaving the
+        // monitor attempt "streaming" forever (ghost 生成中 in the status
+        // bar and the continuous document).
+        this.observer?.onAttemptEnd(
+          attemptId,
+          signal?.aborted || isAbortError(error)
+            ? { state: "cancelled", error: "请求已取消" }
+            : { state: "failed", error: error instanceof Error ? error.message : String(error) },
+        );
+        throw error;
+      }
       if (outcome.kind === "complete") {
         const reason =
           outcome.envelope.segmentEnd?.kind === "complete"
@@ -694,7 +709,11 @@ export class StoryGenerator {
 
         // Swapped dialogue-header bracket (`树莓娘[raspberry|smug]: …`) — a
         // registered id in the variant slot is dropped deterministically.
-        const swapRepair = repairSwappedVisualSlots(trimmed, this.knownSpeakers);
+        // @-prefixed lines (@+/@= form rows) carry free text in the same
+        // shape and must never be "repaired".
+        const swapRepair = trimmed.startsWith("@")
+          ? null
+          : repairSwappedVisualSlots(trimmed, this.knownSpeakers);
         if (swapRepair !== null) {
           observer?.onRepair?.(attemptId, {
             kind: "visual_swap",
@@ -860,7 +879,12 @@ export class StoryGenerator {
         };
       } else {
         // Provider didn't report usage: keep the legacy char-based estimate.
-        usage = { input: 0, output: Math.ceil(streamChars / 4) };
+        // Input is estimated from the prompt (~4 chars/token) so dashboards
+        // do not read a genuine "0 input".
+        usage = {
+          input: Math.ceil(userPrompt.length / 4),
+          output: Math.ceil(streamChars / 4),
+        };
       }
       observer?.onUsage?.(attemptId, {
         input: usage.input,

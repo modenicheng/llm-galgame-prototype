@@ -44,6 +44,7 @@ export function repairDslClosingLine(
   expectedNonce: string,
   allowedReasons: readonly SegmentEndReason[],
 ): DslClosingRepair | null {
+  if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   if (!trimmed.startsWith("@")) return null;
   // Canonical sentinel: never a repair (it must not emit a repair event);

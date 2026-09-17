@@ -8,7 +8,10 @@ import path from "node:path";
  */
 export default defineConfig({
   root: "web",
-  publicDir: false,
+  // Vendored webfonts (web/public/fonts) — served at /fonts/* in dev and
+  // copied into dist/web/fonts by `vite build` (the prod host serves them
+  // from there; MIME map already covers woff2).
+  publicDir: "public",
   build: {
     outDir: "../dist/web",
     emptyOutDir: true,
@@ -17,6 +20,11 @@ export default defineConfig({
   resolve: {
     alias: {
       "@shared": path.resolve(__dirname, "src/shared"),
+      // Portable core (no Node builtins — enforced by
+      // src/core/architecture.test.ts): the monitor dashboard reuses the
+      // DSL line parser / stream decoder directly instead of duplicating
+      // the grammar in the browser.
+      "@core": path.resolve(__dirname, "src/core"),
     },
   },
   server: {

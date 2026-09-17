@@ -1,0 +1,1026 @@
+/*
+ * Monitor dashboard styles (docs/monitor-dashboard.md).
+ *
+ * Layout per design sketch: VSCode-like status bar at the bottom; the
+ * writer LLM panel owns the largest block on the left; the right column
+ * splits top (async context LLM) / bottom (tabs: story graph + states).
+ * Dark base with the sketch's red accent.
+ */
+
+.mon-root {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(420px, 45%) 1fr;
+  grid-template-rows: minmax(0, 1fr) auto;
+  background: #0b0b0d;
+  color: #d6d6da;
+  font-family: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  /* DSL / 等宽渲染统一用更纱黑体（web/public/fonts/sarasa.css）。 */
+  --mon-mono: "Sarasa Gothic SC", ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+.mon-root * {
+  box-sizing: border-box;
+}
+
+/* ---------------------------------------------------------------- panels */
+
+.mon-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: #101014;
+  border: 1px solid #1f1f26;
+  border-radius: 6px;
+  margin: 8px;
+  overflow: hidden;
+}
+
+.mon-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 6px 10px;
+  background: #14141a;
+  border-bottom: 1px solid #23232b;
+  font-weight: 600;
+  color: #ededf0;
+}
+
+.mon-panel-head .mon-accent {
+  color: #ff5722;
+}
+
+.mon-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid #2a2a33;
+  background: #17171d;
+  color: #b9b9c2;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.mon-chip.is-active {
+  border-color: #ff5722;
+  color: #ffb09e;
+  background: #221410;
+}
+
+.mon-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: #6e6e78;
+}
+
+.mon-dot.state-streaming,
+.mon-dot.state-running {
+  background: #ff5722;
+  animation: mon-pulse 1.2s ease-in-out infinite;
+}
+
+.mon-dot.state-done {
+  background: #56d364;
+}
+
+.mon-dot.state-failed {
+  background: #f85149;
+}
+
+.mon-dot.state-retried,
+.mon-dot.state-fallback {
+  background: #d29922;
+}
+
+.mon-dot.state-cancelled {
+  background: #6e6e78;
+}
+
+@keyframes mon-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ------------------------------------------------------------- left grid */
+
+.mon-writer {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.mon-right {
+  grid-column: 2;
+  grid-row: 1;
+  display: grid;
+  grid-template-rows: minmax(180px, 42%) minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+}
+
+.mon-right .mon-panel {
+  margin: 8px 8px 0 0;
+}
+
+.mon-right .mon-panel:last-child {
+  margin-bottom: 8px;
+}
+
+/* --------------------------------------------------------- writer panel */
+
+.mon-taskbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex: none;
+  padding: 6px 8px;
+  border-bottom: 1px solid #1c1c23;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  background: #0e0e12;
+}
+
+.mon-taskbar .mon-chip {
+  cursor: pointer;
+}
+
+.writer-document-toolbar {
+  color: #a5a5ae;
+}
+
+.writer-document-label {
+  color: #ededf0;
+  font-weight: 600;
+}
+
+.writer-document-count {
+  color: #6e6e78;
+  font-size: 11px;
+}
+
+.writer-follow {
+  margin-left: auto;
+  cursor: pointer;
+}
+
+.mon-stream {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0;
+  background: #0c0c0f;
+  font-family: var(--mon-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.writer-request {
+  position: relative;
+  padding: 0 0 12px;
+}
+
+.writer-request + .writer-request {
+  border-top: 1px solid #292932;
+  padding-top: 0;
+}
+
+.writer-request-boundary {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 7px 10px 6px;
+  border-bottom: 1px solid #25252d;
+  border-left: 3px solid #42424c;
+  background: rgba(18, 18, 24, 0.96);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  font-family: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.writer-request-boundary.state-streaming {
+  border-left-color: #ff5722;
+  background: rgba(30, 20, 17, 0.97);
+}
+
+.writer-request-boundary.state-failed {
+  border-left-color: #f85149;
+}
+
+.writer-request-boundary.state-done {
+  border-left-color: #3f6d49;
+}
+
+.writer-request-boundary.state-cancelled {
+  border-left-color: #4d4d57;
+  opacity: 0.72;
+}
+
+.writer-request-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #dedee3;
+}
+
+.writer-request-time,
+.writer-request-state {
+  color: #777781;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.writer-request-state {
+  margin-left: auto;
+}
+
+.writer-request-state.state-streaming {
+  color: #ffa657;
+}
+
+.writer-request-state.state-failed {
+  color: #f85149;
+}
+
+.writer-request-meta {
+  margin: 2px 0 0 15px;
+  color: #85858f;
+  font-size: 11px;
+}
+
+.writer-request-notice:empty {
+  display: none;
+}
+
+.writer-request-notice {
+  display: flex;
+  gap: 10px;
+  margin: 4px 0 0 15px;
+  font-size: 11px;
+}
+
+.writer-repair {
+  color: #d29922;
+}
+
+.writer-request-notice .is-error-text {
+  color: #f85149;
+}
+
+.writer-request-stream {
+  padding-top: 4px;
+}
+
+.dsl-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.dsl-row.is-partial {
+  opacity: 0.75;
+}
+
+.dsl-row.has-error .dsl-code {
+  text-decoration: underline wavy #f85149;
+  text-underline-offset: 3px;
+}
+
+.dsl-row.is-current-block {
+  background: rgba(88, 166, 255, 0.055);
+  box-shadow: inset 3px 0 rgba(88, 166, 255, 0.24);
+}
+
+.dsl-row.is-current-player {
+  background: rgba(88, 166, 255, 0.15);
+  box-shadow: inset 3px 0 #58a6ff;
+}
+
+.dsl-row.is-current-player .dsl-no {
+  color: #79c0ff;
+  font-weight: 700;
+}
+
+.dsl-no {
+  flex: none;
+  width: 34px;
+  text-align: right;
+  color: #4d4d57;
+  user-select: none;
+  font-size: 11px;
+}
+
+.dsl-code {
+  flex: 1;
+  min-width: 0;
+}
+
+.dsl-badge {
+  flex: none;
+  align-self: center;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 3px;
+  border: 1px solid #2a2a33;
+  color: #7d7d87;
+  user-select: none;
+  font-family: "Noto Sans SC", system-ui, sans-serif;
+}
+
+.dsl-badge.is-error {
+  border-color: #a03232;
+  color: #f85149;
+  background: #231111;
+}
+
+.dsl-badge.is-end {
+  border-color: #2d5a2d;
+  color: #56d364;
+  background: #0f1a0f;
+}
+
+/* DSL token palette (classification comes from core parseDslLine). */
+.tok-kw {
+  color: #ff7b72;
+}
+
+.tok-id {
+  color: #79c0ff;
+}
+
+.tok-speaker {
+  color: #d2a8ff;
+  font-weight: 600;
+}
+
+.tok-slot {
+  color: #e3b341;
+}
+
+.tok-text {
+  color: #e6e6e6;
+}
+
+.tok-narr {
+  color: #b0b0b8;
+  font-style: italic;
+}
+
+.tok-prompt {
+  color: #ffa657;
+}
+
+.tok-dim {
+  color: #6e7681;
+}
+
+.tok-reason-ending {
+  color: #56d364;
+  font-weight: 600;
+}
+
+.tok-reason-interaction {
+  color: #ffa657;
+}
+
+.tok-reason-buffer {
+  color: #79c0ff;
+}
+
+.mon-writer-foot {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 5px 10px;
+  border-top: 1px solid #1c1c23;
+  background: #0e0e12;
+  color: #8a8a93;
+  font-size: 11px;
+}
+
+.mon-writer-foot .is-error-text {
+  color: #f85149;
+}
+
+/* --------------------------------------------------------- context panel */
+
+.mon-context-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.mon-context-item {
+  border-bottom: 1px solid #17171d;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.mon-context-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mon-context-item .detail {
+  color: #8a8a93;
+  font-size: 12px;
+}
+
+.mon-context-item .output {
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: #0c0c0f;
+  border: 1px solid #1c1c23;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #c9c9d1;
+  font-size: 12px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.mon-context-item .error-text {
+  color: #f85149;
+}
+
+.mon-kind-recap {
+  color: #79c0ff;
+}
+
+.mon-kind-consolidation {
+  color: #d2a8ff;
+}
+
+.mon-kind-plot_plan {
+  color: #ffa657;
+}
+
+/* ------------------------------------------------------------------ tabs */
+
+.mon-tabbar {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  padding: 4px 8px 0;
+  background: #14141a;
+  border-bottom: 1px solid #23232b;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.mon-tab {
+  padding: 4px 12px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: #8a8a93;
+  cursor: pointer;
+  white-space: nowrap;
+  background: transparent;
+  font: inherit;
+}
+
+.mon-tab.is-active {
+  color: #ffb09e;
+  background: #101014;
+  border-color: #23232b;
+  border-bottom: 1px solid #101014;
+  margin-bottom: -1px;
+}
+
+.mon-tabbody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+/* ------------------------------------------------------------ story graph */
+
+.graph-lane {
+  margin-bottom: 10px;
+}
+
+.graph-lane .bar {
+  position: relative;
+  height: 10px;
+  border-radius: 5px;
+  background: #1c1c23;
+  overflow: hidden;
+}
+
+.graph-lane .fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, #b3371f, #ff5722);
+  border-radius: 5px;
+}
+
+.graph-lane .mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: #4d4d57;
+}
+
+.graph-lane .legend {
+  display: flex;
+  gap: 12px;
+  color: #8a8a93;
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.graph-flow {
+  display: flex;
+  flex-direction: column;
+}
+
+.graph-node {
+  border: 1px solid #2a2a33;
+  border-left: 3px solid #6e6e78;
+  border-radius: 6px;
+  background: #14141a;
+  padding: 7px 10px;
+  max-width: 640px;
+}
+
+.graph-node.is-current {
+  border-left-color: #ff5722;
+  box-shadow: 0 0 0 1px rgba(255, 87, 34, 0.35);
+}
+
+.graph-node.is-ending {
+  border-left-color: #3fb950;
+}
+
+.graph-node .node-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #b9b9c2;
+  font-size: 11px;
+}
+
+.graph-node .prompt {
+  color: #e6e6e6;
+  margin-top: 2px;
+}
+
+.graph-options {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.graph-options li {
+  padding: 1px 8px;
+  border-radius: 3px;
+  color: #8a8a93;
+  border: 1px solid transparent;
+}
+
+.graph-options li.is-selected {
+  color: #ffb09e;
+  border-color: #5a2a1c;
+  background: #1d120d;
+}
+
+.graph-edge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 2px 18px;
+  color: #8a8a93;
+  font-size: 12px;
+}
+
+.graph-edge::before {
+  content: "↓";
+  color: #4d4d57;
+}
+
+.graph-edge .label {
+  color: #ffa657;
+  max-width: 560px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-start {
+  color: #6e6e78;
+  padding: 2px 0 2px 6px;
+  font-size: 12px;
+}
+
+.graph-pending {
+  color: #ff5722;
+  animation: mon-pulse 1.2s ease-in-out infinite;
+}
+
+.graph-branches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+/* --------------------------------------------------------- state / metrics */
+
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.kv-card {
+  border: 1px solid #1f1f26;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #121218;
+}
+
+.kv-card h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #8a8a93;
+  font-weight: 600;
+}
+
+.kv-card .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: #c9c9d1;
+}
+
+.kv-card .row .k {
+  color: #8a8a93;
+}
+
+.section-title {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  color: #8a8a93;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.section-title:first-child {
+  margin-top: 0;
+}
+
+pre.mon-pre {
+  font-family: var(--mon-mono);
+  background: #0c0c0f;
+  border: 1px solid #1c1c23;
+  border-radius: 4px;
+  padding: 8px;
+  overflow: auto;
+  max-height: 260px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #c9c9d1;
+  font-size: 12px;
+  margin: 0;
+}
+
+.thread-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.thread-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 8px;
+  border: 1px solid #1c1c23;
+  border-radius: 4px;
+}
+
+.thread-status {
+  flex: none;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 3px;
+  border: 1px solid #2a2a33;
+  color: #8a8a93;
+}
+
+.thread-status.st-active {
+  color: #79c0ff;
+  border-color: #24405c;
+}
+
+.thread-status.st-ready {
+  color: #ffa657;
+  border-color: #5c4524;
+}
+
+.thread-status.st-resolved {
+  color: #56d364;
+  border-color: #2d5a2d;
+}
+
+.thread-status.st-abandoned {
+  color: #6e6e78;
+}
+
+/* -------------------------------------------------------------- log lists */
+
+.log-list {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--mon-mono);
+  font-size: 12px;
+}
+
+.log-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 6px;
+  border-bottom: 1px solid #14141a;
+  word-break: break-all;
+}
+
+.log-row .t {
+  flex: none;
+  color: #4d4d57;
+}
+
+.log-row .scope {
+  flex: none;
+  color: #79c0ff;
+}
+
+.log-row.lv-warn .scope {
+  color: #d29922;
+}
+
+.log-row .msg {
+  color: #b9b9c2;
+}
+
+.log-row.lv-warn .msg {
+  color: #e3b341;
+}
+
+.kind-chip {
+  flex: none;
+  font-size: 10px;
+  color: #7d7d87;
+  border: 1px solid #2a2a33;
+  border-radius: 3px;
+  padding: 0 5px;
+}
+
+/* Routine events stay intentionally plain; interaction and terminal events
+ * carry progressively stronger structure so a long log remains scannable. */
+.event-row.event-tone-routine {
+  color: #9999a3;
+}
+
+.event-row.event-tone-routine .kind-chip {
+  border-color: transparent;
+  background: #15151a;
+  color: #686872;
+}
+
+.event-row.event-tone-interactive {
+  margin: 2px 0;
+  padding: 4px 7px;
+  border-left: 2px solid #d29922;
+  background: rgba(210, 153, 34, 0.07);
+}
+
+.event-row.event-tone-interactive .kind-chip {
+  border-color: #624b22;
+  color: #e3b341;
+  background: #211b10;
+}
+
+.event-row.event-tone-terminal {
+  margin: 5px 0;
+  padding: 6px 8px;
+  border: 1px solid #2d5a2d;
+  border-left: 3px solid #56d364;
+  border-radius: 4px;
+  background: rgba(63, 185, 80, 0.09);
+}
+
+.event-row.event-tone-terminal .kind-chip {
+  border-color: #2d5a2d;
+  color: #56d364;
+  background: #0f1a0f;
+}
+
+.event-row.event-kind-player_choice .msg,
+.event-row.event-kind-player_input .msg,
+.event-row.event-kind-player_dialogue .msg {
+  color: #f0c674;
+}
+
+/* ------------------------------------------------------------ status bar */
+
+.mon-statusbar {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 26px;
+  background: #17171d;
+  border-top: 1px solid #23232b;
+  color: #9c9ca6;
+  font-size: 11.5px;
+  padding: 0 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+
+.mon-statusbar .seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  height: 100%;
+  border-right: 1px solid #23232b;
+  flex: none;
+}
+
+.mon-statusbar .seg.grow {
+  flex: 1;
+  min-width: 60px;
+}
+
+.mon-statusbar .conn-open {
+  color: #3fb950;
+}
+
+.mon-statusbar .conn-closed,
+.mon-statusbar .conn-connecting {
+  color: #d29922;
+}
+
+.mon-statusbar .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Lucide icons (web/public/icons, ISC license) rendered as colorable masks. */
+.ico {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  flex: none;
+  background-color: currentColor;
+  mask: var(--ico) center / contain no-repeat;
+  -webkit-mask: var(--ico) center / contain no-repeat;
+}
+
+.ico-hash { --ico: url("/icons/hash.svg"); }
+.ico-sparkles { --ico: url("/icons/sparkles.svg"); }
+.ico-rotate-cw { --ico: url("/icons/rotate-cw.svg"); }
+.ico-list { --ico: url("/icons/list.svg"); }
+.ico-text-cursor-input { --ico: url("/icons/text-cursor-input.svg"); }
+.ico-pencil { --ico: url("/icons/pencil.svg"); }
+.ico-split { --ico: url("/icons/split.svg"); }
+.ico-flag { --ico: url("/icons/flag.svg"); }
+.ico-square { --ico: url("/icons/square.svg"); }
+.ico-history { --ico: url("/icons/history.svg"); }
+.ico-loader-circle { --ico: url("/icons/loader-circle.svg"); }
+.ico-play { --ico: url("/icons/play.svg"); }
+.ico-check { --ico: url("/icons/check.svg"); }
+.ico-x { --ico: url("/icons/x.svg"); }
+.ico-chevrons-right { --ico: url("/icons/chevrons-right.svg"); }
+.ico-layers { --ico: url("/icons/layers.svg"); }
+.ico-arrow-left-right { --ico: url("/icons/arrow-left-right.svg"); }
+.ico-arrow-up { --ico: url("/icons/arrow-up.svg"); }
+.ico-arrow-down { --ico: url("/icons/arrow-down.svg"); }
+.ico-database { --ico: url("/icons/database.svg"); }
+.ico-send { --ico: url("/icons/send.svg"); }
+.ico-zap { --ico: url("/icons/zap.svg"); }
+.ico-chevron-right { --ico: url("/icons/chevron-right.svg"); }
+
+.ico.spin {
+  animation: ico-rotate 1.2s linear infinite;
+}
+
+@keyframes ico-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.mon-statusbar .gen-requesting,
+.mon-statusbar .gen-streaming,
+.mon-statusbar .gen-idle {
+  font-variant-numeric: tabular-nums;
+}
+
+.mon-statusbar .gen-requesting {
+  color: #e3b341;
+}
+
+.mon-statusbar .gen-streaming {
+  color: #ff8a65;
+}
+
+.mon-statusbar .gen-idle {
+  color: #777781;
+}
+
+.mon-statusbar .gen-idle .ico.ok {
+  color: #3fb950;
+}
+
+.mon-statusbar .buf-track {
+  position: relative;
+  width: 72px;
+  height: 6px;
+  border-radius: 3px;
+  background: #26262e;
+  overflow: hidden;
+  flex: none;
+}
+
+.mon-statusbar .buf-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: #ff5722;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.mon-statusbar .buf-fill.is-ok {
+  background: #3fb950;
+}
+
+.mon-statusbar .lvl.lvl-0 {
+  color: #8a8a93;
+}
+
+.mon-statusbar .lvl.lvl-1 {
+  color: #ffa657;
+}
+
+.mon-statusbar .lvl.lvl-2 {
+  color: #ff7b72;
+}
+
+.mon-statusbar .lvl.lvl-3 {
+  color: #f85149;
+  font-weight: 700;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ico.spin {
+    animation: none;
+  }
+
+  .mon-statusbar .buf-fill {
+    transition: none;
+  }
+
+  .mon-dot.state-streaming,
+  .mon-dot.state-running,
+  .graph-pending {
+    animation: none;
+  }
+}
+
+.mon-empty {
+  color: #6e6e78;
+  padding: 18px;
+  text-align: center;
+}

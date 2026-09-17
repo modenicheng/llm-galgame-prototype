@@ -498,6 +498,35 @@ describe("DSL mode generation", () => {
     };
   }
 
+  it("emits a cancelled attempt end when the stream aborts mid-request", async () => {
+    const onAttemptEnd = vi.fn();
+    const gen = makeDslGenerator(undefined, {
+      onAttemptStart: vi.fn(),
+      onDelta: vi.fn(),
+      onLine: vi.fn(),
+      onGroup: vi.fn(),
+      onAttemptEnd,
+    } as any);
+    // Transport-level abort: the SDK call itself dies with an AbortError.
+    (gen as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn(async () => {
+            throw new DOMException("The operation was aborted.", "AbortError");
+          }),
+        },
+      },
+    };
+    const controller = new AbortController();
+    await expect(
+      gen.generateOpening(1, createInitialState(), controller.signal),
+    ).rejects.toThrow();
+    expect(onAttemptEnd).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ state: "cancelled" }),
+    );
+  });
+
   it("streams groups, forwards onGroup/onSegmentEnd, and resolves groups + segmentEnd", async () => {
     const gen = makeDslGenerator();
     mockDslClient(gen, (nonce) => [
@@ -569,7 +598,7 @@ describe("DSL mode generation", () => {
     expect(repairs.map((repair) => repair.lineIndex)).toEqual([5, 5]);
     expect(observer.onUsage).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ source: "estimated", input: 0, output: expect.any(Number) }),
+      expect.objectContaining({ source: "estimated", input: expect.any(Number), output: expect.any(Number) }),
     );
   });
 

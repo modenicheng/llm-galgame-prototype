@@ -110,6 +110,22 @@ describe("DslSegmentParser", () => {
     expectCode(() => p.closeOpenInteraction(), "EMPTY_FORM");
   });
 
+  it("rejects a buffer sentinel while a form is still open (no silent drop)", () => {
+    const p = parser();
+    p.pushLine(line("? 怎么回应？"));
+    p.pushLine(line("+ 先看看纸片"));
+    p.pushLine(line("= 你想说点什么"));
+    expectCode(() => p.pushLine(line("@end a81f buffer")), "FORM_OPEN_AT_SENTINEL");
+  });
+
+  it("rejects an interaction sentinel while a form is still open (close first)", () => {
+    const p = parser();
+    p.pushLine(line("? 怎么回应？"));
+    p.pushLine(line("+ 先看看纸片"));
+    p.pushLine(line("= 你想说点什么"));
+    expectCode(() => p.pushLine(line("@end a81f interaction")), "FORM_OPEN_AT_SENTINEL");
+  });
+
   it("accepts a correct sentinel and marks the segment complete", () => {
     const p = parser();
     p.pushLine(line("A: 第一行"));

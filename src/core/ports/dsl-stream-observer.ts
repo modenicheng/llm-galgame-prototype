@@ -25,7 +25,7 @@ export interface WriterLineParse {
   error?: string;
 }
 
-export type WriterAttemptEndState = "done" | "failed" | "retried";
+export type WriterAttemptEndState = "done" | "failed" | "retried" | "cancelled";
 
 export interface WriterAttemptEnd {
   state: WriterAttemptEndState;

@@ -67,6 +67,22 @@ export class DslSegmentParser {
           },
         );
       }
+      if (this.builder.hasOpenInteraction()) {
+        // An unclosed form would be silently dropped with the pending
+        // builder state: the player would never see the interaction while
+        // the segment is marked complete (design: 收尾协议 §有限自动修复).
+        // The streaming adapter closes a finishable form BEFORE pushing an
+        // interaction sentinel, so this only fires on genuinely malformed
+        // output.
+        throw new DslProtocolError(
+          "FORM_OPEN_AT_SENTINEL",
+          "交互表单尚未用 @/? 闭合就用 @end 收尾，表单内容会整段丢失。",
+          {
+            expected: "@/? 换行 @end <nonce> <reason>",
+            fix: '先补一行 @/? 闭合当前表单再输出 @end；若本段确实要交给玩家操作，把 reason 改为 "interaction"',
+          },
+        );
+      }
       this.sentinel = { nonce: line.nonce, reason: line.reason };
       return [];
     }

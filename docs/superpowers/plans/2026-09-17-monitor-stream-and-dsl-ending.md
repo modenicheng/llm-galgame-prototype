@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make DSL endings resilient to two unambiguous model mistakes and turn the writer monitor into one request-aware, auto-scrolling document with semantic event styling and current-player-line highlighting.
+**Goal:** Make DSL endings resilient to a bounded set of unambiguous terminal-keyword mistakes and turn the writer monitor into one request-aware, auto-scrolling document with semantic event styling and current-player-line highlighting.
 
 **Architecture:** Keep `@end` as the strict protocol boundary, with a small pure normalizer and parser-assisted form closure for only well-defined terminal mistakes. Carry request telemetry and optional DSL source locations through the existing observer and monitor wire; `Game` keeps ephemeral source maps and exposes the current location. The browser renders every retained attempt chronologically in one document and updates individual sections incrementally.
 
@@ -10,10 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-17-monitor-stream-and-dsl-ending-design.md`
 
+**Execution status (2026-09-17):** Implemented. Focused suite: 163/163 passed; typecheck and production build passed. Full suite: 1635/1636 passed, with the same pre-existing `src/config.test.ts` / `prompts/author.yaml` preferred-phrase mismatch recorded before implementation.
+
+**Acceptance (2026-09-17 晚):** 三路无上下文子代理独立审查（DSL 收尾链路 / 监控服务端 / 监控前端）后修复全部 P1/P2 及可修 P3：新增 `FORM_OPEN_AT_SENTINEL`（buffer/ending 哨兵遇未闭合表单 fail-loud）、abort/硬失败补发 `onAttemptEnd`（新增 `cancelled` 终态）、ring 淘汰与重启清空补终态事件、观察者安全包装、自动跟随不再被程序化滚动关掉、高亮清理改增量、估算 input 非零、`@+/@=` 行不跑 visual_swap 修复。新增 7 项回归测试；全量 1656/1657（唯一失败为既有 author.yaml 断言）。真机浏览器验收：连续文档/边界遥测/失败注记/当前行高亮/图标化底栏/事件分层样式均与规格一致。遗留（非本次范围）：模型连续 3 局在开场尾部输出裸 `@?` 触发 EMPTY_FORM_PROMPT 后 run loop 静默退出、Game 级修复续写未触发（属已知 run-loop 脆弱类问题）。
+
 ## Global Constraints
 
 - The formal terminal remains `@end <nonce> <reason>`; never infer nonce or reason.
-- Repair only exact `@ <expected-nonce> <allowed-reason>` lines and valid open forms followed by an `interaction` sentinel.
+- Repair only known whole-line `end` keyword manglings that still carry the exact expected nonce and an allowed reason, plus valid open forms followed by an `interaction` sentinel.
 - Every repair is observable; no silent correction.
 - No new runtime dependencies and no persisted DSL provenance.
 - Preserve the writer ring limit of 12 tasks and current text caps.
@@ -31,14 +35,14 @@
 
 **Interfaces:**
 - Consumes: existing `{nonce}` and task template interpolation.
-- Produces: prompt text whose interaction tail contains `/?\n@end {nonce} interaction` and whose non-interaction tasks show their exact allowed terminal before prose requirements.
+- Produces: prompt text whose interaction tail contains `@/?\n@end {nonce} interaction` and whose non-interaction tasks show their exact allowed terminal before prose requirements.
 
 - [ ] **Step 1: Add failing prompt assertions**
 
 Add focused expectations to `src/prompts.test.ts` that the protocol contains the three-step tail checklist and that `opening`, `continuation`, `branch_prefetch`, `input_response`, `input_bridge`, and `ending` contain their exact terminal template. For interaction-capable templates, assert the adjacent literal sequence:
 
 ```ts
-expect(instructions.opening).toContain("/?\n@end {nonce} interaction");
+expect(instructions.opening).toContain("@/?\n@end {nonce} interaction");
 expect(instructions.continuation).toContain("@end {nonce} buffer");
 expect(instructions.ending).toContain("@end {nonce} ending");
 ```
@@ -133,7 +137,7 @@ Expose the builder's open state and add a parser method that pushes `{ kind: "fo
 
 - [ ] **Step 8: Write failing generator observer tests**
 
-Add one streamed response ending in `@ 07b8 interaction` with no `/?`. Assert one interaction group, a complete interaction segment, and both repair observer events in source order. Add rejection coverage for a mismatched nonce.
+Add one streamed response ending in `@ 07b8 interaction` with no `@/?`. Assert one interaction group, a complete interaction segment, and both repair observer events in source order. Add rejection coverage for a mismatched nonce.
 
 - [ ] **Step 9: Run the generator tests and verify red**
 
@@ -361,3 +365,39 @@ Run: `git status --short`
 
 Expected: no whitespace errors; only the task's files plus pre-existing user changes are listed.
 
+### Task 8: Distinguish request wait from active generation in the status bar
+
+**Files:**
+- Modify: `src/shared/wire/monitor-message.ts`
+- Modify: `src/application/monitor/monitor-hub.ts`
+- Modify: `src/application/monitor/monitor-hub.test.ts`
+- Modify: `web/src/monitor/monitor-model.ts`
+- Modify: `web/src/monitor/status-bar.ts`
+- Create: `web/src/monitor/status-bar.test.ts`
+- Modify: `web/src/monitor/monitor.css`
+
+**Interfaces:**
+- `MonitorWriterAttempt.firstTokenMs: number | null` is set by the hub on the first writer delta.
+- `StatusBar` derives `requesting`, `streaming`, or `idle` from the newest active attempt and refreshes the live wait duration while requesting.
+
+- [ ] **Step 1: Add failing hub and status-bar tests**
+
+Assert `firstTokenMs` is null after start, is fixed on the first delta, and does not change on later deltas. Render the bar for a zero-character active attempt, a post-first-token active attempt, and no active attempt; assert the labels `请求中`, `生成中`, and `空闲` plus the relevant latency text.
+
+- [ ] **Step 2: Run the focused tests and verify red**
+
+Run: `pnpm test -- src/application/monitor/monitor-hub.test.ts web/src/monitor/status-bar.test.ts`
+
+Expected: FAIL because first-token timing and three-state rendering do not exist.
+
+- [ ] **Step 3: Record first-token timing and render the three states**
+
+Set `firstTokenMs` exactly once in `MonitorHub.onDelta`, carry it through snapshots and the client model, and add a short-lived 250 ms status-bar ticker only while an attempt is waiting for its first token. Stop the ticker on the first delta, end, or disposal.
+
+- [ ] **Step 4: Run status-bar tests and verification gates**
+
+Run: `pnpm test -- src/application/monitor/monitor-hub.test.ts web/src/monitor/status-bar.test.ts`
+
+Run: `pnpm typecheck`
+
+Expected: PASS.

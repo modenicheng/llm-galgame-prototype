@@ -18,6 +18,7 @@ import { InteractionPanel } from "./ui/interaction-panel.js";
 import { PreviewPanel } from "./ui/input-panel.js";
 import { ControlsBar } from "./ui/controls.js";
 import { EndScreen, ErrorBanner } from "./ui/end-screen.js";
+import { installStageUiScale } from "./ui/stage-ui-scale.js";
 import { StageRenderer } from "./stage/stage-renderer.js";
 import { fetchAssetManifest } from "./stage/asset-manifest-client.js";
 import { BrowserAssetResolver } from "./stage/browser-asset-resolver.js";
@@ -55,6 +56,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   const manifest = await fetchAssetManifest();
   const assetResolver = new BrowserAssetResolver(manifest);
   const stageRenderer = new StageRenderer(refs.stage, assetResolver);
+  installStageUiScale(refs.stage); // 主 UI 随 16:9 框等比缩放（--ui-scale）
   const bgmController = new BgmController(assetResolver);
   const seController = new SoundEffectController(assetResolver);
   const token = tokenFromUrl();
@@ -324,5 +326,13 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 }
 
 if (typeof document !== "undefined" && document.getElementById("app") !== null) {
-  void boot();
+  const appRoot = document.getElementById("app");
+  // Route split: /monitor boots the observability dashboard (same SPA
+  // shell + session token); everything else is the player page.
+  const isMonitorRoute = window.location.pathname.replace(/\/+$/, "").endsWith("/monitor");
+  if (isMonitorRoute && appRoot !== null) {
+    void import("./monitor/boot.js").then((module) => module.bootMonitor(appRoot));
+  } else {
+    void boot();
+  }
 }

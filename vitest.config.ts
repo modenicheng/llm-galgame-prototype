@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@shared": path.resolve(__dirname, "src/shared"),
+      "@core": path.resolve(__dirname, "src/core"),
     },
   },
   test: {
