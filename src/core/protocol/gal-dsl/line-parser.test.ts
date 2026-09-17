@@ -441,9 +441,9 @@ describe("parseDslLine", () => {
   });
 
   it("tolerates spaces around the ch colon (frequent LLM slip)", () => {
-    expect(parseDslLine("@ch raspberry: uneasy center")).toEqual({
+    expect(parseDslLine("@ch suyao: uneasy center")).toEqual({
       kind: "character_cue",
-      characterId: "raspberry",
+      characterId: "suyao",
       variant: "uneasy",
       position: "center",
       action: "set",
@@ -451,13 +451,13 @@ describe("parseDslLine", () => {
   });
 
   it("rejects a ch line whose variant slot holds Chinese dialogue", () => {
-    // Observed failure: `@ch raspberry: 一句台词` — the model wanted a
+    // Observed failure: `@ch suyao: 一句台词` — the model wanted a
     // dialogue line; the parser must fail loudly instead of emitting a cue
     // with a garbage variant.
-    expectCode("@ch raspberry: 你到底藏了什么", "INVALID_CH_CUE");
+    expectCode("@ch suyao: 你到底藏了什么", "INVALID_CH_CUE");
     const err = (() => {
       try {
-        parseDslLine("@ch raspberry: 你到底藏了什么");
+        parseDslLine("@ch suyao: 你到底藏了什么");
       } catch (e) {
         return e as DslProtocolError;
       }
@@ -469,7 +469,7 @@ describe("parseDslLine", () => {
     // Historical incident: `@¬end 4607 buffer` (unrepaired mangle) played as
     // narration. @ now marks command intent — unknown forms must throw.
     expectCode("@¬end 4607 buffer", "UNKNOWN_COMMAND");
-    expectCode("@6ch raspberry: uneasy center", "UNKNOWN_COMMAND");
+    expectCode("@6ch suyao: uneasy center", "UNKNOWN_COMMAND");
     expectCode("@bmg relax", "UNKNOWN_COMMAND");
     expectCode("@", "UNKNOWN_COMMAND");
   });
@@ -488,12 +488,12 @@ describe("parseDslLine", () => {
   });
 
   it("diagnoses swapped visual slots when the variant slot holds a registered id", () => {
-    // Observed in the wild: `raspberry[raspberry|thinking]: …` — character id
+    // Observed in the wild: `suyao[suyao|thinking]: …` — character id
     // in the variant slot, variant name in the position slot.
-    const speakers = new Set(["raspberry"]);
+    const speakers = new Set(["suyao"]);
     let caught: unknown;
     try {
-      parseDslLine("raspberry[raspberry|thinking]: 那走吧。", speakers);
+      parseDslLine("suyao[suyao|thinking]: 那走吧。", speakers);
     } catch (err) {
       caught = err;
     }

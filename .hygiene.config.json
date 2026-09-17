@@ -6,6 +6,7 @@
   },
   "allowlist": {
     "src/game.ts": "M4.5 已完成：交互驱动簇移出后 1588 行（运行循环/段生命周期/恢复/图提交为卡片保留项）",
+    "src/adapters/llm/openai-compatible-generator.ts": "P0-B 移植后 1170 行：attemptDslStream 剔除续写子系统（strip-and-continue 主循环 ~450 行）拆出 dsl-stream-attempt 模块后移除豁免（清偿：下一迭代）",
     "src/runtime/interaction-driver.ts": "M4.5 自 game.ts 迁入的交互驱动 1171 行，二分为 input/choice 两文件后移除豁免（清偿：下一迭代）",
     "src/application/graph/run-graph-coordinator.ts": "M2.4 汇流子系统（末态索引/预筛/改绑 ~300 行）随卡并入后 958 行，拆出 confluence-checker 文件后移除豁免（清偿：下一迭代）",
     "src/application/narrative/narrative-director-service.ts": "M4.4 收窄为记忆子层时收缩（执行清单）",

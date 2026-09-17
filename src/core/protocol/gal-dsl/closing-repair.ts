@@ -102,13 +102,13 @@ function isJunkKeyword(token: string): boolean {
 /**
  * Repair the swapped dialogue-header bracket observed across seeds
  * (2026-09-17 sim audit): the model treats the variant slot as a
- * "whose sprite" slot and writes `raspberry[raspberry|smug]: …` — a
+ * "whose sprite" slot and writes `suyao[suyao|smug]: …` — a
  * registered character id inside the bracket. An id can never be a variant
  * name, so dropping it is deterministic:
  *
- *   `苏遥[raspberry|smug]: …` → `苏遥[smug]: …`
- *   `苏遥[raspberry|left]: …` → `苏遥[|left]: …`
- *   `苏遥[raspberry]: …`      → `苏遥: …` (visual unchanged)
+ *   `苏遥[suyao|smug]: …` → `苏遥[smug]: …`
+ *   `苏遥[suyao|left]: …` → `苏遥[|left]: …`
+ *   `苏遥[suyao]: …`      → `苏遥: …` (visual unchanged)
  *
  * Only an exact registered id in the FIRST slot triggers; every other
  * malformed bracket stays with the strict parser / catalog validation.
@@ -131,7 +131,7 @@ export function repairSwappedVisualSlots(
   const tail = line.slice(match[0].length) ;
   if (segments.length === 2) {
     const rest = segments[1]!;
-    // `[raspberry|]` — empty second slot is the forbidden all-empty form;
+    // `[suyao|]` — empty second slot is the forbidden all-empty form;
     // nothing deterministic to drop down to.
     if (rest === "") return null;
     // A position word keeps its slot semantics via the position-only form;

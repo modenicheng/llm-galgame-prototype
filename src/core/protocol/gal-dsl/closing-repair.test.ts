@@ -58,12 +58,12 @@ describe("repairDslClosingLine", () => {
 });
 
 describe("repairSwappedVisualSlots", () => {
-  const speakers = new Set(["raspberry", "树莓娘"]);
+  const speakers = new Set(["suyao", "苏遥"]);
 
   it.each([
-    ["id in variant slot with variant position", "树莓娘[raspberry|smug]: 走吧。", "树莓娘[smug]: 走吧。"],
-    ["id in variant slot with real position", "raspberry[raspberry|left]: 嗯。", "raspberry[|left]: 嗯。"],
-    ["id as the whole bracket", "树莓娘[raspberry]: 那走吧。", "树莓娘: 那走吧。"],
+    ["id in variant slot with variant position", "苏遥[suyao|smug]: 走吧。", "苏遥[smug]: 走吧。"],
+    ["id in variant slot with real position", "suyao[suyao|left]: 嗯。", "suyao[|left]: 嗯。"],
+    ["id as the whole bracket", "苏遥[suyao]: 那走吧。", "苏遥: 那走吧。"],
   ])("repairs %s", (_label, raw, expected) => {
     expect(repairSwappedVisualSlots(raw, speakers)).toMatchObject({
       line: expected,
@@ -72,17 +72,17 @@ describe("repairSwappedVisualSlots", () => {
   });
 
   it.each([
-    ["legit variant slot", "树莓娘[smug]: 走吧。"],
-    ["legit variant|position", "树莓娘[smug|left]: 走吧。"],
-    ["unregistered id in slot", "树莓娘[同学甲|smug]: 走吧。"],
-    ["no bracket at all", "树莓娘: 走吧。"],
-    ["forbidden empty second slot", "树莓娘[raspberry|]: 走吧。"],
-    ["spriteSet form", "树莓娘[raspberry:smug]: 走吧。"],
+    ["legit variant slot", "苏遥[smug]: 走吧。"],
+    ["legit variant|position", "苏遥[smug|left]: 走吧。"],
+    ["unregistered id in slot", "苏遥[同学甲|smug]: 走吧。"],
+    ["no bracket at all", "苏遥: 走吧。"],
+    ["forbidden empty second slot", "苏遥[suyao|]: 走吧。"],
+    ["spriteSet form", "苏遥[suyao:smug]: 走吧。"],
   ])("leaves %s alone", (_label, raw) => {
     expect(repairSwappedVisualSlots(raw, speakers)).toBeNull();
   });
 
   it("returns null without a speaker set", () => {
-    expect(repairSwappedVisualSlots("树莓娘[raspberry|smug]: 走吧。", undefined)).toBeNull();
+    expect(repairSwappedVisualSlots("苏遥[suyao|smug]: 走吧。", undefined)).toBeNull();
   });
 });

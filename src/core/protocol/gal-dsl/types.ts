@@ -137,16 +137,9 @@ export type MainEventDraft =
  * (docs §36). `prelude` includes the character patches derived from the
  * dialogue header itself (`苏遥[anxious]` → character_patch cue).
  */
-export interface DslSourceLocation {
-  attemptId: string;
-  lineIndex: number;
-}
-
 export interface EventGroupDraft {
   prelude: StageCue[];
   main: MainEventDraft;
-  /** Ephemeral monitor provenance; absent for tests and non-stream producers. */
-  source?: DslSourceLocation;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +222,7 @@ export interface DslErrorDetail {
 
 /** 所有指令的 @ 前缀清单——未知 @ 行的报错与提示词都引用它。 */
 export const DSL_COMMAND_LIST =
-  "@bg <背景id>、@bgm <音乐id|stop>、@se <音效id>、@ch <角色内部id>:<立绘变体> [位置]、@ch <id> hide|show|exit、@beat、@? <提示>、@+ <选项>、@= <占位文本>、@/?、@end <nonce> <reason>、@ending <档位> <结尾词>";
+  "@bg <背景id>、@bgm <音乐id|stop>、@se <音效id>、@ch <角色内部id>:<立绘变体> [位置]、@ch <id> hide|show|exit、@beat、@? <提示>、@+ <选项>、@= <占位文本>、@/?、@end <nonce> <reason>";
 
 /**
  * A structural violation of the DSL. The message doubles as the repair

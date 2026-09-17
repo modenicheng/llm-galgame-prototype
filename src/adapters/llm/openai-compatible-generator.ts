@@ -935,7 +935,11 @@ export class StoryGenerator {
             if (!tailConsumedByMerge) {
               try {
                 const tailClosingRepair = repairDslClosingLine(trimmed, nonce, allowedReasons);
-                const tailSwap = repairSwappedVisualSlots(trimmed, this.knownSpeakers);
+                // 与主循环同一守卫：@ 行（@+/@= 表单行）在同一形状下携带
+                // 自由文本，绝不做台词头槽位 swap。
+                const tailSwap = trimmed.startsWith("@")
+                  ? null
+                  : repairSwappedVisualSlots(trimmed, this.knownSpeakers);
                 const tailParsed = parseDslLine(
                   tailSwap?.line ?? tailClosingRepair?.line ?? trimmed,
                   this.knownSpeakers,

@@ -21,7 +21,7 @@
  *   otherwise                    → narration
  *
  * 以 @ 开头但不匹配任何指令的行**不再静默降级为旁白/台词**（历史事故：
- * `@¬end 4607 buffer` 被当旁白播出、`@ch raspberry: 台词` 造出幻影发言
+ * `@¬end 4607 buffer` 被当旁白播出、`@ch suyao: 台词` 造出幻影发言
  * 人），而是抛 UNKNOWN_COMMAND，由修复回路带着结构化细节重试。
  *
  * `knownSpeakers` (optional, from the character registry) gates the
@@ -126,7 +126,7 @@ function invalidVisualBracket(content: string, why: string): DslProtocolError {
   );
 }
 
-/** 变体槽出现已注册角色 id（如 `[raspberry|thinking]`）：两个槽写反了。 */
+/** 变体槽出现已注册角色 id（如 `[suyao|thinking]`）：两个槽写反了。 */
 function swappedVisualSlots(content: string, speakerId: string): DslProtocolError {
   return new DslProtocolError(
     "INVALID_VISUAL_BRACKET",
@@ -201,7 +201,7 @@ function parseVisual(
     }
     spec.position = positionToken;
   } else if (knownSpeakers?.has(first) === true) {
-    // `[raspberry]` — a registered id is never a variant name; catch it here
+    // `[suyao]` — a registered id is never a variant name; catch it here
     // instead of letting the catalog silently drop the cue later.
     throw swappedVisualSlots(content, first);
   }
@@ -338,7 +338,7 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
 
   // 8. character cue: @ch <id>:<variant> [position] | @ch <id> hide|show|exit.
   // The colon may carry surrounding whitespace — a frequent LLM slip
-  // (`@ch raspberry: uneasy center`) — because variant/position can never
+  // (`@ch suyao: uneasy center`) — because variant/position can never
   // contain spaces, the tight form is always recoverable.
   const chSetMatch = /^@ch\s+([^:\s]+)\s*:\s*(\S+)(?:\s+(\S+))?\s*$/.exec(line);
   if (chSetMatch !== null) {
@@ -346,7 +346,7 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
     const variant = chSetMatch[2]!;
     const positionToken = chSetMatch[3];
     if (knownSpeakers?.has(variant) === true || variant === characterId) {
-      // Observed in the wild: `@ch raspberry:raspberry` — same swapped-slot
+      // Observed in the wild: `@ch suyao:suyao` — same swapped-slot
       // family as the dialogue-header bracket.
       throw new DslProtocolError(
         "INVALID_CH_CUE",
@@ -359,7 +359,7 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
       );
     }
     if (containsHan(variant)) {
-      // Observed failure: `@ch raspberry: 一句台词` — the model wanted a
+      // Observed failure: `@ch suyao: 一句台词` — the model wanted a
       // dialogue line but reached for the ch command. Fail loudly with the
       // dialogue format instead of emitting a cue with a garbage variant.
       throw new DslProtocolError(
@@ -368,7 +368,7 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
         {
           expected: "@ch <角色内部id>:<立绘变体> [位置]",
           cause: "这几乎总是一句被写成 ch 指令的台词——台词行不能以 @ 开头",
-          fix: `台词请写成 "角色名[变体]: 台词"（不带 @），例如 "raspberry[smile]: 台词"；若确实是立绘指令，写 "@ch ${characterId}:<变体>"`,
+          fix: `台词请写成 "角色名[变体]: 台词"（不带 @），例如 "苏遥[smile]: 台词"；若确实是立绘指令，写 "@ch ${characterId}:<变体>"`,
         },
       );
     }
@@ -425,7 +425,7 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
 
   // Any other line starting with "@" claims command intent — it must never
   // degrade into dialogue or narration (historical incidents: `@¬end 4607
-  // buffer` played as narration, `@ch raspberry: …` invented a phantom
+  // buffer` played as narration, `@ch suyao: …` invented a phantom
   // speaker). Unknown @ lines fail loudly with the command list instead.
   if (line.startsWith("@")) {
     const dialogueShaped =
