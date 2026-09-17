@@ -138,7 +138,7 @@ export function scenarioSeedToInitialState(seed: ScenarioSeed): StoryState {
   return createInitialState({
     scene: {
       id: seed.id,
-      location: "校园技术社团（网络开拓者协会）",
+      location: "校园",
       purpose: seed.seed.trim(),
     },
     canon: {

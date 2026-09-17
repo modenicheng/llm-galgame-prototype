@@ -127,15 +127,16 @@ describe("selectScenarioSeed", () => {
 describe("scenarioSeedToInitialState", () => {
   it("builds a valid StoryState carrying the seed as the scene purpose", async () => {
     const catalog = await loadScenarioSeedCatalog(REAL_CATALOG);
-    const seed = selectScenarioSeed(catalog, "sess-xyz", "old-device-before-opening");
+    const seed = selectScenarioSeed(catalog, "sess-xyz", catalog.seeds[0]!.id);
 
     const state = scenarioSeedToInitialState(seed);
 
     // 必须能通过运行时的状态校验（快照持久化/恢复都会用到）。
     expect(StoryStateSchema.parse(state)).toBeDefined();
-    expect(state.scene.id).toBe("old-device-before-opening");
-    expect(state.scene.purpose).toContain("旧设备");
-    expect(state.canon.scenario_seed).toBe("old-device-before-opening");
+    expect(state.scene.id).toBe(seed.id);
+    expect(state.scene.location).toBe("校园");
+    expect(state.scene.purpose).toBe(seed.seed.trim());
+    expect(state.canon.scenario_seed).toBe(seed.id);
     expect(state.open_threads[0]?.summary).toBe(seed.title);
   });
 });
