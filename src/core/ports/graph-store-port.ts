@@ -38,6 +38,15 @@ export interface GraphStorePort {
   /** 全量场景节点（latest-wins 折叠；M2.4 末态索引用于 outlineRef 解析）。 */
   listScenes(): Promise<SceneNode[]>;
 
+  /**
+   * M5.6 图维护：tombstone 一条决策记录（append-only 删除标记行；图零物理
+   * 删除，读取端折叠过滤）。仅限协调器 GC 的不可达内容回收。
+   */
+  removeDecision(id: DecisionId): Promise<void>;
+
+  /** M5.6：tombstone 一条边记录（语义同 removeDecision）。 */
+  removeEdge(id: EdgeId): Promise<void>;
+
   /** Persist a decision node: index line + entry snapshot in one call. */
   putDecision(node: DecisionNode): Promise<void>;
 

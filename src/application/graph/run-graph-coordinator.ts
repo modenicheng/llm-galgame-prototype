@@ -199,6 +199,7 @@ export class RunGraphCoordinator implements RunGraphPort {
     options?: { restart?: boolean },
   ): Promise<RunResume> {
     await this.store.initialize();
+    await this.collectGarbage();
     const cursor = await this.store.loadCursor();
     if (cursor === null) {
       const lastRun = (await this.store.listRuns()).at(-1);
@@ -340,6 +341,93 @@ export class RunGraphCoordinator implements RunGraphPort {
       if (!recorded.has(payloadId)) {
         await this.store.deletePayload(payloadId);
       }
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // M5.6 图维护（内部 GC；无玩家删除入口——决议 D7）
+  //
+  // 仅回收**不可达**内容：putDecision 后 putEdge 前的崩溃孤儿、被汇流改绑
+  // 取代的孤儿节点、孤儿 payload，以及入边归零后的下游递归（共享节点自然
+  // 存活）。保护不变量：被任何周目路径（含已弃周目）到达过的节点与边、
+  // retrace 起点、游标——一律不可回收。canon/stats/runs 不回滚。幂等。
+  // ----------------------------------------------------------------
+
+  async collectGarbage(): Promise<void> {
+    const decisions = await this.store.listDecisions();
+    const edges = await this.store.listEdges();
+    const runs = await this.store.listRuns();
+    const cursor = await this.store.loadCursor();
+
+    // 保护集：所有周目路径（终点 = 结局边 / abandonedAt / 游标）的逆向行走。
+    const protectedNodes = new Set<DecisionId>();
+    const protectedEdges = new Set<EdgeId>();
+    const walk = (terminal: DecisionId | null): void => {
+      let nodeId: DecisionId | null = terminal;
+      const visited = new Set<string>();
+      while (nodeId !== null && !visited.has(nodeId)) {
+        visited.add(nodeId);
+        protectedNodes.add(nodeId);
+        const inEdge = pickLatestInEdge(edges, nodeId);
+        if (inEdge === undefined) break;
+        protectedEdges.add(inEdge.id);
+        nodeId = inEdge.from;
+      }
+    };
+    for (const run of runs) {
+      if (run.ending !== undefined) {
+        // 同一结局 id 可被多个周目到达——每条指向该结局的边都要保护并行走。
+        for (const endingEdge of edges.filter((e) => e.to.kind === "ending" && e.to.id === run.ending)) {
+          protectedEdges.add(endingEdge.id);
+          walk(endingEdge.from);
+        }
+      }
+      if (run.abandonedAt !== undefined) walk(run.abandonedAt);
+      if (run.origin.kind === "retrace") protectedNodes.add(run.origin.from);
+    }
+    if (cursor !== null) walk(cursor.position);
+
+    // 不可达决策：不在保护集（入度 0 由「不在任何保护路径」蕴含——保护行走
+    // 已覆盖全部入边链）。级联：删除后再核对其下游（此处下游必在保护集或
+    // 另一轮处理；迭代直至不动点，保证幂等）。
+    const removedNodes = new Set<DecisionId>();
+    const removedEdges = new Set<EdgeId>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const decision of decisions) {
+        if (protectedNodes.has(decision.id) || removedNodes.has(decision.id)) continue;
+        const hasLiveInEdge = edges.some(
+          (e) =>
+            !removedEdges.has(e.id) &&
+            e.to.kind === "decision" &&
+            e.to.id === decision.id &&
+            !removedNodes.has(e.from),
+        );
+        if (hasLiveInEdge) continue;
+        // 删除该节点与其牵连的边（出边、未删除的入边）。
+        removedNodes.add(decision.id);
+        changed = true;
+        for (const edge of edges) {
+          if (removedEdges.has(edge.id) || protectedEdges.has(edge.id)) continue;
+          if (edge.from === decision.id || (edge.to.kind === "decision" && edge.to.id === decision.id)) {
+            removedEdges.add(edge.id);
+          }
+        }
+      }
+    }
+
+    for (const id of removedNodes) await this.store.removeDecision(id);
+    for (const id of removedEdges) await this.store.removeEdge(id);
+    if (removedEdges.size > 0) {
+      const liveEdges = await this.store.listEdges();
+      await this.discardOrphanPayloads(liveEdges);
+    }
+    if (removedNodes.size > 0) {
+      this.diagnostics.info(
+        "RunGraphCoordinator",
+        `图维护：回收不可达节点 ${removedNodes.size} 个、边 ${removedEdges.size} 条（幂等，图契约零破坏）`,
+      );
     }
   }
 

@@ -118,19 +118,52 @@ async function readJsonlLines(filePath: string): Promise<string[]> {
   return raw.split("\n").filter((line) => line.trim().length > 0);
 }
 
-/** 解析 JSONL 行，损坏行跳过；返回按文件序的合法记录。 */
-async function parseJsonl<T>(filePath: string, schema: z.ZodType<T>): Promise<T[]> {
-  const records: T[] = [];
+/** 解析 JSONL 行，损坏行跳过；返回按文件序的合法记录（latest-wins 折叠前）。
+ * M5.6 tombstone：`{"id":"…","deleted":true}` 行删除同 id 的此前记录——
+ * 磁盘 append-only 不回改，读取端折叠时过滤已删除 id（§3 契约 schema 不动）。 */
+async function parseJsonl<T extends { id: string }>(filePath: string, schema: z.ZodType<T>): Promise<T[]> {
+  interface Entry {
+    id: string;
+    deleted: boolean;
+    record?: T;
+  }
+  const entries: Entry[] = [];
+  const idOf = new Map<string, string>(); // alias-id → canonical id（首次出现序）
   for (const line of await readJsonlLines(filePath)) {
     try {
       const parsed: unknown = JSON.parse(line);
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        (parsed as { deleted?: unknown }).deleted === true &&
+        typeof (parsed as { id?: unknown }).id === "string"
+      ) {
+        const id = (parsed as { id: string }).id;
+        const canonical = idOf.get(id) ?? id;
+        entries.push({ id: canonical, deleted: true });
+        continue;
+      }
       const result = schema.safeParse(parsed);
-      if (result.success) records.push(result.data);
+      if (result.success) {
+        idOf.set(result.data.id, result.data.id);
+        entries.push({ id: result.data.id, deleted: false, record: result.data });
+      }
     } catch {
       // 一行损坏不得掩盖 append-only 日志的其余部分。
     }
   }
-  return records;
+  // 折叠：同 id 取最后一次出现；deleted=true 的最终态 → 整个 id 过滤。
+  const latest = new Map<string, Entry>();
+  for (const entry of entries) latest.set(entry.id, entry);
+  const out: T[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    const finalEntry = latest.get(entry.id)!;
+    if (!finalEntry.deleted && finalEntry.record !== undefined) out.push(finalEntry.record);
+  }
+  return out;
 }
 
 /** latest-wins：同 id 多行时取最后一次出现。 */
@@ -178,6 +211,17 @@ export class GameGraphStore implements GraphStorePort {
         await parseJsonl(this.filePath(GAME_STORAGE_LAYOUT.scenes), SceneNodeSchema),
       ).values(),
     ];
+  }
+
+  /** M5.6：tombstone 决策记录（append-only 删除标记行，磁盘不回改）。 */
+  async removeDecision(id: DecisionId): Promise<void> {
+    await this.appendRecord(GAME_STORAGE_LAYOUT.decisions, { id, deleted: true });
+  }
+
+  /** M5.6：tombstone 边记录；其负载文件随后成为孤儿（GC 一并清理）。 */
+  async removeEdge(id: EdgeId): Promise<void> {
+    await this.appendRecord(GAME_STORAGE_LAYOUT.edges, { id, deleted: true });
+    await this.deletePayload(id);
   }
 
   async putEnding(ending: EndingNode): Promise<void> {
