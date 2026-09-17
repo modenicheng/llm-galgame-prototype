@@ -8,26 +8,26 @@ local_web:
   controller_limit: 1
 
 api:
-  model: deepseek-v4-flash
+  model: deepseek-flash
   base_url: https://api.deepseek.com
   api_key_env: OPENAI_API_KEY
   timeout_ms: 60000
   token_limit_field: max_completion_tokens
 
 generation:
-  temperature: 0.9
-  # 1400 常在长段结尾截断（无 @end）导致整段判失败；2200 给模型足够预算
-  max_tokens: 2200
-  repair_attempts: 2
+  temperature: 0.7
+  # 1400 常在长段结尾截断（2048 给模型足够预算
+  max_tokens: 2048
+  repair_attempts: 4
   # 同一段连续修复链上限：链耗尽后续写转入末段收束提示（L2），
   # 仍连续失败再启用强制收束保险丝（L3）。0 = 不设上限（旧行为）。
   max_consecutive_repairs: 2
 
-# 文本缓冲阈值（docs §74）：播放达到两句即可开始；正常保持六句未来内容；只剩三句时启动续写
+# 文本缓冲阈值（docs §74）：播放达到两句即可开始；正常保持六句未来内容；只剩4句时启动续写
 text_buffer:
   start_threshold_lines: 2
-  target_lines: 6
-  refill_threshold_lines: 3
+  target_lines: 8
+  refill_threshold_lines: 4
 
 # 资源目录（docs §57）：角色绑定、背景/BGM/立绘等资源描述
 assets:
@@ -112,9 +112,9 @@ media:
 characters: {}
 
 game:
-  history_events: 80
+  history_events: 180
   sessions_dir: sessions
-  show_line_ids: true
+  show_line_ids: false
 
 # 叙事模式：校园分支使用 event 模式（每局一个叙事种子，按三级收束节奏结束）。
 narrative:
@@ -129,12 +129,13 @@ narrative:
   #     （endingRequired + 合成结局兜底），正常加压下不应触达。
   # 各级 0 = 禁用；启用项之间必须非递减（L1 ≤ L2 ≤ L3）。
   event:
-    wrapup_interactions: 6
-    closing_push_interactions: 8
-    max_interactions: 10
+    wrapup_interactions: 3
+    closing_push_interactions: 6
+    max_interactions: 8
     # 长回合护栏：单回合模型文本事件超过该数后，续写附"尽快打开交互表单"
     # 软提示（0 = 禁用）。防止整回合连写数分钟不交还玩家。
-    max_events_between_interactions: 24
+    # 2026-09-17 审计：24 过松（实测出现 31 条文本的段），收紧到 10。
+    max_events_between_interactions: 10
   threads:
     max_major_active: 2
     max_minor_active: 3
