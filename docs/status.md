@@ -27,6 +27,16 @@
 - **Gal DSL 单协议**：`src/core/protocol/gal-dsl/`（stream-decoder / line-parser /
   interaction-builder / group-builder / segment-validator / compiler / text-pipeline），
   含完整测试。JSONL 模型协议已于 2026-08-09 全量移除（changelog §115）。
+- **@ 前缀指令语法 + 分层修复（2026-09-18，自 campus 线移植）**：所有指令行
+  `@` 化（`@bg/@bgm/@se/@ch/@beat/@?/@+/@=/@/?/@end`），未知 @ 行
+  `UNKNOWN_COMMAND` 拒绝、裸写法 `RETIRED_ALIAS` 响亮报错、全角前缀归一化；
+  closing-repair 三层修复（哨兵规范化/台词头槽位 swap/空 `@?` 合并）接入生成流；
+  `DslProtocolError` 携带 FastAPI 式 detail 注入下一轮修复指令；strip-and-continue
+  剔除续写（白名单坏行剔除后 assistant 前缀同 parser 续写，每 attempt 预算 1 次，
+  S1/S2/N1 边界加固）；段失败即后台启动修复段（fail-fast，消除读空队列后的
+  冷启动空窗）；幻影角色去污染（knownCharacterIds 门控 + summarizeState 过滤）；
+  舞台状态注入全维度显式化 + compiler `REDUNDANT_STAGE_CUE` 冗余兜底。
+  `@ending` DSL 能力保留惰性解析、协议不宣传（待拍板）。
 - **演出状态**：`src/core/presentation/`——KEEP/SET/RESET、first-touch 初始化、
   hide/show/exit、`bgm stop`、站位互斥、未知角色 no-op（§11–§19、§52–§56）。
 - **@end 哨兵与截断恢复**：nonce 校验、INCOMPLETE_SEGMENT、已发布前缀保留、
