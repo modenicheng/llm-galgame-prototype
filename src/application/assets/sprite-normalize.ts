@@ -198,9 +198,14 @@ export function alphaBBox(image: RGBAImage): VariantBox | undefined {
 /**
  * 同套统一画布：所有变体贴到同一 union 画布，保留各自相对偏移 ——
  * 输出规格逐套一致、差分逐像素对齐。空套（全透明变体）抛错。
+ *
+ * `ground: true` 时做地面线对齐：各变体按自身内容底线垂直平移到画布
+ * 底边（水平位置不动）。用于源图各差分脚底落点不一的套——union 画布
+ * 的底边由内容最低的差分决定，不对齐会让其余差分在舞台上整体悬空。
  */
 export function composeVariantCanvases(
   images: RGBAImage[],
+  options: { ground?: boolean } = {},
 ): { canvas: { width: number; height: number }; outputs: RGBAImage[]; offsets: Array<{ x: number; y: number }> } {
   if (images.length === 0) throw new Error("composeVariantCanvases: 空变体集");
   let minX = Number.POSITIVE_INFINITY;
@@ -224,10 +229,13 @@ export function composeVariantCanvases(
   const outputs = images.map((image, index) => {
     const box = boxes[index]!;
     const out = new Uint8Array(canvasWidth * canvasHeight * 4);
+    // 常规：保持源图相对偏移；ground：内容底边落到画布底边。
+    const offsetX = box.x - minX;
+    const offsetY = options.ground === true ? canvasHeight - box.height : box.y - minY;
     for (let y = 0; y < box.height; y += 1) {
       for (let x = 0; x < box.width; x += 1) {
         const src = ((box.y + y) * image.width + (box.x + x)) * 4;
-        const dst = ((box.y - minY + y) * canvasWidth + (box.x - minX + x)) * 4;
+        const dst = ((offsetY + y) * canvasWidth + (offsetX + x)) * 4;
         out[dst] = image.data[src]!;
         out[dst + 1] = image.data[src + 1]!;
         out[dst + 2] = image.data[src + 2]!;
@@ -239,7 +247,13 @@ export function composeVariantCanvases(
   return {
     canvas: { width: canvasWidth, height: canvasHeight },
     outputs,
-    offsets: boxes.map((box) => ({ x: box.x - minX, y: box.y - minY })),
+    offsets: images.map((_image, index) => {
+      const box = boxes[index]!;
+      return {
+        x: box.x - minX,
+        y: options.ground === true ? canvasHeight - box.height : box.y - minY,
+      };
+    }),
   };
 }
 
@@ -277,7 +291,12 @@ export function effectivePresentation(
 }
 
 function needsProcessing(presentation: SpritePresentation): boolean {
-  return presentation.rotate !== undefined || presentation.crop !== undefined || presentation.normalize === true;
+  return (
+    presentation.rotate !== undefined ||
+    presentation.crop !== undefined ||
+    presentation.normalize === true ||
+    presentation.ground === true
+  );
 }
 
 interface CacheVariantEntry {
@@ -330,15 +349,12 @@ export async function normalizeSprites(
   const derivedRoot = path.resolve(options.derivedRoot);
 
   for (const [setId, set] of Object.entries(catalog.spriteSets)) {
-    if (set.presentation?.height !== undefined) {
-      result.heights[setId] = set.presentation.height;
-    }
-
-    // height 只在 set 级存在（loader 已保证）；变体级参数仅覆盖
+    // height/ground 只在 set 级存在（loader 已保证）；变体级参数仅覆盖
     // rotate/crop/normalize。
     if (set.presentation?.height !== undefined) {
       result.heights[setId] = set.presentation.height;
     }
+    const groundAlign = set.presentation?.ground === true;
 
     const processed = new Map<string, { presentation: SpritePresentation; src: string }>();
     for (const [variantId, variant] of Object.entries(set.variants)) {
@@ -389,7 +405,7 @@ export async function normalizeSprites(
       processedImages.push(image);
     }
 
-    const { canvas, outputs } = composeVariantCanvases(processedImages);
+    const { canvas, outputs } = composeVariantCanvases(processedImages, { ground: groundAlign });
     await mkdir(derivedDir, { recursive: true });
     const variants: Record<string, CacheVariantEntry> = {};
     for (const [index, variantId] of [...processed.keys()].entries()) {

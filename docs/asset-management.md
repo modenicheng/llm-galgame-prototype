@@ -498,10 +498,11 @@ sprite_sets:
         width: 1152
         height: 1600
       normalize: true   # 可选。裁掉透明边 + 同套所有变体归一到统一画布
+      ground: true      # 可选。各变体按自身内容底边对齐到同一地面线（见下）
       height: 0.92      # 可选。舞台显示高度占比（0–1.2），仅前端展示元数据
     variants:
       base: { src: ... }
-      special:          # 变体级可覆写 rotate/crop/normalize（height 只能在 set 级）
+      special:          # 变体级可覆写 rotate/crop/normalize（height/ground 只能在 set 级）
         src: ...
         presentation: { rotate: 0 }
 ```
@@ -509,7 +510,8 @@ sprite_sets:
 处理规则：
 
 - **顺序固定**：rotate → crop → 裁透明边 → 同套统一画布。最后一部把全套变体贴到同一个 union 画布，保证「同一套立绘裁切后规格一致」且表情差分逐像素对齐；
-- 任一 `rotate`/`crop`/`normalize` 出现即触发整套派生（含未配置的变体，保证画布统一）；只配 `height` 不动文件，仅把占比投影进 manifest；
+- **ground（地面线对齐）**：union 画布的底边由内容最低的变体决定——若源图各差分的脚底落点不一（典型：官方 PSD 导出的部分姿势整体画得偏低），其余差分在舞台上会整体悬空、观感"脚底下空了一块"。`ground: true` 把每个变体的内容底边垂直平移到画布底边（水平位置保持不动），保证任意变体切换时脚都踩在同一地面。适用：全员站姿类立绘组；不适用：含悬空/飞行姿态的组；
+- 任一 `rotate`/`crop`/`normalize`/`ground` 出现即触发整套派生（含未配置的变体，保证画布统一）；只配 `height` 不动文件，仅把占比投影进 manifest；
 - 派生产物写 `output/derived-game-assets/<组>/<变体>.png`（gitignore 内），manifest URL 重写为 `/game-assets/__derived__/<组>/<变体>.png`，原始路径照常服务；
 - 磁盘缓存：`.meta.json` 记录参数指纹 + 源 mtime，任一变化自动重derive（冷启动全套约 10s，命中后毫秒级）；
 - 失败即启动失败（fail-fast，与 §9 校验同纪律）；**树莓娘派生产物继承「仅限内部流通」约束**（§10），不入库不上传。

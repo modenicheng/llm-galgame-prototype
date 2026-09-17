@@ -73,21 +73,26 @@ const SpritePresentationCoreSchema = {
 };
 
 const SpritePresentationSchema = z
-  .object({ ...SpritePresentationCoreSchema, height: z.number().finite().gt(0).lte(1.2).optional() })
+  .object({
+    ...SpritePresentationCoreSchema,
+    ground: z.boolean().optional(),
+    height: z.number().finite().gt(0).lte(1.2).optional(),
+  })
   .refine(
     (v) =>
       v.rotate !== undefined ||
       v.crop !== undefined ||
       v.normalize !== undefined ||
+      v.ground !== undefined ||
       v.height !== undefined,
-    "presentation 至少要有一个字段（rotate/crop/normalize/height）",
+    "presentation 至少要有一个字段（rotate/crop/normalize/ground/height）",
   );
 
 const SpriteVariantPresentationSchema = z
   .object({ ...SpritePresentationCoreSchema })
   .refine(
     (v) => v.rotate !== undefined || v.crop !== undefined || v.normalize !== undefined,
-    "变体级 presentation 至少要有一个字段（rotate/crop/normalize；height 只能在 set 级配置）",
+    "变体级 presentation 至少要有一个字段（rotate/crop/normalize；height/ground 只能在 set 级配置）",
   );
 
 const SpriteVariantSchema = z.object({

@@ -209,7 +209,13 @@ sprite_sets:
     presentation:
       # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
       # 前端按归一画布贴底缩放（派生文件见 docs/asset-management.md）。
+      # ground 把各差分的内容底边对齐到同一地面线：union 画布底边若被
+      # 画得偏低的差分占据，其余差分会在舞台上整体悬空。
       normalize: true
+      ground: true
+      # 归一画布顶部被抬手系差分（cheer/proud）撑高，base 本体只占画布
+      # 高 94.5%，默认 0.92 占比会显得比配角矮一截，补到 0.95。
+      height: 0.95
 
     variants:
       base:
@@ -284,7 +290,10 @@ sprite_sets:
     presentation:
       # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
       # 前端按归一画布贴底缩放（派生文件见 docs/asset-management.md）。
+      # ground 把各差分的内容底边对齐到同一地面线：union 画布底边若被
+      # 画得偏低的差分占据，其余差分会在舞台上整体悬空。
       normalize: true
+      ground: true
     variants:
       base:
         src: characters/female_A/base.png
@@ -320,7 +329,10 @@ sprite_sets:
     presentation:
       # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
       # 前端按归一画布贴底缩放（派生文件见 docs/asset-management.md）。
+      # ground 把各差分的内容底边对齐到同一地面线：union 画布底边若被
+      # 画得偏低的差分占据，其余差分会在舞台上整体悬空。
       normalize: true
+      ground: true
     variants:
       base:
         src: characters/female_B/base.png
@@ -355,7 +367,10 @@ sprite_sets:
     presentation:
       # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
       # 前端按归一画布贴底缩放（派生文件见 docs/asset-management.md）。
+      # ground 把各差分的内容底边对齐到同一地面线：union 画布底边若被
+      # 画得偏低的差分占据，其余差分会在舞台上整体悬空。
       normalize: true
+      ground: true
     variants:
       base:
         src: characters/male_A/base.png
@@ -390,7 +405,10 @@ sprite_sets:
     presentation:
       # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
       # 前端按归一画布贴底缩放（派生文件见 docs/asset-management.md）。
+      # ground 把各差分的内容底边对齐到同一地面线：union 画布底边若被
+      # 画得偏低的差分占据，其余差分会在舞台上整体悬空。
       normalize: true
+      ground: true
     variants:
       base:
         src: characters/male_B/base.png

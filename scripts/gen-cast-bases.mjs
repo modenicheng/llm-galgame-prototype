@@ -5,7 +5,8 @@
 //     → chroma key 纯蓝 + despill → 透明底立绘 PNG
 //
 // 用法：
-//   pnpm exec tsx scripts/gen-cast-bases.mjs [--stage all|bases|diffs] [--only <castId>] [--force]
+//   pnpm exec tsx scripts/gen-cast-bases.mjs [--stage all|bases|diffs] [--only <castId>]
+//                                           [--variants smile,angry] [--force]
 //   pnpm exec tsx scripts/gen-cast-bases.mjs --rekey-only [--only <castId>]   # 对已有 *_blue.png 重跑色键，不调 API
 //
 // 产出：output/image-gen/cast/<castId>/{base_blue,base,<diff>}.png
@@ -29,16 +30,25 @@ const SIZE = "1152x1984";
 const QUALITY = "high";
 const REF_IMAGE = "output/image-gen/raspberry-diff/calm.png";
 
-const BASE_PROMPT = `以这张参考图的画风为基准：日系动画赛璐璐立绘、干净均匀的深色细描边、柔和粉彩上色、大而明亮的眼睛，人物比例与参考图完全一致（约6.5头身的全身立绘）。
+// 比例锚定：树莓娘实测约 5.5 头身（头大萌系）。上一批提示词写 6.5 头身，
+// 与参考图自相矛盾，把四个人的头都拉小了（实测 5.8–6.7 头身，男生最写实），
+// 这次的数字必须与参考图一致，不要再写更大的头身比。
+const BASE_PROMPT = `以这张参考图的画风为基准：日系动画赛璐璐立绘、干净均匀的深色细描边、柔和粉彩上色。
+人物比例必须与参考图完全一致：头大而圆润的萌系比例（与参考图相同的头身比，约5.5头身），
+头顶到下巴的距离约占全身的五分之一，肩窄、手脚小巧；严禁画成头小身长的写实比例。
 请绘制一个全新的角色，与参考图中的角色完全不同：
 {DESC}
-全身正面站姿立绘，双臂自然下垂微微张开，正视镜头，表情平静温和，头与脚完整入画，构图与参考图相同。
+姿势：{POSE}
+全身正面站姿立绘，正视镜头，表情平静温和，头与双脚完整入画，双脚踩在同一水平地面线上，构图与参考图相同（人物居中、全身撑满画面高度）。
+眼睛是重点：双眼大而明亮、左右对称，高光通透，眼型与参考图同一风格；严禁呆滞眼、大小眼、线条糊成一团。
 背景为纯蓝色幕布（RGB 0,0,255），完全均匀纯色，无渐变、无阴影、无文字、无杂物。`;
 
+// 差分：只改面部表情。姿势锁按角色注入（每人有标志性姿势，不再是统一
+// 的"双臂自然下垂微微张开"站桩）。
 const DIFF_PROMPT = `保持图中角色的人物设计、发型、发饰、服装、姿势、构图、比例与绘画风格完全不变。
-双臂必须保持与图中完全相同的自然下垂站姿：上臂贴住身体两侧、手肘不弯曲、双手手指自然放松并拢；
-严禁张开手指、弯曲手肘、抬臂或做出任何手势，身体其余部分与图中完全一致。
-仅修改面部表情与神态：{EXPR}
+{POSE_LOCK}
+严禁改变姿势、手势、道具位置或做出图中没有的新动作；身体、四肢与道具与图中完全一致。
+仅修改面部表情与神态（眼部神态变化必须保持双眼对称、线条干净，禁止崩坏）：{EXPR}
 背景保持纯蓝色幕布（RGB 0,0,255）不变，完全均匀纯色，无渐变、无阴影、无杂物。`;
 
 const EXPRESSIONS = [
@@ -72,23 +82,32 @@ const EXPRESSIONS = [
   },
 ];
 
-/** 角色阵容：2 女 2 男，服装配色均避开蓝色系（蓝幕色键安全）。 */
+/**
+ * 角色阵容：2 女 2 男，服装配色均避开蓝色系（蓝幕色键安全）。
+ * pose = 基准图姿势描述；poseLock = 差分时的姿势锁（与 pose 同一句，
+ * 让差分模型把该姿势当作不可动的一部分）。
+ * 姿势设计原则：自然站立 + 一个标志性动作/道具，互不重复，不遮挡面部。
+ */
 const CAST = [
   {
     id: "female_A",
     desc: "一位温柔娴静的女大学生学姐：亚麻棕色齐颈波波头短发，头侧别一枚奶白色发卡；杏色大眼睛；身穿米白色V领针织开衫，内搭白色翻领衬衫，下身是暗红色格纹百褶及膝裙、白色短袜和深棕色乐福鞋。",
+    pose: "双手在腰腹前轻轻交握（一只手轻搭在另一只手背上），双肘微弯自然靠近身体，双肩放松，双脚脚跟并拢自然站立。",
   },
   {
     id: "female_B",
     desc: "一位活力四射的女高中生后辈：焦糖色低双马尾，扎着奶白色圆珠发饰；琥珀色大眼睛；身穿奶油色水手服上衣，配深绿色领结与深绿色百褶裙，白色过膝袜和棕色乐福鞋。",
+    pose: "右手抬起挥手的打招呼姿势：右手举到头部侧面、手肘弯曲、手掌张开朝向镜头，五指自然分开；左手自然垂于身侧，双脚自然站立。",
   },
   {
     id: "male_A",
     desc: "一位开朗阳光的男高中生：栗色蓬松短碎发；茶色大眼睛；身穿白色短袖衬衫、外罩浅灰色V领针织背心，下身深灰色长裤和白色运动鞋。",
+    pose: "双手插进裤子两侧口袋（拇指留在外侧），肩部放松，双脚自然分开与肩同宽站立。",
   },
   {
     id: "male_B",
     desc: "一位沉稳安静的男性学长：黑色清爽短发，戴银灰色细框眼镜；深灰色大眼睛；身穿燕麦色圆领针织毛衣、内搭白色衬衫并露出衣领，下身深炭灰色直筒长裤和深棕色皮鞋。",
+    pose: "左手手肘微微弯曲，把一本合上的书夹在左侧腰间（书贴着身体左侧，左手在书本下方轻托住书底），右手自然垂于身侧，双脚自然并拢站立。",
   },
 ];
 
@@ -103,7 +122,8 @@ const EDGE_ALPHA_MIN = 70; // 边缘带 blueness ≥ 该值 → 完全透明
  * 去蓝幕：全局色键（blueness 阈值判定，树莓娘管线同款；角色服装配色已避开
  * 蓝色系，封闭蓝区如双腿间腿缝同样清除）；与蓝幕相邻的边缘带按 blueness
  * 线性羽化 alpha 并 despill（把溢出的蓝分量压回 max(r,g)）。
- * 返回 { png, removedRatio }。
+ * 返回 { png, removedRatio, metrics }，metrics 为内容包围盒量化指标
+ * （QC 用：底隙/内容高漂移 = 姿势或构图跑偏的信号）。
  */
 function chromaKeyBlue(bytes) {
   const image = PNG.sync.read(Buffer.from(bytes));
@@ -146,18 +166,42 @@ function chromaKeyBlue(bytes) {
     if (data[o + 2] > cap) data[o + 2] = cap;
   }
 
-  return { png: PNG.sync.write(image), removedRatio: removed / total };
+  // 内容包围盒（alpha ≥ 8，与派生管线同阈值）
+  let minX = width, minY = height, maxX = -1, maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[(y * width + x) * 4 + 3] >= 8) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  const metrics =
+    maxX < 0
+      ? null
+      : {
+          contentW: maxX - minX + 1,
+          contentH: maxY - minY + 1,
+          bottomGap: height - 1 - maxY,
+          leftGap: minX,
+          rightGap: width - 1 - maxX,
+          topGap: minY,
+        };
+  return { png: PNG.sync.write(image), removedRatio: removed / total, metrics };
 }
 
 // ---------- 生成流程 ----------
 
 function parseArgs(argv) {
-  const args = { stage: "all", only: null, force: false, rekeyOnly: false };
+  const args = { stage: "all", only: null, force: false, rekeyOnly: false, variants: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--stage") args.stage = argv[++i];
     else if (argv[i] === "--only") args.only = argv[++i];
     else if (argv[i] === "--force") args.force = true;
     else if (argv[i] === "--rekey-only") args.rekeyOnly = true;
+    else if (argv[i] === "--variants") args.variants = argv[++i].split(",").map((s) => s.trim()).filter(Boolean);
   }
   if (!["all", "bases", "diffs"].includes(args.stage)) {
     console.error(`未知 stage: ${args.stage}（all|bases|diffs）`);
@@ -175,7 +219,10 @@ function rekeyExisting(dir, names, manifestItems) {
     const keyed = chromaKeyBlue(fs.readFileSync(bluePath));
     fs.writeFileSync(cutPath, keyed.png);
     const existing = manifestItems.find((it) => it.name === name);
-    if (existing) existing.removedRatio = Number(keyed.removedRatio.toFixed(4));
+    if (existing) {
+      existing.removedRatio = Number(keyed.removedRatio.toFixed(4));
+      existing.metrics = keyed.metrics;
+    }
     console.log(`[rekey] ${name} removedRatio=${keyed.removedRatio.toFixed(4)}`);
   }
 }
@@ -211,13 +258,15 @@ async function processOne({ client, name, prompt, refImagePath, bluePath, cutPat
     blue: path.basename(bluePath),
     file: path.basename(cutPath),
     removedRatio: Number(keyed.removedRatio.toFixed(4)),
+    metrics: keyed.metrics,
     bytes: keyed.png.byteLength,
     ms: Date.now() - started,
   };
   if (result.usage) item.usage = result.usage;
   manifestItems.push(item);
   console.log(
-    `[ok] ${name} removedRatio=${item.removedRatio} ${(item.ms / 1000).toFixed(1)}s` +
+    `[ok] ${name} removedRatio=${item.removedRatio} contentH=${keyed.metrics?.contentH} bottomGap=${keyed.metrics?.bottomGap}` +
+      ` ${(item.ms / 1000).toFixed(1)}s` +
       (result.usage && result.usage.totalTokens != null ? ` tokens=${result.usage.totalTokens}` : ""),
   );
   if (keyed.removedRatio < 0.2 || keyed.removedRatio > 0.95) {
@@ -287,6 +336,9 @@ async function main() {
     console.error(`--only 未匹配角色: ${args.only}（可选: ${CAST.map((c) => c.id).join(", ")}）`);
     process.exit(2);
   }
+  const wantedVariants = args.variants
+    ? new Set(args.variants)
+    : null;
 
   const manifestPath = path.join(OUT_ROOT, "manifest.json");
   const manifest = fs.existsSync(manifestPath)
@@ -309,6 +361,7 @@ async function main() {
     const dir = path.join(OUT_ROOT, character.id);
     fs.mkdirSync(dir, { recursive: true });
     console.log(`\n=== ${character.id} ===`);
+    const poseLock = `姿势锁：${character.pose}`;
 
     if (args.rekeyOnly) {
       rekeyExisting(dir, ["base", ...EXPRESSIONS.map((e) => e.id)], manifest.items);
@@ -320,7 +373,7 @@ async function main() {
         await processOne({
           client,
           name: `${character.id}/base`,
-          prompt: BASE_PROMPT.replace("{DESC}", character.desc),
+          prompt: BASE_PROMPT.replace("{DESC}", character.desc).replace("{POSE}", character.pose),
           refImagePath: refPath,
           bluePath: path.join(dir, "base_blue.png"),
           cutPath: path.join(dir, "base.png"),
@@ -342,11 +395,12 @@ async function main() {
         continue;
       }
       for (const expr of EXPRESSIONS) {
+        if (wantedVariants && !wantedVariants.has(expr.id)) continue;
         try {
           await processOne({
             client,
             name: `${character.id}/${expr.id}`,
-            prompt: DIFF_PROMPT.replace("{EXPR}", expr.prompt),
+            prompt: DIFF_PROMPT.replace("{POSE_LOCK}", poseLock).replace("{EXPR}", expr.prompt),
             refImagePath: bluePath,
             bluePath: path.join(dir, `${expr.id}_blue.png`),
             cutPath: path.join(dir, `${expr.id}.png`),

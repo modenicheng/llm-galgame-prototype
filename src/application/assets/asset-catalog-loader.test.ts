@@ -663,6 +663,27 @@ describe("loadAssetCatalog sprite presentation", () => {
     ).rejects.toThrow(/height/);
   });
 
+  it("解析 set 级 ground；拒绝变体级 ground（地面线必须整套一致）", async () => {
+    const catalog = await loadWithSpriteSets([
+      "grounded:",
+      "  presentation:",
+      "    normalize: true",
+      "    ground: true",
+      "  variants:",
+      "    base: { src: sprite.png }",
+    ]);
+    expect(catalog.spriteSets.grounded!.presentation).toEqual({ normalize: true, ground: true });
+    await expect(
+      loadWithSpriteSets([
+        "bad:",
+        "  variants:",
+        "    base:",
+        "      src: sprite.png",
+        "      presentation: { ground: true }",
+      ]),
+    ).rejects.toThrow(/ground/);
+  });
+
   it("拒绝空 presentation 与越界 rotate", async () => {
     await expect(
       loadWithSpriteSets(["bad:", "  presentation: {}", "  variants:", "    base: { src: sprite.png }"]),

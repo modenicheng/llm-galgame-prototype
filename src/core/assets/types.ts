@@ -70,6 +70,12 @@ export interface SpritePresentation {
   crop?: { left: number; top: number; width: number; height: number } | undefined;
   /** 裁掉透明边并把整套变体归一到统一画布。 */
   normalize?: boolean | undefined;
+  /**
+   * 地面线对齐：各变体按自身非透明内容底线垂直平移到画布底边（水平位置
+   * 保持逐像素对齐不动）。用于源图各差分脚底位置不一的套（如部分差分
+   * 整体画得偏低），保证切换变体时脚都踩在同一地面、不悬空。
+   */
+  ground?: boolean | undefined;
   /** 舞台显示高度占比（0–1]，缺省由前端样式定（92%）。 */
   height?: number | undefined;
 }

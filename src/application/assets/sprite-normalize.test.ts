@@ -193,6 +193,36 @@ describe("composeVariantCanvases", () => {
     const empty = makeImage(4, 4, () => [0, 0, 0, 0]);
     expect(() => composeVariantCanvases([empty])).toThrow(/整图透明/);
   });
+
+  it("ground: 各变体内容底边对齐到画布底边，水平偏移不变", () => {
+    // 同一个角色画布内的两个差分：alt 整体画得偏低 2px（源图坐标系）。
+    const body = (dy: number) => (x: number, y: number): [number, number, number, number] => {
+      if (y >= 4 + dy && y <= 9 + dy && x >= 3 && x <= 6) return [200, 100, 50, 255];
+      if (y === 0 + dy && x >= 1 && x <= 2) return [255, 0, 0, 255];
+      return [0, 0, 0, 0];
+    };
+    const base = makeImage(10, 12, body(0)); // 内容 y0..9
+    const alt = makeImage(10, 12, body(2)); // 内容 y2..11
+    const { canvas, outputs, offsets } = composeVariantCanvases([base, alt], { ground: true });
+    // union 不变：x1..6、y0..11 → 6×12。
+    expect(canvas).toEqual({ width: 6, height: 12 });
+    // 两者内容底边都落到画布底边（y=11）：base 下移 2，alt 原位。
+    expect(offsets).toEqual([
+      { x: 0, y: 2 },
+      { x: 0, y: 2 },
+    ]);
+    for (const out of outputs) {
+      const bottomRow = 11 * canvas.width;
+      let opaque = 0;
+      for (let x = 0; x < canvas.width; x++) {
+        if (out.data[(bottomRow + x) * 4 + 3]! >= 8) opaque += 1;
+      }
+      expect(opaque).toBe(4); // 身体宽 4px 踩在底边
+    }
+    // base 的头顶从 y0 平移到 y2，x 不动。
+    expect(outputs[0]!.data[(2 * canvas.width + 1) * 4]).toBe(255);
+    expect(outputs[0]!.data[(0 * canvas.width + 1) * 4 + 3]).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -282,6 +312,40 @@ describe("normalizeSprites", () => {
     expect(result.heights.meta).toBe(0.85);
     expect(result.urls.meta).toBeUndefined();
     expect(existsSync(path.join(derivedRoot, "meta"))).toBe(false);
+  });
+
+  it("ground 触发派生并把差分脚底落到画布底边", async () => {
+    const assetRoot = await makeTempDir();
+    const derivedRoot = await makeTempDir();
+    const shift = (dy: number) =>
+      makeImage(10, 12, (x, y) => {
+        if (y >= 4 + dy && y <= 9 + dy && x >= 3 && x <= 6) return [200, 100, 50, 255];
+        if (y === 0 + dy && x >= 1 && x <= 2) return [255, 0, 0, 255];
+        return [0, 0, 0, 0];
+      });
+    await writeSet(assetRoot, "grounded", { base: shift(0), alt: shift(2) });
+    const catalog = makeCatalog({
+      grounded: {
+        id: "grounded",
+        presentation: { ground: true },
+        variants: {
+          base: { id: "base", src: "characters/grounded/base.png" },
+          alt: { id: "alt", src: "characters/grounded/alt.png" },
+        },
+      },
+    });
+    const result = await normalizeSprites(catalog, { assetRoot, derivedRoot, urlPrefix: URL_PREFIX });
+    expect(result.urls.grounded?.base).toBe("/game-assets/__derived__/grounded/base.png");
+    expect(result.specs.grounded).toEqual({ width: 6, height: 12 });
+    const base = fromPngBuffer(await readFile(path.join(derivedRoot, "grounded", "base.png")));
+    const alt = fromPngBuffer(await readFile(path.join(derivedRoot, "grounded", "alt.png")));
+    for (const out of [base, alt]) {
+      let opaque = 0;
+      for (let x = 0; x < out.width; x++) {
+        if (out.data[(11 * out.width + x) * 4 + 3]! >= 8) opaque += 1;
+      }
+      expect(opaque).toBe(4);
+    }
   });
 
   it("缓存命中不重写派生文件；源文件变化后重derive", async () => {
