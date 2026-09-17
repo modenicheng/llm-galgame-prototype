@@ -211,6 +211,10 @@ export interface AppConfig {
     sessions_dir: string;
     show_line_ids: boolean;
   };
+  /** 可观测性（2026-09-17）：写手 DSL 流全量落盘到会话目录 llm/。 */
+  observability: {
+    record_llm_streams: boolean;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -601,7 +605,10 @@ const ConfigSchema = z.object({
     history_events: z.number().int().positive().default(80),
     sessions_dir: z.string().min(1).default("sessions"),
     show_line_ids: z.boolean().default(true)
-  })
+  }),
+  observability: z.object({
+    record_llm_streams: z.boolean().default(true)
+  }).default({ record_llm_streams: true })
 });
 
 // ---------------------------------------------------------------------------

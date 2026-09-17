@@ -86,6 +86,9 @@ export function makeTestConfig(overrides?: DeepPartial<AppConfig>): AppConfig {
       sessions_dir: "sessions",
       show_line_ids: true,
     },
+    observability: {
+      record_llm_streams: true,
+    },
     interaction: {
       allowed_modes: ["choice", "hybrid", "input"],
       default_mode: "hybrid",

@@ -13,6 +13,7 @@ import { loadVoices, validateDashscopeEnv, validateDashscopeModelConfig } from "
 import { Game } from "../game.js";
 import { GeneratorPortFacade, StoryGenerator } from "../adapters/llm/openai-compatible-generator.js";
 import { NodeJsonlSessionStore } from "../adapters/storage/node-jsonl-session-store.js";
+import { LlmStreamRecorder } from "../adapters/storage/llm-stream-recorder.js";
 import { ConsoleDiagnosticSink } from "../adapters/platform/console-diagnostic-sink.js";
 import { SessionIdGenerator } from "../adapters/platform/session-id-generator.js";
 import { SystemClock } from "../adapters/platform/system-clock.js";
@@ -119,6 +120,15 @@ export async function createRuntimeApplication(
     },
     game: () => game,
   });
+  // 全量 DSL 流落盘（2026-09-17 可观测性）：/monitor 只有有界内存视图
+  // （ring + 截断），落盘器把写手输入输出逐字节留档到会话目录 llm/，
+  // 含中途死亡的 attempt 现场。与 monitor 一起经 safe 包裹器注入——两者
+  // 的异常都不得影响生成主路径（设计 §错误处理）。
+  const recorder = config.observability.record_llm_streams
+    ? new LlmStreamRecorder()
+    : null;
+  const writerObservers: DslStreamObserver[] = [monitor.writerObserver];
+  if (recorder !== null) writerObservers.push(recorder);
   const generator = new StoryGenerator(
     config,
     bundle,
@@ -127,8 +137,7 @@ export async function createRuntimeApplication(
     authorConfig,
     metrics,
     assetCatalog,
-    // 系统级保证：观察者异常不得影响生成主路径（设计 §错误处理）。
-    safeDslStreamObserver(monitor.writerObserver),
+    safeDslStreamObserver(fanOutDslStreamObserver(writerObservers)),
   );
 
   // TTS provider wiring (§7.6): dashscope → real provider, mock → the
@@ -211,6 +220,11 @@ export async function createRuntimeApplication(
     sessionId: string,
     options: RuntimeApplicationOptions,
   ): Promise<Game> => {
+    // 落盘器跟随会话目录（支持 options.sessionDir 覆盖）；restart 换新
+    // sessionId 时在此切换，落盘记录与存档同生命周期。
+    if (recorder !== null) {
+      await recorder.beginSession(options.sessionDir ?? config.game.sessions_dir, sessionId);
+    }
     const store = new NodeJsonlSessionStore(options.sessionDir ?? config.game.sessions_dir);
     // --- Narrative director assembly (§7.1) ---
     // Diagnostics fan out to the console AND the monitor hub (dashboard log).
@@ -362,6 +376,29 @@ export async function createRuntimeApplication(
   return app;
 }
 
+
+/**
+ * Fan every observer hook out to several observers in order; a hook an
+ * observer does not implement is simply skipped for that observer.
+ */
+function fanOutDslStreamObserver(observers: readonly DslStreamObserver[]): DslStreamObserver {
+  const call = <A extends unknown[]>(
+    pick: (observer: DslStreamObserver) => ((...args: A) => void) | undefined,
+  ) =>
+    (...args: A): void => {
+      for (const observer of observers) pick(observer)?.(...args);
+    };
+  return {
+    onAttemptStart: call((observer) => observer.onAttemptStart),
+    onPrompt: call((observer) => observer.onPrompt),
+    onDelta: call((observer) => observer.onDelta),
+    onLine: call((observer) => observer.onLine),
+    onGroup: call((observer) => observer.onGroup),
+    onRepair: call((observer) => observer.onRepair),
+    onUsage: call((observer) => observer.onUsage),
+    onAttemptEnd: call((observer) => observer.onAttemptEnd),
+  };
+}
 
 /**
  * Wrap every observer hook so a broken monitor can never take the
