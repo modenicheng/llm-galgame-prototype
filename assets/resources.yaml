@@ -25,9 +25,9 @@ guidance: |
   按台词情绪用 `ch raspberry:<变体>` 切换表情，
   悬念/身份未揭示场面可用剪影。
 
-  通用配角同学甲/同学乙（女生立绘）与同学丙/同学丁（男生立绘）可用于
+  配角许晚晴/林小满（女生立绘）与夏一鸣/韩澈（男生立绘）可用于
   来访者、同学、路人等群像场面；群像角色一律用这四个名字登台，
-  不要发明"同学戊/学长/路人甲"等新登台名（未注册的名字无法配立绘）。
+  不要发明新的登台名（未注册的名字无法配立绘）。
   用 `ch <角色>:<变体>` 在 base/smile/surprised/embarrassed/joyful/angry/
   thinking/smug 间切换表情（平静/微笑/惊讶/害羞/开怀/生气/思考/得意）
 
@@ -278,7 +278,7 @@ sprite_sets:
   # 随仓库分发（授权说明见 assets/ATTRIBUTION.md）。
   female_A:
     description: |
-      女生A：温柔娴静的女大学生学姐形象。亚麻棕色齐颈波波头短发、
+      许晚晴：温柔娴静的女大学生学姐形象。亚麻棕色齐颈波波头短发、
       奶白色发卡，米白色V领针织开衫配白衬衫、暗红格纹百褶及膝裙。
       base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
     presentation:
@@ -313,8 +313,9 @@ sprite_sets:
 
   female_B:
     description: |
-      女生B：活力四射的女高中生后辈形象。焦糖色低双马尾、珍珠发饰，
-      奶油色水手服配深绿领结与百褶裙、白色过膝袜。
+      林小满：活力四射的女大学生后辈形象，穿惯了水手服式的制服穿搭。
+      焦糖色低双马尾、珍珠发饰，奶油色水手服配深绿领结与百褶裙、
+      白色过膝袜。
       base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
     presentation:
       # 全身立绘统一去透明边：差分逐像素对齐、同套规格一致，
@@ -348,7 +349,7 @@ sprite_sets:
 
   male_A:
     description: |
-      男生A：开朗阳光的男高中生形象。栗色蓬松短碎发，
+      夏一鸣：开朗阳光的男大学生形象。栗色蓬松短碎发，
       白短袖衬衫外罩浅灰V领针织背心、深灰长裤、白色运动鞋。
       base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
     presentation:
@@ -383,7 +384,7 @@ sprite_sets:
 
   male_B:
     description: |
-      男生B：沉稳安静的男性学长形象。黑色清爽短发、银灰色细框眼镜，
+      韩澈：沉稳安静的男性学长形象。黑色清爽短发、银灰色细框眼镜，
       燕麦色圆领毛衣内搭白衬衫、深炭灰长裤、棕色皮鞋。
       base 为基准形态（表情平和），其余为表情差分，全身图、透明背景。
     presentation:
@@ -425,32 +426,34 @@ characters:
     default_position: center
 
   # 群像配角：script_name 即戏剧名（模型在台词行头最自然写出的名字），
-  # 不要再改回"女生A/男生A"式的抽象代号——模型会改用显示名写行头，
+  # 不要再改回"女生A/同学甲"式的抽象代号——模型会改用显示名写行头，
   # 注册表查不到导致所有立绘 cue 被静默丢弃（UNKNOWN_SPRITE_VARIANT）。
+  # 四人的性格与人设固定，见 prompts/characters.txt 群像配角段；
+  # 每局的具体身份以种子为准。
   female_A:
-    script_name: 同学甲
-    display_name: 同学甲
+    script_name: 许晚晴
+    display_name: 许晚晴
     sprite_set: female_A
     default_variant: base
     default_position: right
 
   female_B:
-    script_name: 同学乙
-    display_name: 同学乙
+    script_name: 林小满
+    display_name: 林小满
     sprite_set: female_B
     default_variant: base
     default_position: left
 
   male_A:
-    script_name: 同学丙
-    display_name: 同学丙
+    script_name: 夏一鸣
+    display_name: 夏一鸣
     sprite_set: male_A
     default_variant: base
     default_position: left
 
   male_B:
-    script_name: 同学丁
-    display_name: 同学丁
+    script_name: 韩澈
+    display_name: 韩澈
     sprite_set: male_B
     default_variant: base
     default_position: right
