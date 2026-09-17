@@ -25,6 +25,7 @@ import { WORLD_PROMPTS_DIR } from "../application/world/world-generator.js";
 import { OutlineStore } from "../adapters/storage/outline-store.js";
 import { CanonStore } from "../adapters/storage/canon-store.js";
 import { StatsStore } from "../adapters/storage/stats-store.js";
+import { ReviewStore } from "../adapters/storage/review-store.js";
 import type { CanonStorePort } from "../core/ports/canon-store-port.js";
 import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
 import { CanonAdjudicatorAdapter } from "../adapters/llm/canon-adjudicator-adapter.js";
@@ -180,6 +181,8 @@ function buildGraphCoordinator(
       ...(canon !== undefined ? { canon } : {}),
       // M5.4：周目完结结算（结局达成 + 边通过计数）。
       stats: new StatsStore(gamesRoot, gameId),
+      // M5.5 ②：通关评注喂回编剧维护输入。
+      reviewStore: new ReviewStore(gamesRoot, gameId),
     },
   );
 }

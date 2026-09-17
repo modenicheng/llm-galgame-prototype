@@ -15,6 +15,7 @@
 import type { OutlineStorePort } from "../../core/ports/outline-store-port.js";
 import type { GraphStorePort } from "../../core/ports/graph-store-port.js";
 import type { StatsStorePort } from "../../core/ports/stats-store-port.js";
+import type { DecisionNode, PlotEdge, SceneNode } from "../../core/graph/types.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -100,40 +101,70 @@ export async function buildGraphView(stores: GraphViewStores): Promise<GraphView
     stores.graph.loadCursor(),
   ]);
 
-  // 脱敏白名单：只有 active/realized 的 act 允许以 outlineRef/groupKey 出现。
-  const actRefBySceneId = new Map<string, { id: string; location?: string | undefined }>();
-  if (stores.outline !== undefined) {
-    try {
-      const outline = await stores.outline.load();
-      const byId = new Map(outline.nodes.map((n) => [n.id, n]));
-      for (const scene of scenes) {
-        const node = byId.get(scene.outlineRef);
-        if (
-          node !== undefined &&
-          node.kind === "act" &&
-          (node.status === "active" || node.status === "realized")
-        ) {
-          actRefBySceneId.set(scene.id, {
-            id: node.id,
-            ...(node.location !== undefined ? { location: node.location } : {}),
-          });
-        }
-      }
-    } catch {
-      // outline 缺失/损坏 → 全部回退模型 id 分组（视图仍可用）。
-    }
-  }
+  const actRefBySceneId = await actWhitelistByScene(scenes, stores.outline);
+  const sceneViews = sceneViewsOf(decisions, edges, scenes, cursor?.position ?? null, actRefBySceneId);
+  const runStats: GraphRunStats = {
+    total: runs.length,
+    ended: runs.filter((r) => r.endedAt !== undefined).length,
+    abandoned: runs.filter((r) => r.abandonedAt !== undefined).length,
+    active: runs.filter((r) => r.endedAt === undefined && r.abandonedAt === undefined).length,
+  };
+  const outlineReview = await outlineReviewOf(stores.outline, stores.stats);
 
-  const cursorPosition = cursor?.position ?? null;
+  return {
+    gameId: stores.gameId,
+    scenes: sceneViews,
+    ...(cursor !== null ? { cursor: { runId: cursor.runId, decisionId: cursor.position } } : {}),
+    runs: runStats,
+    ...(outlineReview !== undefined ? { outlineReview } : {}),
+  };
+}
+
+/** 脱敏白名单：只有 active/realized 的 act 允许以 outlineRef/groupKey 出现。 */
+async function actWhitelistByScene(
+  scenes: Array<{ id: string; outlineRef: string }>,
+  outline: OutlineStorePort | undefined,
+): Promise<Map<string, { id: string; location?: string | undefined }>> {
+  const actRefBySceneId = new Map<string, { id: string; location?: string | undefined }>();
+  if (outline === undefined) return actRefBySceneId;
+  try {
+    const snap = await outline.load();
+    const byId = new Map(snap.nodes.map((n) => [n.id, n]));
+    for (const scene of scenes) {
+      const node = byId.get(scene.outlineRef);
+      if (
+        node !== undefined &&
+        node.kind === "act" &&
+        (node.status === "active" || node.status === "realized")
+      ) {
+        actRefBySceneId.set(scene.id, {
+          id: node.id,
+          ...(node.location !== undefined ? { location: node.location } : {}),
+        });
+      }
+    }
+  } catch {
+    // outline 缺失/损坏 → 全部回退模型 id 分组（视图仍可用）。
+  }
+  return actRefBySceneId;
+}
+
+/** 场景块装配（决策保持 append-only 落盘序 = 剧情时序；空场景不出图）。 */
+function sceneViewsOf(
+  decisions: DecisionNode[],
+  edges: PlotEdge[],
+  scenes: SceneNode[],
+  cursorPosition: string | null,
+  actRefBySceneId: Map<string, { id: string; location?: string | undefined }>,
+): GraphSceneView[] {
   const decisionSceneById = new Map(decisions.map((d) => [d.id, d.sceneId]));
   const sceneViews: GraphSceneView[] = [];
   for (const scene of scenes) {
-    // listDecisions 保持 append-only 落盘序 = 剧情时序；不再重排。
     const sceneDecisions = decisions.filter((d) => d.sceneId === scene.id);
     if (sceneDecisions.length === 0) continue; // 空场景（惰性创建未落决策）不出图
 
     const act = actRefBySceneId.get(scene.id);
-    const sceneView: GraphSceneView = {
+    sceneViews.push({
       sceneId: scene.id,
       groupKey: act?.location ?? sceneDecisions[0]!.entryState.storyState.scene.id,
       status: scene.status,
@@ -166,51 +197,44 @@ export async function buildGraphView(stores: GraphViewStores): Promise<GraphView
               }
             : {}),
         })),
+    });
+  }
+  return sceneViews;
+}
+
+/** M5.5 ③：大纲回顾——通关（有已结算周目）才解锁；未通关绝不返回。 */
+async function outlineReviewOf(
+  outline: OutlineStorePort | undefined,
+  stats: StatsStorePort | undefined,
+): Promise<GraphView["outlineReview"]> {
+  if (outline === undefined || stats === undefined) return undefined;
+  try {
+    const statsSnap = await stats.load();
+    if (statsSnap.settledRuns.length === 0) return undefined;
+    const { nodes } = await outline.load();
+    return {
+      acts: nodes
+        .filter((n) => n.kind === "act" && (n.status === "active" || n.status === "realized"))
+        .map((n) => ({
+          id: n.id,
+          ...(n.location !== undefined ? { location: n.location } : {}),
+          status: n.status,
+          purpose: n.purpose,
+        })),
+      endings: statsSnap.endings.map((e) => ({
+        id: e.id,
+        label: endingLabel(e.id),
+        count: e.count,
+      })),
     };
-    sceneViews.push(sceneView);
+  } catch {
+    return undefined;
   }
+}
 
-  const runStats: GraphRunStats = {
-    total: runs.length,
-    ended: runs.filter((r) => r.endedAt !== undefined).length,
-    abandoned: runs.filter((r) => r.abandonedAt !== undefined).length,
-    active: runs.filter((r) => r.endedAt === undefined && r.abandonedAt === undefined).length,
-  };
-
-  // M5.5 ③：大纲回顾——通关（有已结算周目）才解锁；未通关绝不返回。
-  let outlineReview: GraphView["outlineReview"];
-  if (stores.stats !== undefined && stores.outline !== undefined) {
-    try {
-      const statsSnap = await stores.stats.load();
-      if (statsSnap.settledRuns.length > 0) {
-        const { nodes } = await stores.outline.load();
-        const acts = nodes
-          .filter((n) => n.kind === "act" && (n.status === "active" || n.status === "realized"))
-          .map((n) => ({
-            id: n.id,
-            ...(n.location !== undefined ? { location: n.location } : {}),
-            status: n.status,
-            purpose: n.purpose,
-          }));
-        const endings = statsSnap.endings.map((e) => ({
-          id: e.id,
-          label: e.id.replace(/^end_/, ""),
-          count: e.count,
-        }));
-        outlineReview = { acts, endings };
-      }
-    } catch {
-      outlineReview = undefined;
-    }
-  }
-
-  return {
-    gameId: stores.gameId,
-    scenes: sceneViews,
-    ...(cursor !== null ? { cursor: { runId: cursor.runId, decisionId: cursor.position } } : {}),
-    runs: runStats,
-    ...(outlineReview !== undefined ? { outlineReview } : {}),
-  };
+/** 结局语义名（去 end_ 前缀；图鉴/大纲回顾共用）。 */
+function endingLabel(endingId: string): string {
+  return endingId.replace(/^end_/, "");
 }
 
 // ---------------------------------------------------------------------------

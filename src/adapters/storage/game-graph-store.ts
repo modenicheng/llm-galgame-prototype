@@ -118,52 +118,61 @@ async function readJsonlLines(filePath: string): Promise<string[]> {
   return raw.split("\n").filter((line) => line.trim().length > 0);
 }
 
-/** 解析 JSONL 行，损坏行跳过；返回按文件序的合法记录（latest-wins 折叠前）。
- * M5.6 tombstone：`{"id":"…","deleted":true}` 行删除同 id 的此前记录——
- * 磁盘 append-only 不回改，读取端折叠时过滤已删除 id（§3 契约 schema 不动）。 */
+/** 解析 JSONL 行，损坏行跳过。M5.6 tombstone：`{"id":"…","deleted":true}`
+ * 行删除同 id 的此前记录——磁盘 append-only 不回改，读取端折叠过滤（§3
+ * 契约 schema 不动）。输出 = 折叠后的存活记录，按**首次出现序**；需要
+ * 「最近写入序」的调用方（listRuns）改用 parseJsonlWriteOrder。 */
 async function parseJsonl<T extends { id: string }>(filePath: string, schema: z.ZodType<T>): Promise<T[]> {
-  interface Entry {
-    id: string;
-    deleted: boolean;
-    record?: T;
-  }
-  const entries: Entry[] = [];
-  const idOf = new Map<string, string>(); // alias-id → canonical id（首次出现序）
+  return (await parseJsonlWriteOrder(filePath, schema)).records;
+}
+
+/** 同 parseJsonl，但 records 按**最近写入序**排列（末位 = 最后写入的记录）。 */
+async function parseJsonlWriteOrder<T extends { id: string }>(
+  filePath: string,
+  schema: z.ZodType<T>,
+): Promise<{ records: T[] }> {
+  const latest = new Map<string, { deleted: boolean; record?: T }>();
+  const lastWriteIdx = new Map<string, number>();
+  let writeIndex = 0;
   for (const line of await readJsonlLines(filePath)) {
+    writeIndex += 1;
     try {
       const parsed: unknown = JSON.parse(line);
+      let id: string | undefined;
+      let deleted = false;
+      let record: T | undefined;
       if (
         typeof parsed === "object" &&
         parsed !== null &&
         (parsed as { deleted?: unknown }).deleted === true &&
         typeof (parsed as { id?: unknown }).id === "string"
       ) {
-        const id = (parsed as { id: string }).id;
-        const canonical = idOf.get(id) ?? id;
-        entries.push({ id: canonical, deleted: true });
-        continue;
+        id = (parsed as { id: string }).id;
+        deleted = true;
+      } else {
+        const result = schema.safeParse(parsed);
+        if (!result.success) continue;
+        id = result.data.id;
+        record = result.data;
       }
-      const result = schema.safeParse(parsed);
-      if (result.success) {
-        idOf.set(result.data.id, result.data.id);
-        entries.push({ id: result.data.id, deleted: false, record: result.data });
+      if (deleted) {
+        latest.set(id, { deleted });
+      } else if (record !== undefined) {
+        latest.set(id, { deleted, record });
       }
+      lastWriteIdx.set(id, writeIndex);
     } catch {
       // 一行损坏不得掩盖 append-only 日志的其余部分。
     }
   }
-  // 折叠：同 id 取最后一次出现；deleted=true 的最终态 → 整个 id 过滤。
-  const latest = new Map<string, Entry>();
-  for (const entry of entries) latest.set(entry.id, entry);
-  const out: T[] = [];
-  const seen = new Set<string>();
-  for (const entry of entries) {
-    if (seen.has(entry.id)) continue;
-    seen.add(entry.id);
-    const finalEntry = latest.get(entry.id)!;
-    if (!finalEntry.deleted && finalEntry.record !== undefined) out.push(finalEntry.record);
-  }
-  return out;
+  const records = [...latest.values()]
+    .filter((entry) => !entry.deleted && entry.record !== undefined)
+    .map((entry) => entry.record!);
+  // 按各 id 的最后写入位排序（末位 = 最近写入；Map 序是首次出现序，不同）。
+  records.sort(
+    (a, b) => (lastWriteIdx.get(a.id) ?? 0) - (lastWriteIdx.get(b.id) ?? 0),
+  );
+  return { records };
 }
 
 /** latest-wins：同 id 多行时取最后一次出现。 */
@@ -242,14 +251,9 @@ export class GameGraphStore implements GraphStorePort {
   }
 
   async listRuns(): Promise<RunRecord[]> {
-    // latest-wins 折叠，按各周目最后一次写入排序：末位 = 最近活动的周目
-    // （弃局/结局更新会再追加一行，折叠后每个周目恰一条记录）。
-    const records = await parseJsonl(this.filePath(GAME_STORAGE_LAYOUT.runs), RunRecordSchema);
-    const lastIdx = new Map<string, number>();
-    records.forEach((record, index) => lastIdx.set(record.id, index));
-    return [...latestById(records).values()].sort(
-      (a, b) => (lastIdx.get(a.id) ?? 0) - (lastIdx.get(b.id) ?? 0),
-    );
+    // latest-wins 折叠，按最近写入序排列：末位 = 最近活动的周目（弃局/结局
+    // 更新会再追加一行，折叠后每个周目恰一条记录、位置 = 其最后写入位）。
+    return (await parseJsonlWriteOrder(this.filePath(GAME_STORAGE_LAYOUT.runs), RunRecordSchema)).records;
   }
 
   // -- decisions ----------------------------------------------------------------

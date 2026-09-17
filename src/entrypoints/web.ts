@@ -89,6 +89,7 @@ async function main(): Promise<void> {
           gameId,
           graph: new GameGraphStore(DEFAULT_GAMES_ROOT, gameId),
           outline: new OutlineStore(DEFAULT_GAMES_ROOT, gameId),
+          stats: new StatsStore(DEFAULT_GAMES_ROOT, gameId),
         }),
       settlement: (gameId) =>
         buildSettlementView({

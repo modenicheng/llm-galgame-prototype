@@ -541,10 +541,19 @@ export class Game implements InteractionHost {
       return { type: "choice", nextTurn: turn + 1, ...result };
     }
     if (interaction.mode === "hybrid") {
-      return this.interactionDriver.handleHybridInteraction(interaction, turn, segment.branchManager, context);
+      const hybridOutcome = await this.interactionDriver.handleHybridInteraction(interaction, turn, segment.branchManager, context);
+      // M5.3：hybrid 恢复表单命中快进 → 与 choice 分支对称透传，否则游标
+      // 已前移而运行循环仍按空 preview 续跑（陈旧事件滞留 + seq 复用）。
+      if (hybridOutcome.type === "choice" && hybridOutcome.fastForward !== undefined) {
+        return { type: "fast_forward", restore: hybridOutcome.fastForward, nextTurn: turn + 1 };
+      }
+      return hybridOutcome;
     }
     const result = await this.interactionDriver.handleInteractionInput(interaction, turn, segment.branchManager);
     if (result.type !== "committed") throw new RuntimeShutdownError();
+    if (result.fastForward !== undefined) {
+      return { type: "fast_forward", restore: result.fastForward, nextTurn: turn + 1 };
+    }
     return {
       type: "choice",
       nextTurn: turn + 1,
