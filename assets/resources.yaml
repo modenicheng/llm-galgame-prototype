@@ -1,7 +1,9 @@
 # 校园技术社团分支资源目录（campus branch asset catalog）
 #
 # 素材策略（docs/superpowers/specs/2026-09-06-campus-ops-event-design.md §7）：
-# - 背景使用校园（clubroom/wencui_corridor）素材；地下据点不入目录。
+# - 背景使用校园走廊/林荫道/广场/阶梯教室素材（走廊与教室系真实照片风格化，
+#   见 assets/ATTRIBUTION.md）；clubroom（社团活动室）系已注释下线；
+#   地下据点不入目录。
 # - 树莓娘立绘基于项目负责人提供的官方分层原稿，经自制蓝幕差分管线加工产出
 #   （2026-09-15），资产不入库、不上传，仅限内部流通；
 #   BITNP 其余素材未获授权前不接入、不复制、不再分发。
@@ -10,9 +12,15 @@
 
 # 这个字段只存通用的资产调用规则，不要在里面写素材状态
 guidance: |
-  当前素材覆盖校园社团部室与走廊场景，围绕技术社团值班日常展开。
+  当前素材覆盖文萃楼走廊、校园林荫道、社团广场与阶梯教室场景，
+  围绕校园日常展开。
 
   背景应尽量复用已有资源，不要因为轻微视角变化频繁切换。
+  剧情地点要落在已注册背景能覆盖的位置（文萃楼走廊、校园林荫道、
+  社团广场、阶梯教室）；上课、讲座、集体例会一类的场面用阶梯教室，
+  "社团房间/活动室"一类室内戏可用社团文化广场来呈现，
+  不要发明清单外的背景 id（未注册的 bg 指令会被静默丢弃，
+  舞台保持上一个背景）。
 
   按台词情绪用 `ch raspberry:<变体>` 切换表情，
   悬念/身份未揭示场面可用剪影。
@@ -21,8 +29,7 @@ guidance: |
   来访者、同学、路人等群像场面；群像角色一律用这四个名字登台，
   不要发明"同学戊/学长/路人甲"等新登台名（未注册的名字无法配立绘）。
   用 `ch <角色>:<变体>` 在 base/smile/surprised/embarrassed/joyful/angry/
-  thinking/smug 间切换表情（平静/微笑/惊讶/害羞/开怀/生气/思考/得意）；
-  他们默认站在左右侧，不要抢占树莓娘的中央位。
+  thinking/smug 间切换表情（平静/微笑/惊讶/害羞/开怀/生气/思考/得意）
 
   角色只能使用其"可用立绘组"内的素材组；
   默认每个角色只有自己的立绘组。
@@ -32,29 +39,29 @@ guidance: |
   角色离场用 ch <id> exit，不要只依赖 hide。
 
 backgrounds:
-  clubroom_day:
-    src: backgrounds/clubroom_day.jpg
-    description: |
-      校园社团活动室/教室，有黑板、书架、长桌、电脑、打印设备和大量椅子。
-      白天窗光明亮。
-      适合技术分享、值班接待与设备排查的主场景。
-  clubroom_evening:
-    src: backgrounds/clubroom_evening.jpg
-    description: |
-      同一社团活动室，窗光和室内色调变为暖黄色傍晚光。
-      适合傍晚时分的收尾与交接交流。
+  # clubroom_day:
+  #   src: backgrounds/clubroom_day.jpg
+  #   description: |
+  #     校园社团活动室/教室，有黑板、书架、长桌、电脑、打印设备和大量椅子。
+  #     白天窗光明亮。
+  #     适合技术分享、值班接待与设备排查的主场景。
+  # clubroom_evening:
+  #   src: backgrounds/clubroom_evening.jpg
+  #   description: |
+  #     同一社团活动室，窗光和室内色调变为暖黄色傍晚光。
+  #     适合傍晚时分的收尾与交接交流。
 
-  clubroom_night_on:
-    src: backgrounds/clubroom_night_on.jpg
-    description: |
-      同一社团活动室，窗外是夜色，室内灯光保持开启，桌椅和书架仍清晰可见。
-      适合夜间仍在继续的活动或排查。
+  # clubroom_night_on:
+  #   src: backgrounds/clubroom_night_on.jpg
+  #   description: |
+  #     同一社团活动室，窗外是夜色，室内灯光保持开启，桌椅和书架仍清晰可见。
+  #     适合夜间仍在继续的活动或排查。
 
-  clubroom_night_off:
-    src: backgrounds/clubroom_night_off.jpg
-    description: |
-      同一社团活动室，窗外是夜色，室内照明关闭或显著减弱，整体呈暗蓝色。
-      适合锁门前最后的确认或安静场景。
+  # clubroom_night_off:
+  #   src: backgrounds/clubroom_night_off.jpg
+  #   description: |
+  #     同一社团活动室，窗外是夜色，室内照明关闭或显著减弱，整体呈暗蓝色。
+  #     适合锁门前最后的确认或安静场景。
 
   wencui_corridor_day:
     src: backgrounds/wencui_corridor_day.jpg
@@ -107,7 +114,7 @@ backgrounds:
     description: |
       学生社团文化广场：橙色外墙的社团用房、白色天桥与伞状顶棚，
       前面是开阔的石板广场。白天晴朗。
-      适合招新、社团活动、广场碰头的场景。
+      网协办公室所在地。部分同学会到这里来修电脑
 
   club_plaza_evening:
     src: backgrounds/club_plaza_evening.jpg
@@ -121,6 +128,38 @@ backgrounds:
       同一学生社团文化广场，夜色深蓝，建筑玻璃门透出暖光，
       广场路灯亮起。
       适合夜间活动、广场夜谈的场景。
+      或者是下夜班的情况
+
+  classroom_day:
+    src: backgrounds/classroom_day.jpg
+    description: |
+      阶梯教室内景：成排浅色连排桌椅面向右侧铺木地板的讲台，
+      台上有深灰的多媒体讲台和一把椅子，右墙是墨绿色黑板，
+      左侧两扇大窗配灰色窗帘，天花板嵌有长条照明灯。
+      白天窗光明亮，顶灯全开。
+      适合上课、讲座、社团例会等场面。
+
+  classroom_evening:
+    src: backgrounds/classroom_evening.jpg
+    description: |
+      同一阶梯教室，夕阳从左侧窗户斜照进来，地面拉出长长的暖色光带，
+      顶灯已开启。
+      适合傍晚的课后交流、活动收尾场景。
+
+  classroom_night_on:
+    src: backgrounds/classroom_night_on.jpg
+    description: |
+      同一阶梯教室，窗外是深蓝夜色和远处零星的灯光，
+      室内顶灯全部开启，明亮温暖。
+      适合夜间自习、深夜备赛排查的场景。
+      技术分享会也可以在此场景，因为它经常安排在所有晚课之后。
+
+  classroom_night_off:
+    src: backgrounds/classroom_night_off.jpg
+    description: |
+      同一阶梯教室，顶灯全部关闭，只有窗外月光透入，
+      桌椅与讲台呈暗色剪影，整体昏暗。
+      适合锁门离开前、夜深人静的场面。
 
 bgm:
   relax:
@@ -138,7 +177,7 @@ bgm:
     src: audio/bgm/mountain.mp3
     description: |
       欢快的、节奏快的流行纯音乐；有律动感的鼓组；
-      原生吉他作为铺垫，主旋律主要由合成器演奏，音色富有弹性
+      原声吉他作为铺垫，主旋律主要由合成器演奏，音色富有弹性
 
 sound_effects:
   terminal_beep:

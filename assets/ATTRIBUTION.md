@@ -27,6 +27,20 @@
   与树莓娘的"仅限内部流通"约定不同——本项目产出为 AI 原创内容，无第三方
   授权负担；如后续加入仿照真实人物或第三方素材的设计，须先更新本节。
 
+## 真实照片风格化背景——内部实拍，AI 风格化重绘，随仓库分发
+- 以项目成员实拍的校园照片为底，经自配图像生成 API（gpt-image 系 `edit`，
+  `input_fidelity: high`，构图 1:1 保留仅换渲染风格）产出：
+  - `wencui_corridor_*`：文萃楼走廊实拍（2026-09 上旬，管线脚本
+    `output/wencui_corridor.mts`）；
+  - `campus_road_*` / `club_plaza_*`：校园林荫道与社团文化广场实拍
+    （2026-09，脚本 `output/campus_bgs.mts`）；
+  - `classroom_*`：阶梯教室实拍（2026-09-17）。制作时先按世界竖直参照
+    （黑板框/讲台棱/窗帘边，Theil-Sen 拟合）测得画面滚转约 -4.5° 并旋转校正，
+    再裁 16:9，之后才送风格化（测量 `output/measure_tilt*.py`，
+    生成脚本 `output/classroom_bgs.mts`）。
+- 照片均为项目内部拍摄，无第三方版权；重绘产出为 AI 原创内容，随仓库分发。
+- 照片源与生成 PNG 等中间产物留在 `output/`（不入库）。
+
 ## 角色立绘（立ち絵）
 - 来源：立ち絵素材 わたおきば（作者：わたおび）https://wataokiba.net/
 - 压缩包：`raw/josei_03_shirowanpi.zip`、`raw/josei_12_china.zip`
