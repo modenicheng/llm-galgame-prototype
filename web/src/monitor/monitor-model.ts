@@ -15,6 +15,7 @@ import type {
   MonitorServerEvent,
   MonitorServerMessage,
   MonitorStateFrame,
+  MonitorWriterPromptMessage,
   MonitorWriterRepair,
   MonitorWriterUsage,
 } from "@shared/wire/monitor-message.js";
@@ -36,6 +37,9 @@ export interface WriterAttemptModel {
   repairs: MonitorWriterRepair[];
   text: string;
   truncated: boolean;
+  /** Request payloads indexed by requestIndex (system message stripped —
+   * it lives once on the model as writerSystemPrompt). */
+  promptRequests: MonitorWriterPromptMessage[][];
 }
 
 export interface WriterTaskModel {
@@ -48,7 +52,13 @@ export interface WriterTaskModel {
   attempts: WriterAttemptModel[];
 }
 
-export type MonitorTopic = "connection" | "writer" | "context" | "diagnostics" | "state";
+export type MonitorTopic =
+  | "connection"
+  | "writer"
+  | "writerPrompt"
+  | "context"
+  | "diagnostics"
+  | "state";
 
 /** Client-side text cap per attempt (mirrors the server's 48k cap so the
  * incremental path and the snapshot produce the same document). */
@@ -61,6 +71,8 @@ export class MonitorModel {
   connection: MonitorConnectionState = "connecting";
   /** Newest first. */
   writerTasks: WriterTaskModel[] = [];
+  /** Session-invariant writer system prompt (segmented, audit view). */
+  writerSystemPrompt: MonitorWriterPromptMessage | null = null;
   /** Newest first. */
   contextTasks: MonitorContextTask[] = [];
   diagnostics: MonitorDiagnosticEntry[] = [];
@@ -92,6 +104,7 @@ export class MonitorModel {
       case "monitor.snapshot": {
         const snap = message.snapshot;
         this.info = snap.info;
+        this.writerSystemPrompt = snap.writer.systemPrompt ?? null;
         this.writerTasks = snap.writer.tasks.map((task) => ({
           ...task,
           firstSeen: this.taskSeq++,
@@ -100,6 +113,12 @@ export class MonitorModel {
             firstTokenMs: attempt.firstTokenMs ?? null,
             usage: attempt.usage ?? null,
             repairs: [...(attempt.repairs ?? [])],
+            promptRequests: (attempt.prompt?.requests ?? []).map((messages) =>
+              messages.map((message) => ({
+                role: message.role,
+                segments: message.segments.map((segment) => ({ ...segment })),
+              })),
+            ),
           })),
         }));
         this.reindexAttempts();
@@ -107,6 +126,7 @@ export class MonitorModel {
         this.diagnostics = [...snap.diagnostics];
         this.state = snap.state;
         this.notify("writer");
+        this.notify("writerPrompt");
         this.notify("context");
         this.notify("diagnostics");
         this.notify("state");
@@ -120,6 +140,9 @@ export class MonitorModel {
             case "writer.start":
             case "writer.end":
               topics.add("writer");
+              break;
+            case "writer.prompt":
+              topics.add("writerPrompt");
               break;
             case "context.start":
             case "context.end":
@@ -174,6 +197,7 @@ export class MonitorModel {
               repairs: [...(attempt.repairs ?? [])],
               text: "",
               truncated: false,
+              promptRequests: [],
             })),
           };
           this.writerTasks.unshift(task);
@@ -196,12 +220,43 @@ export class MonitorModel {
                 repairs: [...(attempt.repairs ?? [])],
                 text: "",
                 truncated: false,
+                promptRequests: [],
               });
             }
           }
           existing.lastActivityAt = event.task.lastActivityAt;
           this.indexTask(existing);
         }
+        break;
+      }
+      case "writer.prompt": {
+        const entry = this.attemptIndex.get(event.attemptId);
+        if (entry === undefined) break;
+        // Idempotent system fold: the message rides every writer.prompt event,
+        // but it only changes when the generator is rebuilt.
+        const system = event.messages.find((message) => message.role === "system");
+        if (system !== undefined) {
+          const key = system.segments.map((segment) => segment.text).join("");
+          const current = this.writerSystemPrompt;
+          const currentKey =
+            current !== null ? current.segments.map((segment) => segment.text).join("") : null;
+          if (currentKey !== key) {
+            this.writerSystemPrompt = {
+              role: "system",
+              segments: system.segments.map((segment) => ({ ...segment })),
+            };
+          }
+        }
+        const attempt = entry.attempt;
+        while (attempt.promptRequests.length <= event.requestIndex) {
+          attempt.promptRequests.push([]);
+        }
+        attempt.promptRequests[event.requestIndex] = event.messages
+          .filter((message) => message.role !== "system")
+          .map((message) => ({
+            role: message.role,
+            segments: message.segments.map((segment) => ({ ...segment })),
+          }));
         break;
       }
       case "writer.delta": {

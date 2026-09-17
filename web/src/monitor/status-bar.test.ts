@@ -24,6 +24,7 @@ function task(overrides: Partial<WriterTaskModel["attempts"][number]> = {}): Wri
         firstTokenMs: null,
         usage: null,
         repairs: [],
+        promptRequests: [],
         text: "",
         truncated: false,
         ...overrides,

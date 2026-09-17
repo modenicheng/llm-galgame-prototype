@@ -27,7 +27,7 @@ import type {
   EventGroupDraft,
   SegmentEndStatus,
 } from "./core/protocol/gal-dsl/types.js";
-import type { DslStreamObserver } from "./core/ports/dsl-stream-observer.js";
+import type { DslStreamObserver, WriterPromptReport } from "./core/ports/dsl-stream-observer.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers — reusable fixtures, no real network calls
@@ -792,6 +792,130 @@ describe("DSL mode generation", () => {
       interaction: { prompt: "怎么回应？" },
     });
     expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  // -------------------------------------------------------------------------
+  // onPrompt — monitor audit invariant: joining a report's message segments
+  // must reproduce the exact content that went over the wire.
+  // -------------------------------------------------------------------------
+
+  it("reports the exact prompt payload per attempt, before any delta", async () => {
+    const reports: WriterPromptReport[] = [];
+    const order: string[] = [];
+    const observer = {
+      onAttemptStart: vi.fn(() => order.push("start")),
+      onPrompt: vi.fn((report: WriterPromptReport) => {
+        order.push("prompt");
+        reports.push(report);
+      }),
+      onDelta: vi.fn(() => order.push("delta")),
+      onLine: vi.fn(),
+      onGroup: vi.fn(),
+      onAttemptEnd: vi.fn(),
+    } as unknown as DslStreamObserver;
+    const gen = makeDslGenerator(undefined, observer);
+    mockDslClient(gen, (nonce) => [
+      "地下室里只亮着终端的一点蓝光。",
+      `@end ${nonce} buffer`,
+    ]);
+
+    await gen.generateOpening(1, createInitialState());
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    const sent = create.mock.calls[0]![0].messages as Array<{ role: string; content: string }>;
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.requestIndex).toBe(0);
+    // Fires between onAttemptStart and the first delta.
+    expect(order.indexOf("prompt")).toBeGreaterThan(order.indexOf("start"));
+    expect(order.indexOf("prompt")).toBeLessThan(order.indexOf("delta"));
+
+    const messages = reports[0]!.messages;
+    expect(messages.map((message) => message.role)).toEqual(["system", "user"]);
+    // Audit invariant: joined segments === sent bytes, for every message.
+    for (const [index, message] of messages.entries()) {
+      expect(message.segments.map((segment) => segment.text).join("")).toBe(sent[index]!.content);
+    }
+    // Origins are labeled: static prompt files in system, task template in user.
+    expect(messages[0]!.segments.map((segment) => segment.source)).toContain(
+      "prompts/characters.txt",
+    );
+    expect(messages[1]!.segments.map((segment) => segment.source)).toContain(
+      "prompts/instructions.yaml#opening",
+    );
+  });
+
+  it("reports the repair instruction as its own segment on retry attempts", async () => {
+    const reports: WriterPromptReport[] = [];
+    const observer = {
+      onAttemptStart: vi.fn(),
+      onPrompt: vi.fn((report: WriterPromptReport) => reports.push(report)),
+      onDelta: vi.fn(),
+      onLine: vi.fn(),
+      onGroup: vi.fn(),
+      onAttemptEnd: vi.fn(),
+    } as unknown as DslStreamObserver;
+    const gen = makeDslGenerator({ generation: { repair_attempts: 1 } }, observer);
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) return ["@end bbbb buffer"]; // wrong nonce → retry
+      return ["地下室里只亮着终端的一点蓝光。", `@end ${nonce} buffer`];
+    });
+
+    await gen.generateOpening(1, createInitialState());
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    const retryUser = create.mock.calls[1]![0].messages[1].content as string;
+
+    expect(reports).toHaveLength(2);
+    const retryReport = reports[1]!;
+    const repairSegment = retryReport.messages[1]!.segments.at(-1)!;
+    expect(repairSegment.source).toBe("runtime/repair");
+    expect(repairSegment.label).toContain("修复指令");
+    // Byte-exact including the repair tail.
+    expect(retryReport.messages[1]!.segments.map((segment) => segment.text).join("")).toBe(
+      retryUser,
+    );
+  });
+
+  it("reports strip-continue follow-ups as a second request with the assistant prefix", async () => {
+    const reports: WriterPromptReport[] = [];
+    const observer = {
+      onAttemptStart: vi.fn(),
+      onPrompt: vi.fn((report: WriterPromptReport) => reports.push(report)),
+      onDelta: vi.fn(),
+      onLine: vi.fn(),
+      onGroup: vi.fn(),
+      onAttemptEnd: vi.fn(),
+    } as unknown as DslStreamObserver;
+    const gen = makeDslGenerator(undefined, observer);
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) return ["地下室里只亮着终端的一点蓝光。", "@?"];
+      return ["@? 怎么回应？", "@+ 暂时停手", `@end ${nonce} interaction`];
+    });
+
+    await gen.generateOpening(1, createInitialState());
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    const continuationMessages = create.mock.calls[1]![0]
+      .messages as Array<{ role: string; content: string }>;
+
+    expect(reports.map((report) => report.requestIndex)).toEqual([0, 1]);
+    const followUp = reports[1]!;
+    expect(followUp.messages.map((message) => message.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "user",
+    ]);
+    expect(followUp.messages[2]!.segments[0]!.source).toBe("writer-output/prefix");
+    expect(followUp.messages[3]!.segments[0]!.source).toBe("runtime/strip-continue");
+    // Audit invariant holds for every message of the follow-up request.
+    for (const [index, message] of followUp.messages.entries()) {
+      expect(message.segments.map((segment) => segment.text).join("")).toBe(
+        continuationMessages[index]!.content,
+      );
+    }
   });
 
   it("strip-continues past a mismatched sentinel and completes with the corrected one", async () => {

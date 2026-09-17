@@ -26,6 +26,19 @@
   box-sizing: border-box;
 }
 
+/* Semantic state colors — "in progress" is BLUE, distinct from failure red.
+ * --mon-accent stays the warm UI highlight (active chips, current node,
+ * pressure bars) and never encodes a state. */
+.mon-root {
+  --mon-live: #58a6ff; /* 进行中：流式 / 运行中 / 等待脉冲 */
+  --mon-ok: #56d364; /* 完成 */
+  --mon-ok-dim: #3f6d49; /* 完成边条（低饱和） */
+  --mon-fail: #f85149; /* 失败 / 错误 */
+  --mon-warn: #d29922; /* 重试 / 回退 */
+  --mon-idle: #6e6e78; /* 取消 / 闲置 */
+  --mon-accent: #ff5722; /* UI 强调，非状态 */
+}
+
 /* ---------------------------------------------------------------- panels */
 
 .mon-panel {
@@ -80,30 +93,30 @@
   height: 8px;
   border-radius: 50%;
   flex: none;
-  background: #6e6e78;
+  background: var(--mon-idle);
 }
 
 .mon-dot.state-streaming,
 .mon-dot.state-running {
-  background: #ff5722;
+  background: var(--mon-live);
   animation: mon-pulse 1.2s ease-in-out infinite;
 }
 
 .mon-dot.state-done {
-  background: #56d364;
+  background: var(--mon-ok);
 }
 
 .mon-dot.state-failed {
-  background: #f85149;
+  background: var(--mon-fail);
 }
 
 .mon-dot.state-retried,
 .mon-dot.state-fallback {
-  background: #d29922;
+  background: var(--mon-warn);
 }
 
 .mon-dot.state-cancelled {
-  background: #6e6e78;
+  background: var(--mon-idle);
 }
 
 @keyframes mon-pulse {
@@ -211,16 +224,16 @@
 }
 
 .writer-request-boundary.state-streaming {
-  border-left-color: #ff5722;
-  background: rgba(30, 20, 17, 0.97);
+  border-left-color: var(--mon-live);
+  background: rgba(16, 24, 38, 0.97);
 }
 
 .writer-request-boundary.state-failed {
-  border-left-color: #f85149;
+  border-left-color: var(--mon-fail);
 }
 
 .writer-request-boundary.state-done {
-  border-left-color: #3f6d49;
+  border-left-color: var(--mon-ok-dim);
 }
 
 .writer-request-boundary.state-cancelled {
@@ -247,11 +260,11 @@
 }
 
 .writer-request-state.state-streaming {
-  color: #ffa657;
+  color: var(--mon-live);
 }
 
 .writer-request-state.state-failed {
-  color: #f85149;
+  color: var(--mon-fail);
 }
 
 .writer-request-meta {
@@ -273,24 +286,24 @@
 
 .writer-repair {
   display: block;
-  color: #d29922;
+  color: var(--mon-warn);
   margin-top: 2px;
 }
 
 .writer-request-notice .is-error-text {
   display: block;
-  color: #f85149;
+  color: var(--mon-fail);
   white-space: pre-line;
   word-break: break-all;
 }
 
 .dsl-row.is-repaired .dsl-no {
-  color: #d29922;
+  color: var(--mon-warn);
 }
 
 .dsl-row.is-repaired .dsl-code::before {
   content: "a1 ";
-  color: #d29922;
+  color: var(--mon-warn);
 }
 
 .writer-request-stream {
@@ -311,7 +324,7 @@
 }
 
 .dsl-row.has-error .dsl-code {
-  text-decoration: underline wavy #f85149;
+  text-decoration: underline wavy var(--mon-fail);
   text-underline-offset: 3px;
 }
 
@@ -358,13 +371,13 @@
 
 .dsl-badge.is-error {
   border-color: #a03232;
-  color: #f85149;
+  color: var(--mon-fail);
   background: #231111;
 }
 
 .dsl-badge.is-end {
   border-color: #2d5a2d;
-  color: #56d364;
+  color: var(--mon-ok);
   background: #0f1a0f;
 }
 
@@ -404,7 +417,7 @@
 }
 
 .tok-reason-ending {
-  color: #56d364;
+  color: var(--mon-ok);
   font-weight: 600;
 }
 
@@ -429,7 +442,7 @@
 }
 
 .mon-writer-foot .is-error-text {
-  color: #f85149;
+  color: var(--mon-fail);
 }
 
 /* --------------------------------------------------------- context panel */
@@ -473,7 +486,7 @@
 }
 
 .mon-context-item .error-text {
-  color: #f85149;
+  color: var(--mon-fail);
 }
 
 .mon-kind-recap {
@@ -576,6 +589,14 @@
   color: #8a8a93;
 }
 
+.mon-prompt-item-head .mon-prompt-state.state-streaming {
+  color: var(--mon-live);
+}
+
+.mon-prompt-item-head .mon-prompt-state.state-failed {
+  color: var(--mon-fail);
+}
+
 .mon-prompt-followups {
   color: #ffa657;
 }
@@ -626,13 +647,8 @@
   font-size: 11px;
 }
 
-.mon-prompt-caret {
-  color: #6e6e78;
-  font-size: 10px;
-}
-
 .mon-prompt-trunc {
-  color: #f85149;
+  color: var(--mon-fail);
   font-size: 11px;
 }
 
@@ -664,7 +680,7 @@
 }
 
 .psrc-repair {
-  color: #f85149;
+  color: var(--mon-fail);
 }
 
 .psrc-output {
@@ -881,7 +897,7 @@
 }
 
 .graph-pending {
-  color: #ff5722;
+  color: var(--mon-live);
   animation: mon-pulse 1.2s ease-in-out infinite;
 }
 
@@ -988,7 +1004,7 @@ pre.mon-pre {
 }
 
 .thread-status.st-resolved {
-  color: #56d364;
+  color: var(--mon-ok);
   border-color: #2d5a2d;
 }
 
@@ -1024,7 +1040,7 @@ pre.mon-pre {
 }
 
 .log-row.lv-warn .scope {
-  color: #d29922;
+  color: var(--mon-warn);
 }
 
 .log-row .msg {
@@ -1059,7 +1075,7 @@ pre.mon-pre {
 .event-row.event-tone-interactive {
   margin: 2px 0;
   padding: 4px 7px;
-  border-left: 2px solid #d29922;
+  border-left: 2px solid var(--mon-warn);
   background: rgba(210, 153, 34, 0.07);
 }
 
@@ -1073,14 +1089,14 @@ pre.mon-pre {
   margin: 5px 0;
   padding: 6px 8px;
   border: 1px solid #2d5a2d;
-  border-left: 3px solid #56d364;
+  border-left: 3px solid var(--mon-ok);
   border-radius: 4px;
   background: rgba(63, 185, 80, 0.09);
 }
 
 .event-row.event-tone-terminal .kind-chip {
   border-color: #2d5a2d;
-  color: #56d364;
+  color: var(--mon-ok);
   background: #0f1a0f;
 }
 
@@ -1130,7 +1146,7 @@ pre.mon-pre {
 
 .mon-statusbar .conn-closed,
 .mon-statusbar .conn-connecting {
-  color: #d29922;
+  color: var(--mon-warn);
 }
 
 .mon-statusbar .dot {
@@ -1149,6 +1165,23 @@ pre.mon-pre {
   background-color: currentColor;
   mask: var(--ico) center / contain no-repeat;
   -webkit-mask: var(--ico) center / contain no-repeat;
+}
+
+/* Accordion caret (prompt/context panels): Lucide chevron-right as a
+ * currentColor mask, rotating open — replaces the old ▸/▾ glyphs. */
+.mon-caret {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex: none;
+  background-color: currentColor;
+  mask: url("/icons/chevron-right.svg") center / contain no-repeat;
+  -webkit-mask: url("/icons/chevron-right.svg") center / contain no-repeat;
+  transition: transform 0.12s ease;
+}
+
+.mon-caret.is-open {
+  transform: rotate(90deg);
 }
 
 .ico-hash { --ico: url("/icons/hash.svg"); }
@@ -1242,7 +1275,7 @@ pre.mon-pre {
 }
 
 .mon-statusbar .lvl.lvl-3 {
-  color: #f85149;
+  color: var(--mon-fail);
   font-weight: 700;
 }
 

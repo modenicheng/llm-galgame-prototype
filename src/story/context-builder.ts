@@ -34,36 +34,108 @@ export interface ContextInput {
 }
 
 // ---------------------------------------------------------------------------
+// Prompt segments (monitor audit view)
+// ---------------------------------------------------------------------------
+
+/**
+ * One labeled slice of a prompt message. `text` is a verbatim slice of the
+ * final prompt string — leading separators included — so
+ * `joinPromptSegments(segments)` reproduces the exact bytes sent to the
+ * provider and the audit view cannot drift from the real request.
+ */
+export interface PromptSegment {
+  /** Origin: a repo file path or the producing runtime pipeline. */
+  source: string;
+  /** Human-readable label for the monitor UI. */
+  label: string;
+  /** Verbatim prompt slice, including its leading "\n\n" separator. */
+  text: string;
+}
+
+/** Reassemble the prompt bytes from segments (identity invariant). */
+export function joinPromptSegments(segments: readonly PromptSegment[]): string {
+  return segments.map((segment) => segment.text).join("");
+}
+
+/**
+ * Accumulates prompt sections as labeled segments while reproducing the
+ * legacy `sections.join("\n\n")` byte-for-byte: every section after the
+ * first carries its leading "\n\n" inside its segment text, and an optional
+ * `===== X =====` header is merged into the same segment as its body.
+ */
+class SegmentAssembler {
+  private readonly segments: PromptSegment[] = [];
+  private started = false;
+
+  section(source: string, label: string, body: string, header?: string): void {
+    const prefix = this.started ? "\n\n" : "";
+    this.started = true;
+    this.segments.push({
+      source,
+      label,
+      text: `${prefix}${header !== undefined ? `${header}\n\n` : ""}${body}`,
+    });
+  }
+
+  result(): PromptSegment[] {
+    return this.segments;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // System context
 // ---------------------------------------------------------------------------
+
+/**
+ * Build the system-level prompt block as labeled segments (see
+ * `buildSystemContext` for content and ordering).
+ */
+export function buildSystemContextSegments(input: ContextInput): PromptSegment[] {
+  const assembler = new SegmentAssembler();
+
+  assembler.section("prompts/dsl-protocol.txt", "DSL 协议", input.prompts.dslProtocol);
+
+  if (input.authorConfig) {
+    assembler.section(
+      "author.yaml",
+      "作者控制配置",
+      buildAuthorConfigSection(input.authorConfig),
+    );
+  }
+
+  assembler.section(
+    "prompts/characters.txt",
+    "角色设定",
+    input.prompts.characters,
+    "===== 角色设定 =====",
+  );
+  assembler.section(
+    "prompts/story_line.txt",
+    "故事大纲",
+    input.prompts.storyLine,
+    "===== 故事大纲 =====",
+  );
+  assembler.section(
+    "prompts/guideline.txt",
+    "写作限制",
+    input.prompts.guideline,
+    "===== 写作限制 =====",
+  );
+
+  return assembler.result();
+}
 
 /**
  * Build the system-level prompt block.
  *
  * Includes the output format protocol, character settings, story outline,
- * and writing constraints. Does NOT include dynamic state — that goes in
- * the user prompt so it can be refreshed per-turn without rebuilding the
- * system message.
+ * and writing constraints. Does NOT include dynamic state — that goes in the
+ * user prompt so it can be refreshed per-turn without rebuilding the
+ * system message. Derived from `buildSystemContextSegments` so the audit
+ * view and the sent bytes share one source.
  */
 export function buildSystemContext(input: ContextInput): string {
-  const sections: string[] = [];
-
-  sections.push(input.prompts.dslProtocol);
-
-  if (input.authorConfig) {
-    sections.push(buildAuthorConfigSection(input.authorConfig));
-  }
-
-  sections.push("===== 角色设定 =====");
-  sections.push(input.prompts.characters);
-
-  sections.push("===== 故事大纲 =====");
-  sections.push(input.prompts.storyLine);
-
-  sections.push("===== 写作限制 =====");
-  sections.push(input.prompts.guideline);
-
-  return sections.join("\n\n");
+  return joinPromptSegments(buildSystemContextSegments(input));
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +303,93 @@ export interface DslContextInput extends ContextInput {
 }
 
 /**
+ * Build the per-request user prompt for DSL mode as labeled segments.
+ *
+ * `extraSegments` are separator-free texts (task template fill, guidance
+ * pieces); each becomes its own trailing section joined by "\n\n" — exactly
+ * the bytes the legacy string path produced when those pieces were
+ * pre-concatenated into one `extraInstructions` string.
+ */
+export function buildDslUserPromptSegments(
+  turn: number,
+  input: DslContextInput,
+  extraSegments?: readonly PromptSegment[],
+): PromptSegment[] {
+  const assembler = new SegmentAssembler();
+
+  if (input.modelAssetCatalog) {
+    assembler.section(
+      "assets/resources.yaml",
+      "可用素材",
+      serializeModelAssetCatalog(input.modelAssetCatalog),
+      "===== 可用素材 =====",
+    );
+  }
+
+  assembler.section(
+    "runtime/history-window",
+    `剧情历史（滑窗 ${input.recentEvents.length} 条）`,
+    input.recentEvents.length > 0
+      ? serializeStoryContext(input.recentEvents)
+      : "（当前没有历史事件。）",
+    "===== 剧情历史 =====",
+  );
+
+  if (input.directorBrief) {
+    assembler.section(
+      "narrative/director-brief",
+      "导演便签",
+      renderDirectorNote(input.directorBrief, input.recentEvents.length),
+    );
+  }
+
+  assembler.section(
+    "story/state.ts",
+    "当前故事状态（种子 / 前情梗概 / 线索）",
+    summarizeState(input.state),
+    "===== 当前故事状态 =====",
+  );
+
+  if (input.tailVisualState) {
+    assembler.section(
+      "presentation/visual-state",
+      "当前舞台状态",
+      serializeVisualContext(input.tailVisualState),
+      "===== 当前舞台状态 =====",
+    );
+  }
+
+  const taskHeaderLines = [
+    `任务类型：${input.taskType}`,
+    `生成段 nonce：${input.generationNonce}`,
+    `本次续写行数上限：${input.targetLines}`,
+    `当前回合：${turn}`,
+  ];
+  if (input.interactionProgress) {
+    const { count, target } = input.interactionProgress;
+    taskHeaderLines.push(
+      target !== undefined
+        ? `本局交互进度：${count} / 收束目标 ${target}`
+        : `本局交互进度：${count}`,
+    );
+  }
+  // The legacy assembly pushed each metadata line as its own section, so the
+  // lines are "\n\n"-separated inside the prompt.
+  assembler.section(
+    "runtime/task-header",
+    "本段任务（元信息）",
+    taskHeaderLines.join("\n\n"),
+    "===== 本段任务 =====",
+  );
+
+  for (const segment of extraSegments ?? []) {
+    assembler.section(segment.source, segment.label, segment.text);
+  }
+
+  return assembler.result();
+}
+
+/**
  * Build the per-request user prompt for DSL mode.
  *
  * Section order is provider-cache-aware (DeepSeek prefix caching bills a
@@ -239,57 +398,17 @@ export interface DslContextInput extends ContextInput {
  * (state summary, visual tail, task header with nonce/turn/progress, task
  * instructions) is clustered at the tail. Never insert volatile content
  * before a stable section — it would invalidate the shared prefix.
+ * Derived from `buildDslUserPromptSegments` so the audit view and the sent
+ * bytes share one source.
  */
 export function buildDslUserPrompt(
   turn: number,
   input: DslContextInput,
   extraInstructions?: string,
 ): string {
-  const sections: string[] = [];
-
-  if (input.modelAssetCatalog) {
-    sections.push("===== 可用素材 =====");
-    sections.push(serializeModelAssetCatalog(input.modelAssetCatalog));
-  }
-
-  sections.push("===== 剧情历史 =====");
-  sections.push(
-    input.recentEvents.length > 0
-      ? serializeStoryContext(input.recentEvents)
-      : "（当前没有历史事件。）",
-  );
-
-  if (input.directorBrief) {
-    sections.push(
-      renderDirectorNote(input.directorBrief, input.recentEvents.length),
-    );
-  }
-
-  sections.push("===== 当前故事状态 =====");
-  sections.push(summarizeState(input.state));
-
-  if (input.tailVisualState) {
-    sections.push("===== 当前舞台状态 =====");
-    sections.push(serializeVisualContext(input.tailVisualState));
-  }
-
-  sections.push("===== 本段任务 =====");
-  sections.push(`任务类型：${input.taskType}`);
-  sections.push(`生成段 nonce：${input.generationNonce}`);
-  sections.push(`本次续写行数上限：${input.targetLines}`);
-  sections.push(`当前回合：${turn}`);
-  if (input.interactionProgress) {
-    const { count, target } = input.interactionProgress;
-    sections.push(
-      target !== undefined
-        ? `本局交互进度：${count} / 收束目标 ${target}`
-        : `本局交互进度：${count}`,
-    );
-  }
-
-  if (extraInstructions) {
-    sections.push(extraInstructions);
-  }
-
-  return sections.join("\n\n");
+  const extra =
+    extraInstructions !== undefined && extraInstructions !== ""
+      ? [{ source: "runtime/extra", label: "附加指令", text: extraInstructions }]
+      : undefined;
+  return joinPromptSegments(buildDslUserPromptSegments(turn, input, extra));
 }

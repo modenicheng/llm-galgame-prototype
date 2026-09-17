@@ -7,6 +7,7 @@ import { MonitorClient } from "./monitor-client.js";
 import { MonitorModel } from "./monitor-model.js";
 import { WriterPanel } from "./writer-panel.js";
 import { ContextPanel } from "./context-panel.js";
+import { PromptPanel } from "./prompt-panel.js";
 import { StatusBar } from "./status-bar.js";
 import { deriveStoryGraph, renderStoryGraph } from "./tabs/story-graph.js";
 import { renderStoryState } from "./tabs/story-state-tab.js";
@@ -15,6 +16,7 @@ import { renderDiagnostics, renderEvents } from "./tabs/logs-tab.js";
 import { el } from "../ui/dom.js";
 
 type TabId = "graph" | "state" | "metrics" | "events" | "logs";
+type RightTabId = "prompt" | "context";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "graph", label: "剧情图" },
@@ -24,11 +26,11 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "logs", label: "日志" },
 ];
 
-function panel(title: string, accent: string): { panel: HTMLElement; body: HTMLElement } {
+function panel(title: string, accent: string): { panel: HTMLElement; head: HTMLElement; body: HTMLElement } {
   const panelEl = el("div", "mon-panel");
   const head = el("div", "mon-panel-head");
   head.appendChild(el("span", "mon-accent", accent));
-  head.appendChild(el("span", undefined, title));
+  if (title !== "") head.appendChild(el("span", undefined, title));
   panelEl.appendChild(head);
   const body = el("div");
   body.style.flex = "1";
@@ -36,7 +38,7 @@ function panel(title: string, accent: string): { panel: HTMLElement; body: HTMLE
   body.style.display = "flex";
   body.style.flexDirection = "column";
   panelEl.appendChild(body);
-  return { panel: panelEl, body };
+  return { panel: panelEl, head, body };
 }
 
 export function bootMonitor(root: HTMLElement): void {
@@ -58,12 +60,41 @@ export function bootMonitor(root: HTMLElement): void {
   shell.appendChild(writer.panel);
   new WriterPanel(model, { toolbar, stream, foot });
 
-  // --- Right top: async context LLM panel ---
+  // --- Right top: writer prompt audit (default) / async context LLM, tabbed
+  // inside the panel head so the switch costs no vertical space ---
   const right = el("div", "mon-right");
-  const context = panel("异步上下文管理 LLM", "▍");
+  const rightTop = panel("", "▍");
+  const headTabs = el("div", "mon-head-tabs");
+  const promptList = el("div", "mon-prompt-list");
   const contextList = el("div", "mon-context-list");
-  context.body.appendChild(contextList);
-  right.appendChild(context.panel);
+  const RIGHT_TABS: { id: RightTabId; label: string }[] = [
+    { id: "prompt", label: "编剧输入" },
+    { id: "context", label: "异步上下文" },
+  ];
+  let activeRightTab: RightTabId = "prompt";
+  for (const tab of RIGHT_TABS) {
+    const btn = el("button", "mon-tab mon-tab--head", tab.label);
+    btn.dataset.tabId = tab.id;
+    btn.addEventListener("click", () => {
+      activeRightTab = tab.id;
+      syncRightTabUI();
+    });
+    headTabs.appendChild(btn);
+  }
+  rightTop.head.appendChild(headTabs);
+  rightTop.body.appendChild(promptList);
+  rightTop.body.appendChild(contextList);
+  right.appendChild(rightTop.panel);
+  function syncRightTabUI(): void {
+    for (const button of Array.from(headTabs.children) as HTMLElement[]) {
+      const id = button.dataset.tabId as RightTabId | undefined;
+      button.classList.toggle("is-active", id === activeRightTab);
+    }
+    promptList.style.display = activeRightTab === "prompt" ? "block" : "none";
+    contextList.style.display = activeRightTab === "context" ? "block" : "none";
+  }
+  syncRightTabUI();
+  new PromptPanel(model, { list: promptList });
   new ContextPanel(model, { list: contextList });
 
   // --- Right bottom: tabs (story graph + all other game state) ---

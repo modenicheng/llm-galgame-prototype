@@ -5,11 +5,18 @@
 import { describe, it, expect } from "vitest";
 import {
   buildDslUserPrompt,
+  buildDslUserPromptSegments,
   buildSystemContext,
+  buildSystemContextSegments,
+  joinPromptSegments,
+  serializeModelAssetCatalog,
+  serializeStoryContext,
+  serializeVisualContext,
   type ContextInput,
   type DslContextInput,
 } from "./context-builder.js";
-import { createInitialState } from "./state.js";
+import { renderDirectorNote } from "../application/narrative/narrative-context-builder.js";
+import { summarizeState, createInitialState } from "./state.js";
 import type { NarrativeBrief } from "../core/narrative/narrative-brief.js";
 import type { PromptBundle } from "../prompts.js";
 import type { StoryContextEvent } from "../schema.js";
@@ -252,5 +259,179 @@ describe("buildDslUserPrompt", () => {
     const prompt = buildDslUserPrompt(4, ctx);
     expect(prompt).not.toContain("导演便签");
     expect(prompt).not.toContain("记忆已整理至事件");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Segmented builders — byte-identity with the pre-refactor string assembly
+// (provider prefix caching bills a stable prompt prefix; the audit view must
+// never change what is sent).
+// ---------------------------------------------------------------------------
+
+/** Verbatim copy of the pre-refactor buildDslUserPrompt assembly. */
+function legacyUserPrompt(turn: number, input: DslContextInput, extra: string): string {
+  const sections: string[] = [];
+  if (input.modelAssetCatalog) {
+    sections.push("===== 可用素材 =====");
+    sections.push(serializeModelAssetCatalog(input.modelAssetCatalog));
+  }
+  sections.push("===== 剧情历史 =====");
+  sections.push(
+    input.recentEvents.length > 0
+      ? serializeStoryContext(input.recentEvents)
+      : "（当前没有历史事件。）",
+  );
+  if (input.directorBrief) {
+    sections.push(renderDirectorNote(input.directorBrief, input.recentEvents.length));
+  }
+  sections.push("===== 当前故事状态 =====");
+  sections.push(summarizeState(input.state));
+  if (input.tailVisualState) {
+    sections.push("===== 当前舞台状态 =====");
+    sections.push(serializeVisualContext(input.tailVisualState, input.modelAssetCatalog?.characters));
+  }
+  sections.push("===== 本段任务 =====");
+  sections.push(`任务类型：${input.taskType}`);
+  sections.push(`生成段 nonce：${input.generationNonce}`);
+  sections.push(`本次续写行数上限：${input.targetLines}`);
+  sections.push(`当前回合：${turn}`);
+  if (input.interactionProgress) {
+    const { count, target } = input.interactionProgress;
+    sections.push(
+      target !== undefined
+        ? `本局交互进度：${count} / 收束目标 ${target}`
+        : `本局交互进度：${count}`,
+    );
+  }
+  if (extra) sections.push(extra);
+  return sections.join("\n\n");
+}
+
+describe("prompt segments (audit view)", () => {
+  function makeFullDslContext(): DslContextInput {
+    return {
+      prompts: makePrompts(),
+      state: makeRichState(),
+      recentEvents: makeRecentEvents(),
+      taskType: "continuation",
+      generationNonce: "d41f",
+      targetLines: 8,
+      directorBrief: makeBrief(),
+      tailVisualState: {
+        background: "basement",
+        bgm: "mystery",
+        characters: {
+          suyao: {
+            displayName: "苏遥",
+            spriteSet: "suyao",
+            variant: "normal",
+            position: "left",
+            visible: true,
+          },
+        },
+      },
+      modelAssetCatalog: {
+        guidance: "素材覆盖地下设施。",
+        backgrounds: { basement: { description: "地下设备间。" } },
+        bgm: {},
+        soundEffects: {},
+        spriteSets: {},
+        characters: {},
+      },
+      interactionProgress: { count: 4, target: 6 },
+    };
+  }
+
+  it("system segments join to the exact legacy bytes", () => {
+    const input = makeDefaultContext();
+    const legacy = [
+      input.prompts.dslProtocol,
+      "===== 角色设定 =====",
+      input.prompts.characters,
+      "===== 故事大纲 =====",
+      input.prompts.storyLine,
+      "===== 写作限制 =====",
+      input.prompts.guideline,
+    ].join("\n\n");
+    expect(joinPromptSegments(buildSystemContextSegments(input))).toBe(legacy);
+  });
+
+  it("system segments label every origin and keep the author slot in order", () => {
+    const plain = buildSystemContextSegments(makeDefaultContext());
+    expect(plain.map((segment) => segment.source)).toEqual([
+      "prompts/dsl-protocol.txt",
+      "prompts/characters.txt",
+      "prompts/story_line.txt",
+      "prompts/guideline.txt",
+    ]);
+    expect(plain.map((segment) => segment.label)).toEqual([
+      "DSL 协议",
+      "角色设定",
+      "故事大纲",
+      "写作限制",
+    ]);
+
+    const authored = buildSystemContextSegments({
+      ...makeDefaultContext(),
+      authorConfig: {
+        control: {
+          world: { mode: "locked" },
+          characters: { mode: "preferred" },
+          plot: { mode: "locked" },
+          endings: { mode: "free" },
+          style: { mode: "preferred" },
+        },
+        rules: { locked: ["核心谜题不得提前揭示"], preferred: [], seeds: [] },
+      },
+    });
+    expect(authored[1]!.source).toBe("author.yaml");
+    // Removing the author config drops exactly that one segment, byte-for-byte.
+    expect(authored.filter((_, index) => index !== 1)).toEqual(plain);
+  });
+
+  it("user segments join to the exact legacy bytes (all sections, no extras)", () => {
+    const ctx = makeFullDslContext();
+    expect(joinPromptSegments(buildDslUserPromptSegments(7, ctx))).toBe(
+      legacyUserPrompt(7, ctx, ""),
+    );
+  });
+
+  it("user segments with extra pieces reproduce the pre-concatenated extra string", () => {
+    const ctx = makeFullDslContext();
+    const template = "请继续推进剧情，保持节奏。";
+    const guidance = "剧情已进入收束阶段：请开始收拢当前线索。";
+    // Legacy: the generator concatenated template + "\n\n" + guidance into ONE
+    // extra section before calling the string builder.
+    const legacyExtra = `${template}\n\n${guidance}`;
+    expect(
+      joinPromptSegments(
+        buildDslUserPromptSegments(7, ctx, [
+          { source: "prompts/instructions.yaml#continuation", label: "任务指令模板", text: template },
+          { source: "runtime/event-mode-guidance", label: "收束指令（L1 wrapup）", text: guidance },
+        ]),
+      ),
+    ).toBe(legacyUserPrompt(7, ctx, legacyExtra));
+  });
+
+  it("the string API keeps deriving the same bytes from segments", () => {
+    const ctx = makeFullDslContext();
+    expect(buildDslUserPrompt(7, ctx, "附加指令内容。")).toBe(
+      legacyUserPrompt(7, ctx, "附加指令内容。"),
+    );
+  });
+
+  it("user segments label each origin file / pipeline", () => {
+    const segments = buildDslUserPromptSegments(7, makeFullDslContext(), [
+      { source: "prompts/instructions.yaml#continuation", label: "任务指令模板", text: "模板。" },
+    ]);
+    expect(segments.map((segment) => segment.source)).toEqual([
+      "assets/resources.yaml",
+      "runtime/history-window",
+      "narrative/director-brief",
+      "story/state.ts",
+      "presentation/visual-state",
+      "runtime/task-header",
+      "prompts/instructions.yaml#continuation",
+    ]);
   });
 });

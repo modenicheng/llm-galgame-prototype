@@ -81,6 +81,7 @@ export class ContextPanel {
         ? `${fmtTime(startedAt)} · ${endedAt - startedAt}ms`
         : fmtTime(startedAt);
     head.appendChild(right);
+    head.appendChild(el("span", `mon-caret${id === this.expandedId ? " is-open" : ""}`));
     item.appendChild(head);
 
     item.appendChild(el("div", "detail", detail));

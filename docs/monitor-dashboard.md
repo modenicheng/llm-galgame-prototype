@@ -33,9 +33,18 @@ controller 名额。游戏页不需要开着——不开局时监控页显示空
   错误波浪线。默认自动跟随末尾，用户向上滚动时暂停，点击「继续跟随」恢复。
   玩家当前看到的行以蓝色轨道和低饱和蓝底高亮（`aria-current`，不另加文字标记）；
   交互会高亮整个表单块。
-- **右上**：异步上下文管理 LLM（campus 线 = 前情压缩 recap；longform 线
-  另有记忆整理/剧情规划）。每次调用一条：输入批次（事件 seq 区间）、状态
-  （运行中/完成/已回退/失败）、最终输出文本。
+- **右上（双 tab，tab 在面板头行内，不占纵向空间）**：
+  - **编剧输入（默认）**：审计当前填入编剧 LLM 请求的完整输入提示词，
+    按来源分段标注。系统提示词全话不变，作为顶部 sticky 固定块只渲染
+    一次；每个 attempt 是一条窄手风琴头（状态/任务类型/请求 #/字数/
+    时间），展开后按请求列出消息（user/assistant），每段一行
+    `[来源] 标签 · N 字`（文件蓝/运行时紫/收束指令橙/修复红/模型前缀
+    绿），点击展开 verbatim 文本。默认跟随最新 attempt（审计「当前输
+    入」），手动选择后钉住；strip-continue 续写请求作为同 attempt 的
+    第二个请求展示。
+  - **异步上下文**：异步上下文管理 LLM（campus 线 = 前情压缩 recap；
+    longform 线另有记忆整理/剧情规划）。每次调用一条：输入批次（事件
+    seq 区间）、状态（运行中/完成/已回退/失败）、最终输出文本。
 - **右下 tabs**：
   - **剧情图**：本局的运行图——开局节点 → 每个正式交互一个节点（选项全
     列出、已选项高亮、边标注玩家选择/输入、当前等待节点脉冲）→ 结局节
@@ -52,7 +61,7 @@ controller 名额。游戏页不需要开着——不开局时监控页显示空
 ## 架构
 
 ```
-StoryGenerator ──(DslStreamObserver: delta/line/group/repair/usage/end)──┐
+StoryGenerator ──(DslStreamObserver: prompt/start/delta/line/group/repair/usage/end)──┐
 RecapSummarizer/Consolidator/PlotPlanner ──(instrumented ports)────┤
 DiagnosticSink ──(BroadcastDiagnosticSink)────────────────────────┤
 Game.getMonitorState() ──(400ms 轮询，JSON 变化才推)───────────────┤
@@ -84,6 +93,16 @@ Game.getMonitorState() ──(400ms 轮询，JSON 变化才推)─────�
   后位置可以暂时为空。
 - **上下文 LLM 无流式**：recap/整理/规划都是一次性补全，监控呈现的是生命
   周期 + 最终输出；`null` → 「已回退」（确定性摘要由 Game 落地，日志可查）。
+- **提示词审计与发送字节同源**：`src/story/context-builder.ts` 的分段构造
+  器（`buildSystemContextSegments` / `buildDslUserPromptSegments`）是唯一
+  组装点，字符串构造函数由分段 join 派生——`join(segments)` 逐字节等于实
+  际发送的 prompt（对照测试钉死，前缀缓存不受影响）。生成器在每次
+  `createStream` 前经 `DslStreamObserver.onPrompt` 上报完整 messages
+  （含 strip-continue 续写请求，`requestIndex` 1+）。system 消息全话不
+  变：hub 只存一份（快照 `writer.systemPrompt`），attempt 记录只存
+  user/assistant 消息；`writer.prompt` 事件始终携带 system（客户端幂等
+  折叠）。上限：单段 20KB / 单 attempt 合计 64KB，截断置 `truncated`。
+  前端只订阅 `writerPrompt` topic，流式 delta 不会重绘审计面板。
 - **只读通道**：`/ws/monitor` 复用 token + origin 校验，但忽略一切入站消
   息；上限 8 连接。
 - **有界内存**：writer 任务环 12 条（每尝试文本 48KB 截断）、context 任务

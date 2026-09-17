@@ -50,6 +50,26 @@ export interface MonitorWriterRepair {
   message: string;
 }
 
+// ---------------------------------------------------------------------------
+// Writer prompt audit (exact request payload, segmented by origin)
+// ---------------------------------------------------------------------------
+
+export interface MonitorWriterPromptSegment {
+  /** Origin: repo file path or producing runtime pipeline. */
+  source: string;
+  label: string;
+  /** Verbatim prompt slice (leading separators included); joining a
+   * message's segment texts reproduces the content sent to the provider. */
+  text: string;
+  /** Set when the hub capped the segment text (audit view is partial). */
+  truncated?: boolean;
+}
+
+export interface MonitorWriterPromptMessage {
+  role: "system" | "user" | "assistant";
+  segments: MonitorWriterPromptSegment[];
+}
+
 export interface MonitorWriterTask {
   taskId: string;
   taskType: string;
@@ -58,10 +78,15 @@ export interface MonitorWriterTask {
   attempts: MonitorWriterAttempt[];
 }
 
-/** Snapshot form: attempts carry their full (possibly capped) DSL text. */
+/** Snapshot form: attempts carry their full (possibly capped) DSL text and
+ * their request payloads (system message stripped — it is session-invariant
+ * and carried once on the snapshot itself). */
 export interface MonitorWriterAttemptWithText extends MonitorWriterAttempt {
   text: string;
   truncated: boolean;
+  /** Indexed by requestIndex within the attempt (0 = initial request,
+   * 1+ = strip-continue follow-ups); user/assistant messages only. */
+  prompt?: { requests: MonitorWriterPromptMessage[][] };
 }
 
 export interface MonitorWriterTaskWithText extends Omit<MonitorWriterTask, "attempts"> {
@@ -122,8 +147,12 @@ export interface MonitorInfo {
 export interface MonitorSnapshot {
   at: number;
   info: MonitorInfo;
-  /** Newest first, capped. */
-  writer: { tasks: MonitorWriterTaskWithText[] };
+  /** Newest first, capped. `systemPrompt` is the session-invariant writer
+   * system message (segmented), sent once instead of per attempt. */
+  writer: {
+    tasks: MonitorWriterTaskWithText[];
+    systemPrompt?: MonitorWriterPromptMessage | null;
+  };
   /** Newest first, capped. */
   context: { tasks: MonitorContextTask[] };
   /** Oldest → newest tail, capped. */
@@ -133,6 +162,15 @@ export interface MonitorSnapshot {
 
 export type MonitorServerEvent =
   | { type: "writer.start"; task: MonitorWriterTask }
+  | {
+      /** The exact prompt messages of one LLM call (audit view); fires right
+       * after the attempt's writer.start and again per strip-continue
+       * follow-up. Includes the system message — clients fold it idempotently. */
+      type: "writer.prompt";
+      attemptId: string;
+      requestIndex: number;
+      messages: MonitorWriterPromptMessage[];
+    }
   | { type: "writer.delta"; attemptId: string; text: string; firstTokenMs?: number | null }
   | {
       type: "writer.line";

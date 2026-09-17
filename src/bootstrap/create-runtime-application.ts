@@ -383,6 +383,9 @@ function safeDslStreamObserver(observer: DslStreamObserver): DslStreamObserver {
     onGroup: safe("onGroup", observer.onGroup.bind(observer)),
     onAttemptEnd: safe("onAttemptEnd", observer.onAttemptEnd.bind(observer)),
   };
+  if (observer.onPrompt !== undefined) {
+    wrapped.onPrompt = safe("onPrompt", observer.onPrompt.bind(observer));
+  }
   if (observer.onRepair !== undefined) {
     wrapped.onRepair = safe("onRepair", observer.onRepair.bind(observer));
   }

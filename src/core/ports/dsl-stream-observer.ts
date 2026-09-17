@@ -48,9 +48,37 @@ export interface WriterAttemptUsage {
   latencyMs: number;
 }
 
+/** One labeled slice of a prompt message (monitor audit view). */
+export interface WriterPromptSegment {
+  /** Origin: a repo file path or the producing runtime pipeline. */
+  source: string;
+  /** Human-readable label. */
+  label: string;
+  /** Verbatim prompt slice — leading separators included, so joining the
+   * segments of a message reproduces the exact content sent to the provider. */
+  text: string;
+}
+
+export interface WriterPromptMessage {
+  role: "system" | "user" | "assistant";
+  segments: WriterPromptSegment[];
+}
+
+/** The exact request payload of one LLM call inside an attempt. */
+export interface WriterPromptReport {
+  attemptId: string;
+  /** 0 = the initial request; 1+ = follow-ups within the same attempt
+   * (strip-continue replays an assistant prefix and asks for continuation). */
+  requestIndex: number;
+  messages: WriterPromptMessage[];
+}
+
 export interface DslStreamObserver {
   /** A streaming attempt started; arrives before any delta. */
   onAttemptStart(info: WriterAttemptInfo): void;
+  /** The exact prompt messages of one LLM call (audit view); fires right
+   * after onAttemptStart for the initial request and again per follow-up. */
+  onPrompt?(report: WriterPromptReport): void;
   /** One raw SSE content delta, verbatim. */
   onDelta(attemptId: string, text: string): void;
   /** One complete DSL line was parsed (or rejected) by the generator. */

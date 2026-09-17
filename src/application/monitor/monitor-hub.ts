@@ -22,6 +22,8 @@ import type {
   WriterAttemptInfo,
   WriterAttemptUsage,
   WriterLineParse,
+  WriterPromptMessage,
+  WriterPromptReport,
   WriterRepair,
 } from "../../core/ports/dsl-stream-observer.js";
 import type { GameMonitorState } from "../../core/runtime/monitor-state.js";
@@ -38,6 +40,8 @@ import type {
   MonitorStateFrame,
   MonitorWriterAttempt,
   MonitorWriterAttemptWithText,
+  MonitorWriterPromptMessage,
+  MonitorWriterPromptSegment,
   MonitorWriterTask,
   MonitorWriterTaskWithText,
 } from "../../shared/wire/monitor-message.js";
@@ -63,6 +67,9 @@ const MAX_WRITER_TASKS = 12;
 const MAX_WRITER_TEXT_CHARS = 48_000;
 const MAX_CONTEXT_TASKS = 24;
 const MAX_DIAGNOSTICS = 200;
+/** Prompt audit caps: per segment and per attempt (stored + broadcast). */
+const MAX_PROMPT_SEGMENT_CHARS = 20_000;
+const MAX_PROMPT_ATTEMPT_CHARS = 64_000;
 const DEFAULT_FLUSH_INTERVAL_MS = 25;
 const DEFAULT_POLL_INTERVAL_MS = 400;
 
@@ -82,6 +89,9 @@ interface WriterAttemptRecord {
   repairs: WriterRepair[];
   text: string;
   truncated: boolean;
+  /** Request payloads indexed by requestIndex (system message stripped —
+   * it is session-invariant and kept once on the hub). */
+  promptRequests: MonitorWriterPromptMessage[][];
 }
 
 interface WriterTaskRecord {
@@ -115,6 +125,9 @@ function serializeTaskWithText(task: WriterTaskRecord): MonitorWriterTaskWithTex
     ...serializeAttempt(attempt),
     text: attempt.text,
     truncated: attempt.truncated,
+    ...(attempt.promptRequests.length > 0
+      ? { prompt: { requests: clonePromptRequests(attempt.promptRequests) } }
+      : {}),
   }));
   return {
     taskId: task.taskId,
@@ -125,9 +138,66 @@ function serializeTaskWithText(task: WriterTaskRecord): MonitorWriterTaskWithTex
   };
 }
 
+// ---------------------------------------------------------------------------
+// Prompt audit helpers
+// ---------------------------------------------------------------------------
+
+/** Identity of a prompt message (joined segment texts) for change detection. */
+function promptMessageKey(message: MonitorWriterPromptMessage): string {
+  return message.segments.map((segment) => segment.text).join("");
+}
+
+function clonePromptSegment(segment: MonitorWriterPromptSegment): MonitorWriterPromptSegment {
+  return {
+    source: segment.source,
+    label: segment.label,
+    text: segment.text,
+    ...(segment.truncated === true ? { truncated: true } : {}),
+  };
+}
+
+function clonePromptMessage(message: MonitorWriterPromptMessage): MonitorWriterPromptMessage {
+  return { role: message.role, segments: message.segments.map(clonePromptSegment) };
+}
+
+function clonePromptRequests(requests: readonly MonitorWriterPromptMessage[][]): MonitorWriterPromptMessage[][] {
+  return requests.map((messages) => messages.map(clonePromptMessage));
+}
+
+/** Copy + cap the reported messages (segment 20k / attempt 64k, flag set). */
+function normalizePromptMessages(
+  messages: readonly WriterPromptMessage[],
+): MonitorWriterPromptMessage[] {
+  let budget = MAX_PROMPT_ATTEMPT_CHARS;
+  return messages.map((message) => ({
+    role: message.role,
+    segments: message.segments.map((segment) => {
+      let text = segment.text;
+      let truncated = false;
+      if (text.length > MAX_PROMPT_SEGMENT_CHARS) {
+        text = text.slice(0, MAX_PROMPT_SEGMENT_CHARS);
+        truncated = true;
+      }
+      if (text.length > budget) {
+        text = text.slice(0, Math.max(0, budget));
+        truncated = true;
+      }
+      budget -= text.length;
+      return {
+        source: segment.source,
+        label: segment.label,
+        text,
+        ...(truncated ? { truncated: true } : {}),
+      };
+    }),
+  }));
+}
+
 export class MonitorHub {
   private readonly writerTasks = new Map<string, WriterTaskRecord>();
   private readonly attemptIndex = new Map<string, { task: WriterTaskRecord; attempt: WriterAttemptRecord }>();
+  /** Session-invariant writer system prompt (segmented, audit view). */
+  private writerSystemPrompt: MonitorWriterPromptMessage | null = null;
   private readonly contextTasks: MonitorContextTask[] = [];
   private contextSeq = 0;
   private readonly diagnostics: MonitorDiagnosticEntry[] = [];
@@ -206,6 +276,7 @@ export class MonitorHub {
         repairs: [],
         text: "",
         truncated: false,
+        promptRequests: [],
       };
       task.attempts.push(attempt);
       task.lastActivityAt = attempt.startedAt;
@@ -213,6 +284,36 @@ export class MonitorHub {
       this.queueEvent({
         type: "writer.start",
         task: { ...task, attempts: [serializeAttempt(attempt)] },
+      });
+    },
+
+    onPrompt: (report: WriterPromptReport) => {
+      const entry = this.attemptIndex.get(report.attemptId);
+      if (entry === undefined) return;
+      const messages = normalizePromptMessages(report.messages);
+      // The system message is session-invariant: keep one copy on the hub,
+      // store only the per-request user/assistant messages on the attempt.
+      const system = messages.find((message) => message.role === "system");
+      if (system !== undefined) {
+        if (
+          this.writerSystemPrompt === null ||
+          promptMessageKey(this.writerSystemPrompt) !== promptMessageKey(system)
+        ) {
+          this.writerSystemPrompt = clonePromptMessage(system);
+        }
+      }
+      const rest = messages.filter((message) => message.role !== "system");
+      const { attempt } = entry;
+      while (attempt.promptRequests.length <= report.requestIndex) {
+        attempt.promptRequests.push([]);
+      }
+      attempt.promptRequests[report.requestIndex] = rest;
+      entry.task.lastActivityAt = this.now();
+      this.queueEvent({
+        type: "writer.prompt",
+        attemptId: report.attemptId,
+        requestIndex: report.requestIndex,
+        messages,
       });
     },
 
@@ -491,7 +592,12 @@ export class MonitorHub {
     return {
       at: this.now(),
       info: this.options.info,
-      writer: { tasks: writerTasks },
+      writer: {
+        tasks: writerTasks,
+        ...(this.writerSystemPrompt !== null
+          ? { systemPrompt: clonePromptMessage(this.writerSystemPrompt) }
+          : {}),
+      },
       context: { tasks: [...this.contextTasks].reverse() },
       diagnostics: [...this.diagnostics],
       state,

@@ -218,6 +218,133 @@ describe("MonitorHub", () => {
     expect(tasks[1]!.output).toBe("社团招新夜……");
   });
 
+  // -------------------------------------------------------------------------
+  // onPrompt — audit storage: per-attempt requests (system stripped), the
+  // session system prompt kept once, broadcast + snapshot shapes, caps.
+  // -------------------------------------------------------------------------
+
+  it("stores prompt requests per attempt, dedupes the system message, and snapshots both", () => {
+    vi.useFakeTimers();
+    try {
+      const hub = makeHub(makeGameView());
+      const messages: MonitorServerMessage[] = [];
+      hub.subscribe((message) => messages.push(message));
+      const observer = hub.writerObserver as any;
+
+      observer.onAttemptStart({ attemptId: "continuation-p1#0", taskId: "continuation-p1", taskType: "continuation", index: 0 });
+      observer.onPrompt({
+        attemptId: "continuation-p1#0",
+        requestIndex: 0,
+        messages: [
+          {
+            role: "system",
+            segments: [
+              { source: "prompts/dsl-protocol.txt", label: "DSL 协议", text: "协议正文。" },
+              { source: "prompts/characters.txt", label: "角色设定", text: "\n\n===== 角色设定 =====\n\n角色A。" },
+            ],
+          },
+          {
+            role: "user",
+            segments: [
+              { source: "runtime/history-window", label: "剧情历史（滑窗 3 条）", text: "===== 剧情历史 =====\n\n历史。" },
+            ],
+          },
+        ],
+      });
+      // A second attempt reports the SAME system message plus a follow-up
+      // (strip-continue) request on the first attempt.
+      observer.onAttemptStart({ attemptId: "continuation-p1#1", taskId: "continuation-p1", taskType: "continuation", index: 1 });
+      observer.onPrompt({
+        attemptId: "continuation-p1#1",
+        requestIndex: 0,
+        messages: [
+          {
+            role: "system",
+            segments: [
+              { source: "prompts/dsl-protocol.txt", label: "DSL 协议", text: "协议正文。" },
+              { source: "prompts/characters.txt", label: "角色设定", text: "\n\n===== 角色设定 =====\n\n角色A。" },
+            ],
+          },
+          {
+            role: "user",
+            segments: [
+              { source: "runtime/history-window", label: "剧情历史（滑窗 3 条）", text: "===== 剧情历史 =====\n\n历史。" },
+              { source: "runtime/repair", label: "修复指令（第 1 次重试）", text: "\n上一份输出出错。" },
+            ],
+          },
+        ],
+      });
+      observer.onPrompt({
+        attemptId: "continuation-p1#0",
+        requestIndex: 1,
+        messages: [
+          {
+            role: "user",
+            segments: [{ source: "runtime/strip-continue", label: "剔除续写指令", text: "从断点续写。" }],
+          },
+        ],
+      });
+      vi.advanceTimersByTime(11);
+
+      // Broadcast: one writer.prompt per report, full messages (system rides along).
+      const promptEvents = messages
+        .flatMap((message) => (message.type === "monitor.event" ? message.events : []))
+        .filter((event) => event.type === "writer.prompt");
+      expect(promptEvents).toHaveLength(3);
+      expect(promptEvents[2]).toMatchObject({ attemptId: "continuation-p1#0", requestIndex: 1 });
+
+      // Snapshot: system prompt once at the writer level, per-attempt requests
+      // without the system message, follow-up indexed by requestIndex.
+      const snapshot = hub.snapshot();
+      expect(snapshot.writer.systemPrompt?.role).toBe("system");
+      expect(snapshot.writer.systemPrompt?.segments).toHaveLength(2);
+      const task = snapshot.writer.tasks.find((t) => t.taskId === "continuation-p1")!;
+      expect(task.attempts[0]!.prompt?.requests).toHaveLength(2);
+      expect(task.attempts[0]!.prompt?.requests[1]![0]!.segments[0]!.source).toBe(
+        "runtime/strip-continue",
+      );
+      const retryMessages = task.attempts[1]!.prompt?.requests[0]!;
+      expect(retryMessages).toHaveLength(1); // system stripped
+      expect(retryMessages[0]!.segments.at(-1)!.source).toBe("runtime/repair");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores prompt reports for unknown attempts and caps oversized segments", () => {
+    const hub = makeHub(makeGameView());
+    const observer = hub.writerObserver as any;
+
+    // Unknown attempt: silently dropped (writer.start always precedes on the
+    // live path; a stray report must not throw or broadcast).
+    expect(() =>
+      observer.onPrompt({
+        attemptId: "ghost#0",
+        requestIndex: 0,
+        messages: [{ role: "user", segments: [{ source: "x", label: "x", text: "x" }] }],
+      }),
+    ).not.toThrow();
+
+    observer.onAttemptStart({ attemptId: "continuation-p2#0", taskId: "continuation-p2", taskType: "continuation", index: 0 });
+    const huge = "字".repeat(25_000);
+    observer.onPrompt({
+      attemptId: "continuation-p2#0",
+      requestIndex: 0,
+      messages: [
+        { role: "system", segments: [{ source: "s", label: "s", text: "sys" }] },
+        { role: "user", segments: [{ source: "runtime/history-window", label: "历史", text: huge }] },
+      ],
+    });
+
+    const snapshot = hub.snapshot();
+    const attempt = snapshot.writer.tasks[0]!.attempts[0]!;
+    const stored = attempt.prompt!.requests[0]![0]!.segments[0]!;
+    expect(stored.text.length).toBe(20_000);
+    expect(stored.truncated).toBe(true);
+    // The capped system message is still recorded (caps apply to it too).
+    expect(snapshot.writer.systemPrompt?.segments[0]!.text).toBe("sys");
+  });
+
   it("coalesces events into batched broadcasts and pushes state only on change", () => {
     vi.useFakeTimers();
     try {
