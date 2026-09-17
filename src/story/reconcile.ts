@@ -31,10 +31,27 @@ function isCharacterPatchCue(cue: unknown): cue is { type: "character_patch"; ch
   return typeof cue.character === "string";
 }
 
+/**
+ * 故意未登记进 state.characters 的角色 id 过滤：语法坏行造成的幻影发言者
+ * （如 `@6ch raspberry: …` 被当台词）一旦入库，就会经 summarizeState 的
+ * [Characters] 段回流进后续 writer prompt，模型看到坏语法并模仿——上下文
+ * 污染闭环（2026-09-17 会话审计，自 campus 线移植）。已知角色集来自素材
+ * 目录；不含 @ 或空白的额外兜底让旧会话里已污染的条目也停止扩散。
+ */
+function trackableCharacterId(
+  characterId: string,
+  known: ReadonlySet<string> | undefined,
+): boolean {
+  if (/[\s@]/.test(characterId)) return false;
+  return known === undefined || known.has(characterId);
+}
+
 export function reconcileStoryState(
   previous: StoryState,
   committed: readonly StoredEvent[],
+  options?: { knownCharacterIds?: ReadonlySet<string> | undefined },
 ): StoryState {
+  const known = options?.knownCharacterIds;
   let location = previous.scene.location;
   const characters: StoryState["characters"] = { ...previous.characters };
   let charactersChanged = false;
@@ -48,7 +65,10 @@ export function reconcileStoryState(
             location = cue.assetId;
           }
         } else if (isCharacterPatchCue(cue)) {
-          if (characters[cue.character] === undefined) {
+          if (
+            characters[cue.character] === undefined &&
+            trackableCharacterId(cue.character, known)
+          ) {
             characters[cue.character] = {};
             charactersChanged = true;
           }
@@ -57,7 +77,12 @@ export function reconcileStoryState(
     }
     if (event.type === "dialogue") {
       const characterId = event.characterId;
-      if (characterId !== undefined && characterId !== "" && characters[characterId] === undefined) {
+      if (
+        characterId !== undefined &&
+        characterId !== "" &&
+        characters[characterId] === undefined &&
+        trackableCharacterId(characterId, known)
+      ) {
         characters[characterId] = {};
         charactersChanged = true;
       }

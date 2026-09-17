@@ -34,6 +34,17 @@ DSL 只负责：
 BGM / 音效 / 玩家交互表单 / 必要的纯演出节点 / 生成段结束
 ```
 
+**指令前缀规则（2026-09-17）**：所有非台词、非旁白的指令行一律以 `@` 开头
+（`@bg` `@bgm` `@se` `@ch` `@beat` `@?` `@+` `@=` `@/?` `@end`）；不以 `@`
+开头的行只能是台词或旁白。旧的不带 `@` 的裸词指令（`bg`/`bgm`/`se`/`ch`/
+`beat`/`?`/`+`/`=`/`/?`）已废弃：解析器对它们响亮报 `RETIRED_ALIAS`
+（2026-09-17 第二层硬化），提示词只教 `@` 形式。
+以 `@` 开头但无法识别的行直接报 `UNKNOWN_COMMAND`，绝不静默降级为旁白或
+台词（历史事故：`@¬end 4607 buffer` 被当旁白播出、`@ch raspberry: …`
+造出幻影发言人并经 StoryState 回流进后续 prompt）。行首全角 `＠` 与全角
+`？＋＝／` 归一化为半角后再走 `@` 语法；正文行以全角 `？` 开头仍是旁白，
+不受影响。
+
 DSL 不负责：
 
 ```text
@@ -186,8 +197,8 @@ type PatchValue<T> = { op: "keep" } | { op: "set"; value: T } | { op: "reset" };
 characterId 映射，`ch` 没有台词头）：
 
 ```text
-ch <character_id>:<variant> [position]
-ch <character_id> hide|show|exit
+@ch <character_id>:<variant> [position]
+@ch <character_id> hide|show|exit
 ```
 
 `hide` 仅隐藏（保留状态）；`exit` 彻底离开舞台（状态移除，下次台词重新按默认登台）。
@@ -196,40 +207,40 @@ ch <character_id> hide|show|exit
 
 # 18. 隐藏与重新显示
 
-`ch suyao hide` 只置 visible=false，保留 sprite_set / variant / position / display_name；
-`ch suyao show` 以隐藏前状态恢复。
+`@ch suyao hide` 只置 visible=false，保留 sprite_set / variant / position / display_name；
+`@ch suyao show` 以隐藏前状态恢复。
 
 ---
 
 # 19. Hidden 角色说话 / 站位互斥 / 退场
 
-**Hidden 角色说话不自动显示**：`ch suyao hide` 后 `苏遥: 别回头。` 保持隐藏，
-天然支持画外音、电话、隔墙说话、幕后角色。需要显示时用 `ch suyao show` 或带立绘的台词。
+**Hidden 角色说话不自动显示**：`@ch suyao hide` 后 `苏遥: 别回头。` 保持隐藏，
+天然支持画外音、电话、隔墙说话、幕后角色。需要显示时用 `@ch suyao show` 或带立绘的台词。
 
 **站位互斥（§19b）**：一个槽位同时只能有一个可见角色。角色以可见状态占到一个已被
-占用的位置时，原占位者自动 `visible = false`（保留状态，可被 `show` 或显式换位恢复）。
+占用的位置时，原占位者自动 `visible = false`（保留状态，可被 `@ch ... show` 或显式换位恢复）。
 这是引擎强制的确定性规则——不依赖模型记得 `hide`。
 
-**退场（§19c）**：`ch <id> exit` 从 VisualState 彻底移除该角色（渲染器删除其 DOM 节点）。
+**退场（§19c）**：`@ch <id> exit` 从 VisualState 彻底移除该角色（渲染器删除其 DOM 节点）。
 `hide` 保留状态，`exit` 撤离舞台。
 
 ---
 
 # 20. 背景
 
-`bg basement` 使用逻辑资源 ID。背景持续存在直到新的 `bg`；模型不得重复输出当前背景。
+`@bg basement` 使用逻辑资源 ID。背景持续存在直到新的 `@bg`；模型不得重复输出当前背景。
 
 ---
 
 # 21. BGM
 
-`bgm mystery` 持续到下一个 `bgm` 或 `bgm stop`。
+`@bgm mystery` 持续到下一个 `@bgm` 或 `@bgm stop`。
 
 ---
 
 # 22. 音效
 
-`se terminal_beep` 属于一次性 StageCue。
+`@se terminal_beep` 属于一次性 StageCue。
 
 ---
 
@@ -238,18 +249,18 @@ ch <character_id> hide|show|exit
 没有正文的独立视觉节点：
 
 ```text
-bg black
-bgm stop
-beat
+@bg black
+@bgm stop
+@beat
 ```
 
-`beat` 不要求模型提供 duration_ms，转场时间由 Renderer 决定。
+`@beat` 不要求模型提供 duration_ms，转场时间由 Renderer 决定。
 
 ---
 
 # 24. 表单 DSL
 
-统一使用 `?`（开始）/ `+`（选项）/ `=`（输入框）/ `/?`（结束）。
+统一使用 `@?`（开始）/ `@+`（选项）/ `@=`（输入框）/ `@/?`（结束）。
 Runtime 根据内容自动推导 interaction mode，模型不输出 `mode`。
 
 ---
@@ -257,49 +268,49 @@ Runtime 根据内容自动推导 interaction mode，模型不输出 `mode`。
 # 25. 纯选项（choice）
 
 ```text
-? 怎么回应？
-+ 追问她所谓“启动之后”究竟发生过什么
-+ 暂时停手，要求她先解释自己知道多少
-+ 无视警告，继续操作终端
-/?
+@? 怎么回应？
+@+ 追问她所谓“启动之后”究竟发生过什么
+@+ 暂时停手，要求她先解释自己知道多少
+@+ 无视警告，继续操作终端
+@/?
 ```
 
-有 `+` 无 `=` → `mode = choice`。
+有 `@+` 无 `@=` → `mode = choice`。
 
 ---
 
 # 26. 纯输入（input）
 
 ```text
-? 你准备对她说什么？
-= 输入你的回答……
-/?
+@? 你准备对她说什么？
+@= 输入你的回答……
+@/?
 ```
 
-无 `+` 有 `=` → `mode = input`。
+无 `@+` 有 `@=` → `mode = input`。
 
 ---
 
 # 27. 混合模式（hybrid）
 
 ```text
-? 怎么回应？
-+ 追问她所谓“启动之后”究竟发生过什么
-+ 暂时停手，要求她先解释自己知道多少
-= 或输入自己的回答……
-/?
+@? 怎么回应？
+@+ 追问她所谓“启动之后”究竟发生过什么
+@+ 暂时停手，要求她先解释自己知道多少
+@= 或输入自己的回答……
+@/?
 ```
 
-`+` 与 `=` 同时存在 → `mode = hybrid`。
+`@+` 与 `@=` 同时存在 → `mode = hybrid`。
 
 ---
 
 # 28. 表单推导规则
 
 ```text
-+ >= 1 且 = 0  → choice
-+ = 0  且 = 1  → input
-+ >= 1 且 = 1  → hybrid
+@+ >= 1 且 @= 0  → choice
+@+ = 0  且 @= 1  → input
+@+ >= 1 且 @= 1  → hybrid
 ```
 
 无效：空表单（`?` 直接 `/?`）；多个输入框（第一版一个 Interaction 只允许一个输入框）。
@@ -720,11 +731,11 @@ PLAYER_ACTION / AUTHOR_RULES
 
 **舞台状态序列化契约（2026-09-17 保真化，自 campus 线移植）**：`serializeVisualContext`
 对所有维度**显式**陈述，包括"无"——背景未设置输出 `背景：无（尚未设置）`，
-BGM 已停/未播输出 `BGM：无（当前没有音乐播放，不要再输出 bgm stop）`，台上无人输出
+BGM 已停/未播输出 `BGM：无（当前没有音乐播放，不要再输出 @bgm stop）`，台上无人输出
 `角色：台上无人`。早期版本对"无"维度整行省略，模型无法区分"已停止"与"从未播放"，
-是续写段重复输出 `bgm stop` 的直接根因之一。块首带一行"只输出发生变化的指令"的
+是续写段重复输出 `@bgm stop` 的直接根因之一。块首带一行"只输出发生变化的指令"的
 现状说明；`roster`（注册角色表）追加 `不在场：…` 行，供登台/撤离参照；隐藏角色
-标注 `需 ch <id> show 恢复`。
+标注 `需 @ch <id> show 恢复`。
 
 **冗余 cue 兜底**：compiler `filterInvalidCues` 对合法但应用后舞台状态零变化的
 `background` / `bgm` / `character_patch` cue 静默丢弃并记 `REDUNDANT_STAGE_CUE`
@@ -752,7 +763,7 @@ BGM 已停/未播输出 `BGM：无（当前没有音乐播放，不要再输出 
 # 71. 模型资源选择原则
 
 ```text
-已有状态不变化 → 不重复输出（BGM 正在播放不重发同名 bgm，已停止不再发 bgm stop）
+已有状态不变化 → 不重复输出（BGM 正在播放不重发同名 @bgm，已停止不再发 @bgm stop）
 存在理想素材   → 使用 logical asset ID
 没有理想素材   → 保持当前状态或使用最接近的现有资源
 绝不猜测不存在的 asset ID

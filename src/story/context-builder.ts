@@ -153,7 +153,7 @@ export function serializeVisualContext(
   roster?: ModelAssetCatalog["characters"],
 ): string {
   const lines: string[] = [
-    "以下舞台画面已生效，本段从这一画面继续。只输出发生变化的指令，状态不变时不要重复输出 bg / bgm / ch 或台词头括号。",
+    "以下舞台画面已生效，本段从这一画面继续。只输出发生变化的指令，状态不变时不要重复输出 @bg / @bgm / @ch 或台词头括号。",
   ];
   lines.push(
     state.background !== undefined
@@ -163,7 +163,7 @@ export function serializeVisualContext(
   lines.push(
     state.bgm !== undefined
       ? `BGM：${state.bgm}（正在播放）`
-      : "BGM：无（当前没有音乐播放，不要再输出 bgm stop）",
+      : "BGM：无（当前没有音乐播放，不要再输出 @bgm stop）",
   );
 
   const characterIds = Object.keys(state.characters);
@@ -173,7 +173,7 @@ export function serializeVisualContext(
       const character = state.characters[characterId]!;
       const visibility = character.visible
         ? "可见"
-        : `隐藏（说话不会自动显示，需 ch ${characterId} show 恢复）`;
+        : `隐藏（说话不会自动显示，需 @ch ${characterId} show 恢复）`;
       lines.push(
         `- ${characterId}（显示名：${character.displayName}）：立绘 ${character.spriteSet}/${character.variant}，位置 ${character.position}，${visibility}`,
       );

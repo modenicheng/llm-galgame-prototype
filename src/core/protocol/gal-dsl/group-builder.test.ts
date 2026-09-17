@@ -182,6 +182,53 @@ describe("EventGroupBuilder", () => {
     expectCode(() => builder.push({ kind: "form_end" }), "FORM_END_WITHOUT_OPEN");
   });
 
+  it("recovers with a new form after an outside-form line error (no half-open residue)", () => {
+    // 2026-09-17 独立审计 A2：throwaway 报错不得在 this.interaction 残留
+    // 半开实例——strip-continue 之后同一个 builder 还要继续收流。
+    const builder = new EventGroupBuilder();
+    expectCode(() => builder.push({ kind: "form_option", text: "A" }), "FORM_LINE_OUTSIDE_FORM");
+    builder.push({ kind: "form_start", prompt: "Q" });
+    builder.push({ kind: "form_option", text: "A1" });
+    const groups = builder.push({ kind: "form_end" });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { prompt: "Q", optionTexts: ["A1"], mode: "choice" },
+    });
+  });
+
+  it("does not poison the builder when form_start has an empty prompt", () => {
+    // 2026-09-17 独立审计 A3：空提示抛 EMPTY_FORM_PROMPT 后，后续正文必须
+    // 正常 flush（旧行为：半开残留 → 误报 CONTENT_INSIDE_OPEN_FORM）。
+    const builder = new EventGroupBuilder();
+    expectCode(() => builder.push({ kind: "form_start", prompt: "" }), "EMPTY_FORM_PROMPT");
+    const groups = builder.push({ kind: "narration", text: "旁白继续。" });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.main).toEqual({ type: "narration", text: "旁白继续。" });
+    // 表单状态同样干净：紧随其后的正常表单可开。
+    builder.push({ kind: "form_start", prompt: "Q" });
+    builder.push({ kind: "form_option", text: "A" });
+    expect(builder.push({ kind: "form_end" })).toHaveLength(1);
+  });
+
+  it("finish() detaches the interaction so post-finish pushes stay clean", () => {
+    // 2026-09-17 独立审计 G1：finish 是终态调用——成功与丢弃两个分支都摘
+    // 下 builder，"finish 后继续 push"不再误报 FORM_ALREADY_OPEN /
+    // CONTENT_INSIDE_OPEN_FORM。
+    const builder = new EventGroupBuilder();
+    builder.push({ kind: "form_start", prompt: "Q" });
+    builder.push({ kind: "form_option", text: "A" });
+    expect(builder.finish().openInteraction).not.toBeNull();
+    const groups = builder.push({ kind: "narration", text: "finish 后的旁白。" });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.main).toEqual({ type: "narration", text: "finish 后的旁白。" });
+    // 空表单丢弃分支同样不残留。
+    const builder2 = new EventGroupBuilder();
+    builder2.push({ kind: "form_start", prompt: "Q" });
+    expect(builder2.finish().openInteraction).toBeNull();
+    expect(builder2.push({ kind: "narration", text: "丢弃后旁白。" })).toHaveLength(1);
+  });
+
   it("finish() returns the pending tail and a derivable open form", () => {
     const builder = new EventGroupBuilder();
     builder.push({ kind: "background", assetId: "station" });

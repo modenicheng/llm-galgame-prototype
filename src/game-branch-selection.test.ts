@@ -148,10 +148,10 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
     const streams = new Map<string, (nonce: string) => string[]>();
     streams.set("opening", (nonce) => [
       "苏遥: 别碰那台机器。",
-      "? 怎么回应？",
-      "+ 追问她",
-      "+ 暂时停手",
-      "/?",
+      "@? 怎么回应？",
+      "@+ 追问她",
+      "@+ 暂时停手",
+      "@/?",
       `@end ${nonce} interaction`,
     ]);
     streams.set("branch_prefetch", (nonce) => [

@@ -8,7 +8,7 @@ import { parseDslSegmentText } from "./text-pipeline.js";
 import { DslProtocolError } from "./types.js";
 
 const ACCEPTANCE_TEXT = [
-  "bg basement",
+  "@bg basement",
   "",
   "地下室里只亮着终端的一点蓝光。",
   "",
@@ -16,11 +16,11 @@ const ACCEPTANCE_TEXT = [
   "",
   "苏遥[anxious]: 别碰那台机器。",
   "",
-  "? 怎么回应？",
-  "+ 追问她为什么知道机器仍能运行",
-  "+ 暂时停手",
-  "= 或说出自己的回答……",
-  "/?",
+  "@? 怎么回应？",
+  "@+ 追问她为什么知道机器仍能运行",
+  "@+ 暂时停手",
+  "@= 或说出自己的回答……",
+  "@/?",
   "",
   "@end a81f interaction",
 ].join("\n");
@@ -131,6 +131,41 @@ describe("parseDslSegmentText", () => {
           allowedReasons: ["buffer"],
         }),
       "SENTINEL_NOT_LAST",
+    );
+  });
+
+  it("captures the @ending epilogue end-to-end and drops post-ending residue", () => {
+    const result = parseDslSegmentText(
+      [
+        "樱花从枝头飘落。",
+        "苏遥[smile]: 那么，明年再见。",
+        "@end a81f ending",
+        "@ending HE 樱花与约定的终章",
+        "（不该播出的残留）",
+      ].join("\n"),
+      {
+        expectedNonce: "a81f",
+        allowedReasons: ["buffer", "interaction", "ending"],
+      },
+    );
+    expect(result.status).toEqual({
+      kind: "complete",
+      nonce: "a81f",
+      reason: "ending",
+      epilogue: { grade: "HE", title: "樱花与约定的终章" },
+    });
+    // 残留不进组：只有正文两行（@end/@ending 都不是组）。
+    expect(result.groups).toHaveLength(2);
+  });
+
+  it("rejects an orphan @ending before the sentinel", () => {
+    expectDslCode(
+      () =>
+        parseDslSegmentText("@ending HE 过早的结局\n@end a81f ending", {
+          expectedNonce: "a81f",
+          allowedReasons: ["buffer", "interaction", "ending"],
+        }),
+      "ENDING_EPILOGUE_ORPHAN",
     );
   });
 });

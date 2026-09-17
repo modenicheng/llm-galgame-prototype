@@ -300,12 +300,12 @@ describe("DSL serializers and prompt builder", () => {
     };
     expect(serializeVisualContext(state)).toBe(
       [
-        "以下舞台画面已生效，本段从这一画面继续。只输出发生变化的指令，状态不变时不要重复输出 bg / bgm / ch 或台词头括号。",
+        "以下舞台画面已生效，本段从这一画面继续。只输出发生变化的指令，状态不变时不要重复输出 @bg / @bgm / @ch 或台词头括号。",
         "背景：basement",
         "BGM：mystery（正在播放）",
         "角色：",
         "- suyao（显示名：神秘女子）：立绘 suyao/anxious，位置 left，可见",
-        "- yuki（显示名：由纪）：立绘 yuki/normal，位置 right，隐藏（说话不会自动显示，需 ch yuki show 恢复）",
+        "- yuki（显示名：由纪）：立绘 yuki/normal，位置 right，隐藏（说话不会自动显示，需 @ch yuki show 恢复）",
       ].join("\n"),
     );
 
@@ -313,9 +313,9 @@ describe("DSL serializers and prompt builder", () => {
     // knows it must set the scene up instead of guessing it continues one.
     expect(serializeVisualContext({ characters: {} })).toBe(
       [
-        "以下舞台画面已生效，本段从这一画面继续。只输出发生变化的指令，状态不变时不要重复输出 bg / bgm / ch 或台词头括号。",
+        "以下舞台画面已生效，本段从这一画面继续。只输出发生变化的指令，状态不变时不要重复输出 @bg / @bgm / @ch 或台词头括号。",
         "背景：无（尚未设置）",
-        "BGM：无（当前没有音乐播放，不要再输出 bgm stop）",
+        "BGM：无（当前没有音乐播放，不要再输出 @bgm stop）",
         "角色：台上无人",
       ].join("\n"),
     );
@@ -441,7 +441,7 @@ describe("DSL serializers and prompt builder", () => {
 });
 
 const DSL_ACCEPTANCE_TEXT = [
-  "bg basement",
+  "@bg basement",
   "",
   "地下室里只亮着终端的一点蓝光。",
   "",
@@ -449,11 +449,11 @@ const DSL_ACCEPTANCE_TEXT = [
   "",
   "苏遥[anxious]: 别碰那台机器。",
   "",
-  "? 怎么回应？",
-  "+ 追问她为什么知道机器仍能运行",
-  "+ 暂时停手",
-  "= 或说出自己的回答……",
-  "/?",
+  "@? 怎么回应？",
+  "@+ 追问她为什么知道机器仍能运行",
+  "@+ 暂时停手",
+  "@= 或说出自己的回答……",
+  "@/?",
   "",
   "@end a81f interaction",
 ].join("\n");
@@ -545,7 +545,7 @@ describe("DSL mode generation", () => {
   it("streams groups, forwards onGroup/onSegmentEnd, and resolves groups + segmentEnd", async () => {
     const gen = makeDslGenerator();
     mockDslClient(gen, (nonce) => [
-      "bg basement",
+      "@bg basement",
       "地下室里只亮着终端的一点蓝光。",
       "苏遥[normal|left](神秘女子): 你不该来这里。",
       `@end ${nonce} interaction`,
@@ -588,7 +588,7 @@ describe("DSL mode generation", () => {
     const retryUser = create.mock.calls[1]![0].messages[1].content as string;
     // 逐字断言：该文案进入发给模型的修复指令，行与「DSL」之间的空格是
     // load-bearing（64599a8），不允许再被统一收束吞掉。
-    expect(retryUser).toContain("第 1 行 DSL 校验失败：Sentinel nonce");
+    expect(retryUser).toContain("第 1 行 DSL 校验失败：哨兵 nonce");
     expect(envelope.groups).toHaveLength(1);
     expect(envelope.segmentEnd).toEqual({
       kind: "complete",
@@ -610,7 +610,7 @@ describe("DSL mode generation", () => {
     });
 
     await expect(promise).rejects.toMatchObject({
-      message: expect.stringMatching(/^DSL 流在第 2 行校验失败：Sentinel nonce/),
+      message: expect.stringMatching(/^DSL 流在第 2 行校验失败：哨兵 nonce/),
       cause: expect.objectContaining({ name: "DslProtocolError" }),
     });
     expect(received).toHaveLength(1);

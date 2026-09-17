@@ -1469,6 +1469,13 @@ export class Game implements InteractionHost {
     await this.graph.reachEnding({ endingId: ending.ending_id, moment: this.currentMoment() });
   }
 
+  /** 已注册角色 id 集（幻影角色过滤的已知集；无素材目录时 undefined = 只按语法兜底过滤）。 */
+  private knownCharacterIds(): ReadonlySet<string> | undefined {
+    return this.catalog !== undefined
+      ? new Set(Object.keys(this.catalog.characters))
+      : undefined;
+  }
+
   /** §81: 事件正式提交后异步 reconcile StoryState（不在玩家等待关键路径）。 */
   private scheduleReconcile(event: StoredEvent): void {
     this.pendingReconcile.push(event);
@@ -1479,7 +1486,9 @@ export class Game implements InteractionHost {
       if (this.pendingReconcile.length === 0) return;
       const batch = this.pendingReconcile;
       this.pendingReconcile = [];
-      this.storyState = reconcileStoryState(this.storyState, batch);
+      this.storyState = reconcileStoryState(this.storyState, batch, {
+        knownCharacterIds: this.knownCharacterIds(),
+      });
       // M4.1/M4.3 生产接线：场景边界（scene.id 变化）→ 导演后台刷新
       // SceneDirective（fire-and-forget，滞后不影响本段播放）。
       const sceneId = this.storyState.scene.id;

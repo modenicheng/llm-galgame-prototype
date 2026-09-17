@@ -5,8 +5,9 @@ import {
 } from "./types.js";
 
 /**
- * Accumulates a single form: opened by `?`, fed by `+` / `=`, closed by `/?`
- * (docs §24–§28, §43). Mode is derived on finish() — the model never writes
+ * Accumulates a single form: opened by `@?`, fed by `@+` / `@=`, closed by
+ * `@/?` (the bare `?`/`+`/`=`/`/?` aliases are retired — the parser rejects
+ * them with RETIRED_ALIAS) (docs §24–§28, §43). Mode is derived on finish() — the model never writes
  * it (docs §28). All texts are stored trimmed.
  */
 export class InteractionBuilder {
@@ -18,14 +19,19 @@ export class InteractionBuilder {
     if (this.prompt !== null) {
       throw new DslProtocolError(
         "FORM_ALREADY_OPEN",
-        "A form is already open — finish it with /? before starting another one.",
+        "前一个交互表单还没有关闭，不能开新表单。",
+        { expected: "表单以 @/? 结束后才能开始下一个 @?", fix: "先写 @/? 关闭当前表单" },
       );
     }
     const trimmed = prompt.trim();
     if (trimmed === "") {
       throw new DslProtocolError(
         "EMPTY_FORM_PROMPT",
-        "The form prompt must not be empty. Write a question after `?`.",
+        "交互表单的提示语不能为空。",
+        {
+          expected: "@? 与提示文本必须写在同一行：`@? 提示文本`（提示不能拆到下一行，也不能为空）",
+          fix: '例如 "@? 你打算怎么回应？"',
+        },
       );
     }
     this.prompt = trimmed;
@@ -37,14 +43,16 @@ export class InteractionBuilder {
     if (this.prompt === null) {
       throw new DslProtocolError(
         "FORM_LINE_OUTSIDE_FORM",
-        "`+` outside an open form. Start the form with `?` first.",
+        "`@+` 选项行出现在表单之外。",
+        { expected: "@+ 只能出现在 @? 表单内部", fix: "先写 @? <提示> 打开表单，再写 @+ 选项" },
       );
     }
     const trimmed = text.trim();
     if (trimmed === "") {
       throw new DslProtocolError(
         "EMPTY_OPTION_TEXT",
-        "Option text must not be empty. Write the option after `+`.",
+        "选项文本不能为空。",
+        { expected: "@+ 之后必须写玩家的行动或台词", fix: '例如 "@+ 先退后一步，观察四周"' },
       );
     }
     this.optionTexts.push(trimmed);
@@ -54,20 +62,23 @@ export class InteractionBuilder {
     if (this.prompt === null) {
       throw new DslProtocolError(
         "FORM_LINE_OUTSIDE_FORM",
-        "`=` outside an open form. Start the form with `?` first.",
+        "`@=` 输入行出现在表单之外。",
+        { expected: "@= 只能出现在 @? 表单内部", fix: "先写 @? <提示> 打开表单，再写 @= <占位文本>" },
       );
     }
     if (this.inputPlaceholder !== null) {
       throw new DslProtocolError(
         "MULTIPLE_INPUT_FIELDS",
-        "A form allows at most one input field. Remove the extra `=` line.",
+        "一个表单最多一个输入框，多写了 @= 行。",
+        { fix: "删掉多余的 @= 行，只保留一个" },
       );
     }
     const trimmed = placeholder.trim();
     if (trimmed === "") {
       throw new DslProtocolError(
         "EMPTY_INPUT_PLACEHOLDER",
-        "The input placeholder must not be empty. Write the hint text after `=`.",
+        "输入框占位文本不能为空。",
+        { expected: "@= 之后必须写提示语", fix: '例如 "@= 说出你想说的话"' },
       );
     }
     this.inputPlaceholder = trimmed;
@@ -77,7 +88,8 @@ export class InteractionBuilder {
     if (this.prompt === null) {
       throw new DslProtocolError(
         "FORM_END_WITHOUT_OPEN",
-        "`/?` without an open form. Start the form with `?` first.",
+        "出现了没有打开表单的 @/?。",
+        { expected: "@/? 只用来关闭已打开的表单", cause: "可能漏写了 @? 提示行，或多写了 @/?" },
       );
     }
     const hasOptions = this.optionTexts.length >= 1;
@@ -92,7 +104,8 @@ export class InteractionBuilder {
     } else {
       throw new DslProtocolError(
         "EMPTY_FORM",
-        "The form is empty: it has neither options nor an input field. Add at least one `+` or one `=` line.",
+        "表单是空的：既没有 @+ 选项也没有 @= 输入框。",
+        { fix: "至少补一行 @+ <选项> 或 @= <占位文本>，再以 @/? 结束" },
       );
     }
     const draft: DslInteractionDraft = {

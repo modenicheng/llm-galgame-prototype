@@ -57,10 +57,14 @@ export function summarizeState(state: StoryState): string {
   lines.push(`  Purpose: ${state.scene.purpose}`);
 
   // Characters present
-  const charIds = Object.keys(state.characters);
+  const charIds = Object.keys(state.characters).filter(
+    // 幻影角色（如历史坏行入库的 "@6ch raspberry"）不再回流进 prompt。
+    (id) => !/[\s@]/.test(id),
+  );
   if (charIds.length > 0) {
     lines.push("[Characters]");
-    for (const [id, char] of Object.entries(state.characters)) {
+    for (const id of charIds) {
+      const char = state.characters[id]!;
       const parts: string[] = [id];
       if (char.location) parts.push(`loc:${char.location}`);
       lines.push(`  ${parts.join(" | ")}`);

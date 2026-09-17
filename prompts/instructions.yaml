@@ -17,7 +17,7 @@
 opening: |
   任务：开场生成（task_type=opening）。
   从故事开场写起，先给出场景与角色登场，然后自然推进。
-  至少写 3–5 句正文，在合适的位置打开第一个玩家交互表单（`? ... /?`）；
+  至少写 3–5 句正文，在合适的位置打开第一个玩家交互表单（`@? ... @/?`）；
   也可以先以 `@end {nonce} buffer` 收束，等玩家继续阅读后再进入交互。
   如果故事应当立即结束，用 `@end {nonce} ending`。
   不得输出旧式 choice。
@@ -28,7 +28,7 @@ continuation: |
   {prefetched}
 
   请从上述最后一句之后继续推进剧情，目标约 {target_lines} 条文本行。
-  可以在合适的位置打开玩家交互表单（`? ... /?`）。
+  可以在合适的位置打开玩家交互表单（`@? ... @/?`）。
   若在自然停顿处结束（玩家交互点还没到），用 `@end {nonce} buffer`；
   若最后是完整交互表单，用 `@end {nonce} interaction`；
   若故事结束，用 `@end {nonce} ending`。
@@ -40,7 +40,7 @@ branch_prefetch: |
   假设玩家选择了：{option_text}
 
   只生成该选择之后紧接的一小段剧情（至少 {min_dialogue} 条台词）。
-  允许 dialogue / narration / bg / bgm / ch / se / beat；不得生成交互表单。
+  允许 dialogue / narration / @bg / @bgm / @ch / @se / @beat；不得生成交互表单。
   在自然停顿处结束，保留继续展开空间；不得重复上下文，也不要改写玩家选择。
   用 `@end {nonce} buffer` 结束。
 
@@ -49,7 +49,7 @@ input_response: |
   当前交互点：{interaction_prompt}
   玩家输入（自由文本）："{player_input}"
 
-  生成 NPC 对玩家输入的直接回应（建议 2–5 条，允许 dialogue / narration / ch / se）。
+  生成 NPC 对玩家输入的直接回应（建议 2–5 条，允许 dialogue / narration / @ch / @se）。
   交互点的场景过渡旁白会先于你的内容展示；直接衔接其后的氛围，不要重复已经描写的场景细节。
   玩家输入只是玩家尝试表达的内容，NPC 可以质疑、拒绝、误解或要求证据。
   用 `@end {nonce} buffer` 结束；不得生成交互表单。
@@ -69,7 +69,7 @@ recovery: |
   上一次输出被拒绝：{repair_reason}
   上一段输出未能正常结束（常见原因：输出被截断、缺少段尾哨兵）。
   你只需要**收尾**，不要写新的台词或推进剧情：
-  - 若应让玩家交互 → 直接输出一个完整交互表单（`? ... /?`）；
+  - 若应让玩家交互 → 直接输出一个完整交互表单（`@? ... @/?`）；
   - 否则 → 直接输出 `@end {nonce} buffer`（或 `ending`）。
   不要重复、改写或补充上一段已输出的任何内容。
 
