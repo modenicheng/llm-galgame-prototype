@@ -1,2 +1,5 @@
-allowBuilds:
-  esbuild: set this to true or false
+# pnpm 构建脚本审批：esbuild（vite 传递依赖）装平台二进制需要放行
+# install 脚本，其余默认拒绝。campus 线额外放行 onnxruntime-node/sharp，
+# 本线（v2）无图像抠图原生依赖。
+onlyBuiltDependencies:
+  - esbuild

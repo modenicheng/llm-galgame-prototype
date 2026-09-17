@@ -130,8 +130,8 @@ providers:
 
 ```bash
 cp .env.example .env      # 填入你的 key 和 voice-id
-npm install
-npm run dev               # 启动后播放剧情,应听到对应音色的语音
+pnpm install
+pnpm dev               # 启动后播放剧情,应听到对应音色的语音
 ```
 
 或单独探针合成一次(不启动游戏):

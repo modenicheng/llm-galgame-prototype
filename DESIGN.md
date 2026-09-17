@@ -425,16 +425,16 @@ game:
 要求 Node.js 20 或更高版本：
 
 ```bash
-npm install
+pnpm install
 cp .env.example .env
-npm run dev
+pnpm dev
 ```
 
 PowerShell：
 
 ```powershell
 Copy-Item .env.example .env
-npm run dev
+pnpm dev
 ```
 
 编辑 `.env`：

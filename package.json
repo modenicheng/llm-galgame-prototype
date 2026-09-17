@@ -5,13 +5,13 @@
   "type": "module",
   "description": "LLM-driven GalGame prototype with branch prefetching and media lookahead scheduling.",
   "scripts": {
-    "dev": "npm run dev:web",
+    "dev": "pnpm run dev:web",
     "dev:web": "tsx src/entrypoints/web.ts --dev",
     "dev:cli": "tsx src/entrypoints/cli.ts",
     "build": "tsc -p tsconfig.node.json && vite build",
     "build:node": "tsc -p tsconfig.node.json",
     "build:web": "vite build",
-    "start": "npm run start:web",
+    "start": "pnpm run start:web",
     "start:web": "node dist/node/entrypoints/web.js",
     "start:cli": "node dist/node/entrypoints/cli.js",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
@@ -38,5 +38,6 @@
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "packageManager": "pnpm@10.33.0"
 }
