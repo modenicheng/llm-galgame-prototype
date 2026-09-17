@@ -800,5 +800,66 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     ]);
     expect(controller.ended()).toBe(true);
   });
+
+  it("starts the repair generation before the player drains the queue (fail-fast)", async () => {
+    // 自 campus 线 6365683 移植的行为：失败落定即并行启动修复段，不等玩家
+    // 读空队列。断言方式：玩家从未推进（advance 一次都没发）时，带
+    // repairReason 的修复续写调用就必须已经发生——旧流程此刻必然还没启动
+    // 修复（消费循环阻塞在 waitForAdvance 上，队列读空要等玩家推进）。
+    const config = makeDslConfig();
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+    const generator = makeDslMockGenerator();
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    game.subscribe((o) => outputs.push(o));
+
+    let repairStarted = false;
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: OpeningRequest) =>
+        dslHandle("opening", async (_signal, onGroup) => {
+          onGroup(dslNarration("第一句。"));
+          throw new Error("DSL 流截断：段结束时没有 @end 哨兵");
+        }),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(
+      (request: ContinuationRequest) => {
+        if (request.repairReason !== undefined) {
+          repairStarted = true;
+          return dslHandle("continuation", async (_signal, onGroup) => {
+            onGroup(dslNarration("修复第一句。"));
+            onGroup(dslNarration("修复第二句。"));
+            return { events: [], state_patch: {}, groups: [], segmentEnd: complete("buffer") };
+          });
+        }
+        // 修复后的正常低水续写：buffer 段收尾后由 run loop 启动 → ending。
+        return dslHandle("continuation", async () => {
+          return { events: [], state_patch: {}, groups: [], segmentEnd: complete("ending") };
+        });
+      },
+    );
+
+    const runPromise = game.run();
+    const controller = new MemoryController();
+    controller.attach(game);
+    // 玩家看到首句但从不推进；此时修复续写必须已经启动。
+    await vi.waitFor(
+      () => {
+        expect(outputs.some((o) => o.type === "playback_ready" && o.event.text === "第一句。")).toBe(true);
+        expect(repairStarted).toBe(true);
+      },
+      { timeout: 2000 },
+    );
+
+    await controller.advanceUntilInteractionOrEnd();
+    await runPromise;
+
+    expect(playbackOf(outputs).map((o) => o.event.text)).toEqual([
+      "第一句。",
+      "修复第一句。",
+      "修复第二句。",
+    ]);
+    expect(controller.ended()).toBe(true);
+  });
 });
 

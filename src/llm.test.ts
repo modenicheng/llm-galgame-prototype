@@ -573,6 +573,63 @@ describe("DSL mode generation", () => {
     });
   });
 
+  it("repairs a missing end keyword and closes a complete interaction form", async () => {
+    const gen = makeDslGenerator();
+    mockDslClient(gen, (nonce) => [
+      "@? 你要怎么接话？",
+      "@+ 凑过去看那张纸片，先别撕",
+      "@+ 问这挂件是在哪儿捡到的",
+      "@= 你想说点什么",
+      `@ ${nonce} interaction`, // missing "end" keyword → closing-repair
+    ]);
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.main).toMatchObject({
+      type: "interaction",
+      interaction: { mode: "hybrid", prompt: "你要怎么接话？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("repairs an empty @? into the form end while a form is open", async () => {
+    const gen = makeDslGenerator();
+    mockDslClient(gen, (nonce) => [
+      "@? 你要怎么接话？",
+      "@+ 凑过去看那张纸片",
+      "@?", // empty prompt with the form open → botched @/?
+      `@end ${nonce} interaction`,
+    ]);
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.main).toMatchObject({
+      type: "interaction",
+      interaction: { mode: "choice", prompt: "你要怎么接话？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("does not repair a loose terminal with the wrong nonce", async () => {
+    const gen = makeDslGenerator();
+    // Continuation replays the same broken content: the budget runs out and
+    // the attempt fails — but no end_keyword repair may ever fire for a
+    // nonce that cannot match.
+    mockDslClient(gen, () => ["@? 怎么回应？", "@+ 先看看", "@ dead interaction"]);
+
+    await expect(
+      (gen as any).generateOpening(1, createInitialState()),
+    ).rejects.toThrow(/连续校验失败|EMPTY_FORM_PROMPT|UNKNOWN_COMMAND/);
+  });
+
   it("retries with a repair instruction when a bad line precedes any forwarded group", async () => {
     const gen = makeDslGenerator({ generation: { repair_attempts: 1 } });
     let callCount = 0;
@@ -586,9 +643,13 @@ describe("DSL mode generation", () => {
     const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
     expect(create).toHaveBeenCalledTimes(2);
     const retryUser = create.mock.calls[1]![0].messages[1].content as string;
-    // 逐字断言：该文案进入发给模型的修复指令，行与「DSL」之间的空格是
-    // load-bearing（64599a8），不允许再被统一收束吞掉。
-    expect(retryUser).toContain("第 1 行 DSL 校验失败：哨兵 nonce");
+    // Byte-exact: this string rides into the model's repair instruction —
+    // FastAPI-style detail block (code + offending line + expected format).
+    expect(retryUser).toContain(
+      "第 1 行 DSL 错误 [SENTINEL_NONCE_MISMATCH]：哨兵 nonce bbbb 与本次任务要求的",
+    );
+    expect(retryUser).toContain("期望格式：@end");
+    expect(retryUser).toContain("修正：把 nonce 改为");
     expect(envelope.groups).toHaveLength(1);
     expect(envelope.segmentEnd).toEqual({
       kind: "complete",
@@ -597,11 +658,13 @@ describe("DSL mode generation", () => {
     });
   });
 
-  it("fails with the line framing and cause when a bad line follows forwarded groups", async () => {
+  it("fails preserving the prefix when a non-@ line is structurally invalid", async () => {
+    // INVALID_VISUAL_BRACKET is not @-anchored → not strip-continuable → the
+    // existing fail path keeps the forwarded prefix for the runtime repair.
     const gen = makeDslGenerator();
     mockDslClient(gen, () => [
       "地下室里只亮着终端的一点蓝光。",
-      "@end a81f buffer", // nonce never matches the random request nonce
+      "苏遥[|]: 空段。",
     ]);
 
     const received: EventGroupDraft[] = [];
@@ -610,10 +673,311 @@ describe("DSL mode generation", () => {
     });
 
     await expect(promise).rejects.toMatchObject({
-      message: expect.stringMatching(/^DSL 流在第 2 行校验失败：哨兵 nonce/),
+      message: expect.stringMatching(
+        /^DSL 流校验失败，已保留前面可播放的内容。第 2 行 DSL 错误 \[INVALID_VISUAL_BRACKET\]/,
+      ),
       cause: expect.objectContaining({ name: "DslProtocolError" }),
     });
     expect(received).toHaveLength(1);
+  });
+
+  it("merges a split form prompt (bare @? followed by narration) deterministically", async () => {
+    // Observed on deepseek 2026-09-17: the model writes the form prompt on
+    // the NEXT line after a bare `@?`. The lookahead merge folds it into the
+    // same line without any extra LLM round trip.
+    const gen = makeDslGenerator();
+    mockDslClient(gen, (nonce) => [
+      "苏遥正等你接话，气氛一时凝住。",
+      "@?",
+      "你打算怎么办？",
+      "@+ 坐到她旁边",
+      "@+ 直接问她",
+      `@end ${nonce} interaction`,
+    ]);
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+
+    // No continuation request: the merge is purely deterministic.
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(received).toHaveLength(2);
+    expect(received[0]!.main).toEqual({ type: "narration", text: "苏遥正等你接话，气氛一时凝住。" });
+    expect(received[1]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { mode: "choice", prompt: "你打算怎么办？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues when the model stops right after a bare @?", async () => {
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) return ["地下室里只亮着终端的一点蓝光。", "@?"];
+      return [
+        "@? 怎么回应？",
+        "@+ 暂时停手",
+        "@+ 追问她的来历",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+
+    expect(create).toHaveBeenCalledTimes(2);
+    // The continuation replays the good lines as an assistant prefix — the
+    // stripped `@?` must NOT be part of it.
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.role).toBe("assistant");
+    expect(assistant.content).toContain("地下室里只亮着终端的一点蓝光。");
+    expect(assistant.content).not.toContain("@?");
+    // The user turn carries the repair instruction.
+    const repairTurn = create.mock.calls[1]![0].messages[3] as { role: string; content: string };
+    expect(repairTurn.role).toBe("user");
+    expect(repairTurn.content).toContain("交互表单的提示语不能为空");
+    expect(repairTurn.content).toContain("从删除位置直接续写");
+
+    expect(received).toHaveLength(2);
+    expect(received[0]!.main).toEqual({ type: "narration", text: "地下室里只亮着终端的一点蓝光。" });
+    expect(received[1]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { prompt: "怎么回应？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues past an unrelated bad line without leaving a stale deferred @? behind", async () => {
+    // 2026-09-17 独立审计 S1：旁白 → 裸 @? → 坏指令行。剔除坏行时必须连带
+    // 剔除未合并的 @?，否则续写里模型写出正确的 `@? 提示` 会撞上 stale
+    // deferred 被强制空提示，预算已耗 → fail（模型修对了仍失败）。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["走廊尽头的灯闪了一下。", "@?", "@badcmd 乱写"];
+      }
+      return [
+        "@? 要不要上前查看？",
+        "@+ 上前查看",
+        "@+ 先退回来",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.content).toContain("走廊尽头的灯闪了一下。");
+    expect(assistant.content).not.toContain("@?");
+    expect(assistant.content).not.toContain("@badcmd");
+    expect(received).toHaveLength(2);
+    expect(received[1]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { prompt: "要不要上前查看？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("deduplicates two consecutive bare @? rows instead of poisoning the prefix", async () => {
+    // 2026-09-17 独立审计 S2：双裸 @?。第二个顶替第一个成为延迟行，第一
+    // 个从 rawLines 删除——否则它留在 prefix 尾部成为 stale deferred 陷阱。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["夜色压了下来。", "@?", "@?", `@end ${nonce} interaction`];
+      }
+      return [
+        "@? 接下来去哪？",
+        "@+ 天台",
+        "@+ 机房",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.content).not.toContain("@?");
+    expect(received).toHaveLength(2);
+    expect(received[1]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { prompt: "接下来去哪？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues a retired bare alias into its @ form", async () => {
+    // 白名单码（RETIRED_ALIAS）：裸 bg 行剔除后续写改写成 @bg 形式。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["教室里粉笔灰缓缓落下。", "bg classroom_day", `@end ${nonce} buffer`];
+      }
+      return ["@bg classroom_day", `@end ${nonce} buffer`];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    // 尾部 cue 无主事件跟随即丢弃（docs §50 既有语义）：旁白 1 组 + buffer 收束。
+    expect(received).toHaveLength(1);
+    expect(received[0]!.main).toEqual({ type: "narration", text: "教室里粉笔灰缓缓落下。" });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "buffer" });
+  });
+
+  it("retries the whole attempt (no assistant prefix) when a bare @? is the first line", async () => {
+    // 首行即坏：无前缀可续 → 剔除回退 → 无已提交组 → 整段 retry，
+    // 第二次请求保持 [system, user] 两消息形状。
+    const gen = makeDslGenerator({ generation: { repair_attempts: 1 } });
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) return ["@?", `@end ${nonce} interaction`];
+      return ["@? 怎么回应？", "@+ 先看看", `@end ${nonce} interaction`];
+    });
+
+    const envelope = await (gen as any).generateOpening(1, createInitialState());
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    const retryMessages = create.mock.calls[1]![0].messages as Array<{ role: string }>;
+    expect(retryMessages.map((message) => message.role)).toEqual(["system", "user"]);
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues when an empty form is force-closed by a stray bare @? (N1)", async () => {
+    // 2026-09-17 独立复核 N1：`@? 提示`（零选项）后又一个裸 @? 触发
+    // FORM_ALREADY_OPEN 修复，修复内 closeOpenInteraction 对空表单抛
+    // EMPTY_FORM——在 catch 处理器内若不接住会穿透修复信封裸拒绝。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["台灯在桌角投下光圈。", "@? 你要不要看看？", "@?", `@end ${nonce} interaction`];
+      }
+      return [
+        "@+ 打开看看",
+        "@+ 先放着不动",
+        "@/?",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    // 续写从空表单的 @? 提示行之前继续（提示保留、补选项后收尾）。
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.content).toContain("台灯在桌角投下光圈。");
+    expect(received.at(-1)!.main).toMatchObject({
+      type: "interaction",
+      interaction: expect.objectContaining({ prompt: "你要不要看看？" }),
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues a bare @? followed directly by an option row", async () => {
+    // 另一真实形状：裸 @? 的下一行是 @+ 选项——提示缺失但选项已经在写。
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["走廊尽头的灯闪了一下。", "@?", "@+ 上前查看", `@end ${nonce} interaction`];
+      }
+      return [
+        "@? 要不要上前查看？",
+        "@+ 上前查看",
+        "@+ 先退回来",
+        `@end ${nonce} interaction`,
+      ];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    expect(received).toHaveLength(2);
+    expect(received[1]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { prompt: "要不要上前查看？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("strip-continues past a mismatched sentinel and completes with the corrected one", async () => {
+    const gen = makeDslGenerator();
+    let callCount = 0;
+    mockDslClient(gen, (nonce) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return ["地下室里只亮着终端的一点蓝光。", "@end a81f buffer"]; // stale nonce
+      }
+      return ["苏遥抬起头。", `@end ${nonce} buffer`];
+    });
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+
+    expect(create).toHaveBeenCalledTimes(2);
+    const assistant = create.mock.calls[1]![0].messages[2] as { role: string; content: string };
+    expect(assistant.content).toBe("地下室里只亮着终端的一点蓝光。\n");
+    expect(received).toHaveLength(2);
+    expect(envelope.segmentEnd).toEqual({
+      kind: "complete",
+      nonce: expect.any(String),
+      reason: "buffer",
+    });
+  });
+
+  it("strip-continue falls back to the fail path once the budget is spent", async () => {
+    const gen = makeDslGenerator();
+    // Same broken sentinel on every stream: strip once, then the second
+    // mismatch hits the exhausted budget → forwarded prefix + fail.
+    mockDslClient(gen, () => [
+      "地下室里只亮着终端的一点蓝光。",
+      "@end a81f buffer",
+    ]);
+
+    const received: EventGroupDraft[] = [];
+    const promise = (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+    await expect(promise).rejects.toThrow(/DSL 流校验失败|SENTINEL_NONCE_MISMATCH/);
+    const create = (gen as any).client.chat.completions.create as ReturnType<typeof vi.fn>;
+    expect(create).toHaveBeenCalledTimes(2);
+    // The continuation's group also arrived before the fail.
+    expect(received).toHaveLength(2);
   });
 
   it("fails preserving the prefix when a truncated segment has forwarded groups", async () => {

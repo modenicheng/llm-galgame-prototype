@@ -794,6 +794,10 @@ export class Game implements InteractionHost {
     let firstPlayableSeen = false;
     // 供低水位续写计算 nextTurn（当前段 turn + 1）。
     this.activeSegmentTurn = segment.turn;
+    // Fail-fast 修复续写（自 campus 线 6365683 移植）：失败落定（泵排空、
+    // events 定型）即并行启动修复段——玩家读完保留前缀时修复段前几行通常
+    // 已就绪，消除"读空队列 → 冷启动 TTFT"空窗。守卫见 maybeStartEarlyRepair。
+    void this.maybeStartEarlyRepair(segment, priorContext);
     while (true) {
       const next = await segment.queue.next();
       if (next.done) {
@@ -855,7 +859,12 @@ export class Game implements InteractionHost {
         // otherwise mismatch the repaired segment's events and crash the
         // ordering check in advanceBufferedEvent.
         segment.branchManager?.discardAll();
-        this.playbackBuffer.clear();
+        // 收养提前启动的修复段时不清播放缓冲：修复段生成期间已把可读行
+        // 写进缓冲（这正是 fail-fast 的收益），清掉会把它们连顺序校验一起
+        // 破坏。失败段自身的行此刻已被玩家全部消费，缓冲中只剩修复段的行。
+        if (segment.earlyRepair === undefined) {
+          this.playbackBuffer.clear();
+        }
         const terminal = segment.terminal;
         if (terminal?.type === "interaction" && terminal.mode !== "input") {
           for (const option of terminal.options) {
@@ -875,13 +884,19 @@ export class Game implements InteractionHost {
         );
         this.status.setJob(`repair:${segment.taskId}`, "段失败修复续写", "running");
         try {
-          const repaired = this.startActiveSegment(
-            "continuation",
-            turn,
-            fullContext,
-            playable,
-            failure.message,
-          );
+          // 收养提前启动的修复段（若有）；提前启动不可用（调度槽被占等）
+          // 时回退为现场启动。两者种子一致（fullContext + playable + 失败
+          // 原因），消费逻辑完全相同。
+          const repaired =
+            segment.earlyRepair ??
+            this.startActiveSegment(
+              "continuation",
+              turn,
+              fullContext,
+              playable,
+              failure.message,
+            );
+          segment.earlyRepair = undefined;
           void repaired.done.catch(() => undefined);
           const outcome = await this.consumeActiveSegment(
             repaired,
@@ -968,6 +983,54 @@ export class Game implements InteractionHost {
         preview: committed.preview,
         ...(committed.liveResponse ? { liveResponse: committed.liveResponse } : {}),
       };
+    }
+  }
+
+  /**
+   * Fail-fast 修复续写（自 campus 线 6365683 移植）：段失败落定即后台启动
+   * 修复段，不等玩家读空队列。守卫：
+   * - terminal 已入队（表单打开后断流）不提前修复——孤儿修复段会占住单
+   *   调度槽，玩家选择后抛 "current status is streaming" 杀死 run()
+   *   （campus 审计 F1 实证复现；此时消费循环的收养路径也不会触发，
+   *   因为交互分支先于队列读空返回）；
+   * - 无可播放前缀且非策略拒绝：本就 fatal，消费循环负责抛出；
+   * - startActiveSegment 抛错（调度槽被杂散续写占住等）：静默回退——
+   *   消费循环读空队列时自行启动，行为与移植前一致。
+   */
+  private async maybeStartEarlyRepair(
+    segment: ActiveSegment,
+    priorContext: StoryContextEvent[],
+  ): Promise<void> {
+    if (segment.earlyRepair !== undefined) return;
+    const failure = await segment.done.then(
+      () => null,
+      (reason: unknown) => (reason instanceof Error ? reason : new Error(String(reason))),
+    );
+    if (failure === null) return; // 干净收束（buffer/interaction/ending）——无修复
+    if (segment.terminal !== null) return; // F1 守卫
+    const playable = segment.events.filter(isPlayableEvent);
+    const policyRejected =
+      failure instanceof InteractionPolicyViolationError ||
+      failure.cause instanceof InteractionPolicyViolationError ||
+      failure.message.includes("InteractionPolicy 拒绝");
+    if (playable.length === 0 && !policyRejected) return; // fatal 路径，交给消费循环抛出
+    const fullContext = [...priorContext, ...segment.events];
+    try {
+      const repaired = this.startActiveSegment(
+        "continuation",
+        segment.turn,
+        fullContext,
+        playable,
+        failure.message,
+      );
+      void repaired.done.catch(() => undefined);
+      segment.earlyRepair = repaired;
+      this.diagnostics.info(
+        "Repair",
+        `修复段已提前启动（读空队列前）：保留 ${playable.length} 条事件`,
+      );
+    } catch {
+      // 调度槽被占 → 回退消费循环现场启动（移植前行为）。
     }
   }
 

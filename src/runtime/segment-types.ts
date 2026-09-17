@@ -33,6 +33,14 @@ export interface ActiveSegment {
    * generation call).
    */
   failed: boolean;
+  /**
+   * Fail-fast repair continuation（自 campus 线 6365683 移植）：失败落定即
+   * 后台启动的修复段。玩家还在逐行阅读保留前缀时，修复段前几行已在生成
+   * ——消除"读空队列 → 冷启动 TTFT"空窗。消费循环在队列读空时收养它，
+   * 不再自行启动。`undefined` 且已失败 = 提前启动不可用（调度槽被占/
+   * terminal 已入队等），消费循环回退自行启动。
+   */
+  earlyRepair?: ActiveSegment | undefined;
 }
 
 export type ActiveSegmentKind = "opening" | "continuation";
