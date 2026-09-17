@@ -223,6 +223,10 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     const selectingMode =
       mode === "CHOICE_SELECTING" || mode === "HYBRID_SELECTING" || mode === "INPUT_EDITING";
 
+    // 表单/预览出现时压暗舞台（.stage__veil），保证表单文字可读；预览是
+    // 同一次交互的确认页，一并遮罩。无条件按模式驱动，重连投影同样恢复。
+    show(refs.interactionVeil, selectingMode || mode === "INPUT_PREVIEW");
+
     if (modeChanged || projectionRestored) {
       if (selectingMode) {
         const interactionId = interactionIdOf(view.currentInteraction);

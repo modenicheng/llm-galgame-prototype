@@ -68,7 +68,7 @@ body {
   color: var(--paper);
   font-family: var(--font-serif);
   font-size: 17px;
-  line-height: 1.9;
+  line-height: 1.65;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -195,7 +195,26 @@ button {
   transform: translate(-50%, -50%);
   width: min(100vw, calc(100vh * 16 / 9));
   height: min(100vh, calc(100vw * 9 / 16));
+  /* dvh：移动端地址栏收展时 100vh 跳变会让黑边宽度抖动，支持的浏览器用动态视口。 */
+  width: min(100vw, calc(100dvh * 16 / 9));
+  height: min(100dvh, calc(100vw * 9 / 16));
   overflow: hidden;
+}
+
+/* 交互遮罩——表单（选项/输入/预览）出现时压暗并轻模糊舞台，保证表单文字
+   在亮背景与立绘上的可读性。挂在 16:9 框内，z 序介于舞台图层（auto）与
+   .scene（z:2）之间；由 render 路由随表单/预览模式用 hidden 显隐，入场
+   走自身 opacity 动画（backdrop-filter 元素自身的透明度过渡会连同模糊
+   结果一起淡入，不受 Backdrop Root 限制——那只在祖先带 opacity 时发生，
+   见 .dialogue 处注释）。 */
+.stage__veil {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(180deg, rgba(7, 9, 13, 0.58), rgba(5, 7, 10, 0.72));
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  animation: veil-in 360ms var(--ease-out) both;
 }
 
 /* --------------------------------------------------------------------------
@@ -220,7 +239,8 @@ button {
 }
 .stage__bg-label {
   font-family: var(--font-mono);
-  font-size: 12px;
+  /* 框内非缩放层的唯一文字，随 --ui-scale 与舞台保持同比例。 */
+  font-size: calc(12px * var(--ui-scale, 1));
   letter-spacing: 0.08em;
   color: rgba(242, 236, 223, 0.32);
 }
@@ -306,7 +326,7 @@ button {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 11px 34px;
+  padding: 0.69em 2.13em;
   font-size: 16px;
   letter-spacing: 0.32em;
   border: 1px solid var(--line-soft);
@@ -384,7 +404,11 @@ button {
 
 .dialogue {
   width: min(980px, 96%);
-  animation: rise-in 420ms var(--ease-out) both;
+  /* 入场只动 transform：.dialogue__panel 的 backdrop-filter 在任意
+     opacity<1 的祖先下只能从局部 Backdrop Root（.dialogue 自身）取样、
+     采不到后面的舞台，动画结束瞬间才恢复全屏取样——玻璃面一帧跳变，
+     即"对话框出现时闪一下"。祖先带 opacity 的 rise-in 对毛玻璃是禁手。 */
+  animation: rise-in-solid 420ms var(--ease-out) both;
 }
 
 .dialogue__nameplate {
@@ -455,10 +479,12 @@ button {
 }
 
 .dialogue__text {
-  min-height: calc(1.9em * 3);
-  font-size: clamp(17px, 1.6vw + 12px, 22px);
-  line-height: 2;
-  letter-spacing: 0.06em;
+  min-height: calc(1.75em * 3);
+  /* scene 已按 --ui-scale 随框整体缩放，字号用 1280 参考宽的设计 px；
+     vw 会随视口变化与 transform 缩放叠加成双重缩放，禁用。 */
+  font-size: 22px;
+  line-height: 1.75;
+  letter-spacing: 0.04em;
   color: var(--paper);
   white-space: pre-wrap;
   overflow-wrap: break-word;
@@ -499,7 +525,7 @@ button {
 
 .interaction-panel__prompt {
   font-size: 16px;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.12em;
   color: var(--paper-dim);
   margin-bottom: 12px;
   text-align: center;
@@ -544,7 +570,7 @@ button {
 
 .choices__prompt {
   font-size: 17px;
-  letter-spacing: 0.24em;
+  letter-spacing: 0.12em;
   color: var(--paper-dim);
   text-align: center;
   margin-bottom: 6px;
@@ -569,7 +595,7 @@ button {
   padding: 16px 26px 16px 34px;
   text-align: left;
   font-size: 17px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
   color: var(--paper);
   background: linear-gradient(90deg, rgba(20, 25, 34, 0.86), rgba(13, 16, 22, 0.86));
   border: 1px solid rgba(232, 167, 92, 0.16);
@@ -616,8 +642,8 @@ button {
   resize: vertical;
   font-family: var(--font-serif);
   font-size: 17px;
-  line-height: 1.9;
-  letter-spacing: 0.05em;
+  line-height: 1.6;
+  letter-spacing: 0.03em;
   color: var(--paper);
   background: rgba(8, 11, 16, 0.6);
   border: 1px solid var(--line-soft);
@@ -662,8 +688,8 @@ button {
 .preview__text {
   padding: 22px 30px;
   font-size: 18px;
-  line-height: 2;
-  letter-spacing: 0.05em;
+  line-height: 1.75;
+  letter-spacing: 0.04em;
   color: var(--paper);
   background: linear-gradient(180deg, var(--glass-bright), var(--glass));
   border: 1px solid var(--line-soft);
@@ -792,7 +818,9 @@ button {
 
 .ctl {
   padding: 6px 12px;
-  font-size: 12px;
+  /* 控制条不在 --ui-scale 缩放系内（#app 层视口锚定），字号以 vmin 锚定
+     1080p 观感并随视口线性缩放，大屏不缩水、小窗保底可读。 */
+  font-size: clamp(11px, 0.62vmin + 5px, 24px);
   letter-spacing: 0.16em;
   color: var(--paper-dim);
   border-radius: 999px;
@@ -854,7 +882,7 @@ button {
 
 .ctl--session {
   margin-left: 2px;
-  font-size: 11px;
+  font-size: 0.9em;
   color: var(--paper-dim);
   opacity: 0.7;
   cursor: copy;
@@ -890,7 +918,6 @@ button {
 }
 
 .ctl__status-text {
-  font-size: 12px;
   letter-spacing: 0.1em;
 }
 
@@ -904,6 +931,10 @@ button {
   z-index: 20;
   display: grid;
   place-items: center;
+  /* 开始/结局遮罩覆盖全视口（含黑边），不在 --ui-scale 缩放系内：字号以
+     vmin 锚定 1080p 观感（1.6vmin ≈ 17px），子元素全部用 em 表达，任何
+     分辨率下标题/正文/按钮与舞台 UI 保持同一比例。 */
+  font-size: clamp(12px, 1.6vmin, 36px);
   background: linear-gradient(180deg, rgba(7, 9, 13, 0.82), rgba(5, 7, 10, 0.92));
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -931,7 +962,7 @@ button {
 }
 
 .start-eyebrow {
-  font-size: 13px;
+  font-size: 0.76em;
   letter-spacing: 0.62em;
   text-indent: 0.62em;
   color: var(--paper-faint);
@@ -939,10 +970,10 @@ button {
 }
 
 .start-title {
-  margin-top: 22px;
+  margin-top: 1.3em;
   font-family: var(--font-title);
   font-weight: 400;
-  font-size: clamp(64px, 12vw, 118px);
+  font-size: 6.8em;
   line-height: 1.15;
   letter-spacing: 0.14em;
   text-indent: 0.14em;
@@ -957,21 +988,21 @@ button {
 .start-rule {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin: 26px 0 24px;
+  gap: 0.8em;
+  margin: 1.5em 0 1.4em;
   animation: rise-in 900ms var(--ease-out) 420ms both;
 }
 
 .start-rule__bar {
-  width: 168px;
+  width: 9.7em;
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--lantern), transparent);
   box-shadow: 0 0 12px rgba(232, 167, 92, 0.5);
 }
 
 .start-rule__tick {
-  width: 5px;
-  height: 5px;
+  width: 0.3em;
+  height: 0.3em;
   background: var(--lantern);
   transform: rotate(45deg);
   box-shadow: 0 0 10px rgba(232, 167, 92, 0.8);
@@ -979,18 +1010,18 @@ button {
 
 .start-tagline {
   max-width: 46ch;
-  font-size: 15px;
-  line-height: 2.1;
-  letter-spacing: 0.14em;
+  font-size: 0.88em;
+  line-height: 1.8;
+  letter-spacing: 0.1em;
   color: var(--paper-dim);
   animation: rise-in 900ms var(--ease-out) 560ms both;
 }
 
 .btn--start {
-  margin-top: 40px;
-  min-width: 232px;
-  padding: 15px 44px;
-  font-size: 19px;
+  margin-top: 2.3em;
+  min-width: 13.5em;
+  padding: 0.79em 2.3em;
+  font-size: 1.1em;
   font-weight: 600;
   letter-spacing: 0.5em;
   text-indent: 0.5em;
@@ -1006,16 +1037,16 @@ button {
 }
 
 .start-hint {
-  margin-top: 22px;
-  font-size: 12px;
+  margin-top: 1.3em;
+  font-size: 0.7em;
   letter-spacing: 0.3em;
   color: var(--paper-faint);
   animation: rise-in 900ms var(--ease-out) 840ms both;
 }
 
 .start-warning {
-  margin-top: 10px;
-  font-size: 12px;
+  margin-top: 0.6em;
+  font-size: 0.7em;
   letter-spacing: 0.12em;
   color: var(--cinnabar-soft);
   animation: rise-in 500ms var(--ease-out) both;
@@ -1033,19 +1064,19 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  max-width: 680px;
+  max-width: 39.4em;
   text-align: center;
   padding: 0 6vw;
   animation: rise-in 700ms var(--ease-out) both;
 }
 
 .end-seal {
-  width: 52px;
-  height: 52px;
+  width: 3em;
+  height: 3em;
   display: grid;
   place-items: center;
   font-family: var(--font-title);
-  font-size: 26px;
+  font-size: 1.5em;
   color: var(--cinnabar-soft);
   border: 2px solid var(--cinnabar);
   border-radius: 4px;
@@ -1055,10 +1086,10 @@ button {
 }
 
 .end-title {
-  margin-top: 26px;
+  margin-top: 1.5em;
   font-family: var(--font-serif);
   font-weight: 700;
-  font-size: 30px;
+  font-size: 1.75em;
   letter-spacing: 0.6em;
   text-indent: 0.6em;
   color: var(--paper);
@@ -1067,9 +1098,9 @@ button {
 /* 结局档位徽章（@ending 档位：TE|HE|NE|BE），印章与标题之间的窄条。
    配色：TE 紫（真结局）/ HE 金（圆满）/ NE 青灰（平淡，缺省）/ BE 朱红（坏结局）。 */
 .end-grade {
-  margin-top: 18px;
-  padding: 4px 14px;
-  font-size: 12px;
+  margin-top: 1em;
+  padding: 0.34em 1.15em;
+  font-size: 0.7em;
   letter-spacing: 0.22em;
   text-indent: 0.22em;
   color: #9aa7b5;
@@ -1104,22 +1135,23 @@ button {
 }
 
 .end-text {
-  margin-top: 22px;
-  font-size: 17px;
-  line-height: 2.1;
-  letter-spacing: 0.08em;
+  margin-top: 1.3em;
+  font-size: 1em;
+  line-height: 1.8;
+  letter-spacing: 0.05em;
   color: var(--paper-dim);
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
 
 .end-restart {
-  margin-top: 38px;
+  margin-top: 2.2em;
+  font-size: 0.94em;
 }
 
 .end-session {
-  margin-top: 18px;
-  font-size: 12px;
+  margin-top: 1em;
+  font-size: 0.7em;
   letter-spacing: 0.18em;
   color: var(--paper-dim);
   opacity: 0.65;
@@ -1142,6 +1174,27 @@ button {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* rise-in 的不透明版：供毛玻璃元素（或其祖先）入场用——祖先 opacity<1
+   会把 backdrop-filter 的取样限制在局部 Backdrop Root，动画结束瞬间
+   恢复全屏取样造成一帧跳变（见 .dialogue 注释），故只动 transform。 */
+@keyframes rise-in-solid {
+  from {
+    transform: translateY(18px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes veil-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 
@@ -1286,6 +1339,6 @@ button {
   }
 
   .btn--start {
-    min-width: 200px;
+    min-width: 11.5em;
   }
 }

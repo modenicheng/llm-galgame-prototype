@@ -12,6 +12,7 @@ import { el } from "./dom.js";
 export interface AppDomRefs {
   stage: HTMLElement;
   scene: HTMLElement;
+  interactionVeil: HTMLElement;
   dialogueRoot: HTMLElement;
   interactionRoot: HTMLElement;
   previewRoot: HTMLElement;
@@ -48,6 +49,12 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     el("div", "stage__orb stage__orb--lantern"),
     el("div", "stage__vig"),
   );
+  // 交互遮罩：表单（选项/输入/预览）出现时压暗并轻模糊舞台，保证表单文字
+  // 在亮背景/立绘上的可读性（样式见 .stage__veil）。创建即隐藏，避免首帧
+  // 渲染前闪现；显隐由 main.ts 的 render 路由随表单/预览模式驱动。
+  const interactionVeil = el("div", "stage__veil") as HTMLDivElement;
+  interactionVeil.hidden = true;
+
   const scene = el("section", "scene") as HTMLElement;
 
   // Dialogue box — nameplate tab + paper panel.
@@ -110,7 +117,8 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   scene.append(waitingEl);
 
   // 对白 UI 挂进 16:9 舞台框（构图随框缩放，见上方 stage-frame 注释）。
-  stage.append(scene);
+  // 遮罩在 DOM 序上位于 scene 之前、舞台氛围层之后（z 序由 z-index 决定）。
+  stage.append(interactionVeil, scene);
 
   const controlsRoot = el("section", "controls") as HTMLElement;
 
@@ -160,6 +168,7 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   return {
     stage,
     scene,
+    interactionVeil,
     dialogueRoot,
     interactionRoot,
     previewRoot,
