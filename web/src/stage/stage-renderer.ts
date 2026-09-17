@@ -29,7 +29,6 @@ export function deterministicHue(key: string): number {
 interface CharacterNode {
   root: HTMLElement;
   img: HTMLImageElement;
-  label: HTMLElement;
 }
 
 export class StageRenderer {
@@ -132,10 +131,11 @@ export class StageRenderer {
     root.dataset.char = key;
     const img = document.createElement("img");
     img.alt = key;
-    const label = document.createElement("figcaption");
-    root.append(img, label);
+    // 底端名称标签已移除（观感问题）； displayName 保留为可访问名。
+    root.setAttribute("aria-label", key);
+    root.append(img);
     this.charsLayer.append(root);
-    const node: CharacterNode = { root, img, label };
+    const node: CharacterNode = { root, img };
     this.characterNodes.set(key, node);
     return node;
   }
@@ -171,7 +171,7 @@ export class StageRenderer {
     node.root.classList.add(`stage__char--${character.position}`);
 
     node.root.hidden = !character.visible;
-    node.label.textContent = character.displayName;
+    node.root.setAttribute("aria-label", character.displayName);
   }
 
   private applyCharacterPlaceholder(node: CharacterNode, key: string): void {

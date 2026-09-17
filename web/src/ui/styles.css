@@ -256,16 +256,6 @@ button {
   object-fit: contain;
   filter: drop-shadow(0 18px 22px rgba(0, 0, 0, 0.45));
 }
-.stage__char figcaption {
-  position: absolute;
-  bottom: 2%;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 13px;
-  color: #eee;
-  text-shadow: 0 1px 3px #000;
-  white-space: nowrap;
-}
 .stage__char[hidden] {
   opacity: 0;
   display: block !important; /* 保留布局以让淡出生效 */
@@ -278,14 +268,19 @@ button {
 .stage__char--placeholder img {
   display: none;
 }
-/* 五个互斥站位（舞台宽度百分比，全部完整可见；center 居中）。
-   gal 惯例：两人同场用 left/right，center 留给主角/独场。 */
+/* 五个互斥站位（舞台宽度百分比，center 居中）。
+   gal 惯例：两人同场用 left/right，center 留给主角/独场。
+   2304×3968 归一画布（height 0.92）下人物本体约占舞台宽 18%：
+   left/right 定在 18%/82%（对齐用户批注框位置，与 center 本体间隙
+   ~14%）；far 槽随之贴边（6%/94%），画布透明边与外侧手臂可被裁，
+   且与 left/right 本体少量叠放——远槽只在 4-5 人同场时使用，
+   按层次前后遮挡属 gal 常规。 */
 .stage__char--far_left {
-  left: 13%;
+  left: 6%;
   transform: translateX(-50%);
 }
 .stage__char--left {
-  left: 30%;
+  left: 18%;
   transform: translateX(-50%);
 }
 .stage__char--center {
@@ -293,50 +288,12 @@ button {
   transform: translateX(-50%);
 }
 .stage__char--right {
-  left: 70%;
+  left: 82%;
   transform: translateX(-50%);
 }
 .stage__char--far_right {
-  left: 87%;
+  left: 94%;
   transform: translateX(-50%);
-}
-
-/* --------------------------------------------------------------------------
-   HUD
-   -------------------------------------------------------------------------- */
-
-.hud {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 18px 26px;
-  pointer-events: none;
-  z-index: 5;
-}
-
-.hud__brand {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  opacity: 0.82;
-}
-
-.hud__brand-mark {
-  font-family: var(--font-title);
-  font-size: 21px;
-  letter-spacing: 0.28em;
-  color: var(--lantern-soft);
-  text-shadow: 0 0 18px rgba(232, 167, 92, 0.35);
-}
-
-.hud__brand-sub {
-  font-size: 11px;
-  letter-spacing: 0.42em;
-  color: var(--paper-faint);
 }
 
 /* --------------------------------------------------------------------------
@@ -400,6 +357,9 @@ button {
    Scene — dialogue / choices / input / waiting
    挂在 16:9 舞台框内（见 .stage-frame）：inset/百分比都以框为基准，
    对话框永远贴着舞台下缘、与立绘同框构图。
+   主 UI 随框等比缩放：--ui-scale（= 框宽/1280，由 stage-ui-scale.ts 写入）
+   经 transform 应用，origin 取舞台底部中点——对白贴底、水平居中的构图
+   锚点不动，字号间距与背景/立绘保持同一比例。
    -------------------------------------------------------------------------- */
 
 .scene {
@@ -412,6 +372,8 @@ button {
   padding: 0 3% 30px;
   z-index: 2;
   pointer-events: none;
+  transform: scale(var(--ui-scale, 1));
+  transform-origin: 50% 100%;
 }
 
 .scene > * {
@@ -775,6 +737,8 @@ button {
 
 /* --------------------------------------------------------------------------
    Controls bar
+   自动隐藏：默认淡出上移收起，鼠标移到右上角区域（.controls::before
+   扩大的热区）或键盘聚焦栏内控件时浮现；无 hover 能力的触屏设备常显。
    -------------------------------------------------------------------------- */
 
 .controls {
@@ -782,6 +746,13 @@ button {
   top: 14px;
   right: 20px;
   z-index: 6;
+}
+
+/* 扩大 hover 热区：盖住栏体四周，鼠标扫过栏所在角落即触发浮现。 */
+.controls::before {
+  content: "";
+  position: absolute;
+  inset: -14px -18px;
 }
 
 .controls__bar {
@@ -795,7 +766,28 @@ button {
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  animation: rise-in 480ms var(--ease-out) both;
+  opacity: 0;
+  transform: translateY(-12px);
+  pointer-events: none;
+  transition:
+    opacity 240ms var(--ease-out),
+    transform 240ms var(--ease-out);
+}
+
+.controls:hover .controls__bar,
+.controls:focus-within .controls__bar {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* 触屏（无 hover）：常显，否则控件永远无法触达。 */
+@media (hover: none) {
+  .controls__bar {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
 }
 
 .ctl {
@@ -1319,7 +1311,6 @@ button {
 }
 
 @media (max-width: 640px) {
-  .hud__brand-sub,
   .ctl__status-text {
     display: none;
   }

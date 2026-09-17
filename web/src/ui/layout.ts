@@ -3,7 +3,7 @@
  * layout into `#app` and returns handles to every interactive region:
  * a full-viewport atmospheric backdrop, the centered 16:9 stage frame
  * (background layers + StageRenderer layers + dialogue scene, WebGAL-style
- * letterbox), and viewport-anchored chrome (HUD, controls, overlays, banner).
+ * letterbox), and viewport-anchored chrome (controls, overlays, banner).
  * All dynamic content lives in the widgets; this file only declares
  * structure and class hooks for the design system in `styles.css`.
  */
@@ -11,7 +11,6 @@ import { el } from "./dom.js";
 
 export interface AppDomRefs {
   stage: HTMLElement;
-  hud: HTMLElement;
   scene: HTMLElement;
   dialogueRoot: HTMLElement;
   interactionRoot: HTMLElement;
@@ -114,14 +113,6 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   // 对白 UI 挂进 16:9 舞台框（构图随框缩放，见上方 stage-frame 注释）。
   stage.append(scene);
 
-  const hud = el("div", "hud") as HTMLDivElement;
-  const brand = el("div", "hud__brand") as HTMLDivElement;
-  brand.append(
-    el("span", "hud__brand-mark", "灯影夜话"),
-    el("span", "hud__brand-sub", "· 本地 AI 视觉小说 ·"),
-  );
-  hud.append(brand);
-
   const controlsRoot = el("section", "controls") as HTMLElement;
 
   // Start overlay (autoplay unlock, §10.5).
@@ -167,11 +158,10 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   );
   (bannerRoot.querySelector(".banner__action") as HTMLButtonElement).hidden = true;
 
-  root.append(backdrop, stage, hud, controlsRoot, startRoot, endRoot, bannerRoot);
+  root.append(backdrop, stage, controlsRoot, startRoot, endRoot, bannerRoot);
 
   return {
     stage,
-    hud,
     scene,
     dialogueRoot,
     interactionRoot,
