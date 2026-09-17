@@ -12,6 +12,7 @@ import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import { makeTestConfig } from "../../test-helpers.js";
 import type { RuntimeApplication } from "../../application/runtime-application.js";
+import type { GraphView } from "../../application/graph/graph-view.js";
 import { makeAssetCatalog } from "../../application/assets/asset-manifest.fixtures.js";
 import type { Metrics } from "../../runtime/metrics.js";
 import type { Game } from "../../game.js";
@@ -425,7 +426,62 @@ describe("LocalWebHost POST /api/worlds (M3.3)", () => {
     const addr = host["httpServer"]!.address() as AddressInfo;
     const result = await request(addr.port, "POST", "/api/worlds", { "content-type": "application/json" }, JSON.stringify({ text: "x" }));
     expect(result.status).toBe(404);
-    await host.shutdown();
-    rmSync(distDir, { recursive: true, force: true });
+      await host.shutdown();
+      rmSync(distDir, { recursive: true, force: true });
+    });
+
+  // -- GET /api/graph（M5.1） ---------------------------------------------------
+
+  describe("GET /api/graph", () => {
+    function startGraphHost(graphBuild?: (gameId: string) => Promise<GraphView>): Promise<{ host: LocalWebHost; port: number; distDir: string }> {
+      const distDir = mkdtempSync(path.join(tmpdir(), "web-dist-"));
+      process.env[DIST_ENV] = distDir;
+      const host = new LocalWebHost({
+        config: makeConfig(),
+        app: makeFakeApp(),
+        dev: false,
+        logger: () => {},
+        ...(graphBuild !== undefined ? { graph: { build: graphBuild } } : {}),
+      });
+      return host.start().then(() => {
+        const addr = host["httpServer"]!.address() as AddressInfo;
+        return { host, port: addr.port, distDir };
+      });
+    }
+
+    it("serves the sanitized graph view from the wired builder", async () => {
+      const { host, port, distDir } = await startGraphHost(async (gameId) => ({
+        gameId,
+        scenes: [{ sceneId: "sc_1", groupKey: "教室", status: "active", decisions: [], outEdges: [] }],
+        cursor: undefined,
+        runs: { total: 1, ended: 0, abandoned: 0, active: 1 },
+      }));
+      const result = await request(port, "GET", "/api/graph");
+      expect(result.status).toBe(200);
+      const body = JSON.parse(result.text) as { gameId: string; scenes: unknown[] };
+      expect(body.gameId).toBe("game_initial"); // makeFakeApp 的固定 gameId 透传
+      expect(body.scenes).toHaveLength(1);
+      await host.shutdown();
+      rmSync(distDir, { recursive: true, force: true });
+    });
+
+    it("propagates builder failures as 500", async () => {
+      const { host, port, distDir } = await startGraphHost(async () => {
+        throw new Error("存储不可用");
+      });
+      const result = await request(port, "GET", "/api/graph");
+      expect(result.status).toBe(500);
+      expect(JSON.parse(result.text).error).toContain("存储不可用");
+      await host.shutdown();
+      rmSync(distDir, { recursive: true, force: true });
+    });
+
+    it("returns 404 when the graph channel is not wired", async () => {
+      const { host, port, distDir } = await startGraphHost(undefined);
+      const result = await request(port, "GET", "/api/graph");
+      expect(result.status).toBe(404);
+      await host.shutdown();
+      rmSync(distDir, { recursive: true, force: true });
+    });
   });
 });

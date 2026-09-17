@@ -1233,3 +1233,115 @@ button {
     min-width: 200px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * GraphPanel（M5.1/M5.2）— 剧情图总览 + 决策子图
+ * ------------------------------------------------------------------------- */
+.graph-overlay-root {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.graph-overlay {
+  pointer-events: auto;
+  display: none;
+  width: min(880px, 92vw);
+  max-height: 82vh;
+  overflow: auto;
+  padding: 22px 26px 28px;
+  border: 1px solid rgba(230, 220, 200, 0.25);
+  border-radius: 14px;
+  background: rgba(16, 14, 20, 0.94);
+  color: #e8e2d6;
+}
+
+.graph-overlay[hidden] {
+  display: none;
+}
+
+.graph-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.graph-panel__title {
+  margin: 0;
+  font-size: 1.15rem;
+  letter-spacing: 0.12em;
+}
+
+.graph-panel__summary {
+  margin: 0 0 14px;
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+
+.graph-group {
+  margin-bottom: 18px;
+}
+
+.graph-group__title {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  border-left: 3px solid rgba(214, 178, 106, 0.8);
+  padding-left: 8px;
+}
+
+.graph-scene {
+  margin: 0 0 10px 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(230, 220, 200, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.graph-scene__id {
+  margin: 0 0 6px;
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+
+.graph-decision {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.graph-decision--cursor {
+  background: rgba(214, 178, 106, 0.18);
+  outline: 1px solid rgba(214, 178, 106, 0.65);
+}
+
+.graph-decision__mode {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+.graph-decision__cursor-mark {
+  font-size: 0.75rem;
+  color: #d6b26a;
+}
+
+.graph-edges {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+
+.graph-panel__empty,
+.graph-panel__error {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}

@@ -202,15 +202,17 @@
 
 ### P6 图 UI 与结算
 
-- [ ] **M5.1 总览场景图**
+- [x] **M5.1 总览场景图**
   前置：M5.0。关联：§2 术语；可见性 §4（前沿不可见）。
   要点：① web API `GET /api/graph`：场景节点 + 已实现边 + 当前游标 + run 统计；**脱敏**：只返回 realized/active 场景，不含 outline 未来信息；② 前端 `web/src/ui/graph-panel.ts`：最小可视化（场景块 + 连线 + 游标高亮；CSS/SVG 均可，不引入图库依赖；场景块按 `outline.location` 并排分组——同物理场景不同状态并列展示，组内保持剧情时序，决议 D8）；③ 视图模型单测 + app 集成测试（fake 数据）。
   验收：API 脱敏负面断言（响应无 planned/pruned outline 内容）；渲染测试。
+  落地（2026-09-17）：视图模型 `src/application/graph/graph-view.ts`（buildGraphView：脱敏白名单——outlineRef 只在指向 active/realized **act** 时返回，planned/pruned/ending 的 id/location/purpose 零泄漏；D8 `groupKey` = outline act location，无大纲回退模型场景 id；决策/边/游标/周目统计）；`GET /api/graph` 路由（LocalWebHostOptions.graph 通道，未接线 404，builder 失败 500）；前端 `web/src/ui/graph-panel.ts`（GraphPanel：分组渲染 + 决策节点 + 出边文本 + 游标高亮 + 空态/错误态；main.ts 控制区「剧情图」按钮 + overlay 挂载；styles.css 增量）。
 
-- [ ] **M5.2 决策子图展开**
+- [x] **M5.2 决策子图展开**
   前置：M5.1。
   要点：点开场景 → 场景内决策节点 + 出边（选择文本）子图；数据复用 M5.1 API（决策粒度一并提供，前端按场景过滤）；交互测试。
   验收：子图渲染测试；未实现前沿不出现。
+  落地（2026-09-17）：决策粒度并入 M5.1 API（GraphSceneView.decisions 表单快照 + outEdges 选择文本/指向/汇流标注），前端场景卡内直接展开决策子图（无二级交互——数据即场景内全量，API 一次性提供）；graph-panel 渲染断言决策/边/未实现前沿不出现（脱敏由 graph-view 测试锁定）。
 
 - [ ] **M5.3 回溯入口 + 同选项快进**
   前置：M5.2。关联：§6；决议 D7；附录 A「M1.5 快进推迟」决议（含 beginEdge 返回形状）。

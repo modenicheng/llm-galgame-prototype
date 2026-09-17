@@ -24,7 +24,8 @@ import { BrowserAssetResolver } from "./stage/browser-asset-resolver.js";
 import { BgmController } from "./stage/bgm-controller.js";
 import { SoundEffectController } from "./stage/sound-effect-controller.js";
 import type { StageVisualState } from "./stage/stage-types.js";
-import { show } from "./ui/dom.js";
+import { el, show } from "./ui/dom.js";
+import { GraphPanel } from "./ui/graph-panel.js";
 import "./ui/styles.css";
 
 function tokenFromUrl(): string {
@@ -114,6 +115,25 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     onRestart: () => window.location.reload(),
   });
   const errorBanner = new ErrorBanner(refs.bannerRoot);
+
+  // M5.1/M5.2：剧情图入口（总览 + 决策子图）。拉取失败在面板内提示。
+  const graphOverlay = el("div", "graph-overlay-root") as HTMLDivElement;
+  const graphPanel = new GraphPanel(graphOverlay);
+  const graphBtn = el("button", "btn btn--ghost graph-toggle", "剧情图") as HTMLButtonElement;
+  graphBtn.type = "button";
+  graphBtn.addEventListener("click", () => {
+    if (graphPanel.isVisible) {
+      graphPanel.hide();
+      return;
+    }
+    void graphPanel.refresh(async () => {
+      const res = await fetch("/api/graph", { headers: { accept: "application/json" } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    });
+  });
+  refs.controlsRoot.append(graphBtn);
+  appRoot.append(graphOverlay);
 
   window.addEventListener("keydown", (event) => {
     if (event.isComposing || event.keyCode === 229) return; // IME composition

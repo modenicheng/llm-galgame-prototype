@@ -69,6 +69,13 @@ export interface LocalWebHostOptions {
   worlds?: {
     create: (text: string) => Promise<{ gameId: string; app: RuntimeApplication }>;
   };
+  /**
+   * M5.1 图视图通道：GET /api/graph 时调用 build——实现方（entrypoint）
+   * 负责用当前 gameId 装配图存储并产出脱敏视图。缺省时 /api/graph 返回 404。
+   */
+  graph?: {
+    build: (gameId: string) => Promise<import("../../application/graph/graph-view.js").GraphView>;
+  };
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -104,6 +111,7 @@ export class LocalWebHost {
   private readonly assetRoot: string | null;
   private readonly assetManifest: PublicAssetManifest | null;
   private readonly worlds: LocalWebHostOptions["worlds"];
+  private readonly graph: LocalWebHostOptions["graph"];
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private devMiddleware: ViteDevMiddleware | null = null;
@@ -113,6 +121,7 @@ export class LocalWebHost {
     this.config = options.config;
     this.app = options.app;
     this.worlds = options.worlds;
+    this.graph = options.graph;
     this.dev = options.dev;
     this.logger = options.logger ?? (() => {});
     this.token = randomBytes(16).toString("hex");
@@ -373,6 +382,19 @@ export class LocalWebHost {
         return;
       }
       void this.handleWorldCreation(req, res);
+      return;
+    }
+    if (req.method === "GET" && pathname === "/api/graph") {
+      if (this.graph === undefined) {
+        this.sendJson(res, 404, { error: "graph view unavailable" });
+        return;
+      }
+      this.graph
+        .build(this.app.gameId)
+        .then((view) => this.sendJson(res, 200, view))
+        .catch((err: unknown) => {
+          this.sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        });
       return;
     }
     if (req.method === "GET" && pathname === "/api/assets/manifest") {

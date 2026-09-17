@@ -13,6 +13,9 @@ import {
 } from "../hosts/local-web/last-game.js";
 import { WorldGenerator } from "../application/world/world-generator.js";
 import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
+import { GameGraphStore } from "../adapters/storage/game-graph-store.js";
+import { OutlineStore } from "../adapters/storage/outline-store.js";
+import { buildGraphView } from "../application/graph/graph-view.js";
 
 function parseArgs(argv: string[]): {
   dev: boolean;
@@ -74,6 +77,15 @@ async function main(): Promise<void> {
         writeLastGameId(DEFAULT_GAMES_ROOT, gameId);
         return { gameId, app: nextApp };
       },
+    },
+    // M5.1：图视图通道（脱敏装配在 graph-view.ts）。
+    graph: {
+      build: (gameId) =>
+        buildGraphView({
+          gameId,
+          graph: new GameGraphStore(DEFAULT_GAMES_ROOT, gameId),
+          outline: new OutlineStore(DEFAULT_GAMES_ROOT, gameId),
+        }),
     },
   });
   const { url } = await host.start();
