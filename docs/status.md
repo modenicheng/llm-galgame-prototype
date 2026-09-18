@@ -117,6 +117,12 @@
 ### 音频（TTS V2/V3 管线）
 - **合成**：DashScope CosyVoice（`voices.yaml` V3 逻辑音色 → `.env` voice-id），
   PCM 流式（`pcm_s16le`）；TTS 按 `characterId` 查音色（§67），旁白不配音。
+- **本地合成（2026-09-16 移植 campus 线）**：`synthesis.provider: local` →
+  `LocalQwen3TtsProvider`（本机 Qwen3-TTS 推理服务，OpenAI 兼容
+  `/v1/audio/speech` 或 `tts-server` Python 方言，`LOCAL_TTS_BASE_URL`/
+  `LOCAL_TTS_DIALECT` 覆盖）；voices.yaml `providers.local` 注册表键音色
+  （与 dashscope 绑定并存），固定 24000 Hz（启动校验拦截）；
+  `TtsProviderError`/`deferred` 抽为 `adapters/tts/` 共享模块。
 - **调度**：`audio-intent-planner` / `performance-compiler` / `tts-task-service` /
   `cache-key`，播放水位参数（startup_buffer / low_watermark / target_buffer）。
 - **播放**：`web/src/audio/`——AudioCoordinator（共享 AudioContext + AudioWorklet）、
