@@ -27,6 +27,7 @@ import type {
   TtsSynthesisRequest,
   TtsStreamSession,
 } from "../../core/ports/tts-provider-port.js";
+import { deferred } from "./deferred.js";
 import { TtsProviderError } from "./tts-provider-error.js";
 import { ttsLog } from "../../application/audio/tts-log.js";
 
@@ -51,25 +52,6 @@ export interface LocalQwen3TtsProviderOptions {
   fetchImpl?: typeof fetch;
 }
 
-/**
- * Promise.withResolvers-style deferred. `Promise.withResolvers` itself needs
- * lib ES2024, which the project's ES2022 target does not provide, so this
- * module-local helper keeps the same linear, typed-resolver shape.
- */
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (reason: unknown) => void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 export class LocalQwen3TtsProvider implements TtsProviderPort {
   private readonly baseUrl: string;
   private readonly dialect: "openai" | "tts-server";
@@ -83,6 +65,24 @@ export class LocalQwen3TtsProvider implements TtsProviderPort {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
+  /** Dialect-specific request target and JSON body for one synthesis. */
+  private buildDialectRequest(request: TtsSynthesisRequest): { url: string; body: string } {
+    return this.dialect === "openai"
+      ? {
+          url: `${this.baseUrl}/v1/audio/speech`,
+          body: JSON.stringify({
+            model: request.model,
+            input: request.text,
+            voice: request.voiceId,
+            response_format: "pcm",
+          }),
+        }
+      : {
+          url: `${this.baseUrl}/tts`,
+          body: JSON.stringify({ text: request.text, voice: request.voiceId }),
+        };
+  }
+
   async start(
     request: TtsSynthesisRequest,
     signal: AbortSignal,
@@ -94,21 +94,7 @@ export class LocalQwen3TtsProvider implements TtsProviderPort {
     }
     signal.addEventListener("abort", onUpstreamAbort, { once: true });
 
-    const [url, body] =
-      this.dialect === "openai"
-        ? [
-            `${this.baseUrl}/v1/audio/speech`,
-            JSON.stringify({
-              model: request.model,
-              input: request.text,
-              voice: request.voiceId,
-              response_format: "pcm",
-            }),
-          ]
-        : [
-            `${this.baseUrl}/tts`,
-            JSON.stringify({ text: request.text, voice: request.voiceId }),
-          ];
+    const { url, body } = this.buildDialectRequest(request);
 
     let response: Response;
     try {
@@ -147,7 +133,21 @@ export class LocalQwen3TtsProvider implements TtsProviderPort {
       channels: 1,
       bitDepth: 16,
     };
+    return this.pumpSession(response, request, metadata, signal, controller, onUpstreamAbort);
+  }
 
+  /**
+   * Wrap an accepted (2xx, body present) response in a TtsStreamSession:
+   * pump PCM chunks, track bytes, settle `completion` on end/abort/error.
+   */
+  private pumpSession(
+    response: Response,
+    request: TtsSynthesisRequest,
+    metadata: TtsStreamMetadata,
+    signal: AbortSignal,
+    controller: AbortController,
+    onUpstreamAbort: () => void,
+  ): TtsStreamSession {
     let totalBytes = 0;
     let firstChunkSeen = false;
     let settled = false;
@@ -170,7 +170,7 @@ export class LocalQwen3TtsProvider implements TtsProviderPort {
       finish(new TtsProviderError("first_chunk_timeout", `no PCM within ${this.timeoutMs}ms`));
     }, this.timeoutMs);
 
-    const reader = response.body.getReader();
+    const reader = response.body!.getReader();
     const onAbort = () => {
       // Upstream canceled: tear down the connection AND the body reader
       // (defensive: injected fetches may ignore the abort signal); the
@@ -180,6 +180,8 @@ export class LocalQwen3TtsProvider implements TtsProviderPort {
       finish({ totalBytes });
     };
     signal.addEventListener("abort", onAbort, { once: true });
+    // Aborted between the fetch resolving and the listener going in.
+    if (signal.aborted) onAbort();
 
     const chunks: AsyncGenerator<Uint8Array> = (async function* () {
       try {
@@ -205,12 +207,7 @@ export class LocalQwen3TtsProvider implements TtsProviderPort {
       }
     })();
 
-    const stream: TtsStreamSession = {
-      metadata,
-      chunks,
-      completion,
-    };
     ttsLog("local-start", request.voiceId, `${request.text.length} chars`);
-    return stream;
+    return { metadata, chunks, completion };
   }
 }

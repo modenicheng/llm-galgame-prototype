@@ -24,7 +24,7 @@ function makeRequest(overrides: Partial<TtsSynthesisRequest> = {}): TtsSynthesis
   };
 }
 
-function pcmResponse(chunks: number[][]): Response {
+function pcmResponse(chunks: number[][], headers: Record<string, string> = { "X-Audio-Sample-Rate": "24000" }): Response {
   const bytes = chunks.map((c) => new Uint8Array(c));
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -32,10 +32,7 @@ function pcmResponse(chunks: number[][]): Response {
       controller.close();
     },
   });
-  return new Response(stream, {
-    status: 200,
-    headers: { "X-Audio-Sample-Rate": "24000" },
-  });
+  return new Response(stream, { status: 200, headers });
 }
 
 describe("LocalQwen3TtsProvider", () => {
@@ -44,10 +41,15 @@ describe("LocalQwen3TtsProvider", () => {
     const provider = new LocalQwen3TtsProvider({
       fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
         seen.push({ url: String(url), body: JSON.parse(String(init?.body)) });
-        return pcmResponse([[1, 2, 3], [4, 5, 6]]);
+        // openai dialect servers send no X-Audio-* headers — exercise the
+        // metadata fallback to the request sample rate (deliberately ≠24000).
+        return pcmResponse([[1, 2, 3], [4, 5, 6]], {});
       }) as typeof fetch,
     });
-    const session = await provider.start(makeRequest(), new AbortController().signal);
+    const session = await provider.start(
+      makeRequest({ sampleRate: 22050 }),
+      new AbortController().signal,
+    );
     expect(seen[0]?.url).toBe(`${LOCAL_TTS_DEFAULT_BASE_URL}/v1/audio/speech`);
     expect(seen[0]?.body).toEqual({
       model: "local-qwen3-tts",
@@ -55,8 +57,7 @@ describe("LocalQwen3TtsProvider", () => {
       voice: "suyao",
       response_format: "pcm",
     });
-    // openai dialect sends no X-Audio-* headers — falls back to the request rate
-    expect(session.metadata.sampleRate).toBe(24000);
+    expect(session.metadata.sampleRate).toBe(22050); // from the request, no header
     expect(session.metadata.encoding).toBe("pcm_s16le");
     let total = 0;
     for await (const chunk of session.chunks) total += chunk.byteLength;

@@ -37,6 +37,7 @@ import type {
   TtsStreamSession,
 } from "../../core/ports/tts-provider-port.js";
 import { ttsLog } from "../../application/audio/tts-log.js";
+import { deferred } from "./deferred.js";
 import { TtsProviderError } from "./tts-provider-error.js";
 
 export const DASHSCOPE_DEFAULT_BASE_URL =
@@ -57,25 +58,6 @@ export interface DashScopeCosyVoiceProviderOptions {
 
 /** Typed provider failure — shared class, see `tts-provider-error.ts`. */
 export { TtsProviderError };
-
-/**
- * Promise.withResolvers-style deferred. `Promise.withResolvers` itself needs
- * lib ES2024, which the project's ES2022 target does not provide, so this
- * module-local helper keeps the same linear, typed-resolver shape.
- */
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (reason: unknown) => void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 interface DashScopeSseEvent {
   request_id?: string;

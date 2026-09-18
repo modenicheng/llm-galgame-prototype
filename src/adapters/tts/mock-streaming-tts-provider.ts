@@ -23,6 +23,7 @@ import type {
   TtsSynthesisRequest,
   TtsStreamSession,
 } from "../../core/ports/tts-provider-port.js";
+import { deferred } from "./deferred.js";
 
 export interface MockStreamingTtsProviderOptions {
   /** Fallback sample rate when `request.sampleRate` is not positive. Default 22050. */
@@ -44,25 +45,6 @@ const DEFAULT_CHUNK_BYTES = 4096;
 const DEFAULT_CHUNK_INTERVAL_MS = 100;
 const DEFAULT_FIRST_BYTE_DELAY_MS = 0;
 const DEFAULT_DURATION_MS = 2000;
-
-/**
- * Promise.withResolvers-style deferred. `Promise.withResolvers` itself needs
- * lib ES2024, which the project's ES2022 target does not provide, so this
- * module-local helper keeps the same linear, typed-resolver shape.
- */
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (reason: unknown) => void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 /** mulberry32 — tiny deterministic PRNG: same seed, same sequence. */
 function mulberry32(seed: number): () => number {

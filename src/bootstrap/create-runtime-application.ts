@@ -110,13 +110,23 @@ function selectTtsProvider(config: AppConfig, voices: Awaited<ReturnType<typeof 
     if (modelErrors.length > 0) {
       throw new Error(`Local TTS model config invalid — ${modelErrors.join("; ")}`);
     }
+    // Env overrides get the same startup-time scrutiny as the dashscope
+    // branch: an empty base URL falls back to the default (typed but not
+    // filled), a filled one must be http(s); an unknown dialect is a typo,
+    // not a silent openai fallback.
+    const baseUrl = process.env.LOCAL_TTS_BASE_URL?.trim() ?? "";
+    if (baseUrl !== "" && !/^https?:\/\//.test(baseUrl)) {
+      throw new Error("Local TTS env invalid — LOCAL_TTS_BASE_URL must be an http(s) URL");
+    }
+    const dialect = process.env.LOCAL_TTS_DIALECT?.trim() ?? "";
+    if (dialect !== "" && dialect !== "openai" && dialect !== "tts-server") {
+      throw new Error(
+        `Local TTS env invalid — LOCAL_TTS_DIALECT must be "openai" or "tts-server", got "${dialect}"`,
+      );
+    }
     return new LocalQwen3TtsProvider({
-      ...(process.env.LOCAL_TTS_BASE_URL !== undefined
-        ? { baseUrl: process.env.LOCAL_TTS_BASE_URL }
-        : {}),
-      ...(process.env.LOCAL_TTS_DIALECT === "tts-server"
-        ? { dialect: "tts-server" as const }
-        : {}),
+      ...(baseUrl !== "" ? { baseUrl } : {}),
+      ...(dialect === "tts-server" ? { dialect: "tts-server" as const } : {}),
       timeoutMs: config.api.timeout_ms,
     });
   }

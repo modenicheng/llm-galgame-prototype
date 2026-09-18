@@ -194,16 +194,14 @@ export function validateLocalModelConfig(
   voices: VoicesConfig,
   sampleRate: number,
 ): string[] {
-  const errors: string[] = [];
-  for (const [profileId, profile] of Object.entries(voices.profiles)) {
-    const binding = profile.providers.local;
-    if (binding === undefined) continue;
-    if (sampleRate !== LOCAL_QWEN3_TTS_SAMPLE_RATE) {
-      errors.push(
-        `profile "${profileId}" uses local-qwen3-tts（固定 ${LOCAL_QWEN3_TTS_SAMPLE_RATE} Hz 输出）` +
-          `，但 synthesis.sample_rate=${sampleRate}；请将 media.audio.synthesis.sample_rate 设为 ${LOCAL_QWEN3_TTS_SAMPLE_RATE}`,
-      );
-    }
+  const localProfileIds = Object.entries(voices.profiles)
+    .filter(([, profile]) => profile.providers.local !== undefined)
+    .map(([profileId]) => profileId);
+  if (localProfileIds.length === 0 || sampleRate === LOCAL_QWEN3_TTS_SAMPLE_RATE) {
+    return [];
   }
-  return errors;
+  return [
+    `profiles [${localProfileIds.join(", ")}] 使用 local-qwen3-tts（固定 ${LOCAL_QWEN3_TTS_SAMPLE_RATE} Hz 输出）` +
+      `，但 synthesis.sample_rate=${sampleRate}；请将 media.audio.synthesis.sample_rate 设为 ${LOCAL_QWEN3_TTS_SAMPLE_RATE}`,
+  ];
 }
