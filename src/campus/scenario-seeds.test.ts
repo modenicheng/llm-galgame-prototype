@@ -49,6 +49,17 @@ describe("loadScenarioSeedCatalog", () => {
     }
   });
 
+  it("keeps real seed narration addressed to the player", async () => {
+    const catalog = await loadScenarioSeedCatalog(REAL_CATALOG);
+
+    for (const seed of catalog.seeds) {
+      // 台词里的“你”不能代替正文视角；这里只做词面回归检查，视角仍需人工审阅。
+      const narration = seed.seed.replace(/“[^”]*”/gu, "");
+      expect(narration, seed.id).toContain("你");
+      expect(seed.seed, seed.id).not.toMatch(/玩家|主角/u);
+    }
+  });
+
   it("rejects workflow fields such as success_path or required_rounds", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "campus-seeds-"));
     try {
