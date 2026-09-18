@@ -9,10 +9,23 @@
  */
 import type { StoredEvent } from "../../schema.js";
 
+/** 压缩附加上下文：让记录员知道框架已有哪些内容，避免重复。 */
+export interface RecapSummarizeContext {
+  /**
+   * 框架已常驻提示词的状态台账 + 既有梗概（summarizeState 输出）。
+   * 其中已有条目（人物情绪/目标/关系、canon、线索、已记前情）不应在
+   * 新记录里复述。
+   */
+  frameworkDigest?: string;
+}
+
 export interface RecapSummarizerPort {
   /**
-   * 把一批滑出历史窗口的事件压缩成 ≤3 句的中文事实记录。
-   * 事件按 seq 升序；返回 null 表示无法产出（调用方自行回退）。
+   * 把一批滑出历史窗口的事件压缩成中文事实记录（细节优先，单行分号
+   * 要点式）。事件按 seq 升序；返回 null 表示无法产出（调用方自行回退）。
    */
-  summarize(events: readonly StoredEvent[]): Promise<string | null>;
+  summarize(
+    events: readonly StoredEvent[],
+    context?: RecapSummarizeContext,
+  ): Promise<string | null>;
 }

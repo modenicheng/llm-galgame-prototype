@@ -83,7 +83,7 @@ function isAbortError(error: unknown): boolean {
  * the server ignores `temperature`, and reasoning tokens bill into the
  * completion-token budget.
  */
-function thinkingRequestBody(
+export function thinkingRequestBody(
   thinking: AppConfig["generation"]["thinking"] | undefined,
 ): Record<string, unknown> {
   // `thinking` is schema-guaranteed in production; the ?. tolerates

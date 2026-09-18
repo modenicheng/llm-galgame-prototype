@@ -8,7 +8,7 @@
  * presentation layer.
  */
 import { loadApiKey, loadAuthorConfig, loadConfig } from "../config.js";
-import type { AppConfig } from "../config.js";
+import type { AgentLLMOverrideConfig, AppConfig } from "../config.js";
 import {
   loadVoices,
   validateDashscopeEnv,
@@ -82,6 +82,42 @@ function fnv1a(input: string): number {
     hash = Math.imul(hash, 0x01000193);
   }
   return hash >>> 0;
+}
+
+/**
+ * 背景代理的生效 api 配置：override 未给出的字段逐项回退主配置。
+ * （2026-09-19：agents.memory / agents.recap 独立模型参数。）
+ */
+function resolveAgentApi(
+  base: AppConfig["api"],
+  override: AgentLLMOverrideConfig | undefined,
+): AppConfig["api"] {
+  if (override === undefined) return base;
+  return {
+    ...base,
+    ...(override.model !== undefined ? { model: override.model } : {}),
+    ...(override.base_url !== undefined ? { base_url: override.base_url } : {}),
+    ...(override.api_key_env !== undefined ? { api_key_env: override.api_key_env } : {}),
+    ...(override.timeout_ms !== undefined ? { timeout_ms: override.timeout_ms } : {}),
+    ...(override.token_limit_field !== undefined
+      ? { token_limit_field: override.token_limit_field }
+      : {}),
+  };
+}
+
+/** 背景代理的密钥：override.api_key_env 指向独立环境变量时单独解析。 */
+function agentApiKey(
+  base: AppConfig["api"],
+  override: AgentLLMOverrideConfig | undefined,
+  fallbackKey: string,
+): string {
+  const envName = override?.api_key_env;
+  if (envName === undefined || envName === base.api_key_env) return fallbackKey;
+  const key = process.env[envName];
+  if (!key) {
+    throw new Error(`环境变量 ${envName} 未设置（agents 独立密钥覆盖）。`);
+  }
+  return key;
 }
 
 export async function createRuntimeApplication(
@@ -321,11 +357,18 @@ export async function createRuntimeApplication(
 
     // 滚动前情梗概压缩器（2026-09-17 上下文审计）：滑出历史窗口的事件
     // 压缩进 [Recap]；失败时 Game 内部回退确定性摘要。包装器把生命周期
-    // 报告给监控后台（context LLM 面板）。
+    // 报告给监控后台（context LLM 面板）。模型参数可经 agents.recap
+    // 独立覆盖。
     const recapSummarizer = instrumentRecapSummarizer(
       new RecapSummarizerAdapter({
-        apiKey,
-        api: config.api,
+        apiKey: agentApiKey(config.api, config.agents?.recap, apiKey),
+        api: resolveAgentApi(config.api, config.agents?.recap),
+        ...(config.agents?.recap?.thinking !== undefined
+          ? { thinking: config.agents.recap.thinking }
+          : {}),
+        ...(config.agents?.recap?.max_tokens !== undefined
+          ? { maxTokens: config.agents.recap.max_tokens }
+          : {}),
         diagnostics,
         metrics,
       }),
@@ -335,10 +378,22 @@ export async function createRuntimeApplication(
     // Event 模式会话记忆代理（2026-09-18 记忆审计定稿落地）：从增量
     // 提交事件提取人物状态 / canon / 线程推进，merge-only 写入 StoryState。
     // 仅 event 模式装配（长线模式由 NarrativeDirector 负责）；失败在
-    // Game 内隔离，只跳过本批。
+    // Game 内隔离，只跳过本批。模型参数可经 agents.memory 独立覆盖
+    // （换模型 / max 推理强度 / 独立密钥）。
     const memoryAgent =
       config.narrative.mode === "event"
-        ? new MemoryAgentAdapter({ apiKey, api: config.api, diagnostics, metrics })
+        ? new MemoryAgentAdapter({
+            apiKey: agentApiKey(config.api, config.agents?.memory, apiKey),
+            api: resolveAgentApi(config.api, config.agents?.memory),
+            ...(config.agents?.memory?.thinking !== undefined
+              ? { thinking: config.agents.memory.thinking }
+              : {}),
+            ...(config.agents?.memory?.max_tokens !== undefined
+              ? { maxTokens: config.agents.memory.max_tokens }
+              : {}),
+            diagnostics,
+            metrics,
+          })
         : undefined;
 
     return new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {

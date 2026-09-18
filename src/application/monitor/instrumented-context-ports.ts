@@ -32,9 +32,9 @@ export function instrumentRecapSummarizer(
   monitor: MonitorHub,
 ): RecapSummarizerPort {
   return {
-    summarize: (events) => {
+    summarize: (events, context) => {
       const id = monitor.contextStart("recap", eventRangeDetail(events));
-      return inner.summarize(events).then(
+      return inner.summarize(events, context).then(
         (output) => {
           monitor.contextEnd(
             id,

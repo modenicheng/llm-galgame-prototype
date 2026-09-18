@@ -79,7 +79,7 @@ import { InteractionPolicy } from "./story/interaction-policy.js";
 import type { InteractionMode, InputSpec } from "./story/types.js";
 import { reconcileStoryState } from "./story/reconcile.js";
 import { appendRecap, deterministicRecapDigest } from "./story/recap.js";
-import { createInitialState } from "./story/state.js";
+import { createInitialState, summarizeState } from "./story/state.js";
 import type {
   GeneratedEvent,
   StoryState,
@@ -1658,7 +1658,12 @@ export class Game {
         let digest = "";
         if (this.recapSummarizer !== undefined && batch.length > 0) {
           try {
-            digest = (await this.recapSummarizer.summarize(batch)) ?? "";
+            // 注入框架已有内容（状态台账 + 既有梗概）：压缩器据此查重，
+            // 不复述记忆代理已维护的状态与早前记录的条目。
+            digest =
+              (await this.recapSummarizer.summarize(batch, {
+                frameworkDigest: summarizeState(this.storyState),
+              })) ?? "";
           } catch (error) {
             this.diagnostics.warn(
               "Game",

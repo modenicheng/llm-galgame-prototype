@@ -13,6 +13,7 @@ import { summarizeState } from "../../story/state.js";
 import type { StoryState } from "../../story/types.js";
 import type { Metrics } from "../../runtime/metrics.js";
 import { parseLLMUsage } from "./llm-usage.js";
+import { thinkingRequestBody } from "./openai-compatible-generator.js";
 
 const SYSTEM_PROMPT =
   "你是互动视觉小说的状态投影器。根据剧情片段，提取人物状态与世界事实的**增量**更新。" +
@@ -51,16 +52,69 @@ const ProposalSchema = z.object({
     .optional(),
 });
 
-/** 从模型原文里抠出 JSON（容忍 ```json 围栏与前后杂文字）。 */
-function extractJson(text: string): unknown {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end <= start) return undefined;
-  try {
-    return JSON.parse(text.slice(start, end + 1));
-  } catch {
-    return undefined;
+/**
+ * 从模型原文里抠出 JSON 对象。
+ *
+ * 推理模型常在 content 里带 `<think>` 推演（内含大量花括号样式的伪
+ * JSON）或代码围栏/前后杂文字， naïve 的 first-{-last-} 切片会被推理
+ * 噪声带偏。策略：
+ * 1. 先剥掉 `<think>…</think>`（含只有开头没有闭合的残截）；
+ * 2. 括号配平扫描出所有顶层 `{…}` 候选切片（跳过字符串字面量内的
+ *    花括号），从最后一个候选开始尝试解析——最终答案总在推理之后；
+ * 3. 严格解析失败再试容错解析（去尾逗号）。
+ */
+export function extractJson(text: string): unknown {
+  const body = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  const thinkEnd = body.toLowerCase().lastIndexOf("</think>");
+  const withoutThink = thinkEnd !== -1 ? body.slice(thinkEnd + "</think>".length) : body;
+
+  const candidates: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < withoutThink.length; i++) {
+    const ch = withoutThink[i]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          candidates.push(withoutThink.slice(start, i + 1));
+          start = -1;
+        }
+      }
+    }
   }
+
+  for (const candidate of candidates.reverse()) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      try {
+        return JSON.parse(candidate.replace(/,\s*([}\]])/g, "$1"));
+      } catch {
+        // 尝试下一个（更早的）候选切片。
+      }
+    }
+  }
+  return undefined;
+}
+
+/** 失败日志用的原文摘录：压平空白并截断，保证 /monitor 上可读。 */
+export function rawOutputExcerpt(text: string, maxChars = 200): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > maxChars ? `${flat.slice(0, maxChars)}…` : flat;
 }
 
 export class MemoryAgentAdapter implements SessionMemoryAgentPort {
@@ -69,11 +123,17 @@ export class MemoryAgentAdapter implements SessionMemoryAgentPort {
   private readonly diagnostics: DiagnosticSink;
   private readonly metrics: Metrics | undefined;
   private readonly maxTokens: number;
+  private readonly thinking: AppConfig["generation"]["thinking"] | undefined;
   private readonly tokenLimitField: AppConfig["api"]["token_limit_field"];
 
   constructor(opts: {
     apiKey: string;
     api: AppConfig["api"];
+    /** 思考链开关（agents.memory.thinking 覆盖）；缺省关闭。 */
+    thinking?: AppConfig["generation"]["thinking"];
+    /** 输出 token 预算（agents.memory.max_tokens 覆盖）。推理模型 reasoning
+     * token 计入该预算，开思考时必须给足，否则 JSON 被截断必解析失败。 */
+    maxTokens?: number;
     diagnostics?: DiagnosticSink;
     metrics?: Metrics;
     client?: OpenAI;
@@ -88,7 +148,8 @@ export class MemoryAgentAdapter implements SessionMemoryAgentPort {
     this.model = opts.api.model;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
     this.metrics = opts.metrics;
-    this.maxTokens = 400;
+    this.maxTokens = opts.maxTokens ?? 1200;
+    this.thinking = opts.thinking;
     this.tokenLimitField = opts.api.token_limit_field;
   }
 
@@ -115,8 +176,9 @@ export class MemoryAgentAdapter implements SessionMemoryAgentPort {
         ...(this.tokenLimitField === "max_tokens"
           ? { max_tokens: this.maxTokens }
           : { max_completion_tokens: this.maxTokens }),
-        // DeepSeek reasoning models：顶层关闭思考（与 recap 压缩器一致）。
-        ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
+        // DeepSeek thinking 顶层开关（+ reasoning_effort），与主写手同一
+        // 形态；agents.memory.thinking 未配置时保持关闭。
+        ...thinkingRequestBody(this.thinking),
       });
 
       const raw = (response.choices[0]?.message?.content ?? "").trim();
@@ -128,7 +190,11 @@ export class MemoryAgentAdapter implements SessionMemoryAgentPort {
 
       const parsed = ProposalSchema.safeParse(extractJson(raw));
       if (!parsed.success) {
-        this.diagnostics.warn("Game", "记忆代理输出无法解析为有效提案，本批跳过");
+        // 带上原文摘录：落盘器不录背景代理，这条 warn 是唯一的现场。
+        this.diagnostics.warn(
+          "Game",
+          `记忆代理输出无法解析为有效提案（模型 ${this.model}），本批跳过。原文摘录：${rawOutputExcerpt(raw) || "（空输出）"}`,
+        );
         return null;
       }
       // exactOptionalPropertyTypes：zod 的可选字段带 | undefined，剥掉

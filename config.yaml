@@ -14,6 +14,24 @@ api:
   timeout_ms: 60000
   token_limit_field: max_completion_tokens
 
+# 背景 LLM 代理独立模型参数（2026-09-19）：未给出的字段逐项回退上方 api.*。
+# 记忆代理此前与主写手同模型且关闭思考、输出预算仅 400 token，
+# 「无法解析为有效提案，本批跳过」频发；现单独开 max 推理强度并给足预算。
+# 注意：reasoning token 计入该代理的 max_tokens 预算，开思考必须给足。
+agents:
+  memory:
+    # 换模型 / 换供应商时取消注释覆盖：
+    # model: deepseek-reasoner
+    # base_url: https://api.deepseek.com
+    # api_key_env: OPENAI_API_KEY
+    thinking:
+      type: enabled
+      effort: max
+    max_tokens: 4000
+  recap:
+    # 前情梗概压缩器：保持关闭思考；细节化后预算放宽（默认 900）。
+    # max_tokens: 900
+
 generation:
   temperature: 0.7
   # 1400 常在长段结尾截断（2048 给模型足够预算

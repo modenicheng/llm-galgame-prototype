@@ -526,6 +526,133 @@ describe("loadConfig narrative section", () => {
 });
 
 // ---------------------------------------------------------------------------
+// loadConfig — agents（背景代理独立模型参数）
+// ---------------------------------------------------------------------------
+
+describe("loadConfig agents section", () => {
+  it("defaults agents to an empty object when the section is absent", async () => {
+    const filePath = await writeTempYaml(
+      "agents-default",
+      [
+        "api:",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    enabled: false",
+        "game:",
+        "  history_events: 80",
+      ].join("\n"),
+    );
+
+    const config = await loadConfig(filePath);
+
+    expect(config.agents).toEqual({});
+  });
+
+  it("parses per-agent overrides (model / thinking / max_tokens)", async () => {
+    const filePath = await writeTempYaml(
+      "agents-overrides",
+      [
+        "api:",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    enabled: false",
+        "game:",
+        "  history_events: 80",
+        "agents:",
+        "  memory:",
+        "    model: other-model",
+        "    api_key_env: MEMORY_KEY",
+        "    thinking:",
+        "      type: enabled",
+        "      effort: max",
+        "    max_tokens: 4000",
+        "  recap:",
+        "    max_tokens: 900",
+      ].join("\n"),
+    );
+
+    const config = await loadConfig(filePath);
+
+    expect(config.agents.memory).toEqual({
+      model: "other-model",
+      api_key_env: "MEMORY_KEY",
+      thinking: { type: "enabled", effort: "max" },
+      max_tokens: 4000,
+    });
+    expect(config.agents.recap).toEqual({ max_tokens: 900 });
+    // 主配置不受影响
+    expect(config.api.model).toBe("test-model");
+  });
+
+  it("treats a comment-only agent key (YAML null) as absent", async () => {
+    const filePath = await writeTempYaml(
+      "agents-null-key",
+      [
+        "api:",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    enabled: false",
+        "game:",
+        "  history_events: 80",
+        "agents:",
+        "  memory:",
+        "    max_tokens: 4000",
+        "  recap:",
+      ].join("\n"),
+    );
+
+    const config = await loadConfig(filePath);
+
+    expect(config.agents.memory).toEqual({ max_tokens: 4000 });
+    expect(config.agents.recap).toBeUndefined();
+  });
+
+  it("rejects an invalid agent thinking effort", async () => {
+    const filePath = await writeTempYaml(
+      "agents-bad-effort",
+      [
+        "api:",
+        "  model: test-model",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    enabled: false",
+        "game:",
+        "  history_events: 80",
+        "agents:",
+        "  memory:",
+        "    thinking:",
+        "      type: enabled",
+        "      effort: ultra",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // loadAuthorConfig — defaults when file missing
 // ---------------------------------------------------------------------------
 

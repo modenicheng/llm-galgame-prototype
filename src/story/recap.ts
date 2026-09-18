@@ -11,8 +11,9 @@
 import type { StoredEvent } from "../schema.js";
 import { serializeStoryContext } from "./context-builder.js";
 
-/** recap 文本的总长度上限：更早的记录被截掉（按整行丢弃）。 */
-export const RECAP_MAX_CHARS = 600;
+/** recap 文本的总长度上限：更早的记录被截掉（按整行丢弃）。
+ * 2026-09-19 从 600 放宽——细节优先的前情梗概单条即可到 500 字。 */
+export const RECAP_MAX_CHARS = 1800;
 
 function truncate(text: string, maxLength: number): string {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -40,16 +41,16 @@ export function deterministicRecapDigest(
   let lastTextLine = "";
   for (const line of lines) {
     if (line.startsWith("[交互]") || line.startsWith("[玩家]")) {
-      picked.push(truncate(line, 60));
+      picked.push(truncate(line, 80));
     } else {
       lastTextLine = line;
     }
   }
   if (lastTextLine !== "") {
-    picked.push(truncate(lastTextLine, 80));
+    picked.push(truncate(lastTextLine, 120));
   }
   const digest = picked.join("；");
-  return digest === "" ? "" : truncate(digest, 220);
+  return digest === "" ? "" : truncate(digest, 360);
 }
 
 /**

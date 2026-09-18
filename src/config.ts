@@ -83,6 +83,24 @@ interface RefinementContext {
   addIssue(issue: unknown): void;
 }
 
+/** 单个背景代理的模型参数覆盖：缺省字段跟随 api.* 与各代理内置默认。 */
+export interface AgentLLMOverrideConfig {
+  model?: string;
+  base_url?: string;
+  /** 独立密钥环境变量（如换供应商时）；缺省 = api.api_key_env。 */
+  api_key_env?: string;
+  timeout_ms?: number;
+  token_limit_field?: "max_completion_tokens" | "max_tokens";
+  /** 思考链开关与强度（DeepSeek 顶层 thinking + reasoning_effort）。
+   * reasoning token 计入该代理的 max_tokens 预算。 */
+  thinking?: {
+    type: "enabled" | "disabled";
+    effort?: "low" | "high" | "max";
+  };
+  /** 输出 token 预算（含 reasoning token）；各代理有内置默认。 */
+  max_tokens?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Narrative director settings
 // ---------------------------------------------------------------------------
@@ -144,6 +162,14 @@ export interface AppConfig {
     api_key_env: string;
     timeout_ms: number;
     token_limit_field: "max_completion_tokens" | "max_tokens";
+  };
+  /** 背景 LLM 代理的独立模型参数（2026-09-19）。未给出的字段回退
+   * api.* 主配置；两个代理都缺省时行为与旧版完全一致。 */
+  agents: {
+    /** Event 模式会话记忆代理（状态/台账/线索提取）。 */
+    memory?: AgentLLMOverrideConfig;
+    /** 滚动前情梗概压缩器（recap）。 */
+    recap?: AgentLLMOverrideConfig;
   };
   generation: {
     temperature: number;
@@ -499,6 +525,22 @@ const NarrativeConfigSchema = z
   })
   .default(DEFAULT_NARRATIVE_CONFIG);
 
+/** 单个背景代理的模型参数覆盖 schema；字段全部可选。 */
+const AgentLLMOverrideSchema = z.object({
+  model: z.string().min(1).optional(),
+  base_url: z.string().url().optional(),
+  api_key_env: z.string().min(1).optional(),
+  timeout_ms: z.number().int().positive().optional(),
+  token_limit_field: z.enum(["max_completion_tokens", "max_tokens"]).optional(),
+  thinking: z
+    .object({
+      type: z.enum(["enabled", "disabled"]),
+      effort: z.enum(["low", "high", "max"]).optional(),
+    })
+    .optional(),
+  max_tokens: z.number().int().positive().optional(),
+});
+
 const ConfigSchema = z.object({
   api: z.object({
     model: z.string().min(1),
@@ -509,6 +551,16 @@ const ConfigSchema = z.object({
       .enum(["max_completion_tokens", "max_tokens"])
       .default("max_completion_tokens")
   }),
+  // 背景 LLM 代理独立参数：全部字段可选，缺省跟随 api.* / 代理内置默认。
+  // YAML 里「recap:」只写注释时解析成 null，preprocess 归一成缺省。
+  agents: z
+    .object({
+      memory: z
+        .preprocess((v) => (v === null ? undefined : v), AgentLLMOverrideSchema.optional()),
+      recap: z
+        .preprocess((v) => (v === null ? undefined : v), AgentLLMOverrideSchema.optional()),
+    })
+    .default({}),
   generation: z.object({
     temperature: z.number().min(0).max(2).default(0.9),
     max_tokens: z.number().int().positive().default(2200),
