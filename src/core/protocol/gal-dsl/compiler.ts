@@ -155,6 +155,19 @@ function resolveDialogue(
       cue.position = setOp(visual.position);
       hasOps = true;
     }
+    if (
+      cue.visible === undefined &&
+      current !== undefined &&
+      !current.visible &&
+      defaults !== undefined
+    ) {
+      // 隐形说话兜底：隐藏角色开口即自动登台（位置不变；§19 槽位互斥
+      // 照常生效——若原位置已有可见角色，对方被顶替隐藏）。诊断交给
+      // 游戏层转成下一请求的舞台警告，模型得以纠正舞台认知。
+      cue.visible = setOp(true);
+      hasOps = true;
+      diagnostics?.push({ code: "HIDDEN_SPEAKER_AUTO_SHOW", id: characterId });
+    }
   }
 
   if (displayNameOverride !== undefined) {

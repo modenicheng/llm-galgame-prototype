@@ -255,7 +255,7 @@ export function serializeVisualContext(
       const character = state.characters[characterId]!;
       const visibility = character.visible
         ? "可见"
-        : `隐藏（说话不会自动显示，需 @ch ${characterId} show 恢复）`;
+        : `隐藏（开口会自动重新登台；正式回场请先 @ch ${characterId} show，并留意其位置是否已被占用）`;
       lines.push(
         `- ${characterId}（显示名：${character.displayName}）：立绘 ${character.spriteSet}/${character.variant}，位置 ${character.position}，${visibility}`,
       );
@@ -327,6 +327,11 @@ export interface DslContextInput extends ContextInput {
   targetLines: number;
   /** Visual state at the tail the model continues from (docs §70). */
   tailVisualState?: VisualState;
+  /**
+   * 舞台警告（一次性）：上一段播出中系统自动纠正的舞台异常（如隐藏
+   * 角色说话被强制登台）。注入一次即清空——提醒模型核对可见性状态。
+   */
+  stageWarnings?: readonly string[];
   /** Model-facing asset catalog (logical ids only, docs §59). */
   modelAssetCatalog?: ModelAssetCatalog;
   /** Event mode：本局交互进度（让模型感知收束节奏）。 */
@@ -387,6 +392,19 @@ export function buildDslUserPromptSegments(
       "当前舞台状态",
       serializeVisualContext(input.tailVisualState, input.modelAssetCatalog?.characters),
       "===== 当前舞台状态 =====",
+    );
+  }
+
+  if (input.stageWarnings !== undefined && input.stageWarnings.length > 0) {
+    const warningLines = [
+      "上一段发生了系统自动纠正的舞台异常，可能造成预期外的舞台效果。请先对照上方「当前舞台状态」核实各角色可见性，必要时用 @ch <内部id> show / exit 显式调整，之后不要让隐藏状态的角色直接开口：",
+      ...input.stageWarnings.map((warning) => `- ${warning}`),
+    ];
+    assembler.section(
+      "runtime/stage-warning",
+      "舞台警告",
+      warningLines.join("\n"),
+      "===== 舞台警告 =====",
     );
   }
 

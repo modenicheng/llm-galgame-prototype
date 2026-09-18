@@ -26,6 +26,8 @@ export interface OpeningRequest {
   brief?: NarrativeBrief;
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
+  /** 舞台警告（一次性）：随本请求注入用户 prompt 后清空。 */
+  stageWarnings?: readonly string[];
   /** 生成片 id（monitor 分组）：开场的修复续写继承它实现原位替换。 */
   sliceId?: string;
 }
@@ -62,6 +64,8 @@ export interface ContinuationRequest {
   interactionProgress?: { count: number; target?: number };
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
+  /** 舞台警告（一次性）：随本请求注入用户 prompt 后清空。 */
+  stageWarnings?: readonly string[];
 }
 
 export interface BranchPrefetchRequest {
@@ -74,6 +78,8 @@ export interface BranchPrefetchRequest {
   brief?: NarrativeBrief;
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
+  /** 舞台警告（一次性）：随本请求注入用户 prompt 后清空。 */
+  stageWarnings?: readonly string[];
 }
 
 export interface InputResponseRequest {
@@ -86,6 +92,8 @@ export interface InputResponseRequest {
   brief?: NarrativeBrief;
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
+  /** 舞台警告（一次性）：随本请求注入用户 prompt 后清空。 */
+  stageWarnings?: readonly string[];
 }
 
 export interface InputBridgeRequest {
@@ -96,6 +104,8 @@ export interface InputBridgeRequest {
   brief?: NarrativeBrief;
   /** DSL 模式：模型继续前的舞台尾部视觉状态（docs §70）。 */
   tailVisualState?: VisualState;
+  /** 舞台警告（一次性）：随本请求注入用户 prompt 后清空。 */
+  stageWarnings?: readonly string[];
 }
 
 export interface GenerationHandle {

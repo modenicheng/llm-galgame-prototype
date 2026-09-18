@@ -971,3 +971,73 @@ describe("compileEventGroup — redundant stage-cue guard (REDUNDANT_STAGE_CUE)"
     expect(diagnostics).toEqual([]);
   });
 });
+
+describe("compileEventGroup — hidden speaker auto-show (HIDDEN_SPEAKER_AUTO_SHOW)", () => {
+  /** 先首触登台，再用 hide 置为隐藏——得到"在册但不可见"的尾部状态。 */
+  function hiddenSuyaoCtx() {
+    const ctx = makeCtx();
+    const first = compileEventGroup(dialogue("苏遥", "A"), ctx);
+    const tailState = ctx.reduce(first.tailState, [
+      { type: "character_patch", character: "suyao", visible: { op: "set", value: false } },
+    ] as StageCue[]);
+    return { ctx: { ...ctx, tailState }, tailState };
+  }
+
+  it("auto-shows a hidden speaker on a plain dialogue line and emits the diagnostic", () => {
+    const { ctx, tailState } = hiddenSuyaoCtx();
+    const diagnostics: AssetDiagnostic[] = [];
+    const { group, tailState: next } = compileEventGroup(dialogue("苏遥", "我还在。"), {
+      ...ctx,
+      diagnostics,
+    });
+
+    expect(tailState.characters["suyao"]!.visible).toBe(false);
+    expect(group.prelude).toEqual([
+      { type: "character_patch", character: "suyao", visible: { op: "set", value: true } },
+    ]);
+    expect(next.characters["suyao"]!.visible).toBe(true);
+    // 其余字段原样保留（hide 不清状态）。
+    expect(next.characters["suyao"]!.variant).toBe("normal");
+    expect(diagnostics).toEqual([{ code: "HIDDEN_SPEAKER_AUTO_SHOW", id: "suyao" }]);
+  });
+
+  it("auto-shows alongside a partial [variant] spec", () => {
+    const { ctx } = hiddenSuyaoCtx();
+    const diagnostics: AssetDiagnostic[] = [];
+    const { group, tailState: next } = compileEventGroup(
+      dialogueWith("苏遥", "等等。", { visual: { hasVisual: true, variant: "anxious" } }),
+      { ...ctx, diagnostics },
+    );
+
+    expect(group.prelude).toEqual([
+      {
+        type: "character_patch",
+        character: "suyao",
+        variant: { op: "set", value: "anxious" },
+        visible: { op: "set", value: true },
+      },
+    ]);
+    expect(next.characters["suyao"]!.visible).toBe(true);
+    expect(diagnostics).toEqual([{ code: "HIDDEN_SPEAKER_AUTO_SHOW", id: "suyao" }]);
+  });
+
+  it("does not emit the diagnostic for a deliberate [] reset", () => {
+    const { ctx } = hiddenSuyaoCtx();
+    const diagnostics: AssetDiagnostic[] = [];
+    const { tailState: next } = compileEventGroup(
+      dialogueWith("苏遥", "抱歉，失态了。", { visual: { hasVisual: true, resetVisual: true } }),
+      { ...ctx, diagnostics },
+    );
+
+    expect(next.characters["suyao"]!.visible).toBe(true);
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("does not emit the diagnostic when the speaker is visible", () => {
+    const ctx = makeCtx();
+    const diagnostics: AssetDiagnostic[] = [];
+    compileEventGroup(dialogue("苏遥", "B"), { ...ctx, diagnostics });
+
+    expect(diagnostics).toEqual([]);
+  });
+});

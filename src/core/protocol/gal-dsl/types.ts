@@ -294,7 +294,9 @@ export type AssetDiagnosticCode =
   | "UNKNOWN_SPRITE_VARIANT"
   | "FORBIDDEN_SPRITE_SET"
   | "FORBIDDEN_DISPLAY_NAME"
-  | "REDUNDANT_STAGE_CUE";
+  | "REDUNDANT_STAGE_CUE"
+  /** 隐形说话兜底：隐藏角色开口，编译器已自动置 visible 登台（§19 顶替照常）。 */
+  | "HIDDEN_SPEAKER_AUTO_SHOW";
 
 /**
  * One dropped-cue diagnostic: which asset kind was unknown and the id

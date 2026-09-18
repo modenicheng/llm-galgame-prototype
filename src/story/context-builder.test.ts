@@ -435,3 +435,49 @@ describe("prompt segments (audit view)", () => {
     ]);
   });
 });
+
+describe("stage warnings section (一次性舞台异常注入)", () => {
+  function baseCtx(): DslContextInput {
+    return {
+      prompts: makePrompts(),
+      state: makeRichState(),
+      recentEvents: [],
+      taskType: "continuation",
+      generationNonce: "d41f",
+      targetLines: 8,
+      tailVisualState: {
+        characters: {
+          suyao: {
+            displayName: "苏遥",
+            spriteSet: "suyao",
+            variant: "normal",
+            position: "left",
+            visible: true,
+          },
+        },
+      },
+    };
+  }
+
+  it("emits a stage-warning section right after the visual state when warnings exist", () => {
+    const segments = buildDslUserPromptSegments(7, {
+      ...baseCtx(),
+      stageWarnings: ["角色 苏遥（suyao）在隐藏状态（不在台上）时说了台词，系统已自动让其登台。"],
+    });
+
+    const sources = segments.map((segment) => segment.source);
+    expect(sources).toContain("runtime/stage-warning");
+    expect(sources.indexOf("runtime/stage-warning")).toBe(
+      sources.indexOf("presentation/visual-state") + 1,
+    );
+    const warning = segments.find((segment) => segment.source === "runtime/stage-warning")!;
+    expect(warning.label).toBe("舞台警告");
+    expect(warning.text).toContain("苏遥（suyao）");
+    expect(warning.text).toContain("@ch <内部id> show / exit");
+  });
+
+  it("emits no stage-warning section without warnings", () => {
+    const segments = buildDslUserPromptSegments(7, baseCtx());
+    expect(segments.map((segment) => segment.source)).not.toContain("runtime/stage-warning");
+  });
+});

@@ -344,6 +344,11 @@ export interface GenerationStreamOptions {
    */
   tailVisualState?: VisualState;
   /**
+   * 舞台警告（一次性）：注入本请求用户 prompt 后即清空。内容由游戏层
+   * 在编译期产生（如隐藏角色说话被自动登台），提醒模型核对舞台状态。
+   */
+  stageWarnings?: readonly string[];
+  /**
    * Per-turn narrative director brief injected as a director note section
    * in the user prompt (docs narrative-director §Task-10).
    */
@@ -459,6 +464,9 @@ export class StoryGenerator {
     };
     if (options?.tailVisualState) {
       ctx.tailVisualState = options.tailVisualState;
+    }
+    if (options?.stageWarnings !== undefined && options.stageWarnings.length > 0) {
+      ctx.stageWarnings = options.stageWarnings;
     }
     if (options?.brief) {
       ctx.directorBrief = options.brief;
@@ -1685,6 +1693,9 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         ...(request.tailVisualState
           ? { tailVisualState: request.tailVisualState }
           : {}),
+        ...(request.stageWarnings !== undefined && request.stageWarnings.length > 0
+          ? { stageWarnings: request.stageWarnings }
+          : {}),
         ...(request.sliceId ? { sliceId: request.sliceId } : {}),
       }),
     );
@@ -1703,6 +1714,9 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
           ...(request.brief ? { brief: request.brief } : {}),
           ...(request.tailVisualState
             ? { tailVisualState: request.tailVisualState }
+            : {}),
+          ...(request.stageWarnings !== undefined && request.stageWarnings.length > 0
+            ? { stageWarnings: request.stageWarnings }
             : {}),
           ...(request.repairReason
             ? { repairReason: request.repairReason }
@@ -1742,6 +1756,9 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
           ...(request.tailVisualState
             ? { tailVisualState: request.tailVisualState }
             : {}),
+          ...(request.stageWarnings !== undefined && request.stageWarnings.length > 0
+            ? { stageWarnings: request.stageWarnings }
+            : {}),
         },
       ),
     );
@@ -1762,6 +1779,9 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
           ...(request.tailVisualState
             ? { tailVisualState: request.tailVisualState }
             : {}),
+          ...(request.stageWarnings !== undefined && request.stageWarnings.length > 0
+            ? { stageWarnings: request.stageWarnings }
+            : {}),
         },
       ),
     );
@@ -1781,6 +1801,9 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
             ...(request.brief ? { brief: request.brief } : {}),
             ...(request.tailVisualState
               ? { tailVisualState: request.tailVisualState }
+              : {}),
+            ...(request.stageWarnings !== undefined && request.stageWarnings.length > 0
+              ? { stageWarnings: request.stageWarnings }
               : {}),
           },
         ),
