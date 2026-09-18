@@ -300,7 +300,7 @@ describe("PerformanceCompilerImpl — 导演指导合并", () => {
     const longBase = "青".repeat(40); // 80 weighted
     const result = compile({
       baseDescription: longBase,
-      direction: { delivery: "firm", note: "这句要狠一点" }, // 80 + 12 + 24 = 116 > 100
+      direction: { delivery: "firm", note: "这句要狠一点" }, // 80 + 10 + 12 = 102 > 100
     });
     // note 让位，语气段保留（二者合计 96 ≤ 100）。
     expect(result.instruction).toBe(`${longBase}语气：坚定。`);

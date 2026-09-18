@@ -27,7 +27,7 @@
 |---|---|---|---|---|
 | **身份** | 嗓子是谁的（克隆注册表键 / voice-id + model） | 作者/部署侧 | 部署期 | `voices.yaml` providers + （V3）per-game voice-bindings |
 | **画像** | 声学画像 + 表达调色板 + 表演先验 | **编剧**（authoring） | 世界创建期，随世界持久化 | （新）`games/<id>/world/voice-design.json`，author voices.yaml 为预置世界的权威 |
-| **指导** | 此刻怎么演（delivery/pace/volume/自由提示） | **导演**（runtime） | 会话内逐场景，不入图契约 | SceneDirective 扩展段（会话内存） |
+| **指导** | 此刻怎么演（delivery/pace/volume/自由提示） | **导演**（runtime） | runtime 内逐场景，不入图契约 | SceneDirective 扩展段（runtime 内存，跨 restart 延续） |
 
 演员层**不变**：DSL 协议冻结不动；台词头 `[anxious]`（§14.3）仍是逐行
 表演意图的唯一模型侧通道。
@@ -153,7 +153,9 @@ undefined 的现状路径），V3 解决。
 
 ### 4.2 导演指导进编译器（V1 核心）
 
-导演按会话构建（`buildGameFor`），audio 栈按 runtime 构建——引入桥：
+导演与 audio 栈均按 runtime 生命周期构建（DirectorService 的 directive
+缓存跨 restart 随世界延续——与 formModes 既有语义一致），换绑只发生在
+桥上：
 
 ```ts
 // src/application/audio/voice-direction-hub.ts（新，~20 行）
@@ -195,7 +197,7 @@ export class VoiceDirectionHub {
 - **失败降级**：导演 JSON 缺 voice 段 = 无指导（现状）；compiler 永不抛
   （§14.5 不变）；voice-design.json 损坏 = 大声报错（世界资产损坏语义）。
 - **单一真源**：voices.yaml 不被运行时改写；动态画像只存在于世界存储；
-  导演指导只在会话内存。
+  导演指导在 runtime 内存（directive 缓存跨 restart 随世界延续，与 formModes 既有语义一致）。
 - **防火墙**：演员可见面 = briefing（画像的嗓音行经 characters.txt 进
   system prompt，属设计描述非剧透）；outline 全量/结局候选不因本次扩展
   进入演员可见面。

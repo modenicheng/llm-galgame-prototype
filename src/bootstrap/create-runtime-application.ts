@@ -47,6 +47,7 @@ import type { VoiceDirectionTarget } from "../application/audio/performance-comp
 import {
   DASHSCOPE_VOICE_FALLBACK_ENV,
   mergeVoiceDesignViews,
+  type VoiceDesignViews,
 } from "../application/audio/voice-design-views.js";
 import { VoiceDesignStore } from "../adapters/storage/voice-design-store.js";
 import { AudioIntentPlanner } from "../application/audio/audio-intent-planner.js";
@@ -205,6 +206,57 @@ function buildAudioStack(
 }
 
 /**
+ * V2（角色音频特征设计 §4.1）：世界创建期落盘的编剧画像 → factory/导演
+ * 共用的合并视图（缺失/无画像角色 = 与 author 视图等价）。文件损坏大声
+ * 抛错（世界资产损坏语义）。
+ */
+async function buildVoiceViews(input: {
+  gamesRoot: string;
+  gameId: string;
+  config: AppConfig;
+  voices: Awaited<ReturnType<typeof loadVoices>>;
+}): Promise<VoiceDesignViews> {
+  const designFile = await new VoiceDesignStore(input.gamesRoot, input.gameId).load();
+  const synthesisProvider = input.config.media.audio.synthesis?.provider;
+  const provider =
+    synthesisProvider === "dashscope" || synthesisProvider === "local"
+      ? synthesisProvider
+      : "mock";
+  return mergeVoiceDesignViews({
+    authorCharacters: input.config.characters,
+    authorVoices: input.voices,
+    designFile,
+    provider,
+    dashscopeModelProfile: input.config.media.audio.synthesis?.model_profile ?? "cosyvoice_v3_flash",
+    fallbackVoiceId: (process.env[DASHSCOPE_VOICE_FALLBACK_ENV] ?? "").trim(),
+  });
+}
+
+/**
+ * 导演音频调色板查询（角色音频特征设计 §3.2）：author semantic ⊕ 设计
+ * 画像，Set 去重保序（注入角色的合成 profile 已含 design 交付，并集去重
+ * 后与混合场景共用一条路径）。
+ */
+function buildSpeakerPalette(
+  views: VoiceDesignViews,
+): (characterId: string) => SpeakerVoicePalette | undefined {
+  return (characterId) => {
+    const entry = views.characters[characterId];
+    const profile =
+      entry !== undefined ? views.voices.profiles[entry.voice_profile] : undefined;
+    const design = views.designs[characterId];
+    const allowedDelivery = [
+      ...new Set([...(profile?.semantic.allowed_delivery ?? []), ...(design?.delivery ?? [])]),
+    ];
+    const forbiddenDelivery = [
+      ...new Set([...(profile?.semantic.forbidden_delivery ?? []), ...(design?.avoid ?? [])]),
+    ];
+    if (allowedDelivery.length === 0 && forbiddenDelivery.length === 0) return undefined;
+    return { allowedDelivery, forbiddenDelivery };
+  };
+}
+
+/**
  * v2 剧情图协调器（§9）：confluence.enabled 时给协调器挂 LLM 判定员（后台
  * 比较，不阻塞播放）；判定失败只告警，运行时不受影响。confluence 段容忍
  * 手拼 config 的缺省（options.config 可绕过 zod 默认值填充）。
@@ -329,22 +381,8 @@ export async function createRuntimeApplication(
   // options.gameId 固定世界（「继续游戏」指向同一目录）；缺省每次启动
   // 生成新世界。
   const gameId = options.gameId ?? `game_${new Date().toISOString().replace(/[:.]/g, "-")}`;
-  // V2（角色音频特征设计 §4.1）：世界创建期落盘的编剧画像 → 动态角色
-  // 注入视图（缺失/无画像角色 = 与 author 视图等价）。文件损坏大声抛错。
-  const designFile = await new VoiceDesignStore(gamesRoot, gameId).load();
-  const synthesisProvider = config.media.audio.synthesis?.provider;
-  const factoryProvider =
-    synthesisProvider === "dashscope" || synthesisProvider === "local"
-      ? synthesisProvider
-      : "mock";
-  const voiceViews = mergeVoiceDesignViews({
-    authorCharacters: config.characters,
-    authorVoices: voices,
-    designFile,
-    provider: factoryProvider,
-    dashscopeModelProfile: config.media.audio.synthesis?.model_profile ?? "cosyvoice_v3_flash",
-    fallbackVoiceId: (process.env[DASHSCOPE_VOICE_FALLBACK_ENV] ?? "").trim(),
-  });
+  // V2（角色音频特征设计 §4.1）：编剧画像 → 动态角色注入视图。
+  const voiceViews = await buildVoiceViews({ gamesRoot, gameId, config, voices });
   // 导演声音指导桥（角色音频特征设计 §4.2）：hub 先于会话存在，
   // buildGameFor 建完 game 后重绑 source。
   const voiceDirectionHub = new VoiceDirectionHub();
@@ -380,23 +418,7 @@ export async function createRuntimeApplication(
     confluenceEnabled,
     outline,
     canon: canonStore,
-    // V1/V2：author semantic ⊕ per-game 设计调色板进导演输入（合并视图）。
-    speakerPalette: (characterId) => {
-      const entry = voiceViews.characters[characterId];
-      const profile =
-        entry !== undefined ? voiceViews.voices.profiles[entry.voice_profile] : undefined;
-      const design = voiceViews.designs[characterId];
-      const allowedDelivery = [
-        ...(profile?.semantic.allowed_delivery ?? []),
-        ...(design?.delivery ?? []),
-      ];
-      const forbiddenDelivery = [
-        ...(profile?.semantic.forbidden_delivery ?? []),
-        ...(design?.avoid ?? []),
-      ];
-      if (allowedDelivery.length === 0 && forbiddenDelivery.length === 0) return undefined;
-      return { allowedDelivery, forbiddenDelivery };
-    },
+    speakerPalette: buildSpeakerPalette(voiceViews),
   });
   const graphCoordinator = buildGraphCoordinator(
     gamesRoot,

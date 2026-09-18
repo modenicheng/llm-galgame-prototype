@@ -12,7 +12,14 @@ import type { MemoryDigest } from "../../core/graph/types.js";
 import type { CanonSnapshot } from "../../core/ports/canon-store-port.js";
 import type { RunReview } from "../../core/ports/review-store-port.js";
 import type { OutlineOp } from "../../core/ports/outline-store-port.js";
-import type { VoicePerformanceBaseline } from "../audio/performance-compiler.js";
+import {
+  DELIVERY_TAGS,
+  ENERGY_VALUES,
+  PACE_VALUES,
+  VOLUME_VALUES,
+  type VoicePerformanceBaseline,
+} from "../audio/performance-compiler.js";
+import { z } from "zod";
 
 /**
  * 角色音频画像（角色音频特征设计 §3.1，编剧产出）：描述性词汇，不涉
@@ -29,6 +36,28 @@ export interface CharacterVoiceDesign {
   /** 表演基线档位（低于演员逐行意图与导演指导）。 */
   baseline?: VoicePerformanceBaseline;
 }
+
+/**
+ * 画像的唯一 zod 真源：编剧 LLM 输出校验（outline-writer-adapter）与
+ * voice-design.json 落盘校验（voice-design-store）共用；词表从
+ * performance-compiler 的运行时常量派生，防手抄漂移。
+ */
+export const CharacterVoiceDesignSchema = z
+  .object({
+    timbre: z.string().min(1).max(120),
+    delivery: z.array(z.enum(DELIVERY_TAGS)).min(1).max(8),
+    avoid: z.exactOptional(z.array(z.enum(DELIVERY_TAGS)).max(8)),
+    baseline: z.exactOptional(
+      z
+        .object({
+          pace: z.exactOptional(z.enum(PACE_VALUES)),
+          energy: z.exactOptional(z.enum(ENERGY_VALUES)),
+          volume: z.exactOptional(z.enum(VOLUME_VALUES)),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
 /** 角色卡（M3.3 渲染进 per-game characters.txt；spriteBinding 可缺省）。 */
 export interface DraftCharacter {

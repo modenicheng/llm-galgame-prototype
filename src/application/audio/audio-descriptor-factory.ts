@@ -101,8 +101,10 @@ export class AudioDescriptorFactory {
 
     const binding = this.resolveBinding(character.voiceProfile, character.speakerId);
     const voiceId = resolveVoiceId(binding, this.options.env) ?? "";
-    const direction = this.options.voiceDirectionFor?.(character.speakerId);
-    const design = this.options.voiceDesigns?.[character.speakerId];
+    // 指导/画像按 characters 命中键查（byName 回退时 speakerId 是显示名，
+    // 查表键须用注册键，否则指导静默失效）。
+    const direction = this.options.voiceDirectionFor?.(character.registryKey);
+    const design = this.options.voiceDesigns?.[character.registryKey];
     const compiled = this.options.compiler.compile({
       baseDescription: profile.semantic.base_description,
       allowedDelivery:
@@ -168,21 +170,24 @@ export class AudioDescriptorFactory {
 
   private resolveCharacter(
     event: RuntimePlayableEvent,
-  ): { voiceProfile: string; speakerId: string; displayName: string } | null {
+  ): { registryKey: string; voiceProfile: string; speakerId: string; displayName: string } | null {
     // Narration has no voice by design — only character lines are synthesized.
     if (event.type === "narration") return null;
     // Character identity comes from `characterId` when present (docs
     // llm-outputs-refactor.md §10/§67); legacy events fall back to the
     // display-name keyed mapping.
     const characterId = (event as { characterId?: string }).characterId;
-    const byId = characterId ? this.options.characters[characterId] : undefined;
+    const byId = characterId !== undefined ? this.options.characters[characterId] : undefined;
     const bySpeaker = this.options.characters[event.speaker];
-    const byName = Object.values(this.options.characters).find(
-      (c) => c.name === event.speaker,
+    const byNameEntry = Object.entries(this.options.characters).find(
+      ([, c]) => c.name === event.speaker,
     );
-    const character = byId ?? bySpeaker ?? byName;
+    const character = byId ?? bySpeaker ?? byNameEntry?.[1];
     if (!character) return null;
+    const registryKey =
+      byId !== undefined ? (characterId as string) : bySpeaker !== undefined ? event.speaker : (byNameEntry?.[0] as string);
     return {
+      registryKey,
       voiceProfile: character.voice_profile,
       speakerId: characterId ?? event.speaker,
       displayName: character.name,

@@ -30,11 +30,7 @@ import {
   ENERGY_VALUES,
   PACE_VALUES,
   VOLUME_VALUES,
-  type DeliveryTag,
-  type Energy,
-  type Pace,
   type VoiceDirectionTarget,
-  type VolumeLevel,
 } from "../audio/performance-compiler.js";
 import { serializeStoryContext } from "../../story/context-builder.js";
 
@@ -65,6 +61,7 @@ export interface SceneDirective {
   voice?: Record<string, VoiceDirectionTarget>;
 }
 
+// 词表段从 performance-compiler 运行时常量拼接（单一真源，防手抄漂移）。
 const DIRECTIVE_SYSTEM_PROMPT =
   "你是 GalGame 导演。输入场景信息与既有记忆，输出本场景的演出指令 JSON：" +
   '{sceneGoal, defenseBeats:[string], endingPressure:boolean, voice?}。' +
@@ -72,8 +69,11 @@ const DIRECTIVE_SYSTEM_PROMPT =
   "endingPressure 仅在剧情明显接近终章时为 true。" +
   "voice 是可选的角色音频指导，仅当场景状态要求声音变化时给出，形如 " +
   '{"角色id":{"delivery":"breathless","volume":"whisper","note":"夜谈压低声音"}}；' +
-  "delivery 只能取 restrained/hesitant/firm/gentle/cold/playful/breathless/tearful 之一，" +
-  "volume 只能取 whisper/soft/normal/loud，note ≤40 字。只给指令，不写台词。";
+  `delivery 只能取 ${DELIVERY_TAGS.join("/")} 之一，` +
+  `volume 只能取 ${VOLUME_VALUES.join("/")}，` +
+  `pace 只能取 ${PACE_VALUES.join("/")}，` +
+  `energy 只能取 ${ENERGY_VALUES.join("/")}，` +
+  "note ≤40 字。只给指令，不写台词。";
 
 interface DirectorServiceOptions {
   runner: AgentRunnerPort;
@@ -517,6 +517,13 @@ export class DirectorService {
   }
 }
 
+/** 枚举字段校验：字符串命中词表则收窄返回，否则 undefined（丢弃该字段）。 */
+function pickEnum<T extends string>(value: unknown, values: readonly T[]): T | undefined {
+  return typeof value === "string" && (values as readonly string[]).includes(value)
+    ? (value as T)
+    : undefined;
+}
+
 /**
  * voice 段解析（角色音频特征设计 §3.2）：逐条目校验词表（越界字段丢弃）、
  * note 截 40 字；空目标/空表 → undefined。确定性——相同输入相同输出。
@@ -530,18 +537,14 @@ function parseVoiceDirections(
     if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
     const v = value as Record<string, unknown>;
     const target: VoiceDirectionTarget = {};
-    if (typeof v.delivery === "string" && (DELIVERY_TAGS as readonly string[]).includes(v.delivery)) {
-      target.delivery = v.delivery as DeliveryTag;
-    }
-    if (typeof v.pace === "string" && (PACE_VALUES as readonly string[]).includes(v.pace)) {
-      target.pace = v.pace as Pace;
-    }
-    if (typeof v.energy === "string" && (ENERGY_VALUES as readonly string[]).includes(v.energy)) {
-      target.energy = v.energy as Energy;
-    }
-    if (typeof v.volume === "string" && (VOLUME_VALUES as readonly string[]).includes(v.volume)) {
-      target.volume = v.volume as VolumeLevel;
-    }
+    const delivery = pickEnum(v.delivery, DELIVERY_TAGS);
+    if (delivery !== undefined) target.delivery = delivery;
+    const pace = pickEnum(v.pace, PACE_VALUES);
+    if (pace !== undefined) target.pace = pace;
+    const energy = pickEnum(v.energy, ENERGY_VALUES);
+    if (energy !== undefined) target.energy = energy;
+    const volume = pickEnum(v.volume, VOLUME_VALUES);
+    if (volume !== undefined) target.volume = volume;
     if (typeof v.note === "string") {
       const note = v.note.trim().slice(0, 40);
       if (note !== "") target.note = note;

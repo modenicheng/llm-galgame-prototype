@@ -8,6 +8,7 @@ import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { CharacterVoiceDesign } from "../../application/outline/outline-writer.js";
+import { CharacterVoiceDesignSchema } from "../../application/outline/outline-writer.js";
 
 /** per-game 音频画像文件（world/ 下的非冻结布局，随 world/prompts 先例）。 */
 export const VOICE_DESIGN_FILE = "world/voice-design.json";
@@ -23,21 +24,8 @@ export interface VoiceDesignFile {
   characters: Record<string, StoredVoiceDesign>;
 }
 
-const CharacterVoiceDesignSchema = z
-  .object({
-    timbre: z.string().min(1).max(120),
-    delivery: z.array(z.string().min(1).max(24)).min(1).max(8),
-    avoid: z.array(z.string().min(1).max(24)).max(8),
-    baseline: z
-      .object({
-        pace: z.exactOptional(z.enum(["very_slow", "slow", "normal", "fast", "very_fast"])),
-        energy: z.exactOptional(z.enum(["very_low", "low", "normal", "high", "very_high"])),
-        volume: z.exactOptional(z.enum(["whisper", "soft", "normal", "loud"])),
-      })
-      .strict(),
-  })
-  .strict();
-
+// voice 字段的 schema 唯一真源在 outline-writer.ts（与编剧 LLM 输出校验共用，
+// 防 save 侧合法形状被 load 侧更严 schema 拒收的漂移）。
 const VoiceDesignFileSchema = z
   .object({
     version: z.literal(1),

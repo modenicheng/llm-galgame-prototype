@@ -40,7 +40,10 @@ vi.mock("../adapters/tts/dashscope-cosyvoice-provider.js", () => ({
     }
   },
 }));
-vi.mock("../application/audio/performance-compiler.js", () => ({
+vi.mock("../application/audio/performance-compiler.js", async (importOriginal) => ({
+  // 词汇表常量被 outline-writer/director-service 的模块级 schema/prompt 引用，
+  // 必须保留真值；仅编译器实现换成确定性桩。
+  ...(await importOriginal()),
   PerformanceCompilerImpl: class {
     compile() {
       return { rate: 1, pitch: 1, volume: 1, pauseBeforeMs: 0, pauseAfterMs: 0 };
