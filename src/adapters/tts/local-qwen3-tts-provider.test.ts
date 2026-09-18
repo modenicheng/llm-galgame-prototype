@@ -39,7 +39,7 @@ function pcmResponse(chunks: number[][]): Response {
 }
 
 describe("LocalQwen3TtsProvider", () => {
-  it("posts {text, voice} and streams PCM chunks with 24 kHz metadata", async () => {
+  it("defaults to the openai dialect: posts /v1/audio/speech and streams PCM", async () => {
     const seen: Array<{ url: string; body: unknown }> = [];
     const provider = new LocalQwen3TtsProvider({
       fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
@@ -48,8 +48,14 @@ describe("LocalQwen3TtsProvider", () => {
       }) as typeof fetch,
     });
     const session = await provider.start(makeRequest(), new AbortController().signal);
-    expect(seen[0]?.url).toBe(`${LOCAL_TTS_DEFAULT_BASE_URL}/tts`);
-    expect(seen[0]?.body).toEqual({ text: "欢迎来到展位！", voice: "paimeng" });
+    expect(seen[0]?.url).toBe(`${LOCAL_TTS_DEFAULT_BASE_URL}/v1/audio/speech`);
+    expect(seen[0]?.body).toEqual({
+      model: "local-qwen3-tts",
+      input: "欢迎来到展位！",
+      voice: "paimeng",
+      response_format: "pcm",
+    });
+    // openai dialect sends no X-Audio-* headers — falls back to the request rate
     expect(session.metadata.sampleRate).toBe(24000);
     expect(session.metadata.encoding).toBe("pcm_s16le");
     let total = 0;
@@ -58,6 +64,23 @@ describe("LocalQwen3TtsProvider", () => {
     const completion = await session.completion;
     expect(completion.totalBytes).toBe(6);
     expect(completion.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("dialect tts-server posts {text, voice} to /tts with header metadata", async () => {
+    const seen: Array<{ url: string; body: unknown }> = [];
+    const provider = new LocalQwen3TtsProvider({
+      dialect: "tts-server",
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        seen.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+        return pcmResponse([[9, 9]]);
+      }) as typeof fetch,
+    });
+    const session = await provider.start(makeRequest(), new AbortController().signal);
+    expect(seen[0]?.url).toBe(`${LOCAL_TTS_DEFAULT_BASE_URL}/tts`);
+    expect(seen[0]?.body).toEqual({ text: "欢迎来到展位！", voice: "paimeng" });
+    expect(session.metadata.sampleRate).toBe(24000); // from X-Audio-Sample-Rate
+    for await (const _ of session.chunks); // drain
+    expect((await session.completion).totalBytes).toBe(2);
   });
 
   it("rejects with http_<status> when the server errors (unknown voice -> 404)", async () => {

@@ -187,6 +187,9 @@ export async function createRuntimeApplication(
       ...(process.env.LOCAL_TTS_BASE_URL !== undefined
         ? { baseUrl: process.env.LOCAL_TTS_BASE_URL }
         : {}),
+      ...(process.env.LOCAL_TTS_DIALECT === "tts-server"
+        ? { dialect: "tts-server" as const }
+        : {}),
       timeoutMs: config.api.timeout_ms,
     });
   } else if (synthesis?.provider === "mock") {

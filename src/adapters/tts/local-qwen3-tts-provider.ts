@@ -1,15 +1,15 @@
 /**
- * LocalQwen3TtsProvider — streaming synthesis against the local tts-server
- * (tts-server/server.py, Qwen3-TTS-12Hz-1.7B-Base on this machine's GPU).
+ * LocalQwen3TtsProvider — streaming synthesis against a local inference
+ * server, implements `TtsProviderPort`.
  *
- * Implements `TtsProviderPort`. POST {text, voice} → chunked
- * application/octet-stream of s16le 24 kHz mono PCM; chunks are forwarded
- * as they arrive. Client abort destroys the fetch body, which the server
- * treats as a cancel (the request drops out before its next sentence wave).
+ * Default dialect "openai" targets qwentts.cpp's tts-server (C++/GGML,
+ * D:\tmp\qwentts.cpp): POST /v1/audio/speech → chunked s16le 24 kHz mono
+ * PCM streamed frame-by-frame; client abort destroys the fetch body which
+ * the server treats as a cancel. Dialect "tts-server" targets the Python
+ * fallback engine (tts-server/server.py, POST /tts + X-Audio-* headers).
  *
- * The local stack ignores rate/pitch/volume/seed (clone path has no such
- * controls) and takes no per-request instructions — mirrors the DashScope
- * qwen3-tts-vc semantics.
+ * Neither engine takes rate/pitch/volume/seed or per-request instructions
+ * on the clone path — mirrors the DashScope qwen3-tts-vc semantics.
  *
  * Session semantics (same contract as the DashScope provider):
  *  - `completion` resolves with `{ totalBytes, durationMs }` on normal end
@@ -26,7 +26,7 @@ import type {
 } from "../../core/ports/tts-provider-port.js";
 import { ttsLog } from "../../application/audio/tts-log.js";
 
-export const LOCAL_TTS_DEFAULT_BASE_URL = "http://127.0.0.1:9765";
+export const LOCAL_TTS_DEFAULT_BASE_URL = "http://127.0.0.1:9766";
 export const LOCAL_TTS_DEFAULT_TIMEOUT_MS = 120_000;
 
 export class TtsProviderError extends Error {
@@ -41,6 +41,14 @@ export class TtsProviderError extends Error {
 
 export interface LocalQwen3TtsProviderOptions {
   baseUrl?: string;
+  /**
+   * Wire dialect of the local server:
+   *  - "openai" (default): qwentts.cpp tts-server — POST /v1/audio/speech
+   *    {model, input, voice, response_format:"pcm"}, chunked s16le 24 kHz.
+   *  - "tts-server": the Python tts-server/server.py — POST /tts
+   *    {text, voice} with X-Audio-* metadata headers.
+   */
+  dialect?: "openai" | "tts-server";
   /** First-chunk deadline in ms. Default 120000. */
   timeoutMs?: number;
   /** Injectable fetch for tests. Defaults to the global fetch. */
@@ -49,11 +57,13 @@ export interface LocalQwen3TtsProviderOptions {
 
 export class LocalQwen3TtsProvider implements TtsProviderPort {
   private readonly baseUrl: string;
+  private readonly dialect: "openai" | "tts-server";
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: LocalQwen3TtsProviderOptions = {}) {
     this.baseUrl = (options.baseUrl ?? LOCAL_TTS_DEFAULT_BASE_URL).replace(/\/$/, "");
+    this.dialect = options.dialect ?? "openai";
     this.timeoutMs = options.timeoutMs ?? LOCAL_TTS_DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
@@ -69,12 +79,28 @@ export class LocalQwen3TtsProvider implements TtsProviderPort {
     }
     signal.addEventListener("abort", onUpstreamAbort, { once: true });
 
+    const [url, body] =
+      this.dialect === "openai"
+        ? [
+            `${this.baseUrl}/v1/audio/speech`,
+            JSON.stringify({
+              model: request.model,
+              input: request.text,
+              voice: request.voiceId,
+              response_format: "pcm",
+            }),
+          ]
+        : [
+            `${this.baseUrl}/tts`,
+            JSON.stringify({ text: request.text, voice: request.voiceId }),
+          ];
+
     let response: Response;
     try {
-      response = await this.fetchImpl(`${this.baseUrl}/tts`, {
+      response = await this.fetchImpl(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: request.text, voice: request.voiceId }),
+        body,
         signal: controller.signal,
       });
     } catch (error) {
