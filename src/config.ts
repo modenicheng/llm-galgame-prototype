@@ -34,7 +34,8 @@ export interface AudioPlaybackConfig {
 
 /** V2 synthesis provider settings (Node-side only; never serialized to web). */
 export interface AudioSynthesisConfig {
-  provider: "disabled" | "mock" | "dashscope";
+  /** local = on-machine Qwen3-TTS inference server (fixed 24 kHz PCM output). */
+  provider: "disabled" | "mock" | "dashscope" | "local";
   max_concurrency: number;
   model_profile: string;
   api_key_env: string;
@@ -217,7 +218,7 @@ const AudioPlaybackConfigSchema = z
 
 const AudioSynthesisConfigSchema = z
   .object({
-    provider: z.enum(["disabled", "mock", "dashscope"]).default("dashscope"),
+    provider: z.enum(["disabled", "mock", "dashscope", "local"]).default("dashscope"),
     max_concurrency: z.number().int().min(1).max(10).default(2),
     model_profile: z.string().min(1).default("cosyvoice_v3_flash"),
     api_key_env: z.string().min(1).default("DASHSCOPE_API_KEY"),

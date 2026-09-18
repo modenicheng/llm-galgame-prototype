@@ -37,6 +37,7 @@ import type {
   TtsStreamSession,
 } from "../../core/ports/tts-provider-port.js";
 import { ttsLog } from "../../application/audio/tts-log.js";
+import { TtsProviderError } from "./tts-provider-error.js";
 
 export const DASHSCOPE_DEFAULT_BASE_URL =
   "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer";
@@ -54,16 +55,8 @@ export interface DashScopeCosyVoiceProviderOptions {
   decode?: (base64Chunk: string) => Uint8Array;
 }
 
-/** Typed provider failure. `code` is one of `http_<status>`, `first_chunk_timeout`, `sse_parse`. */
-export class TtsProviderError extends Error {
-  readonly code: string;
-
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "TtsProviderError";
-    this.code = code;
-  }
-}
+/** Typed provider failure — shared class, see `tts-provider-error.ts`. */
+export { TtsProviderError };
 
 /**
  * Promise.withResolvers-style deferred. `Promise.withResolvers` itself needs

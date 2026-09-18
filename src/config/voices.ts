@@ -27,10 +27,24 @@ export interface VoiceProviderBinding {
   model: string;
   /** Env var holding the effective voice-id (system / console-cloned / console-designed). */
   voice_id_env: string;
+  /** Local bindings only: registry key in the local tts server (no env indirection). */
+  voice?: string;
   /** Cache invalidation bump. Zod default 1 — always present after parse. */
   voice_revision: number;
   /** Instruction policy. Zod default "free" — always present after parse. */
   instruction_mode: InstructionMode;
+}
+
+/**
+ * Local qwen3-tts binding: `voice` is a registry key in the local inference
+ * server's voice registry (a machine-local asset, not a secret) — no .env
+ * indirection.
+ */
+export interface LocalVoiceProviderBinding {
+  model: "local-qwen3-tts";
+  voice: string;
+  /** Cache invalidation bump (bump after re-building the voice prompt). */
+  voice_revision: number;
 }
 
 /** Semantic section of a profile (fed to the performance compiler). */
@@ -44,6 +58,7 @@ export interface VoiceProfile {
   semantic: VoiceSemantic;
   providers: {
     dashscope?: VoiceProviderBinding;
+    local?: LocalVoiceProviderBinding;
   };
 }
 
@@ -61,6 +76,14 @@ const VoiceProviderBindingSchema = z
   })
   .strict();
 
+const LocalVoiceProviderBindingSchema = z
+  .object({
+    model: z.literal("local-qwen3-tts"),
+    voice: z.string().min(1),
+    voice_revision: z.number().int().nonnegative().default(1),
+  })
+  .strict();
+
 const VoiceProfileSchema = z
   .object({
     semantic: z
@@ -73,6 +96,7 @@ const VoiceProfileSchema = z
     providers: z
       .object({
         dashscope: VoiceProviderBindingSchema.optional(),
+        local: LocalVoiceProviderBindingSchema.optional(),
       })
       .strict(),
   })
@@ -92,25 +116,43 @@ export async function loadVoices(voicesPath = "voices.yaml"): Promise<VoicesConf
   return VoicesConfigSchema.parse(parsed) as VoicesConfig;
 }
 
-/** Resolve a profile binding for the configured provider; undefined if absent. */
+/**
+ * Resolve a profile binding for the configured provider; undefined if absent.
+ * The local binding is normalized into the dashscope shape (voice_id_env left
+ * empty; instruction_mode fixed to "none" — the local clone path takes no
+ * per-request instructions) so downstream consumers stay polymorphic.
+ */
 export function resolveVoiceBinding(
   voices: VoicesConfig,
   profileId: string,
-  provider: "dashscope",
+  provider: "dashscope" | "local",
 ): VoiceProviderBinding | undefined {
-  return voices.profiles[profileId]?.providers[provider];
+  const profile = voices.profiles[profileId];
+  if (profile === undefined) return undefined;
+  if (provider === "local") {
+    const binding = profile.providers.local;
+    if (binding === undefined) return undefined;
+    return {
+      model: binding.model,
+      voice_id_env: "",
+      voice: binding.voice,
+      voice_revision: binding.voice_revision,
+      instruction_mode: "none",
+    };
+  }
+  return profile.providers.dashscope;
 }
 
 /**
- * Resolve the effective voice-id for a binding. All voice ids come from
- * the environment — the author copies the id out of the Bailian console
- * into `.env`. Startup validation (validateDashscopeEnv) guarantees this
- * is set before any synthesis; undefined here is a programming error.
+ * Resolve the effective voice-id for a binding. DashScope ids come from the
+ * environment — the author copies the id out of the Bailian console into
+ * `.env`. Local bindings carry their registry key inline (`voice`).
  */
 export function resolveVoiceId(
   binding: VoiceProviderBinding,
   env: Record<string, string | undefined>,
 ): string | undefined {
+  if (binding.voice !== undefined) return binding.voice;
   return env[binding.voice_id_env];
 }
 
@@ -137,4 +179,31 @@ export function validateDashscopeEnv(
     missing.push("DASHSCOPE_TTS_BASE_URL must be an http(s) URL");
   }
   return missing;
+}
+
+/** Fixed output rate of the local qwen3-tts server (s16le PCM). */
+const LOCAL_QWEN3_TTS_SAMPLE_RATE = 24_000;
+
+/**
+ * Startup validation (local mode only): the local server emits fixed 24 kHz
+ * PCM, so the global synthesis sample rate must match (the browser resamples
+ * from the descriptor rate; a mismatch would skew playback). Voice keys
+ * themselves are validated by the server (404 → provider error).
+ */
+export function validateLocalModelConfig(
+  voices: VoicesConfig,
+  sampleRate: number,
+): string[] {
+  const errors: string[] = [];
+  for (const [profileId, profile] of Object.entries(voices.profiles)) {
+    const binding = profile.providers.local;
+    if (binding === undefined) continue;
+    if (sampleRate !== LOCAL_QWEN3_TTS_SAMPLE_RATE) {
+      errors.push(
+        `profile "${profileId}" uses local-qwen3-tts（固定 ${LOCAL_QWEN3_TTS_SAMPLE_RATE} Hz 输出）` +
+          `，但 synthesis.sample_rate=${sampleRate}；请将 media.audio.synthesis.sample_rate 设为 ${LOCAL_QWEN3_TTS_SAMPLE_RATE}`,
+      );
+    }
+  }
+  return errors;
 }

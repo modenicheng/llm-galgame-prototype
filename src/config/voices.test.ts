@@ -7,6 +7,7 @@ import {
   resolveVoiceBinding,
   resolveVoiceId,
   validateDashscopeEnv,
+  validateLocalModelConfig,
   type VoicesConfig,
 } from "./voices.js";
 
@@ -122,5 +123,108 @@ describe("validateDashscopeEnv", () => {
 
   it("flags an empty base override (absent = undefined, empty = invalid)", () => {
     expect(validateDashscopeEnv({ version: 3, profiles: {} }, { DASHSCOPE_TTS_BASE_URL: "" })).toHaveLength(1);
+  });
+});
+
+function voicesWithLocalBinding(): VoicesConfig {
+  return {
+    version: 3,
+    profiles: {
+      suyao_main: {
+        semantic: { base_description: "", allowed_delivery: [], forbidden_delivery: [] },
+        providers: {
+          local: { model: "local-qwen3-tts", voice: "suyao", voice_revision: 1 },
+          dashscope: { model: "cosyvoice-v3-flash", voice_id_env: "COSYVOICE_VOICE_SUYAO", voice_revision: 1, instruction_mode: "free" },
+        },
+      },
+    },
+  };
+}
+
+describe("local bindings", () => {
+  it("parses a local binding with zod defaults expanded", async () => {
+    const yaml = `version: 3
+profiles:
+  p:
+    semantic: { base_description: x }
+    providers:
+      local: { model: local-qwen3-tts, voice: suyao }
+`;
+    const dir = fixtureDir(yaml);
+    try {
+      const voices = await loadVoices(path.join(dir, "voices.yaml"));
+      expect(voices.profiles.p?.providers.local).toEqual({
+        model: "local-qwen3-tts",
+        voice: "suyao",
+        voice_revision: 1, // default expanded
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a local binding with an unknown model literal", async () => {
+    const yaml = `version: 3
+profiles:
+  p:
+    semantic: { base_description: x }
+    providers:
+      local: { model: local-cosyvoice, voice: suyao }
+`;
+    const dir = fixtureDir(yaml);
+    try {
+      await expect(loadVoices(path.join(dir, "voices.yaml"))).rejects.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveVoiceBinding normalizes a local binding into the dashscope shape", () => {
+    const binding = resolveVoiceBinding(voicesWithLocalBinding(), "suyao_main", "local")!;
+    expect(binding).toEqual({
+      model: "local-qwen3-tts",
+      voice_id_env: "",
+      voice: "suyao",
+      voice_revision: 1,
+      instruction_mode: "none",
+    });
+    // the dashscope view of the same profile is untouched
+    const dashscope = resolveVoiceBinding(voicesWithLocalBinding(), "suyao_main", "dashscope")!;
+    expect(dashscope.model).toBe("cosyvoice-v3-flash");
+    expect(dashscope.voice).toBeUndefined();
+  });
+
+  it("returns undefined for an absent local binding or profile", () => {
+    const voices = voicesWithLocalBinding();
+    expect(resolveVoiceBinding(voices, "nope", "local")).toBeUndefined();
+    expect(resolveVoiceBinding({ version: 3, profiles: { p: { semantic: { base_description: "", allowed_delivery: [], forbidden_delivery: [] }, providers: { dashscope: { model: "m", voice_id_env: "V", voice_revision: 1, instruction_mode: "free" } } } } }, "p", "local")).toBeUndefined();
+  });
+
+  it("resolveVoiceId prefers the inline registry key over the env lookup", () => {
+    const binding = resolveVoiceBinding(voicesWithLocalBinding(), "suyao_main", "local")!;
+    expect(resolveVoiceId(binding, { COSYVOICE_VOICE_SUYAO: "cosyvoice-xxx" })).toBe("suyao");
+  });
+});
+
+describe("validateLocalModelConfig", () => {
+  it("accepts the fixed 24000 Hz output rate and ignores dashscope-only profiles", () => {
+    expect(validateLocalModelConfig(voicesWithLocalBinding(), 24000)).toEqual([]);
+    const dashscopeOnly: VoicesConfig = {
+      version: 3,
+      profiles: {
+        p: {
+          semantic: { base_description: "", allowed_delivery: [], forbidden_delivery: [] },
+          providers: { dashscope: { model: "cosyvoice-v3-flash", voice_id_env: "V", voice_revision: 1, instruction_mode: "free" } },
+        },
+      },
+    };
+    expect(validateLocalModelConfig(dashscopeOnly, 22050)).toEqual([]);
+  });
+
+  it("flags a sample rate mismatch naming the profile and the required rate", () => {
+    const errors = validateLocalModelConfig(voicesWithLocalBinding(), 22050);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("suyao_main");
+    expect(errors[0]).toContain("24000");
   });
 });

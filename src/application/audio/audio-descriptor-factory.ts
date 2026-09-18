@@ -32,7 +32,7 @@ import { ttsLog } from "./tts-log.js";
 export interface AudioDescriptorFactoryOptions {
   characters: Record<string, { name: string; voice_profile: string }>;
   voices: VoicesConfig;
-  provider: "dashscope" | "mock";
+  provider: "dashscope" | "local" | "mock";
   /** Fallback model profile, e.g. "cosyvoice_v3_flash" (used for mock bindings). */
   modelProfile: string;
   sampleRate: number;

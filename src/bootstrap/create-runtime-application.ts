@@ -9,7 +9,7 @@
  */
 import { DEFAULT_NARRATIVE_CONFIG, loadApiKey, loadAuthorConfig, loadConfig } from "../config.js";
 import type { AppConfig } from "../config.js";
-import { loadVoices, validateDashscopeEnv } from "../config/voices.js";
+import { loadVoices, validateDashscopeEnv, validateLocalModelConfig } from "../config/voices.js";
 import { Game } from "../game.js";
 import { GeneratorPortFacade, StoryGenerator } from "../adapters/llm/openai-compatible-generator.js";
 import { GameGraphStore } from "../adapters/storage/game-graph-store.js";
@@ -49,6 +49,7 @@ import {
 import { PerformanceCompilerImpl } from "../application/audio/performance-compiler.js";
 import { MockStreamingTtsProvider } from "../adapters/tts/mock-streaming-tts-provider.js";
 import { DashScopeCosyVoiceProvider } from "../adapters/tts/dashscope-cosyvoice-provider.js";
+import { LocalQwen3TtsProvider } from "../adapters/tts/local-qwen3-tts-provider.js";
 import type { TtsProviderPort } from "../core/ports/tts-provider-port.js";
 import type {
   RuntimeApplication,
@@ -78,10 +79,10 @@ function fnv1a(input: string): number {
 export const DEFAULT_GAMES_ROOT = "games";
 
 /**
- * TTS provider wiring (§7.6): dashscope → real provider, mock → the
- * streaming mock, disabled/absent → null. With null the catalog still
- * receives descriptors but every synthesis request rejects with
- * "audio_disabled".
+ * TTS provider wiring (§7.6): dashscope → real provider, local → the
+ * on-machine Qwen3-TTS server, mock → the streaming mock, disabled/absent
+ * → null. With null the catalog still receives descriptors but every
+ * synthesis request rejects with "audio_disabled".
  */
 function selectTtsProvider(config: AppConfig, voices: Awaited<ReturnType<typeof loadVoices>>): TtsProviderPort | null {
   const synthesis = config.media.audio.synthesis;
@@ -98,6 +99,23 @@ function selectTtsProvider(config: AppConfig, voices: Awaited<ReturnType<typeof 
       apiKey,
       ...(process.env.DASHSCOPE_TTS_BASE_URL !== undefined
         ? { baseUrl: process.env.DASHSCOPE_TTS_BASE_URL }
+        : {}),
+      timeoutMs: config.api.timeout_ms,
+    });
+  }
+  if (synthesis?.provider === "local") {
+    // Local voices.yaml bindings are self-contained (registry keys, no env);
+    // only the fixed 24 kHz output rate needs cross-checking.
+    const modelErrors = validateLocalModelConfig(voices, synthesis.sample_rate);
+    if (modelErrors.length > 0) {
+      throw new Error(`Local TTS model config invalid — ${modelErrors.join("; ")}`);
+    }
+    return new LocalQwen3TtsProvider({
+      ...(process.env.LOCAL_TTS_BASE_URL !== undefined
+        ? { baseUrl: process.env.LOCAL_TTS_BASE_URL }
+        : {}),
+      ...(process.env.LOCAL_TTS_DIALECT === "tts-server"
+        ? { dialect: "tts-server" as const }
         : {}),
       timeoutMs: config.api.timeout_ms,
     });
@@ -130,7 +148,10 @@ function buildAudioStack(
     voices,
     // The factory needs a discriminator even when synthesis is disabled;
     // "mock" yields stable mock bindings for every speaker.
-    provider: synthesis?.provider === "dashscope" ? "dashscope" : "mock",
+    provider:
+      synthesis?.provider === "dashscope" || synthesis?.provider === "local"
+        ? synthesis.provider
+        : "mock",
     modelProfile: synthesis?.model_profile ?? "cosyvoice_v3_flash",
     sampleRate: synthesis?.sample_rate ?? 22050,
     format: "pcm_s16le",
