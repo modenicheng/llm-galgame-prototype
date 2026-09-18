@@ -921,6 +921,138 @@ button {
   letter-spacing: 0.1em;
 }
 
+/* 浮层（设置/回看）打开期间控制条常显：否则鼠标移入浮层离开栏热区时，
+   栏体带着入口按钮一起淡出。 */
+.controls--pinned .controls__bar {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* --------------------------------------------------------------------------
+   Settings menu — 语音/BGM 音量、静音、文字速度的统一设置浮层。
+   锚在控制条正下方（.controls 的定位即锚点）；缩放系与控制条一致。
+   -------------------------------------------------------------------------- */
+
+.settings-menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px 12px;
+  background: var(--glass);
+  border: 1px solid rgba(232, 167, 92, 0.22);
+  border-radius: 12px;
+  backdrop-filter: blur(16px) saturate(1.1);
+  -webkit-backdrop-filter: blur(16px) saturate(1.1);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  /* 与 .ctl 同一缩放系：vmin 锚定 1080p 观感。 */
+  font-size: clamp(11px, 0.62vmin + 5px, 24px);
+  /* 显隐由 hidden 属性驱动（display:none 直接切断，不做淡入淡出——
+     面板自身 opacity<1 会让 backdrop-filter 采样跳变，见 .stage__veil 注释）。 */
+}
+
+.settings-menu__title {
+  text-align: center;
+  font-size: 1em;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  color: var(--lantern-soft);
+  text-shadow: 0 0 14px rgba(232, 167, 92, 0.35);
+}
+
+.settings-menu__subtitle {
+  margin-top: 2px;
+  font-size: 0.72em;
+  letter-spacing: 0.42em;
+  color: var(--paper-faint);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-menu__subtitle::before,
+.settings-menu__subtitle::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-soft);
+}
+
+.settings-menu__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-menu__row--check {
+  cursor: pointer;
+}
+
+.settings-menu__label {
+  flex: 0 0 5.5em;
+  font-size: 0.88em;
+  letter-spacing: 0.14em;
+  color: var(--paper-dim);
+  white-space: nowrap;
+}
+
+.settings-menu__slider {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--lantern);
+  cursor: pointer;
+}
+
+.settings-menu__value {
+  flex: 0 0 4.5em;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  letter-spacing: 0.04em;
+  color: var(--paper-faint);
+}
+
+.settings-menu__check {
+  width: 1.15em;
+  height: 1.15em;
+  accent-color: var(--lantern);
+  cursor: pointer;
+}
+
+.settings-menu__reset {
+  align-self: center;
+  margin-top: 2px;
+  padding: 0.45em 1.6em;
+  font-size: 0.82em;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em;
+  color: var(--paper-dim);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  transition:
+    color 180ms var(--ease-out),
+    border-color 180ms var(--ease-out),
+    box-shadow 180ms var(--ease-out);
+}
+
+.settings-menu__reset:hover {
+  color: var(--lantern-soft);
+  border-color: rgba(232, 167, 92, 0.5);
+  box-shadow: 0 0 18px rgba(232, 167, 92, 0.14);
+}
+
+.settings-menu__hint {
+  text-align: center;
+  font-size: 0.68em;
+  letter-spacing: 0.16em;
+  color: var(--paper-faint);
+  opacity: 0.75;
+}
+
 /* --------------------------------------------------------------------------
    Start overlay — the autoplay-unlock gate
    -------------------------------------------------------------------------- */

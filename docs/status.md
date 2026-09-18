@@ -104,6 +104,9 @@
   AudioTimeline（顺序排队 / skip / 低水位驱动）、pcm-decoder（worklet 按
   descriptor 采样率重采样）。
 - **缓存**：IndexedDB（`audio-db` + cache reader/writer/cleaner，容量上限与清理）。
+- **玩家音频设置**（2026-09-19）：语音/BGM 音量双通道分离，与静音、字速一起
+  收进控制条「设置」浮层（`web/src/ui/settings-menu.ts`）；偏好经 localStorage
+  持久化（`web/src/storage/player-settings.ts`），刷新自动恢复。
 
 ### 持久化
 - `sessions/<sessionId>/` 会话目录：`events.jsonl` + narrative 记忆三件套

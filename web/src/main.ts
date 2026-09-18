@@ -25,6 +25,12 @@ import { BrowserAssetResolver } from "./stage/browser-asset-resolver.js";
 import { BgmController } from "./stage/bgm-controller.js";
 import { SoundEffectController } from "./stage/sound-effect-controller.js";
 import type { StageVisualState } from "./stage/stage-types.js";
+import {
+  loadPlayerSettings,
+  savePlayerSettings,
+  type PlayerSettings,
+} from "./storage/player-settings.js";
+import { SettingsMenu } from "./ui/settings-menu.js";
 import { setText, show } from "./ui/dom.js";
 import "./ui/styles.css";
 
@@ -60,7 +66,16 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   const bgmController = new BgmController(assetResolver);
   const seController = new SoundEffectController(assetResolver);
   const token = tokenFromUrl();
-  const app = new GameApp({ wsUrl: wsUrlFromLocation(), token, bgmController });
+  // Player preferences persist across reloads (booth restarts, accidental
+  // refreshes): restore once here and save on every change below.
+  const playerSettings: PlayerSettings = loadPlayerSettings();
+  const persistSettings = (): void => savePlayerSettings(playerSettings);
+  const app = new GameApp({
+    wsUrl: wsUrlFromLocation(),
+    token,
+    bgmController,
+    initialSettings: playerSettings,
+  });
 
   const startScreen = new StartScreen(refs.startRoot, {
     onStart: async () => {
@@ -90,6 +105,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   const dialogueBox = new DialogueBox(refs.dialogueRoot, {
     onAdvance: () => app.advance(),
   });
+  dialogueBox.setCharsPerSecond(playerSettings.textSpeed);
   const interactionPanel = new InteractionPanel(refs.interactionRoot, {
     onSelect: (optionId) => app.selectChoice(optionId),
     onSubmit: (text) => app.submitInput(text),
@@ -102,12 +118,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     refs.controlsRoot,
     {
       onModeToggle: (mode) => app.setMode(mode),
-      onVolume: (v) => app.setVolume(v),
-      onMute: (m) => app.setMuted(m),
-      onSpeed: (cps) => {
-        app.setTextSpeed(cps);
-        dialogueBox.setCharsPerSecond(cps);
-      },
+      onOpenSettings: () => toggleSettings(),
       onRestart: () => {
         // Mid-session restart loses progress; the end-screen path does not
         // need this guard (nothing is left to lose).
@@ -116,8 +127,49 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
         }
       },
     },
-    { mode: "manual", volume: 1, muted: false, speed: 32 },
+    { mode: "manual" },
   );
+  const settingsMenu = new SettingsMenu(
+    refs.controlsRoot,
+    {
+      onVoiceVolume: (v) => {
+        playerSettings.voiceVolume = v;
+        app.setVoiceVolume(v);
+        persistSettings();
+      },
+      onBgmVolume: (v) => {
+        playerSettings.bgmVolume = v;
+        app.setBgmVolume(v);
+        persistSettings();
+      },
+      onMute: (m) => {
+        playerSettings.muted = m;
+        app.setMuted(m);
+        persistSettings();
+      },
+      onTextSpeed: (cps) => {
+        playerSettings.textSpeed = cps;
+        app.setTextSpeed(cps);
+        dialogueBox.setCharsPerSecond(cps);
+        persistSettings();
+      },
+    },
+    {
+      voiceVolume: playerSettings.voiceVolume,
+      bgmVolume: playerSettings.bgmVolume,
+      muted: playerSettings.muted,
+      textSpeed: playerSettings.textSpeed,
+    },
+    { anchor: controls.settingsTrigger },
+  );
+  // 浮层（设置/回看）打开期间控制条常显，否则鼠标离开角落时入口随栏淡出。
+  const syncControlsPinned = (): void => {
+    refs.controlsRoot.classList.toggle("controls--pinned", settingsMenu.isOpen());
+  };
+  const toggleSettings = (): void => {
+    settingsMenu.toggle();
+    syncControlsPinned();
+  };
   const endScreen = new EndScreen(refs.endRoot, {
     onRestart: () => beginRestart(),
   });
@@ -150,6 +202,16 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
   window.addEventListener("keydown", (event) => {
     if (event.isComposing || event.keyCode === 229) return; // IME composition
+    // 设置菜单打开时独占键盘：Esc 关闭它，其余按键不进入剧情路由
+    // （面板里的滑杆/复选框需要方向键与空格，且菜单后的舞台不应推进）。
+    if (settingsMenu.isOpen()) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        settingsMenu.close();
+        syncControlsPinned();
+      }
+      return;
+    }
     const mode = app.state().view.mode;
     // Esc has no native button behavior, so it is handled BEFORE the
     // button-target guard below: with a preview button focused (Tab), Esc

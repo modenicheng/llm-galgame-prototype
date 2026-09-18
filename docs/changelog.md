@@ -3,6 +3,19 @@
 > 摘编自原 `docs/llm-outputs-refactor.md` §114–§118（该文件 2026-09-04 拆分，
 > 全文见 git 历史）。当前进度权威见 `docs/status.md`。
 
+## 2026-09-19 玩家端音频设置菜单与回看（campus 分支）
+
+**音频设置统一菜单**
+- 控制条只保留 推进模式 / 设置 / 重开 / 状态：音量与静音不再平铺在栏上，
+  收进「设置」浮层（语音音量 / BGM 音量 / 全部静音 / 字速 + 恢复默认），
+  锚在栏正下方，打开期间控制条常显（`.controls--pinned`），Esc 关闭且
+  打开期间独占键盘（面板滑杆与剧情按键互不干扰）。
+- GameApp 单一 `volume` 拆为 `voiceVolume`/`bgmVolume` 双通道（语音→
+  AudioCoordinator，BGM→BgmController，互不串扰）；玩家偏好（双音量/
+  静音/字速）经 localStorage 持久化（`web/src/storage/player-settings.ts`，
+  全路径 fail-open：损坏 JSON/隐私模式退默认），刷新/重开后自动恢复；
+  BGM 控制器在构造期即应用持久化电平，首曲不会先响满音量。
+
 ## 2026-09-17 ~ 2026-09-18 本地 TTS、记忆代理与展位打磨
 
 **本地语音合成（tts-server，provider `local`）**

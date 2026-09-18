@@ -12,6 +12,7 @@ import { AudioCacheWriter } from "./storage/audio-cache-writer.js";
 import { resetDb } from "./storage/test-utils.js";
 import type { AudioDescriptor } from "@shared/wire/audio-descriptor.js";
 import type { PublicWebConfig } from "@shared/wire/public-web-config.js";
+import type { BgmController } from "./stage/bgm-controller.js";
 import type { WebSocketLike, WebSocketCtor } from "./runtime/runtime-client.js";
 
 const WS_URL = "ws://127.0.0.1:8080/ws/runtime";
@@ -601,15 +602,17 @@ describe("GameApp", () => {
     });
   });
 
-  it("serves a coordinator-backed state (buffered ms, mode, volume) through the public surface", async () => {
+  it("serves a coordinator-backed state (buffered ms, mode, volumes) through the public surface", async () => {
     const { app, ws } = await setupApp();
     app.setMode("auto");
-    app.setVolume(0.42);
+    app.setVoiceVolume(0.42);
+    app.setBgmVolume(0.3);
     app.setMuted(true);
     app.setTextSpeed(48);
     const state = app.state();
     expect(state.playbackMode).toBe("auto");
-    expect(state.volume).toBe(0.42);
+    expect(state.voiceVolume).toBe(0.42);
+    expect(state.bgmVolume).toBe(0.3);
     expect(state.muted).toBe(true);
     expect(state.textSpeed).toBe(48);
     expect(state.configSource).toBe("server");
@@ -621,6 +624,52 @@ describe("GameApp", () => {
     await vi.waitFor(() => {
       expect(app.state().bufferedAheadMs).toBeGreaterThan(0);
     });
+  });
+
+  it("applies restored settings at construction and routes volumes per channel", async () => {
+    const bgm = {
+      setVolume: vi.fn(),
+      setMuted: vi.fn(),
+      unlock: vi.fn(),
+      apply: vi.fn(),
+    };
+    const { fetchImpl, synthesizeCalls } = makeFetchImpl();
+    const app = new GameApp({
+      wsUrl: WS_URL,
+      token: TOKEN,
+      fetchImpl,
+      webSocketImpl: FakeWebSocket as unknown as WebSocketCtor,
+      db,
+      bgmController: bgm as unknown as BgmController,
+      initialSettings: { voiceVolume: 0.8, bgmVolume: 0.5, muted: true, textSpeed: 40 },
+    });
+    expect(app.state().voiceVolume).toBe(0.8);
+    expect(app.state().bgmVolume).toBe(0.5);
+    expect(app.state().muted).toBe(true);
+    expect(app.state().textSpeed).toBe(40);
+    // The BGM controller exists before start(): the persisted level is
+    // applied at construction so the first track never plays at 1.0.
+    expect(bgm.setVolume).toHaveBeenCalledWith(0.5);
+    expect(bgm.setMuted).toHaveBeenCalledWith(true);
+
+    await app.start(makeFakeAudioContext().context);
+    FakeWebSocket.last!.open();
+
+    // Per-channel routing: voice touches only the coordinator path, BGM only
+    // the controller; the two never bleed into each other.
+    app.setVoiceVolume(0.2);
+    expect(app.state().voiceVolume).toBe(0.2);
+    expect(bgm.setVolume).toHaveBeenCalledTimes(1);
+    app.setBgmVolume(0.9);
+    expect(app.state().bgmVolume).toBe(0.9);
+    expect(bgm.setVolume).toHaveBeenCalledTimes(2);
+    expect(bgm.setVolume).toHaveBeenLastCalledWith(0.9);
+    // Out-of-range values clamp instead of poisoning the gain nodes.
+    app.setVoiceVolume(5);
+    app.setBgmVolume(-1);
+    expect(app.state().voiceVolume).toBe(1);
+    expect(app.state().bgmVolume).toBe(0);
+    void synthesizeCalls;
   });
   it("task_status finished does not re-feed the cache (samples play exactly once)", async () => {
     const { app, ws } = await setupApp();
