@@ -129,15 +129,17 @@ export class LocalQwen3TtsProvider implements TtsProviderPort {
       finish(new TtsProviderError("first_chunk_timeout", `no PCM within ${this.timeoutMs}ms`));
     }, this.timeoutMs);
 
+    const reader = response.body.getReader();
     const onAbort = () => {
-      // Upstream canceled: tear down the fetch; the consumer reads partial
-      // bytes from the already-yielded chunks.
+      // Upstream canceled: tear down the connection AND the body reader
+      // (defensive: injected fetches may ignore the abort signal); the
+      // consumer keeps whatever chunks were already yielded.
       controller.abort();
+      reader.cancel().catch(() => {});
       finish({ totalBytes });
     };
     signal.addEventListener("abort", onAbort, { once: true });
 
-    const reader = response.body.getReader();
     const chunks: AsyncGenerator<Uint8Array> = (async function* () {
       try {
         while (true) {

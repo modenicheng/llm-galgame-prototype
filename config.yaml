@@ -94,7 +94,8 @@ media:
       # local = 本机 tts-server（tts-server/，Qwen3-TTS-12Hz-1.7B-Base，
       # 树莓娘 paimeng 克隆 + 四配角内置音色克隆，详见 tts-server/README）。
       provider: local
-      max_concurrency: 2
+      # 4 与 tts-server 的浪批量一致：单请求并发占满一个 batch 才不吃亏
+      max_concurrency: 4
       model_profile: local_qwen3_base
       api_key_env: DASHSCOPE_API_KEY
       format: pcm_s16le
