@@ -513,6 +513,21 @@ beat 到来时 pending + main 成组发布；`?` 开表单、`+` 追加选项、
 没有看到正确的 `@end <nonce>` = `INCOMPLETE_SEGMENT`，即使最后一行语法完整。
 （旧 JSONL 只能靠尾部非法 + terminal contract 间接判断，新协议显式规定。）
 
+**例外：确定性补哨兵（2026-09-18，feat/end-sentinel-low）。** 同时满足以下
+条件时，不判截断，本地合成 `@end <nonce> <reason>` 补完并记 repair
+`sentinel_autoclose`：
+
+- SSE 末块 `finish_reason == "stop"`（模型自然停笔；`length` 或网关剥掉
+  该字段仍按截断处理，宁 fail 勿补）；
+- 全部行解析合法（无 rejectLine / strip-continue 残留），parser 只差哨兵；
+- 本任务收束理由唯一（固定尾 buffer 类：input_bridge / input_response /
+  branch_prefetch）。多理由任务（continuation / opening 的
+  interaction|buffer|ending）不补——reason 承载语义，不可替模型决定。
+
+理由：固定尾任务的哨兵除 nonce 回显外不携带信息，漏写是纯形式性缺失
+（实测占全部写手失败的 ~90%+）；而 fail 路径的代价是桥接旁白整段废弃、
+分支预取降级为选中时重造。补哨兵后该类任务的漏哨兵失败率实测降为 0。
+
 ---
 
 # 50. 截断时已完成 Group 不回滚

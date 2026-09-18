@@ -25,6 +25,7 @@ const REPAIR_LABELS: Record<string, string> = {
   form_prompt_merge: "提示并入",
   visual_swap: "台词头纠正",
   strip_continue: "断行续写",
+  sentinel_autoclose: "补哨兵",
 };
 
 function num(value: number | undefined): string {
