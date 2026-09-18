@@ -28,6 +28,7 @@ import type {
   PerformanceCompiler,
   VoiceDirectionTarget,
 } from "./performance-compiler.js";
+import type { CharacterVoiceDesign } from "../outline/outline-writer.js";
 import { ttsLog } from "./tts-log.js";
 
 export interface AudioDescriptorFactoryOptions {
@@ -48,6 +49,12 @@ export interface AudioDescriptorFactoryOptions {
    * VoiceDirectionTarget；缺省/未绑定 = 无指导。
    */
   voiceDirectionFor?: (speakerId: string) => VoiceDirectionTarget | undefined;
+  /**
+   * 编剧音频画像（角色音频特征设计 §4.1）：说话人 → 画像。delivery 与
+   * author semantic 取并集进调色板，avoid 并进 forbidden，baseline 作
+   * 表演先验；timbre 锚由装配层折进合成 profile 的 base_description。
+   */
+  voiceDesigns?: Record<string, CharacterVoiceDesign>;
 }
 
 export interface BuildAudioResult {
@@ -95,13 +102,21 @@ export class AudioDescriptorFactory {
     const binding = this.resolveBinding(character.voiceProfile, character.speakerId);
     const voiceId = resolveVoiceId(binding, this.options.env) ?? "";
     const direction = this.options.voiceDirectionFor?.(character.speakerId);
+    const design = this.options.voiceDesigns?.[character.speakerId];
     const compiled = this.options.compiler.compile({
       baseDescription: profile.semantic.base_description,
-      allowedDelivery: profile.semantic.allowed_delivery,
-      forbiddenDelivery: profile.semantic.forbidden_delivery,
+      allowedDelivery:
+        design !== undefined
+          ? [...profile.semantic.allowed_delivery, ...design.delivery]
+          : profile.semantic.allowed_delivery,
+      forbiddenDelivery:
+        design?.avoid !== undefined
+          ? [...profile.semantic.forbidden_delivery, ...design.avoid]
+          : profile.semantic.forbidden_delivery,
       instructionMode: binding.instruction_mode,
       ...(performance !== undefined ? { performance } : {}),
       ...(direction !== undefined ? { direction } : {}),
+      ...(design?.baseline !== undefined ? { baseline: design.baseline } : {}),
     });
 
     const seed = this.options.seedFor(event.line_id);

@@ -31,6 +31,7 @@ import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js"
 import { CanonAdjudicatorAdapter } from "../adapters/llm/canon-adjudicator-adapter.js";
 import { AgentRunnerAdapter } from "../adapters/llm/agent-runner-adapter.js";
 import { DirectorService, type SpeakerVoicePalette } from "../application/director/director-service.js";
+import type { CharacterVoiceDesign } from "../application/outline/outline-writer.js";
 import { CanonPromoter } from "../application/canon/canon-promoter.js";
 import type {
   OutlineMaintainerPort,
@@ -43,6 +44,11 @@ import { AudioCatalogServiceImpl } from "../application/audio/audio-catalog-serv
 import { AudioDescriptorFactory } from "../application/audio/audio-descriptor-factory.js";
 import { VoiceDirectionHub } from "../application/audio/voice-direction-hub.js";
 import type { VoiceDirectionTarget } from "../application/audio/performance-compiler.js";
+import {
+  DASHSCOPE_VOICE_FALLBACK_ENV,
+  mergeVoiceDesignViews,
+} from "../application/audio/voice-design-views.js";
+import { VoiceDesignStore } from "../adapters/storage/voice-design-store.js";
 import { AudioIntentPlanner } from "../application/audio/audio-intent-planner.js";
 import {
   TtsTaskServiceImpl,
@@ -147,7 +153,11 @@ function buildAudioStack(
   config: AppConfig,
   voices: Awaited<ReturnType<typeof loadVoices>>,
   provider: TtsProviderPort | null,
-  voiceDirectionFor?: (speakerId: string) => VoiceDirectionTarget | undefined,
+  wiring: {
+    characters?: Record<string, { name: string; voice_profile: string }>;
+    voiceDirectionFor?: (speakerId: string) => VoiceDirectionTarget | undefined;
+    voiceDesigns?: Record<string, CharacterVoiceDesign>;
+  } = {},
 ): {
   catalog: AudioCatalogServiceImpl;
   planner: AudioIntentPlanner;
@@ -157,7 +167,7 @@ function buildAudioStack(
   const synthesis = config.media.audio.synthesis;
   const catalog = new AudioCatalogServiceImpl();
   const factory = new AudioDescriptorFactory({
-    characters: config.characters,
+    characters: wiring.characters ?? config.characters,
     voices,
     // The factory needs a discriminator even when synthesis is disabled;
     // "mock" yields stable mock bindings for every speaker.
@@ -171,7 +181,10 @@ function buildAudioStack(
     env: process.env,
     compiler: new PerformanceCompilerImpl(),
     seedFor: (lineId) => fnv1a(lineId),
-    ...(voiceDirectionFor !== undefined ? { voiceDirectionFor } : {}),
+    ...(wiring.voiceDirectionFor !== undefined ? { voiceDirectionFor: wiring.voiceDirectionFor } : {}),
+    ...(wiring.voiceDesigns !== undefined && Object.keys(wiring.voiceDesigns).length > 0
+      ? { voiceDesigns: wiring.voiceDesigns }
+      : {}),
   });
   const planner = new AudioIntentPlanner({
     catalog,
@@ -311,23 +324,37 @@ export async function createRuntimeApplication(
   );
 
   const provider = selectTtsProvider(config, voices);
-  // 导演声音指导桥（角色音频特征设计 §4.2）：hub 先于会话存在，
-  // buildGameFor 建完 game 后重绑 source。
-  const voiceDirectionHub = new VoiceDirectionHub();
-  const { catalog, planner, ttsTasks, taskStatusListeners } = buildAudioStack(
-    config,
-    voices,
-    provider,
-    voiceDirectionHub.for.bind(voiceDirectionHub),
-  );
-
-  const projection = new UiProjectionStoreImpl();
-
   // v2 剧情图（§9）：gameId 是世界的身份，在运行时生命周期内固定；周目
   // （run）才是重开/回溯的单位。图存储与协调器跨 restart 共享。宿主可传
   // options.gameId 固定世界（「继续游戏」指向同一目录）；缺省每次启动
   // 生成新世界。
   const gameId = options.gameId ?? `game_${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  // V2（角色音频特征设计 §4.1）：世界创建期落盘的编剧画像 → 动态角色
+  // 注入视图（缺失/无画像角色 = 与 author 视图等价）。文件损坏大声抛错。
+  const designFile = await new VoiceDesignStore(gamesRoot, gameId).load();
+  const synthesisProvider = config.media.audio.synthesis?.provider;
+  const factoryProvider =
+    synthesisProvider === "dashscope" || synthesisProvider === "local"
+      ? synthesisProvider
+      : "mock";
+  const voiceViews = mergeVoiceDesignViews({
+    authorCharacters: config.characters,
+    authorVoices: voices,
+    designFile,
+    provider: factoryProvider,
+    dashscopeModelProfile: config.media.audio.synthesis?.model_profile ?? "cosyvoice_v3_flash",
+    fallbackVoiceId: (process.env[DASHSCOPE_VOICE_FALLBACK_ENV] ?? "").trim(),
+  });
+  // 导演声音指导桥（角色音频特征设计 §4.2）：hub 先于会话存在，
+  // buildGameFor 建完 game 后重绑 source。
+  const voiceDirectionHub = new VoiceDirectionHub();
+  const { catalog, planner, ttsTasks, taskStatusListeners } = buildAudioStack(config, voiceViews.voices, provider, {
+    characters: voiceViews.characters,
+    voiceDirectionFor: voiceDirectionHub.for.bind(voiceDirectionHub),
+    voiceDesigns: voiceViews.designs,
+  });
+
+  const projection = new UiProjectionStoreImpl();
   // M3.4：显式世界接线 OutlineStore（确定性迁移 + 大纲后台维护）；缺省新世界
   // 无大纲 → 协调器走 ol_seed 种子回退。
   let outline: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort } | undefined;
@@ -353,15 +380,22 @@ export async function createRuntimeApplication(
     confluenceEnabled,
     outline,
     canon: canonStore,
-    // V1：author semantic 调色板进导演输入（V2 起 per-game 设计优先）。
+    // V1/V2：author semantic ⊕ per-game 设计调色板进导演输入（合并视图）。
     speakerPalette: (characterId) => {
-      const entry = config.characters[characterId];
-      const profile = entry !== undefined ? voices.profiles[entry.voice_profile] : undefined;
-      if (profile === undefined) return undefined;
-      return {
-        allowedDelivery: profile.semantic.allowed_delivery,
-        forbiddenDelivery: profile.semantic.forbidden_delivery,
-      };
+      const entry = voiceViews.characters[characterId];
+      const profile =
+        entry !== undefined ? voiceViews.voices.profiles[entry.voice_profile] : undefined;
+      const design = voiceViews.designs[characterId];
+      const allowedDelivery = [
+        ...(profile?.semantic.allowed_delivery ?? []),
+        ...(design?.delivery ?? []),
+      ];
+      const forbiddenDelivery = [
+        ...(profile?.semantic.forbidden_delivery ?? []),
+        ...(design?.avoid ?? []),
+      ];
+      if (allowedDelivery.length === 0 && forbiddenDelivery.length === 0) return undefined;
+      return { allowedDelivery, forbiddenDelivery };
     },
   });
   const graphCoordinator = buildGraphCoordinator(

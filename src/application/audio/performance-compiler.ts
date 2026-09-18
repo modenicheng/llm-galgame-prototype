@@ -60,6 +60,16 @@ export const VOLUME_VALUES = ["whisper", "soft", "normal", "loud"] as const;
 export type VolumeLevel = (typeof VOLUME_VALUES)[number];
 
 /**
+ * 表演先验（角色音频画像 §3.1 的 baseline）：画像层的基线档位，低于演员
+ * 逐行意图与导演指导。词汇表与 LinePerformance 同源。
+ */
+export interface VoicePerformanceBaseline {
+  pace?: Pace;
+  energy?: Energy;
+  volume?: VolumeLevel;
+}
+
+/**
  * 导演逐场景声音指导（角色音频特征设计 §3.2）：作用于某说话人在当前场景
  * 的全部台词，优先级高于演员逐行意图。`note` 只进 free 档 instruction
  * （fixed_emotion 档是纯情绪句式，自由文字没有落点）。
@@ -95,6 +105,8 @@ export interface PerformanceCompileInput {
   performance?: LinePerformance;
   /** 导演场景指导（优先于逐行意图）；缺省 = 无指导。 */
   direction?: VoiceDirectionTarget;
+  /** 画像层表演先验（低于逐行意图与导演指导）；缺省 = 无。 */
+  baseline?: VoicePerformanceBaseline;
   /** DashScope instruction policy: free-form (cloned/designed voices —
    *  default), fixed_emotion (system voices), or none. */
   instructionMode?: InstructionMode;
@@ -302,8 +314,10 @@ export class PerformanceCompilerImpl implements PerformanceCompiler {
       const validPerf = perf !== null && typeof perf === "object" ? perf : undefined;
       const direction =
         input.direction !== null && typeof input.direction === "object" ? input.direction : undefined;
-      // 导演指导优先于演员逐行意图（角色音频特征设计 §3.3）；delivery 候选
-      // 里导演标签前置，仍受同一调色板过滤（§14.1）。
+      const baseline =
+        input.baseline !== null && typeof input.baseline === "object" ? input.baseline : undefined;
+      // 合并优先级：导演指导 > 演员逐行意图 > 画像基线（角色音频特征设计
+      // §3.3）；delivery 候选里导演标签前置，仍受同一调色板过滤（§14.1）。
       const deliveryCandidates =
         direction?.delivery !== undefined
           ? [direction.delivery, ...(validPerf?.delivery ?? [])]
@@ -318,9 +332,21 @@ export class PerformanceCompilerImpl implements PerformanceCompiler {
         instruction = buildInstruction(base, kept, validPerf?.intensity, direction?.note);
       }
       const result: CompiledPerformance = {
-        rate: lookup(PACE_RATE, direction?.pace ?? validPerf?.pace, IDENTITY_PARAMS.rate),
-        pitch: lookup(ENERGY_PITCH, direction?.energy ?? validPerf?.energy, IDENTITY_PARAMS.pitch),
-        volume: lookup(VOLUME_LEVEL, direction?.volume ?? validPerf?.volume, IDENTITY_PARAMS.volume),
+        rate: lookup(
+          PACE_RATE,
+          direction?.pace ?? validPerf?.pace ?? baseline?.pace,
+          IDENTITY_PARAMS.rate,
+        ),
+        pitch: lookup(
+          ENERGY_PITCH,
+          direction?.energy ?? validPerf?.energy ?? baseline?.energy,
+          IDENTITY_PARAMS.pitch,
+        ),
+        volume: lookup(
+          VOLUME_LEVEL,
+          direction?.volume ?? validPerf?.volume ?? baseline?.volume,
+          IDENTITY_PARAMS.volume,
+        ),
         pauseBeforeMs: clampPause(validPerf?.pause_before_ms),
         pauseAfterMs: clampPause(validPerf?.pause_after_ms),
       };

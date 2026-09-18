@@ -12,6 +12,23 @@ import type { MemoryDigest } from "../../core/graph/types.js";
 import type { CanonSnapshot } from "../../core/ports/canon-store-port.js";
 import type { RunReview } from "../../core/ports/review-store-port.js";
 import type { OutlineOp } from "../../core/ports/outline-store-port.js";
+import type { VoicePerformanceBaseline } from "../audio/performance-compiler.js";
+
+/**
+ * 角色音频画像（角色音频特征设计 §3.1，编剧产出）：描述性词汇，不涉
+ * 供应商参数。timbre 是 free 档 instruction 的画像锚；delivery/avoid 是
+ * 表达调色板（§14.1 过滤语义同 allowed/forbidden）；baseline 是表演先验。
+ */
+export interface CharacterVoiceDesign {
+  /** 声学画像一句话（≤120 字）：年龄感/质感/音区/口音。 */
+  timbre: string;
+  /** 表达调色板：该角色"怎么说话"的允许集合。 */
+  delivery: string[];
+  /** 明确禁止的表达。 */
+  avoid?: string[];
+  /** 表演基线档位（低于演员逐行意图与导演指导）。 */
+  baseline?: VoicePerformanceBaseline;
+}
 
 /** 角色卡（M3.3 渲染进 per-game characters.txt；spriteBinding 可缺省）。 */
 export interface DraftCharacter {
@@ -19,6 +36,8 @@ export interface DraftCharacter {
   name: string;
   description: string;
   spriteBinding?: string;
+  /** 编剧设计的音频画像；缺省 = 无设计，回落既有链路。 */
+  voice?: CharacterVoiceDesign;
 }
 
 /** 编剧初版产物。outline 全部 planned；act 链 + 1–2 个 ending。 */

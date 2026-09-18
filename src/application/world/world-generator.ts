@@ -12,8 +12,9 @@ import { mkdir, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { OutlineStore } from "../../adapters/storage/outline-store.js";
 import { CanonStore } from "../../adapters/storage/canon-store.js";
+import { VoiceDesignStore } from "../../adapters/storage/voice-design-store.js";
 import { DEFAULT_GAMES_ROOT } from "../../bootstrap/create-runtime-application.js";
-import type { OutlineWriterPort, WorldDraft } from "../outline/outline-writer.js";
+import type { DraftCharacter, CharacterVoiceDesign, OutlineWriterPort, WorldDraft } from "../outline/outline-writer.js";
 
 /** per-game prompt 覆盖目录（M3.3 ②；随卡新增，不改 §9 冻结布局）。 */
 export const WORLD_PROMPTS_DIR = "world/prompts";
@@ -69,6 +70,20 @@ export class WorldGenerator {
       characters: draft.characters,
     });
 
+    // V2（角色音频特征设计 §3.1）：有音频画像的角色落盘 voice-design.json
+    //（世界创建期写一次）；无画像角色 → 不落盘。
+    const designed = draft.characters.filter(
+      (c): c is DraftCharacter & { voice: CharacterVoiceDesign } => c.voice !== undefined,
+    );
+    if (designed.length > 0) {
+      await new VoiceDesignStore(this.gamesRoot, gameId).save({
+        version: 1,
+        characters: Object.fromEntries(
+          designed.map((c) => [c.id, { name: c.name, voice: c.voice }]),
+        ),
+      });
+    }
+
     // per-game prompts（loadPrompts 优先读取，见 prompts.ts）。
     const promptsDir = path.join(gameDir, WORLD_PROMPTS_DIR);
     await mkdir(promptsDir, { recursive: true });
@@ -79,7 +94,7 @@ export class WorldGenerator {
   }
 }
 
-/** 角色卡渲染：`【名】(id)` + 描述 + 可选立绘绑定。 */
+/** 角色卡渲染：`【名】(id)` + 描述 + 可选立绘绑定与嗓音画像。 */
 export function renderCharacters(draft: WorldDraft): string {
   return draft.characters
     .map((c) =>
@@ -87,6 +102,7 @@ export function renderCharacters(draft: WorldDraft): string {
         `【${c.name}】(${c.id})`,
         c.description,
         ...(c.spriteBinding !== undefined ? [`立绘绑定：${c.spriteBinding}`] : []),
+        ...(c.voice !== undefined ? [`嗓音：${c.voice.timbre}`] : []),
       ].join("\n"),
     )
     .join("\n\n");

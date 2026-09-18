@@ -21,18 +21,39 @@ import type {
 
 const SYSTEM_PROMPT =
   "你是 GalGame 编剧。输入玩家的世界描述，输出开局前的世界设计 JSON：" +
-  "{worldSetting, characters:[{id,name,description,spriteBinding?}], outline:[{id,purpose,kind,status,location?}]}。" +
+  "{worldSetting, characters:[{id,name,description,spriteBinding?,voice?}], outline:[{id,purpose,kind,status,location?}]}。" +
   "worldSetting 是世界观设定（≤500 字）。characters 2~5 名角色，description ≤200 字。" +
+  "voice 是可选的音频画像，为每个有台词的角色设计：{timbre（声音画像一句话，≤60 字：年龄感/质感/音区/口音）, " +
+  "delivery:[语气标签，从 restrained/hesitant/firm/gentle/cold/playful/breathless/tearful 中选 2~4 个], " +
+  "avoid?:[忌用的同类标签], baseline?:{pace,energy,volume}}；" +
+  "pace 取 very_slow/slow/normal/fast/very_fast，energy 取 very_low/low/normal/high/very_high，" +
+  "volume 取 whisper/soft/normal/loud。" +
   "outline 是幕级大纲：至少 2 个 kind=act 的幕节点按剧情顺序排列，最后恰好 1~2 个 kind=ending 的结局节点；" +
   "所有节点 status 固定为 planned；id 用 `ol_` 前缀且全局唯一（结局节点 id 以 `ol_end_` 开头）。" +
   "每个 purpose 是节拍目的（不超过 " + OUTLINE_PURPOSE_MAX_LENGTH + " 字），禁止写任何台词。" +
   "location 是物理地点标签（如「教室」「旧校舍」），不写状态细节；同一物理地点的不同幕共享同一 location。";
+
+const VoiceDesignSchema = z.object({
+  timbre: z.string().min(1).max(120),
+  delivery: z.array(z.string().min(1).max(24)).min(1).max(8),
+  avoid: z.exactOptional(z.array(z.string().min(1).max(24)).max(8)),
+  baseline: z.exactOptional(
+    z
+      .object({
+        pace: z.exactOptional(z.enum(["very_slow", "slow", "normal", "fast", "very_fast"])),
+        energy: z.exactOptional(z.enum(["very_low", "low", "normal", "high", "very_high"])),
+        volume: z.exactOptional(z.enum(["whisper", "soft", "normal", "loud"])),
+      })
+      .strict(),
+  ),
+}).strict();
 
 const DraftCharacterSchema = z.object({
   id: z.string().min(1).max(64),
   name: z.string().min(1).max(64),
   description: z.string().min(1).max(500),
   spriteBinding: z.exactOptional(z.string().min(1).max(64)),
+  voice: z.exactOptional(VoiceDesignSchema),
 });
 
 const RawOutlineNodeSchema = z.object({

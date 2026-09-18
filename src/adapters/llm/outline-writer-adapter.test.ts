@@ -94,3 +94,40 @@ describe("OutlineWriterAdapter", () => {
     ).rejects.toThrow("outline 输出解析失败");
   });
 });
+
+describe("OutlineWriterAdapter — 编剧音频画像（V2）", () => {
+  it("passes the voice design through to the draft character", async () => {
+    const withVoice = JSON.parse(VALID_JSON);
+    withVoice.characters[0].voice = {
+      timbre: "年轻女性，清亮偏冷",
+      delivery: ["restrained", "firm"],
+      avoid: ["playful"],
+      baseline: { pace: "slow", volume: "soft" },
+    };
+    const draft = await makeAdapter(JSON.stringify(withVoice)).writeOutline({
+      userText: "任意描述",
+    });
+    expect(draft.characters[0]?.voice).toEqual({
+      timbre: "年轻女性，清亮偏冷",
+      delivery: ["restrained", "firm"],
+      avoid: ["playful"],
+      baseline: { pace: "slow", volume: "soft" },
+    });
+    expect(draft.characters[1]?.voice).toBeUndefined();
+  });
+
+  it("rejects a voice design with empty timbre or unknown baseline values", async () => {
+    const bad = [
+      { timbre: "", delivery: ["restrained"] },
+      { timbre: "声音", delivery: [] },
+      { timbre: "声音", delivery: ["restrained"], baseline: { pace: "warp" } },
+    ];
+    for (const voice of bad) {
+      const payload = JSON.parse(VALID_JSON);
+      payload.characters[0].voice = voice;
+      await expect(
+        makeAdapter(JSON.stringify(payload)).writeOutline({ userText: "任意描述" }),
+      ).rejects.toThrow("outline 输出解析失败");
+    }
+  });
+});

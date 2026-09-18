@@ -339,3 +339,35 @@ describe("PerformanceCompilerImpl — 导演指导合并", () => {
     expect(compile(input)).toEqual(compile(input));
   });
 });
+
+describe("PerformanceCompilerImpl — 画像基线合并（V2）", () => {
+  it("baseline applies when neither direction nor per-line intent sets the axis", () => {
+    const result = compile({
+      baseDescription: BASE,
+      baseline: { pace: "slow", energy: "low", volume: "soft" },
+    });
+    expect(result.rate).toBe(0.92);
+    expect(result.pitch).toBe(0.95);
+    expect(result.volume).toBe(35);
+  });
+
+  it("direction > performance > baseline on every axis", () => {
+    const result = compile({
+      baseDescription: BASE,
+      baseline: { pace: "very_slow", energy: "very_low", volume: "whisper" },
+      performance: { pace: "very_fast", energy: "very_high", volume: "loud" },
+      direction: { pace: "slow", energy: "high", volume: "soft" },
+    });
+    expect(result.rate).toBe(0.92);
+    expect(result.pitch).toBe(1.05);
+    expect(result.volume).toBe(35);
+    const noDirection = compile({
+      baseDescription: BASE,
+      baseline: { pace: "very_slow", energy: "very_low", volume: "whisper" },
+      performance: { pace: "very_fast", energy: "very_high", volume: "loud" },
+    });
+    expect(noDirection.rate).toBe(1.15);
+    expect(noDirection.pitch).toBe(1.1);
+    expect(noDirection.volume).toBe(70);
+  });
+});

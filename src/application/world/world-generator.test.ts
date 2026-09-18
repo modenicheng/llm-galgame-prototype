@@ -147,3 +147,79 @@ describe("draft renderers", () => {
     expect(text).not.toContain("ol_end");
   });
 });
+
+describe("WorldGenerator — 编剧音频画像（V2）", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), "world-gen-voice-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("writes voice-design.json for designed characters and renders the voice line", async () => {
+    const draft: WorldDraft = {
+      ...DRAFT,
+      characters: [
+        {
+          id: "su_yao",
+          name: "苏遥",
+          description: "转学生。",
+          voice: {
+            timbre: "年轻女性，清亮偏冷",
+            delivery: ["restrained", "firm"],
+            avoid: ["playful"],
+            baseline: { pace: "slow" },
+          },
+        },
+        { id: "lin_che", name: "林澈", description: "主人公。" },
+      ],
+    };
+    const gen = new WorldGenerator({
+      writer: { writeOutline: vi.fn(async () => draft) },
+      gamesRoot: root,
+      newGameId: () => "game_voice_fixed",
+    });
+    const { gameId } = await gen.generate({ userText: "学园都市题材" });
+
+    const stored = JSON.parse(
+      await readFile(path.join(root, gameId, "world", "voice-design.json"), "utf8"),
+    );
+    expect(stored).toEqual({
+      version: 1,
+      characters: {
+        su_yao: {
+          name: "苏遥",
+          voice: {
+            timbre: "年轻女性，清亮偏冷",
+            delivery: ["restrained", "firm"],
+            avoid: ["playful"],
+            baseline: { pace: "slow" },
+          },
+        },
+      },
+    });
+
+    const charactersTxt = await readFile(
+      path.join(root, gameId, "world", "prompts", "characters.txt"),
+      "utf8",
+    );
+    expect(charactersTxt).toContain("嗓音：年轻女性，清亮偏冷");
+    // 无画像角色不渲染嗓音行 —— 林澈段内没有
+    expect(charactersTxt.split("【林澈】")[1]).not.toContain("嗓音");
+  });
+
+  it("writes no voice-design.json when no character has a design", async () => {
+    const gen = new WorldGenerator({
+      writer: { writeOutline: vi.fn(async () => DRAFT) },
+      gamesRoot: root,
+      newGameId: () => "game_no_voice",
+    });
+    const { gameId } = await gen.generate({ userText: "学园都市题材" });
+    await expect(
+      readFile(path.join(root, gameId, "world", "voice-design.json"), "utf8"),
+    ).rejects.toThrow();
+  });
+});
