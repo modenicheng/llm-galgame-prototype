@@ -1,6 +1,7 @@
 # TTS 音色配置指南
 
 本文面向协作者:如何**创建**自己的音色(三种方式),以及如何把它**绑定**到游戏里。
+(走本机推理服务的离线方案见文末「五、本地合成(provider: local)」。)
 
 音色的核心只有两个字段:
 
@@ -153,6 +154,62 @@ node scripts/probe-tts-params.mjs suyao_main "苏遥轻轻地笑了。"
 | 换了音色但声音没变 | 音频缓存未失效 | 该角色的 `voice_revision` +1 |
 | 复刻音色效果差 | 参考音频有噪声/过短 | 用 10~20 秒干净人声重录,控制台可开预处理 |
 | 旁白没有声音 | 设计如此 | 旁白不配音,只有角色行合成语音 |
+| 启动报错 "Local TTS model config invalid" | `synthesis.provider: local` 但 `sample_rate` 不是 24000 | 把 `config.yaml` 的 `media.audio.synthesis.sample_rate` 改为 `24000` |
+| 本地合成报 http_404 | `voices.yaml` 里 `providers.local.voice` 的键不在服务端音色注册表 | 在服务端注册表中补该键(参考音克隆),必要时 `voice_revision` +1 |
+| 本地合成报 connection / 不可达 | 推理服务未启动,或地址/方言不对 | 启动服务;或用 `.env` 的 `LOCAL_TTS_BASE_URL` / `LOCAL_TTS_DIALECT` 指向正确端点 |
+
+---
+
+## 五、本地合成(provider: local)
+
+`synthesis.provider: local` 把合成切到**本机 Qwen3-TTS 推理服务**:流式 s16le
+24 kHz PCM、无 API key、无按量计费,音色由服务端的参考音克隆注册表决定。
+适合离线运行与长时间试玩;代价是需自建推理服务(GPU 最佳,CPU 后端亦可跑,
+吞吐见引擎文档)。
+
+### 1. 启动推理服务(机器本地依赖,不入库)
+
+默认对接 OpenAI 兼容端点 `POST /v1/audio/speech`
+(如 [qwentts.cpp](https://github.com/ServeurpersoCom/qwentts.cpp) 的 tts-server,
+GGML 系 C++ 实现,支持 CUDA/CPU 等后端)。也可在 `.env` 覆盖:
+
+```bash
+LOCAL_TTS_BASE_URL=http://127.0.0.1:9766   # 服务地址(默认本行值,可不设)
+LOCAL_TTS_DIALECT=openai                   # openai(默认) | tts-server(Python 引擎,POST /tts)
+```
+
+### 2. `voices.yaml` 绑定(与 dashscope 可并存)
+
+每个档案在 `providers.local` 里写音色注册表键——服务端机器本地的参考音克隆
+资产,不是机密,不走 `.env`:
+
+```yaml
+suyao_main:
+  semantic: { ... }
+  providers:
+    local:
+      model: local-qwen3-tts   # 固定值
+      voice: suyao             # 服务端注册表键
+      voice_revision: 1        # 重建参考音后 +1 使缓存失效
+```
+
+### 3. `config.yaml` 切换
+
+```yaml
+media:
+  audio:
+    synthesis:
+      provider: local
+      sample_rate: 24000      # 引擎固定 24 kHz 输出,启动校验拦截其他值
+      max_concurrency: 2      # 建议 ≤ 服务端浪批量,过高只会在服务端排队
+```
+
+### 4. 语义差异(相对 dashscope)
+
+- 不支持 rate/pitch/volume/seed 与逐请求指令(发送前即丢弃);
+- `instruction_mode` 恒为 `none`(归一化,无需手填);
+- 切换 provider 不共享音频缓存(缓存键含 provider/model/voice);
+- 首块超时/断流按 provider 错误处理,行内已有的 PCM 照常播放。
 
 ---
 
@@ -162,3 +219,4 @@ node scripts/probe-tts-params.mjs suyao_main "苏遥轻轻地笑了。"
 - [实时语音合成用户指南(指令控制)](https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide)
 - [声音复刻用户指南](https://help.aliyun.com/zh/model-studio/voice-cloning-user-guide)
 - [声音设计用户指南](https://help.aliyun.com/zh/model-studio/voice-design-user-guide)
+- [qwentts.cpp(本地 Qwen3-TTS 推理服务)](https://github.com/ServeurpersoCom/qwentts.cpp)

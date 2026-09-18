@@ -41,6 +41,13 @@ npm run dev -- --debug-runtime
 默认 `config.yaml` 的 `media.audio.synthesis.provider: dashscope` 会启用 DashScope 语音合成，
 启动时需要 `.env` 中已配置 `DASHSCOPE_API_KEY` 及 `voices.yaml` 引用的音色变量
 （创建与绑定方法见 [docs/agents/TTS-音色配置指南.md](./docs/agents/TTS-音色配置指南.md)）。
+
+也可切换 `synthesis.provider: local` 走本机 Qwen3-TTS 推理服务
+（qwentts.cpp 等，OpenAI 兼容流式 PCM；无需任何 API key）：
+`voices.yaml` 用 `providers.local` 的音色注册表键，`sample_rate` 需为 `24000`，
+服务地址/方言可用 `.env` 的 `LOCAL_TTS_BASE_URL` / `LOCAL_TTS_DIALECT` 覆盖——
+详见指南的「本地合成（provider: local）」章节。
+
 不配置 TTS 时，把 `synthesis.provider` 改为 `disabled` 即可纯文本运行（CLI 同理）。
 
 ## 验证媒体调度

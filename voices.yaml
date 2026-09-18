@@ -6,6 +6,16 @@
 #   - voice_id_env:  存放 voice-id 的环境变量名（voice-id 放 .env，像 API key 一样，
 #                     各协作者可各自复刻/设计自己的音色，互不串扰）
 #
+# 本地合成（provider: local）改用 local 绑定（可与 dashscope 并存于同一档案，
+# 按 config.yaml 的 synthesis.provider 全局二选一）：
+#   - model:         固定 local-qwen3-tts
+#   - voice:         本地推理服务音色注册表的键（机器本地资产，非机密，
+#                     不走 .env）；服务端用参考音克隆该键的音色
+#   - voice_revision: 重建参考音后 +1 使缓存失效
+# 本地引擎固定输出 24000 Hz PCM，启用时 config.yaml 的
+# media.audio.synthesis.sample_rate 必须为 24000（启动校验拦截）。
+# 详见 docs/agents/TTS-音色配置指南.md 的本地合成章节。
+#
 # voice-id 三种来源，全部只需复制 id 填入 .env，无需本地调用：
 #   1. 系统音色：音色列表中的字面量（如 longanyang、longxiaochun_v3）
 #   2. 声音复刻：百炼控制台 → 选择模型 → 复刻音色 → 上传 10~20 秒音频 → 得到 voice-id
@@ -50,6 +60,11 @@ profiles:
         model: qwen3-tts-vc-2026-01-22
         voice_id_env: COSYVOICE_VOICE_SUYAO
         instruction_mode: free
+      # 本地服务音色注册表键（参考音克隆；重建后 bump voice_revision）
+      local:
+        model: local-qwen3-tts
+        voice: suyao
+        voice_revision: 1
 
   # 林澈（玩家角色）音色配置（voice-id 在 .env 的 COSYVOICE_VOICE_LINCHE）
   linche_main:
@@ -70,6 +85,10 @@ profiles:
         # model: cosyvoice-v3.5-flash
         voice_id_env: COSYVOICE_VOICE_LINCHE
         instruction_mode: free
+      local:
+        model: local-qwen3-tts
+        voice: linche
+        voice_revision: 1
 
   # 系统音色示例：直接使用预设音色（voice-id = longanyang，放入 .env）
   # longanyang 支持 Instruct（固定格式），故用 fixed_emotion 演示情绪指令；
