@@ -374,6 +374,60 @@ describe("interaction forms", () => {
     expect(restored.value).toBe("我想跟她走");
   });
 
+  it("Enter confirms and Esc cancels the preview, including from a focused preview button", async () => {
+    await bootStarted();
+    feed({ type: "interaction_opened", interactionId: "int-1", interaction: inputInteraction });
+
+    const field = document.querySelector(".interaction-panel textarea") as HTMLTextAreaElement;
+    field.value = "我自己来";
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    feed({ type: "input_preview_opened", previewId: "pv-1", text: "我自己来" });
+
+    // Esc (from body) sends cancel_input — the "返回修改" path.
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    expect(
+      sentCommands().some((cmd) => cmd.type === "cancel_input" && cmd.previewId === "pv-1"),
+    ).toBe(true);
+
+    // The interaction reopens with the draft; re-submit for round 2.
+    feed({ type: "input_preview_canceled", previewId: "pv-1" });
+    feed({ type: "interaction_opened", interactionId: "int-1", interaction: inputInteraction });
+    expect(field.value).toBe("我自己来");
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    feed({ type: "input_preview_opened", previewId: "pv-2", text: "我自己来" });
+
+    // Esc still works when a preview button has focus (Tab navigation): the
+    // keydown target is the button, which must not swallow it.
+    const cancelBtn = document.querySelector(".preview__cancel") as HTMLButtonElement;
+    cancelBtn.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    expect(
+      sentCommands().some((cmd) => cmd.type === "cancel_input" && cmd.previewId === "pv-2"),
+    ).toBe(true);
+
+    feed({ type: "input_preview_canceled", previewId: "pv-2" });
+    feed({ type: "interaction_opened", interactionId: "int-1", interaction: inputInteraction });
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    feed({ type: "input_preview_opened", previewId: "pv-3", text: "我自己来" });
+
+    // Enter (from body) confirms.
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    expect(
+      sentCommands().some((cmd) => cmd.type === "confirm_input" && cmd.previewId === "pv-3"),
+    ).toBe(true);
+  });
+
   it("never restores a previous interaction's draft when a new interaction opens", async () => {
     await bootStarted();
     feed({ type: "interaction_opened", interactionId: "int-a", interaction: inputInteraction });
