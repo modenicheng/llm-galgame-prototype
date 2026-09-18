@@ -51,7 +51,14 @@ export interface MonitorWriterUsage {
 }
 
 export interface MonitorWriterRepair {
-  kind: "end_keyword" | "form_close" | "visual_swap" | "form_prompt_merge" | "strip_continue";
+  kind:
+    | "end_keyword"
+    | "form_close"
+    | "visual_swap"
+    | "form_prompt_merge"
+    | "strip_continue"
+    | "sentinel_autoclose"
+    | "narration_label";
   lineIndex: number;
   message: string;
 }

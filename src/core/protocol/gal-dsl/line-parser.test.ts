@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseDslLine, interpretEndingEpilogue } from "./line-parser.js";
+import { parseDslLine, interpretEndingEpilogue, stripNarrationLabel } from "./line-parser.js";
 import { DslProtocolError } from "./types.js";
 import type { DslErrorCode } from "./types.js";
 
@@ -514,6 +514,64 @@ describe("parseDslLine", () => {
       kind: "narration",
       text: "Suyao 会不会来还不一定。",
     });
+  });
+});
+
+describe("旁白 self-label strip (stripNarrationLabel)", () => {
+  // 实测泄漏形态（2026-09-18 思考档对照局 raw 流）：全角形式带标签播出，
+  // 半角形式更解析出 speaker=「旁白」的台词名牌。
+  it("strips the full-width label form", () => {
+    expect(parseDslLine("旁白：他捏着手机愣了两秒，还是塞回了裤兜。")).toEqual({
+      kind: "narration",
+      text: "他捏着手机愣了两秒，还是塞回了裤兜。",
+    });
+  });
+
+  it("strips the ascii-colon form instead of inventing a 旁白 speaker", () => {
+    expect(parseDslLine("旁白: 名字一个个念过去，轮到我们这排。")).toEqual({
+      kind: "narration",
+      text: "名字一个个念过去，轮到我们这排。",
+    });
+    expect(parseDslLine("旁白:下课铃的尾音还没散干净。")).toEqual({
+      kind: "narration",
+      text: "下课铃的尾音还没散干净。",
+    });
+  });
+
+  it("keeps 旁白 as a speaker only when it is a registered one", () => {
+    const speakers = new Set(["苏遥", "旁白"]);
+    expect(parseDslLine("旁白: 我不是旁白，我是角色。", speakers)).toEqual({
+      kind: "dialogue",
+      speaker: "旁白",
+      text: "我不是旁白，我是角色。",
+      visual: { hasVisual: false, resetVisual: false },
+      name: { hasName: false, resetName: false },
+    });
+  });
+
+  it("does not touch lines that merely start with the word", () => {
+    expect(parseDslLine("旁白君今天格外沉默。")).toEqual({
+      kind: "narration",
+      text: "旁白君今天格外沉默。",
+    });
+    expect(parseDslLine("旁白")).toEqual({ kind: "narration", text: "旁白" });
+    // 别的冒号引导词（非注册说话人）维持原样，不受剥离影响。
+    expect(parseDslLine("警告：危险")).toEqual({ kind: "narration", text: "警告：危险" });
+  });
+
+  it("falls back by speaker when bracket slots slip past the label regex", () => {
+    expect(parseDslLine("旁白[smile]: 他是从后门进来的。")).toEqual({
+      kind: "narration",
+      text: "他是从后门进来的。",
+    });
+  });
+
+  it("exposes the same verdict as a pure helper for the generator's repair tap", () => {
+    expect(stripNarrationLabel("旁白：正文一句话。")).toBe("正文一句话。");
+    expect(stripNarrationLabel("旁白:正文一句话。")).toBe("正文一句话。");
+    expect(stripNarrationLabel("旁白君没有冒号。")).toBeNull();
+    expect(stripNarrationLabel("旁白：")).toBeNull();
+    expect(stripNarrationLabel("旁白：正文。", new Set(["旁白"]))).toBeNull();
   });
 });
 

@@ -13,7 +13,7 @@ import { toModelCatalog } from "../../core/assets/catalog.js";
 import type { AssetCatalog, ModelAssetCatalog } from "../../core/assets/types.js";
 import type { VisualState } from "../../core/presentation/types.js";
 import { StreamLineDecoder } from "../../core/protocol/gal-dsl/stream-decoder.js";
-import { parseDslLine } from "../../core/protocol/gal-dsl/line-parser.js";
+import { parseDslLine, stripNarrationLabel } from "../../core/protocol/gal-dsl/line-parser.js";
 import {
   repairDslClosingLine,
   repairSwappedVisualSlots,
@@ -1153,11 +1153,24 @@ export class StoryGenerator {
           let parsed: DslLine;
           try {
             parsed = parseDslLine(
-              swapRepair?.line ?? closingRepair?.line ?? trimmed,
+              labelStripped ?? swapRepair?.line ?? closingRepair?.line ?? trimmed,
               this.knownSpeakers,
             );
           } catch (error) {
             if (error instanceof DslProtocolError) {
+          // 旁白自标注标签（`旁白：正文` / `旁白: 正文`）——确定性剥掉，
+          // 标签不进玩家正文、不造「旁白」名牌，上报监控计为修复。
+          const labelStripped = trimmed.startsWith("旁白")
+            ? stripNarrationLabel(trimmed, this.knownSpeakers)
+            : null;
+          if (labelStripped !== null) {
+            observer?.onRepair?.(attemptId, {
+              kind: "narration_label",
+              lineIndex,
+              message: `已剥离旁白自标注前缀：“${trimmed.slice(0, 40)}” → “${labelStripped.slice(0, 40)}”。`,
+            });
+          }
+
               observer?.onLine(attemptId, lineIndex, { kind: null, error: error.message });
               if (await tryStripContinue(error, rawLines.length - 1, lineIndex)) continue outer;
               rejectLine(error, trimmed);
@@ -1412,13 +1425,23 @@ export class StoryGenerator {
                   });
                 }
                 const tailParsed = parseDslLine(
-                  tailSwap?.line ?? closingRepair?.line ?? trimmed,
+                  tailLabel ?? tailSwap?.line ?? closingRepair?.line ?? trimmed,
                   this.knownSpeakers,
                 );
                 if (
                   tailParsed.kind === "segment_end" &&
                   tailParsed.reason === "interaction" &&
                   tailParsed.nonce === nonce &&
+                const tailLabel = trimmed.startsWith("旁白")
+                  ? stripNarrationLabel(trimmed, this.knownSpeakers)
+                  : null;
+                if (tailLabel !== null) {
+                  observer?.onRepair?.(attemptId, {
+                    kind: "narration_label",
+                    lineIndex: tailIndex,
+                    message: `已剥离旁白自标注前缀：“${trimmed.slice(0, 40)}” → “${tailLabel.slice(0, 40)}”。`,
+                  });
+                }
                   allowedReasons.includes(tailParsed.reason) &&
                   parser.hasOpenInteraction()
                 ) {

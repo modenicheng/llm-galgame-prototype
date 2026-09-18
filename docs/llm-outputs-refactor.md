@@ -438,6 +438,11 @@ StreamLineDecoder → DslLineParser → EventGroupBuilder → SegmentValidator
 只解析单行，输出 `DslLine` 判别联合（dialogue / narration / bg / bgm / ch / se /
 表单四行 / beat / 段结束）。不在此层处理 Runtime ID。
 
+容错归解析器的有：全角 `：` 分隔符归一（仅注册说话人）、＠/全角指令标点
+归一。旁白自标注标签（`旁白：正文` / `旁白: 正文`，思考档实测泄漏）由
+`stripNarrationLabel` 确定性剥离成旁白正文——除非「旁白」是注册说话人；
+生成器在预解析层调同一纯函数上报 repair `narration_label`（2026-09-18）。
+
 ---
 
 # 43. EventGroupBuilder

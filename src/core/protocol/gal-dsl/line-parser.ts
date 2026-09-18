@@ -18,6 +18,9 @@
  *   @ch <id>:<variant> [position]→ character_cue set
  *   @ch <id> hide|show|exit      → character_cue hide/show/exit
  *   <speaker>[<visual>](<name>): <text> → dialogue
+ *   旁白[:：] <text>             → narration（「旁白」自标注标签剥离，
+ *                                   见 stripNarrationLabel；「旁白」是注册
+ *                                   说话人时不适用）
  *   otherwise                    → narration
  *
  * 以 @ 开头但不匹配任何指令的行**不再静默降级为旁白/台词**（历史事故：
@@ -98,6 +101,23 @@ const FULLWIDTH_FORM_PUNCT: Readonly<Record<string, string>> = {
   "＝": "=",
   "／": "/",
 };
+
+/**
+ * 「旁白」自标注标签剥离。实测（2026-09-18 思考档对照局）模型会把旁白
+ * 写成 `旁白：正文` / `旁白: 正文`：全角形式把标签播进玩家正文，半角
+ * 形式更造出 speaker=「旁白」的台词名牌。旁白行本身没有名字，标签是纯
+ * 泄漏记号——除非「旁白」真的是注册说话人，确定性剥掉标签收进旁白正文。
+ * 返回 null 表示不适用（无冒号、正文为空、或「旁白」已注册），交回严格
+ * 解析。纯函数：parser 与生成器的修复上报共用，勿在两处重写正则。
+ */
+export function stripNarrationLabel(
+  line: string,
+  knownSpeakers?: ReadonlySet<string>,
+): string | null {
+  if (knownSpeakers?.has("旁白") === true) return null;
+  const match = /^旁白\s*[:：]\s*(.+)$/.exec(line);
+  return match !== null ? match[1]! : null;
+}
 
 /**
  * 全角/半角指令前缀兼容（仅行首指令意图位）：＠→@，@ 后紧跟的全角
@@ -447,6 +467,13 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
     );
   }
 
+  // 8.5 旁白自标注标签：`旁白：正文` 带标签播出、「旁白: 正文」造出
+  // speaker=「旁白」的名牌——都在玩家面前泄漏机器记号。确定性剥离。
+  const narrationLabel = stripNarrationLabel(line, knownSpeakers);
+  if (narrationLabel !== null) {
+    return { kind: "narration", text: narrationLabel };
+  }
+
   // 9. dialogue: <speaker>[<visual>](<name>): <text>
   // A full-width "：" as the delimiter is a high-frequency Chinese LLM
   // output. When it sits exactly in the delimiter position AND the prefix
@@ -474,6 +501,11 @@ export function parseDslLine(rawLine: string, knownSpeakers?: ReadonlySet<string
   if (dialogueMatch !== null) {
     const speaker = dialogueMatch[1]!.trim();
     const text = dialogueMatch[4]!;
+    if (speaker === "旁白" && knownSpeakers?.has("旁白") !== true) {
+      // 带括号槽的变体（`旁白[smile]: …`）逃过了 8.5 的标签正则——台词
+      // 已解析成形，按说话人兜底，同样转旁白，「旁白」不上名牌。
+      return { kind: "narration", text };
+    }
     // A ： inside [visual]/(name) is the same LLM habit — normalize so
     // `苏遥[suit：calm]：你好` keeps its spriteSet:variant split.
     const visualSource = dialogueMatch[2]?.replace(/：/g, ":");

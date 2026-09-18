@@ -331,7 +331,7 @@ describe("DSL serializers and prompt builder", () => {
         "BGM：mystery（正在播放）",
         "角色：",
         "- suyao（显示名：神秘女子）：立绘 suyao/anxious，位置 left，可见",
-        "- yuki（显示名：由纪）：立绘 yuki/normal，位置 right，隐藏（说话不会自动显示，需 @ch yuki show 恢复）",
+        "- yuki（显示名：由纪）：立绘 yuki/normal，位置 right，隐藏（开口会自动重新登台；正式回场请先 @ch yuki show，并留意其位置是否已被占用）",
       ].join("\n"),
     );
 
@@ -679,6 +679,38 @@ describe("DSL mode generation", () => {
       expect.any(String),
       expect.objectContaining({ source: "estimated", input: expect.any(Number), output: expect.any(Number) }),
     );
+  });
+
+  it("strips the 旁白 self-label from narration lines and reports the repair", async () => {
+    const repairs: Array<{ kind: string; lineIndex: number; message: string }> = [];
+    const observer = {
+      onAttemptStart: vi.fn(),
+      onDelta: vi.fn(),
+      onLine: vi.fn(),
+      onGroup: vi.fn(),
+      onRepair: vi.fn((_attemptId: string, repair: (typeof repairs)[number]) => repairs.push(repair)),
+      onUsage: vi.fn(),
+      onAttemptEnd: vi.fn(),
+    } as DslStreamObserver;
+    const gen = makeDslGenerator(undefined, observer);
+    mockDslClient(gen, (nonce) => [
+      "旁白：他捏着手机愣了两秒，还是塞回了裤兜。",
+      "旁白: 名字一个个念过去，轮到我们这排。",
+      `@end ${nonce} interaction`,
+    ]);
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+
+    expect(received.map((group) => group.main)).toEqual([
+      { type: "narration", text: "他捏着手机愣了两秒，还是塞回了裤兜。" },
+      { type: "narration", text: "名字一个个念过去，轮到我们这排。" },
+    ]);
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+    expect(repairs.map((repair) => repair.kind)).toEqual(["narration_label", "narration_label"]);
+    expect(repairs[0]?.message).toContain("旁白自标注前缀");
   });
 
   it("repairs an empty @? into the form end while a form is open", async () => {
