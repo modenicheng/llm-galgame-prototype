@@ -24,7 +24,7 @@
 | 指标 | Python 引擎 | qwentts.cpp (Q8_0) |
 |---|---|---|
 | 单路 RTF | 0.47 | **0.27**（CLI 冷启 0.215） |
-| 四路吞吐 RTF | 0.43 | **0.09**（24.8s 音频 2.33s） |
+| 四路吞吐 RTF | 0.43 | **0.20**（24.4s 音频 4.9s，--max-batch 1 顺序） |
 | 流式首包 | 1.9–3.9s | **~530ms**（TTFA 76ms 帧级） |
 | 显存 | 4.2 GB (bf16) | ~2.4 GB (Q8) |
 | 预热 | 4–7 分钟编译 | 无 |
@@ -57,3 +57,11 @@ recompile 上限）详见 docs/local-tts.md 引擎 B 一节与 fastpath.py 头�
 - 引擎 B：`PAIMENG_REF_WAV=<参考音> python tools/build_voices.py`
   （四配角参考音由 CustomVoice 内置音色合成，脚本内含人设台词与语气指令；
   需先 `CUSTOM_VOICE_DIR`/`TTS_MODEL_DIR` 指向本地权重或留 HF id 自动下载）。
+
+### 2026-09-19 勘误：ggml submodule 勿盲升级
+- 本机部署（D:	ools\qwentts.cpp）钉在 ggml **3f88e6f**，`--max-batch 4`
+  实测吞吐 RTF 0.13，一切正常。
+- 上游更新的 submodule（0572d60+）存在 `--max-batch>1` 严重性能回归
+  （四路 RTF 崩到 ~6，单路不受影响、顺序 --max-batch 1 吞吐 0.20 可兜底）。
+- 结论：**升级 qwentts.cpp/ggml 前先用 bench_qwentts.py --par 4 验批处理**，
+  回归未修则保持 3f88e6f。
