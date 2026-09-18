@@ -1198,16 +1198,18 @@ button {
   }
 }
 
+/* 只动 opacity+transform：keyframes 里一旦混入 filter，filter 分量走主线程
+   而 opacity/transform 走合成器——页面在后台/被遮挡时主线程动画节流冻结，
+   opacity 照常播完，标题就永远停在 blur(8px) 起始帧（backdrop-filter 遮罩
+   内尤甚）。规则同 rise-in-solid：毛玻璃祖先进场禁非合成器友好属性。 */
 @keyframes title-in {
   from {
     opacity: 0;
     transform: translateY(26px) scale(0.985);
-    filter: blur(8px);
   }
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
-    filter: blur(0);
   }
 }
 
