@@ -69,7 +69,8 @@ profiles:
       local:
         model: local-qwen3-tts
         voice: xuwanqing
-        voice_revision: 1
+        # 2026-09-19 参考音更换（内置音色→真人音源），bump 失效旧缓存
+        voice_revision: 2
 
   linxiaoman_main:
     semantic:
@@ -85,7 +86,8 @@ profiles:
       local:
         model: local-qwen3-tts
         voice: linxiaoman
-        voice_revision: 1
+        # 2026-09-19 参考音更换（内置音色→真人音源），bump 失效旧缓存
+        voice_revision: 2
 
   xiayiming_main:
     semantic:
@@ -118,7 +120,8 @@ profiles:
       local:
         model: local-qwen3-tts
         voice: hanche
-        voice_revision: 1
+        # 2026-09-19 参考音更换（内置音色→真人音源），bump 失效旧缓存
+        voice_revision: 2
 
   # qwen3-tts 复刻音色（voice-id 在 .env 的 QWEN3_VOICE_SUYAO）
   # 注意：需在百炼控制台对 qwen3-tts-vc 模型复刻苏遥音色（10~20s 干净人声，

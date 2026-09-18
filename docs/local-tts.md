@@ -156,6 +156,34 @@ uv pip install --python .venv qwen-tts fastapi uvicorn aiohttp triton-windows
 3. `voices.yaml` 加 profile 并在 `config.yaml` 的 `characters` 绑定。
 4. 之后每次重建音色，`voice_revision` +1。
 
+## 标点兼容与节奏控制（两引擎通用）
+
+qwen3-tts **没有任何内联节奏标签**：DashScope 的情感/富语言标签
+（`[sad]`、`[laughing]`…）属于另一条 Qwen-Audio-TTS 产品线；`<break>`/SSML
+不支持；`instructions` 参数只有 qwen3-tts-instruct\* 云端模型接受，且是整句
+风格描述而非逐点控制。**停顿只来自标点本身**（外加播放侧的
+`pause_before_ms`/`pause_after_ms`，见 performance-compiler）。
+
+模型词表外的标点会被**静默丢弃**。2026-09-19 用固定种子探针
+（`tts-server/tools/probe_punct.py`，间隙=帧 RMS 静音分析）实测引擎 A：
+
+| 输入 | 实测行为 |
+|---|---|
+| 行尾 `——`（话被打断） | 只多 ~0.1s 衰减 ≈ 被吞；`……` 则产生可闻的渐弱尾音 |
+| 句中 `——` | 停顿 0.2~0.7s 随上下文波动（同位置逗号 ~0.44s）——时有时无，正是「偶尔被静默吞掉」听感的来源；`……` 是模型原生犹豫标记，稳定 |
+| 数字区间 `三千——五千` | 连读无停顿（语义有风险），`到` 版本读法自然 |
+| `～` / `·` | 无垃圾音、无错误停顿——**保持原样**，加停顿反而破坏节奏 |
+
+游戏侧适配（`src/application/audio/qwen3-text-compat.ts`，在
+AudioDescriptorFactory 内按 `qwen3-tts` 模型族门控）：破折号族
+（`——`/`—`/`–`/`--`/LLM 分隔线等）→ `……`；数字区间 → `到`；其余标点不动。
+适配发生在 cacheKey 之前，因此旧的「吞破折号」缓存音频会自动失效重合成。
+探针用法：
+
+```bash
+cd tts-server && python tools/probe_punct.py --out /tmp/punct-probe
+```
+
 ## 故障排查
 
 | 症状 | 原因与处理 |
