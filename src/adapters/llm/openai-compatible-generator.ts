@@ -568,6 +568,12 @@ export class StoryGenerator {
     // the wrap thrown to the runtime so error-class detection survives it.
     let streamError: unknown = undefined;
 
+    // Provider end-of-stream signal (SSE finish_reason, rides the final
+    // chunk): "stop" = the model finished on its own; "length" = cut by the
+    // token budget; null/absent = gateway stripped it. Gates the
+    // deterministic sentinel autoclose at finish() below.
+    let finishReason: string | null = null;
+
     try {
       const createStream = async (
         messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
@@ -600,11 +606,20 @@ export class StoryGenerator {
       // in a fresh pair while the parser (and its pending cues / open form)
       // carries over.
       const makeLineStream = (
-        sse: AsyncIterable<{ choices?: Array<{ delta?: { content?: string | null } }>}>,
+        sse: AsyncIterable<{
+          choices?: Array<{
+            delta?: { content?: string | null };
+            finish_reason?: string | null;
+          }>;
+        }>,
         lineDecoder: StreamLineDecoder,
       ): AsyncGenerator<string> =>
         (async function* (): AsyncGenerator<string> {
           for await (const chunk of sse) {
+            // finish_reason rides the final chunk (usually beside empty
+            // choices); capture it before the content check skips the chunk.
+            const chunkFinish = chunk.choices?.[0]?.finish_reason;
+            if (chunkFinish) finishReason = chunkFinish;
             const content = chunk.choices?.[0]?.delta?.content;
             if (!content) continue;
             if (firstLineMs === 0) firstLineMs = Date.now();
@@ -661,6 +676,8 @@ export class StoryGenerator {
         const previousController = activeController;
         activeController = new AbortController();
         previousController.abort();
+        // 续写流成为新的权威输出：被中止流的 finish_reason 作废。
+        finishReason = null;
         const continuationInstruction = buildStripContinueInstruction(error, nonce, allowedReasons);
         const continuation = await createStream([
           { role: "system" as const, content: this.systemPrompt },
@@ -1038,6 +1055,49 @@ export class StoryGenerator {
             segmentEnd: result.status,
           },
         };
+      }
+
+      // 确定性补哨兵（移植自 campus 线 feat/end-sentinel-low，2026-09-18）：
+      // 输出自然结束（finish_reason=stop，非预算截断）、全部行解析合法、
+      // parser 只差段尾哨兵、且本任务收束理由唯一（固定尾 buffer 类小任务：
+      // input_bridge / input_response / branch_prefetch）时，本地合成哨兵行
+      // 补完。这类任务的哨兵除 nonce 回显外不携带任何信息，漏写是纯形式性
+      // 缺失（campus 实测占全部写手失败 ~90%+）；fail 路径的代价是桥接旁白
+      // 整段废弃、分支预取降级为选中时重造。截断（length / 缺失）与多理由
+      // 任务不补：前者可能是真截断，后者的 reason（interaction/buffer/ending）
+      // 承载语义，不可替模型决定。
+      if (
+        finishReason === "stop" &&
+        allowedReasons.length === 1 &&
+        pendingFormStart === null &&
+        !parser.hasOpenInteraction()
+      ) {
+        const fixedReason = allowedReasons[0]!;
+        const synthLine = `@end ${nonce} ${fixedReason}`;
+        try {
+          parser.pushLine({ kind: "segment_end", nonce, reason: fixedReason });
+          const closed = parser.finish();
+          if (closed.status.kind === "complete") {
+            lineIndex += 1;
+            rawLines.push(synthLine);
+            console.warn(
+              `[LLM] ${type} 输出自然结束但漏写段尾哨兵，已本地补「${synthLine}」（理由取本任务固定尾部）`,
+            );
+            this.metrics?.recordLLMRequest(type, usage, latencyMs);
+            options?.onSegmentEnd?.(closed.status);
+            return {
+              kind: "complete",
+              envelope: {
+                events: [],
+                groups: allGroups,
+                segmentEnd: closed.status,
+              },
+            };
+          }
+        } catch {
+          // 合成行被 parser 拒绝（理论不可达：nonce/reason 均来自本任务
+          // 自身参数）——parser 状态未被消费，落回下方原 fail/retry 路径。
+        }
       }
 
       // No @end sentinel → truncated segment (docs §49). With forwarded

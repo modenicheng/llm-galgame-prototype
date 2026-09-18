@@ -519,10 +519,14 @@ describe("DSL mode generation", () => {
     );
   }
 
-  function dslStream(lines: string[]): AsyncGenerator<unknown> {
+  function dslStream(lines: string[], finishReason?: string): AsyncGenerator<unknown> {
     return (async function* () {
       for (const line of lines) {
         yield { choices: [{ delta: { content: `${line}\n` } }] };
+      }
+      // Final SSE chunk carrying the end-of-stream signal (no content).
+      if (finishReason !== undefined) {
+        yield { choices: [{ delta: {}, finish_reason: finishReason }] };
       }
     })();
   }
@@ -1016,5 +1020,80 @@ describe("DSL mode generation", () => {
       nonce: expect.any(String),
       reason: "buffer",
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Deterministic sentinel autoclose (ported from campus, 2026-09-18)
+  // -------------------------------------------------------------------------
+
+  /** Client mock whose stream ends with an explicit finish_reason. */
+  function mockFinishDslClient(
+    gen: StoryGenerator,
+    lines: string[],
+    finishReason: string,
+  ): void {
+    (gen as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn(async () => dslStream(lines, finishReason)),
+        },
+      },
+    };
+  }
+
+  const bridgeInteraction: InteractionEvent = {
+    type: "interaction",
+    interaction_id: "int_1",
+    prompt: "你想说什么？",
+    mode: "input",
+    input: { kind: "free_text", placeholder: "...", max_length: 200 },
+  };
+
+  it("autocloses a naturally-stopped single-reason stream that omitted the sentinel", async () => {
+    const gen = makeDslGenerator();
+    mockFinishDslClient(gen, ["她静静地看着你。", "窗外的光又暗了一格。"], "stop");
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateInputBridge(
+      1,
+      createInitialState(),
+      bridgeInteraction,
+      undefined,
+      { onGroup: (group: EventGroupDraft) => received.push(group) },
+    );
+
+    // 2 narration groups survive; the segment completes as buffer.
+    expect(received).toHaveLength(2);
+    expect(envelope.segmentEnd).toEqual({
+      kind: "complete",
+      nonce: expect.any(String),
+      reason: "buffer",
+    });
+  });
+
+  it("does not autoclose a budget-truncated stream (finish_reason=length)", async () => {
+    const gen = makeDslGenerator();
+    mockFinishDslClient(gen, ["她静静地看着你。", "窗外的光又暗了一格。"], "length");
+
+    const promise = (gen as any).generateInputBridge(
+      1,
+      createInitialState(),
+      bridgeInteraction,
+      undefined,
+      { onGroup: () => undefined },
+    );
+    await expect(promise).rejects.toThrow(/没有 @end 哨兵/);
+  });
+
+  it("does not autoclose multi-reason tasks even on natural stop", async () => {
+    const gen = makeDslGenerator();
+    mockFinishDslClient(gen, ["地下室里只亮着终端的一点蓝光。"], "stop");
+
+    const promise = (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: () => undefined,
+    });
+    // opening 允许 interaction/buffer/ending 多种收束理由——reason 承载语义，
+    // 不替模型决定，维持 fail。
+    await expect(promise).rejects.toThrow(/没有 @end 哨兵/);
   });
 });

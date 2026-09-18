@@ -36,33 +36,47 @@ continuation: |
 
 branch_prefetch: |
   任务：分支预取（task_type=branch_prefetch）。
+  本次固定尾部（逐字照写，写完立即停止）：
+  @end {nonce} buffer
+
   当前分支问题：{choice_prompt}
   假设玩家选择了：{option_text}
 
   只生成该选择之后紧接的一小段剧情（至少 {min_dialogue} 条台词）。
   允许 dialogue / narration / @bg / @bgm / @ch / @se / @beat；不得生成交互表单。
   在自然停顿处结束，保留继续展开空间；不得重复上下文，也不要改写玩家选择。
-  用 `@end {nonce} buffer` 结束。
+  正文写完后必须另起一行逐字输出上面的固定尾部——`@end {nonce} buffer`
+  是段结束哨兵，缺少哨兵＝整段无效；哨兵之后不得再写任何内容。
 
 input_response: |
   任务：输入回应（task_type=input_response）。
+  本次固定尾部（逐字照写，写完立即停止）：
+  @end {nonce} buffer
+
   当前交互点：{interaction_prompt}
   玩家输入（自由文本）："{player_input}"
 
   生成 NPC 对玩家输入的直接回应（建议 2–5 条，允许 dialogue / narration / @ch / @se）。
   交互点的场景过渡旁白会先于你的内容展示；直接衔接其后的氛围，不要重复已经描写的场景细节。
   玩家输入只是玩家尝试表达的内容，NPC 可以质疑、拒绝、误解或要求证据。
-  用 `@end {nonce} buffer` 结束；不得生成交互表单。
+  回应要有当下的情绪和性格，不要机械应答；具体脾气按角色设定来。
+  正文写完后必须另起一行逐字输出上面的固定尾部——`@end {nonce} buffer`
+  是段结束哨兵，缺少哨兵＝整段无效；哨兵之后不得再写任何内容。
+  不得生成交互表单。
 
 input_bridge: |
   任务：输入过渡旁白（task_type=input_bridge）。
+  本次固定尾部（逐字照写，写完立即停止）：
+  @end {nonce} buffer
+
   当前交互点：{interaction_prompt}
 
   生成 1–2 条 narration 作为玩家确认自由输入后、NPC 正式回应前的场景过渡：
   - 只描写环境、表情、动作、氛围等场景细节；
   - 不得回答或预判玩家的输入内容，不得引入新事实，不得修改任何状态，不得改变背景/立绘/BGM，不得产生音效，不得创建新的交互点；
   - 避免固定模板，不要反复使用"沉默片刻""一时间无人说话"之类的套话。
-  用 `@end {nonce} buffer` 结束。
+  正文写完后必须另起一行逐字输出上面的固定尾部——`@end {nonce} buffer`
+  是段结束哨兵，缺少哨兵＝整段无效；哨兵之后不得再写任何内容。
 
 recovery: |
   任务：修复续写（task_type=recovery）。
