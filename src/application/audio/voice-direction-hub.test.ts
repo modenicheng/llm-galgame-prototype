@@ -5,13 +5,9 @@ import { describe, expect, it } from "vitest";
 import { VoiceDirectionHub } from "./voice-direction-hub.js";
 
 describe("VoiceDirectionHub", () => {
-  it("returns undefined before a source is bound", () => {
+  it("starts unbound, delegates to the bound source, and rebinds on setSource", () => {
     const hub = new VoiceDirectionHub();
     expect(hub.for("suyao")).toBeUndefined();
-  });
-
-  it("delegates to the bound source and rebinds on setSource", () => {
-    const hub = new VoiceDirectionHub();
     hub.setSource((speaker) => (speaker === "suyao" ? { volume: "whisper" } : undefined));
     expect(hub.for("suyao")).toEqual({ volume: "whisper" });
     expect(hub.for("linche")).toBeUndefined();

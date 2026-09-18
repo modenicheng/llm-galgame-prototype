@@ -105,6 +105,9 @@ export class AudioDescriptorFactory {
     // 查表键须用注册键，否则指导静默失效）。
     const direction = this.options.voiceDirectionFor?.(character.registryKey);
     const design = this.options.voiceDesigns?.[character.registryKey];
+    // design 并集在此是通用路径：既覆盖注入角色（合成 profile 已含 design，
+    // filterDelivery 去重兜底），也覆盖 author 混合角色与注入被跳过
+    // （local / 无 fallback env）时 design id 撞 author 键的边缘。
     const compiled = this.options.compiler.compile({
       baseDescription: profile.semantic.base_description,
       allowedDelivery:
@@ -185,7 +188,11 @@ export class AudioDescriptorFactory {
     const character = byId ?? bySpeaker ?? byNameEntry?.[1];
     if (!character) return null;
     const registryKey =
-      byId !== undefined ? (characterId as string) : bySpeaker !== undefined ? event.speaker : (byNameEntry?.[0] as string);
+      byId !== undefined
+        ? (characterId as string)
+        : bySpeaker !== undefined
+          ? event.speaker
+          : (byNameEntry?.[0] as string);
     return {
       registryKey,
       voiceProfile: character.voice_profile,

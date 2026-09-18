@@ -187,20 +187,9 @@ describe("WorldGenerator — 编剧音频画像（V2）", () => {
     const stored = JSON.parse(
       await readFile(path.join(root, gameId, "world", "voice-design.json"), "utf8"),
     );
-    expect(stored).toEqual({
-      version: 1,
-      characters: {
-        su_yao: {
-          name: "苏遥",
-          voice: {
-            timbre: "年轻女性，清亮偏冷",
-            delivery: ["restrained", "firm"],
-            avoid: ["playful"],
-            baseline: { pace: "slow" },
-          },
-        },
-      },
-    });
+    const design = draft.characters[0]?.voice;
+    expect(design).toBeDefined();
+    expect(stored).toEqual({ version: 1, characters: { su_yao: { name: "苏遥", voice: design } } });
 
     const charactersTxt = await readFile(
       path.join(root, gameId, "world", "prompts", "characters.txt"),

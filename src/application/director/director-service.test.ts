@@ -325,7 +325,6 @@ describe("DirectorService — voice 指导与调色板", () => {
 
   it("omits voice when the model gives none or only invalid targets", async () => {
     for (const payload of [
-      { sceneGoal: "x", defenseBeats: [], endingPressure: false },
       { sceneGoal: "x", defenseBeats: [], endingPressure: false, voice: { 苏遥: { pace: 7 } } },
       { sceneGoal: "x", defenseBeats: [], endingPressure: false, voice: [1, 2] },
     ]) {

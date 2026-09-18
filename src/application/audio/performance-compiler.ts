@@ -331,22 +331,16 @@ export class PerformanceCompilerImpl implements PerformanceCompiler {
       } else if (mode === "free") {
         instruction = buildInstruction(base, kept, validPerf?.intensity, direction?.note);
       }
+      // 三轴同一优先级链（§3.3）：导演 > 逐行意图 > 画像基线。
+      const axis = {
+        pace: direction?.pace ?? validPerf?.pace ?? baseline?.pace,
+        energy: direction?.energy ?? validPerf?.energy ?? baseline?.energy,
+        volume: direction?.volume ?? validPerf?.volume ?? baseline?.volume,
+      };
       const result: CompiledPerformance = {
-        rate: lookup(
-          PACE_RATE,
-          direction?.pace ?? validPerf?.pace ?? baseline?.pace,
-          IDENTITY_PARAMS.rate,
-        ),
-        pitch: lookup(
-          ENERGY_PITCH,
-          direction?.energy ?? validPerf?.energy ?? baseline?.energy,
-          IDENTITY_PARAMS.pitch,
-        ),
-        volume: lookup(
-          VOLUME_LEVEL,
-          direction?.volume ?? validPerf?.volume ?? baseline?.volume,
-          IDENTITY_PARAMS.volume,
-        ),
+        rate: lookup(PACE_RATE, axis.pace, IDENTITY_PARAMS.rate),
+        pitch: lookup(ENERGY_PITCH, axis.energy, IDENTITY_PARAMS.pitch),
+        volume: lookup(VOLUME_LEVEL, axis.volume, IDENTITY_PARAMS.volume),
         pauseBeforeMs: clampPause(validPerf?.pause_before_ms),
         pauseAfterMs: clampPause(validPerf?.pause_after_ms),
       };

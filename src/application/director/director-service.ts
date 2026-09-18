@@ -477,24 +477,12 @@ export class DirectorService {
     return JSON.stringify({ characterId, known: false });
   }
 
-  private parseDirective(text: string):
-    | {
-        sceneGoal?: string;
-        defenseBeats: string[];
-        endingPressure: boolean;
-        voice?: Record<string, VoiceDirectionTarget>;
-      }
-    | undefined {
+  private parseDirective(text: string): ParsedDirective | undefined {
     const match = /\{[\s\S]*\}/.exec(text);
     if (match === null) return undefined;
     try {
       const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-      const directive: {
-        sceneGoal?: string;
-        defenseBeats: string[];
-        endingPressure: boolean;
-        voice?: Record<string, VoiceDirectionTarget>;
-      } = {
+      const directive: ParsedDirective = {
         defenseBeats: [],
         endingPressure: parsed.endingPressure === true,
       };
@@ -515,6 +503,14 @@ export class DirectorService {
       return undefined;
     }
   }
+}
+
+/** 模型指令 JSON 的校验产物（voice 已过词表校验）。 */
+interface ParsedDirective {
+  sceneGoal?: string;
+  defenseBeats: string[];
+  endingPressure: boolean;
+  voice?: Record<string, VoiceDirectionTarget>;
 }
 
 /** 枚举字段校验：字符串命中词表则收窄返回，否则 undefined（丢弃该字段）。 */

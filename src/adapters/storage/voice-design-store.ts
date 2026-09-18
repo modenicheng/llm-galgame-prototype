@@ -11,10 +11,10 @@ import type { CharacterVoiceDesign } from "../../application/outline/outline-wri
 import { CharacterVoiceDesignSchema } from "../../application/outline/outline-writer.js";
 
 /** per-game 音频画像文件（world/ 下的非冻结布局，随 world/prompts 先例）。 */
-export const VOICE_DESIGN_FILE = "world/voice-design.json";
+const VOICE_DESIGN_FILE = "world/voice-design.json";
 
 /** 单个角色的画像存储形状（name 供装配层直接注 factory characters）。 */
-export interface StoredVoiceDesign {
+interface StoredVoiceDesign {
   name: string;
   voice: CharacterVoiceDesign;
 }

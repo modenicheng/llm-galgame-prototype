@@ -8,14 +8,14 @@
  */
 import type { VoiceDirectionTarget } from "./performance-compiler.js";
 
-export type VoiceDirectionSource = (
-  speakerId: string,
-) => VoiceDirectionTarget | undefined;
-
 export class VoiceDirectionHub {
-  private source: VoiceDirectionSource | undefined;
+  private source:
+    | ((speakerId: string) => VoiceDirectionTarget | undefined)
+    | undefined;
 
-  setSource(source: VoiceDirectionSource | undefined): void {
+  setSource(
+    source: ((speakerId: string) => VoiceDirectionTarget | undefined) | undefined,
+  ): void {
     this.source = source;
   }
 

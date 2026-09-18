@@ -155,10 +155,12 @@ function buildAudioStack(
   voices: Awaited<ReturnType<typeof loadVoices>>,
   provider: TtsProviderPort | null,
   wiring: {
-    characters?: Record<string, { name: string; voice_profile: string }>;
+    characters: Record<string, { name: string; voice_profile: string }>;
+    factoryProvider: "dashscope" | "local" | "mock";
+    modelProfile: string;
     voiceDirectionFor?: (speakerId: string) => VoiceDirectionTarget | undefined;
     voiceDesigns?: Record<string, CharacterVoiceDesign>;
-  } = {},
+  },
 ): {
   catalog: AudioCatalogServiceImpl;
   planner: AudioIntentPlanner;
@@ -168,15 +170,12 @@ function buildAudioStack(
   const synthesis = config.media.audio.synthesis;
   const catalog = new AudioCatalogServiceImpl();
   const factory = new AudioDescriptorFactory({
-    characters: wiring.characters ?? config.characters,
+    characters: wiring.characters,
     voices,
     // The factory needs a discriminator even when synthesis is disabled;
     // "mock" yields stable mock bindings for every speaker.
-    provider:
-      synthesis?.provider === "dashscope" || synthesis?.provider === "local"
-        ? synthesis.provider
-        : "mock",
-    modelProfile: synthesis?.model_profile ?? "cosyvoice_v3_flash",
+    provider: wiring.factoryProvider,
+    modelProfile: wiring.modelProfile,
     sampleRate: synthesis?.sample_rate ?? 22050,
     format: "pcm_s16le",
     env: process.env,
@@ -215,19 +214,16 @@ async function buildVoiceViews(input: {
   gameId: string;
   config: AppConfig;
   voices: Awaited<ReturnType<typeof loadVoices>>;
+  provider: "dashscope" | "local" | "mock";
+  modelProfile: string;
 }): Promise<VoiceDesignViews> {
   const designFile = await new VoiceDesignStore(input.gamesRoot, input.gameId).load();
-  const synthesisProvider = input.config.media.audio.synthesis?.provider;
-  const provider =
-    synthesisProvider === "dashscope" || synthesisProvider === "local"
-      ? synthesisProvider
-      : "mock";
   return mergeVoiceDesignViews({
     authorCharacters: input.config.characters,
     authorVoices: input.voices,
     designFile,
-    provider,
-    dashscopeModelProfile: input.config.media.audio.synthesis?.model_profile ?? "cosyvoice_v3_flash",
+    provider: input.provider,
+    dashscopeModelProfile: input.modelProfile,
     fallbackVoiceId: (process.env[DASHSCOPE_VOICE_FALLBACK_ENV] ?? "").trim(),
   });
 }
@@ -381,13 +377,30 @@ export async function createRuntimeApplication(
   // options.gameId 固定世界（「继续游戏」指向同一目录）；缺省每次启动
   // 生成新世界。
   const gameId = options.gameId ?? `game_${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  // 工厂侧 provider 判别与模型档（disabled → mock）——buildAudioStack 与
+  // buildVoiceViews 共用同一推导（单一真源）。
+  const synthesisProvider = config.media.audio.synthesis?.provider;
+  const factoryProvider =
+    synthesisProvider === "dashscope" || synthesisProvider === "local"
+      ? synthesisProvider
+      : "mock";
+  const modelProfile = config.media.audio.synthesis?.model_profile ?? "cosyvoice_v3_flash";
   // V2（角色音频特征设计 §4.1）：编剧画像 → 动态角色注入视图。
-  const voiceViews = await buildVoiceViews({ gamesRoot, gameId, config, voices });
+  const voiceViews = await buildVoiceViews({
+    gamesRoot,
+    gameId,
+    config,
+    voices,
+    provider: factoryProvider,
+    modelProfile,
+  });
   // 导演声音指导桥（角色音频特征设计 §4.2）：hub 先于会话存在，
   // buildGameFor 建完 game 后重绑 source。
   const voiceDirectionHub = new VoiceDirectionHub();
   const { catalog, planner, ttsTasks, taskStatusListeners } = buildAudioStack(config, voiceViews.voices, provider, {
     characters: voiceViews.characters,
+    factoryProvider,
+    modelProfile,
     voiceDirectionFor: voiceDirectionHub.for.bind(voiceDirectionHub),
     voiceDesigns: voiceViews.designs,
   });

@@ -129,6 +129,8 @@ describe("PerformanceCompilerImpl", () => {
         pause_before_ms: 100,
         pause_after_ms: 200,
       },
+      direction: { delivery: "firm", volume: "soft", note: "夜谈压低声音" },
+      baseline: { pace: "slow", energy: "low", volume: "whisper" },
     };
     const a = compile(input);
     const b = compile(input);
@@ -329,15 +331,6 @@ describe("PerformanceCompilerImpl — 导演指导合并", () => {
     expect(result.instruction).toBe(BASE);
   });
 
-  it("keeps identical output for identical inputs (cacheKey safety)", () => {
-    const input: PerformanceCompileInput = {
-      baseDescription: BASE,
-      allowedDelivery: ["gentle", "firm"],
-      performance: { delivery: ["gentle"] },
-      direction: { volume: "soft", delivery: "gentle" },
-    };
-    expect(compile(input)).toEqual(compile(input));
-  });
 });
 
 describe("PerformanceCompilerImpl — 画像基线合并（V2）", () => {

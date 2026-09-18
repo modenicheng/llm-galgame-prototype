@@ -107,12 +107,7 @@ describe("OutlineWriterAdapter — 编剧音频画像（V2）", () => {
     const draft = await makeAdapter(JSON.stringify(withVoice)).writeOutline({
       userText: "任意描述",
     });
-    expect(draft.characters[0]?.voice).toEqual({
-      timbre: "年轻女性，清亮偏冷",
-      delivery: ["restrained", "firm"],
-      avoid: ["playful"],
-      baseline: { pace: "slow", volume: "soft" },
-    });
+    expect(draft.characters[0]?.voice).toEqual(withVoice.characters[0].voice);
     expect(draft.characters[1]?.voice).toBeUndefined();
   });
 
