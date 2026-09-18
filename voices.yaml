@@ -31,6 +31,95 @@
 version: 3
 
 profiles:
+  # ---- 本地 qwen3-tts 服务（tts-server/，RTX 5060 本机推理）----
+  # providers.local.voice = tts-server/voices/registry.json 的音色键。
+  # 树莓娘 = paimeng.wav 参考音克隆；四配角 = 内置音色（Serena/Vivian/
+  # Dylan/Uncle_Fu）经 CustomVoice 合成参考音后转 Base 克隆 prompt——
+  # 运行时只加载一个 1.7B-Base，五音色单模型、可批处理并行。
+  # 音色重建后 bump voice_revision 使缓存失效。
+  raspberry_main:
+    semantic:
+      base_description: 树莓娘，活泼的协会看板娘，语速偏快，情绪起伏明显。
+      allowed_delivery:
+        - cheerful
+        - excited
+        - gentle
+        - firm
+      forbidden_delivery:
+        - announcer
+        - exaggerated
+    providers:
+      local:
+        model: local-qwen3-tts
+        voice: paimeng
+        voice_revision: 1
+
+  xuwanqing_main:
+    semantic:
+      base_description: 许晚晴，温和稳重的学姐，轻声，句子完整，语气词少。
+      allowed_delivery:
+        - gentle
+        - restrained
+        - firm
+      forbidden_delivery:
+        - exaggerated
+        - childish
+        - announcer
+    providers:
+      local:
+        model: local-qwen3-tts
+        voice: xuwanqing
+        voice_revision: 1
+
+  linxiaoman_main:
+    semantic:
+      base_description: 林小满，直率嘴快的后辈，短句，语速快，反问开路。
+      allowed_delivery:
+        - cheerful
+        - firm
+        - hesitant
+      forbidden_delivery:
+        - announcer
+        - exaggerated
+    providers:
+      local:
+        model: local-qwen3-tts
+        voice: linxiaoman
+        voice_revision: 1
+
+  xiayiming_main:
+    semantic:
+      base_description: 夏一鸣，自来熟的气氛担当，嗓门大，比喻夸张，爱接梗。
+      allowed_delivery:
+        - cheerful
+        - excited
+        - firm
+      forbidden_delivery:
+        - announcer
+        - gentle
+    providers:
+      local:
+        model: local-qwen3-tts
+        voice: xiayiming
+        voice_revision: 1
+
+  hanche_main:
+    semantic:
+      base_description: 韩澈，话少的学长，短句，平静，冷幽默。
+      allowed_delivery:
+        - restrained
+        - firm
+        - gentle
+      forbidden_delivery:
+        - exaggerated
+        - excited
+        - announcer
+    providers:
+      local:
+        model: local-qwen3-tts
+        voice: hanche
+        voice_revision: 1
+
   # qwen3-tts 复刻音色（voice-id 在 .env 的 QWEN3_VOICE_SUYAO）
   # 注意：需在百炼控制台对 qwen3-tts-vc 模型复刻苏遥音色（10~20s 干净人声，
   # 采样率 ≥24kHz 单声道）；旧的 cosyvoice 复刻 id 不能直接沿用。

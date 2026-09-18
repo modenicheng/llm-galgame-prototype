@@ -33,7 +33,7 @@ import { ttsLog } from "./tts-log.js";
 export interface AudioDescriptorFactoryOptions {
   characters: Record<string, { name: string; voice_profile: string }>;
   voices: VoicesConfig;
-  provider: "dashscope" | "mock";
+  provider: "dashscope" | "local" | "mock";
   /** Fallback model profile, e.g. "cosyvoice_v3_flash" (used for mock bindings). */
   modelProfile: string;
   sampleRate: number;
@@ -187,8 +187,7 @@ export class AudioDescriptorFactory {
     if (this.options.provider !== "mock") {
       const binding = resolveVoiceBinding(this.options.voices, profileId, this.options.provider);
       if (binding) return binding;
-    }
-    return {
+    }    return {
       model: this.options.modelProfile,
       voice_id_env: `${MOCK_VOICE_ENV_PREFIX}${speakerId}`,
       voice_revision: 0,

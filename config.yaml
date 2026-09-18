@@ -90,18 +90,19 @@ media:
       target_buffer_ms: 6500
 
     synthesis:
-      # V2 权威开关：web 模式从这里读取 provider（dashscope / mock / disabled）。
-      # 校园分支：文本优先，展位不依赖 DASHSCOPE_API_KEY；接入树莓娘音色后再启用。
-      provider: disabled
+      # V2 权威开关：web 模式从这里读取 provider（dashscope / local / mock / disabled）。
+      # local = 本机 tts-server（tts-server/，Qwen3-TTS-12Hz-1.7B-Base，
+      # 树莓娘 paimeng 克隆 + 四配角内置音色克隆，详见 tts-server/README）。
+      provider: local
       max_concurrency: 2
-      model_profile: cosyvoice_v3_flash
+      model_profile: local_qwen3_base
       api_key_env: DASHSCOPE_API_KEY
       format: pcm_s16le
       # 实际合成模型在 voices.yaml 逐音色配置（model 字段），支持两个族：
       #   cosyvoice*（本 sample_rate 生效）与 qwen3-tts*（固定 24000 输出）。
       # voices.yaml 出现 qwen3-tts 档案时此处必须为 24000（启动校验拦截）；
-      # cosyvoice 同样支持 24000，混布时统一 24k 即可。
-      sample_rate: 22050
+      # local-qwen3-tts 同样固定 24000；cosyvoice 同样支持 24000，混布统一 24k。
+      sample_rate: 24000
 
     cache:
       max_bytes: 536870912
@@ -112,10 +113,24 @@ media:
       candidate_ttl_hours: 1
 
 # 角色 → 逻辑音色配置映射（V2）
-# 校园分支（campus-ops-raspberry）：树莓娘音色尚未确认，
-# 展位采用文本优先模式（synthesis.provider: disabled），
-# 音频关闭时此映射不参与合成；确认音色后再新增独立 profile。
-characters: {}
+# 校园分支：树莓娘（paimeng 克隆）+ 四配角（内置音色克隆）走本地
+# tts-server；键名任意（工厂按 name 匹配说话人显示名）。
+characters:
+  raspberry:
+    name: 树莓娘
+    voice_profile: raspberry_main
+  xuwanqing:
+    name: 许晚晴
+    voice_profile: xuwanqing_main
+  linxiaoman:
+    name: 林小满
+    voice_profile: linxiaoman_main
+  xiayiming:
+    name: 夏一鸣
+    voice_profile: xiayiming_main
+  hanche:
+    name: 韩澈
+    voice_profile: hanche_main
 
 game:
   history_events: 180

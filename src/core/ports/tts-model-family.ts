@@ -24,9 +24,12 @@ export type TtsModelFamily = "qwen3-tts" | "cosyvoice";
  * 判定模型族：`qwen3-tts` 前缀（含 -instruct/-vc/-vd 及带日期的快照名）
  * 走 qwen3 协议，其余（cosyvoice*、qwen-audio*）走 CosyVoice
  * SpeechSynthesizer 协议——与官方端点支持模型列表一致。
+ * `local-qwen3-tts`（本地 tts-server 推理服务）同样固定 24 kHz PCM 输出。
  */
 export function ttsModelFamilyOf(model: string): TtsModelFamily {
-  return model.startsWith("qwen3-tts") ? "qwen3-tts" : "cosyvoice";
+  return model.startsWith("qwen3-tts") || model.startsWith("local-qwen3-tts")
+    ? "qwen3-tts"
+    : "cosyvoice";
 }
 
 /**
