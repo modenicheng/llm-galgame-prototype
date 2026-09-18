@@ -207,8 +207,10 @@ describe("loadAssetCatalog", () => {
     );
     const catalog = await loadAssetCatalog(resourcesPath);
 
-    // Campus branch catalog: 走廊 + 校道 + 广场 + 阶梯教室四组场景（clubroom 部室系已下线）。
-    expect(catalog.guidance).toContain("文萃楼走廊、校园林荫道、社团广场与阶梯教室");
+    // Campus branch catalog: 走廊 + 校道 + 广场 + 阶梯教室 + 操场 + 食堂门口
+    // 六组场景（clubroom 部室系已下线）。
+    expect(catalog.guidance).toContain("文萃楼走廊、校园林荫道、社团广场、阶梯教室、");
+    expect(catalog.guidance).toContain("操场与北食堂场景");
     expect(Object.keys(catalog.backgrounds)).toEqual([
       "wencui_corridor_day",
       "wencui_corridor_evening",
@@ -224,6 +226,12 @@ describe("loadAssetCatalog", () => {
       "classroom_evening",
       "classroom_night_on",
       "classroom_night_off",
+      "playground_day",
+      "playground_evening",
+      "playground_night",
+      "north_canteen_day",
+      "north_canteen_evening",
+      "north_canteen_night",
     ]);
     expect(catalog.bgm.relax!.src).toBe("audio/bgm/relax.mp3");
     expect(catalog.bgm.calm!.src).toBe("audio/bgm/calm.mp3");

@@ -84,7 +84,7 @@ output/*.mts 脚本         resources.yaml ──┼─▶ loadAssetCatalog()   
 assets/
 ├── resources.yaml          # 资产目录（唯一注册入口，必须入库）
 ├── ATTRIBUTION.md          # 来源与授权记录（必须入库）
-├── backgrounds/            # 背景图（当前 2048→1920x1080 JPG）
+├── backgrounds/            # 背景图（2048→1920x1080 JPG；playground/north_canteen 六张为 realcugan 2x 的 3840x2160）
 ├── audio/
 │   ├── bgm/                # 背景音乐
 │   └── se/                 # 音效
@@ -442,7 +442,7 @@ TTS 是与素材目录并行的独立链路：`config.yaml` 的 `characters.<id>
 
 ## 9.2 新增背景（含时间差分组）
 
-1. 制作（§3.4），统一缩放到目标分辨率（当前 1920×1080 JPG）；
+1. 制作（§3.4），统一缩放到目标分辨率（当前 1920×1080 JPG；2026-09-18 起 playground/north_canteen 六张经 realcugan 2x（models-pro、降噪 0）替换为 3840×2160，其余 14 张维持 1920×1080，渲染端 <img> 自适应无需区分）；
 2. 复制进 `assets/backgrounds/`，命名 `<场景>_<时间>.jpg`；
 3. `backgrounds:` 段登记，description 写"同一场景 + 光照差异 + 适用时机"，与同组既有变体互相锚定；
 4. §9.6。
