@@ -124,6 +124,13 @@
   `LOCAL_TTS_DIALECT` 覆盖）；voices.yaml `providers.local` 注册表键音色
   （与 dashscope 绑定并存），固定 24000 Hz（启动校验拦截）；
   `TtsProviderError`/`deferred` 抽为 `adapters/tts/` 共享模块。
+- **角色音频特征（2026-09-16 V1/V2 落地，spec：character-voice-design）**：
+  编剧画像 `DraftCharacter.voice`（timbre/调色板/baseline）→ 世界创建期落盘
+  `world/voice-design.json` 并渲染进 characters.txt；导演逐场景声音指导
+  `SceneDirective.voice`（会话外查询经 VoiceDirectionHub）；编译器合并链
+  导演 > 演员逐行 > 画像基线 > 恒等值（进 cacheKey）；动态角色经
+  mergeVoiceDesignViews 注入（dashscope 需 `DASHSCOPE_VOICE_FALLBACK`，
+  local 待 V3 身份合成）；表演词汇表运行时常量单一真源。
 - **调度**：`audio-intent-planner` / `performance-compiler` / `tts-task-service` /
   `cache-key`，播放水位参数（startup_buffer / low_watermark / target_buffer）。
 - **播放**：`web/src/audio/`——AudioCoordinator（共享 AudioContext + AudioWorklet）、

@@ -1,6 +1,6 @@
 # 角色音频特征设计（导演/编剧产出）——接口与实现方案
 
-> 日期：2026-09-16。状态：**设计稿，待实施**。
+> 日期：2026-09-16。状态：**V1（导演层）/V2（编剧层）已落地（2026-09-16，feat/voice-design）；V3（身份合成）待实施，默认关。**
 > 关联：`docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md`（三角色模型）、
 > `docs/llm-outputs-refactor.md` §14（性能编译器）、§67（TTS 查音色）、§7.6（provider 装配）。
 
