@@ -13,6 +13,7 @@ export interface AppDomRefs {
   stage: HTMLElement;
   scene: HTMLElement;
   interactionVeil: HTMLElement;
+  backlogRoot: HTMLElement;
   dialogueRoot: HTMLElement;
   interactionRoot: HTMLElement;
   previewRoot: HTMLElement;
@@ -118,7 +119,10 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
 
   // 对白 UI 挂进 16:9 舞台框（构图随框缩放，见上方 stage-frame 注释）。
   // 遮罩在 DOM 序上位于 scene 之前、舞台氛围层之后（z 序由 z-index 决定）。
-  stage.append(interactionVeil, scene);
+  // 回看面板同框（盖住舞台，z 序高于 scene 低于视口级控制条），创建即隐藏。
+  const backlogRoot = el("section", "backlog") as HTMLElement;
+  backlogRoot.hidden = true;
+  stage.append(interactionVeil, scene, backlogRoot);
 
   const controlsRoot = el("section", "controls") as HTMLElement;
 
@@ -169,6 +173,7 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     stage,
     scene,
     interactionVeil,
+    backlogRoot,
     dialogueRoot,
     interactionRoot,
     previewRoot,

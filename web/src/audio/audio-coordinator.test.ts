@@ -205,6 +205,51 @@ describe("AudioCoordinator", () => {
     expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-2");
   });
 
+  it("setSuspended gates playback start and empty-EOF finish; resume replays the buffer", async () => {
+    const { context, port } = makeFakeContext();
+    const events = makeEvents();
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, events);
+    await coordinator.init();
+    coordinator.enqueueLine("line-1", "cache-1", 0, 0);
+    coordinator.setSuspended(true); // 回看打开
+    coordinator.start("line-1");
+    coordinator.feedPcm("line-1", new Int16Array(22050)); // 1s ≥ threshold…
+    coordinator.notifyLineEof("line-1"); // …and producer done — yet suspended
+    expect(events.onLinePlaybackStarted).not.toHaveBeenCalled();
+    expect(events.onLinePlaybackFinished).not.toHaveBeenCalled();
+    expect(coordinator.isPlaying()).toBe(false);
+
+    // An empty stream must not "finish" while suspended either (finish would
+    // trigger the app's auto-advance behind the panel). Switching current to
+    // the empty line drops line-1's samples (forward-only timeline — the app
+    // only ever resumes the current line).
+    coordinator.enqueueLine("line-2", "cache-2", 0, 0);
+    coordinator.start("line-2");
+    coordinator.notifyLineEof("line-2");
+    expect(events.onLinePlaybackFinished).not.toHaveBeenCalledWith("line-2");
+
+    // Resume: the EOF recorded during suspension completes the line now —
+    // deferred, never lost.
+    coordinator.setSuspended(false);
+    coordinator.start("line-2");
+    expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-2");
+
+    // Round 2: samples buffered during suspension replay from the top.
+    coordinator.enqueueLine("line-3", "cache-3", 0, 0);
+    coordinator.setSuspended(true);
+    coordinator.start("line-3");
+    coordinator.feedPcm("line-3", new Int16Array(22050));
+    coordinator.notifyLineEof("line-3");
+    expect(events.onLinePlaybackStarted).not.toHaveBeenCalledWith("line-3");
+    coordinator.setSuspended(false);
+    coordinator.start("line-3");
+    expect(events.onLinePlaybackStarted).toHaveBeenCalledWith("line-3");
+    const rawPosts = port.postMessage.mock.calls.map((c) => c[0]);
+    expect(rawPosts).toContainEqual({ type: "line", lineId: "line-3" });
+    simulateDrain(coordinator, port, "line-3");
+    expect(events.onLinePlaybackFinished).toHaveBeenCalledWith("line-3");
+  });
+
   it("drained without producer EOF does not finish the line", async () => {
     const { context, port } = makeFakeContext();
     const events = makeEvents();

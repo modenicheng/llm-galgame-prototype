@@ -12,17 +12,19 @@ function build(initial: { mode: "manual" | "auto" } = { mode: "manual" }): {
   const hooks = {
     onModeToggle: vi.fn(),
     onOpenSettings: vi.fn(),
+    onOpenBacklog: vi.fn(),
     onRestart: vi.fn(),
   };
   return { root, bar: new ControlsBar(root, hooks, initial), hooks };
 }
 
 describe("ControlsBar", () => {
-  it("renders mode toggle, settings entry, restart and status; no flat audio sliders", () => {
+  it("renders mode toggle, settings/backlog entries, restart and status; no flat audio sliders", () => {
     const { root } = build();
     const bar = root.querySelector(".controls__bar") as HTMLElement;
     expect((bar.querySelector(".ctl--mode") as HTMLElement).textContent).toBe("手动推进");
     expect((bar.querySelector(".ctl--settings") as HTMLElement).textContent).toBe("设置");
+    expect((bar.querySelector(".ctl--backlog") as HTMLElement).textContent).toBe("回看");
     expect((bar.querySelector(".ctl--restart") as HTMLElement).textContent).toBe("重开");
     expect(bar.querySelector(".ctl--status")).not.toBeNull();
     // Audio settings live in the settings menu — no sliders/mute/speed on the bar.
@@ -42,17 +44,25 @@ describe("ControlsBar", () => {
     expect(hooks.onModeToggle).toHaveBeenCalledWith("manual");
   });
 
-  it("settings button reports clicks and reflects the open state", () => {
+  it("settings and backlog buttons report clicks and reflect open state", () => {
     const { root, bar, hooks } = build();
     const settingsBtn = root.querySelector(".ctl--settings") as HTMLButtonElement;
+    const backlogBtn = root.querySelector(".ctl--backlog") as HTMLButtonElement;
     expect(bar.settingsTrigger).toBe(settingsBtn);
     settingsBtn.click();
+    backlogBtn.click();
     expect(hooks.onOpenSettings).toHaveBeenCalledTimes(1);
+    expect(hooks.onOpenBacklog).toHaveBeenCalledTimes(1);
     expect(settingsBtn.classList.contains("ctl--active")).toBe(false);
+    expect(backlogBtn.classList.contains("ctl--active")).toBe(false);
     bar.setSettingsOpen(true);
+    bar.setBacklogOpen(true);
     expect(settingsBtn.classList.contains("ctl--active")).toBe(true);
+    expect(backlogBtn.classList.contains("ctl--active")).toBe(true);
     bar.setSettingsOpen(false);
+    bar.setBacklogOpen(false);
     expect(settingsBtn.classList.contains("ctl--active")).toBe(false);
+    expect(backlogBtn.classList.contains("ctl--active")).toBe(false);
   });
 
   it("status line follows connection and audio state", () => {

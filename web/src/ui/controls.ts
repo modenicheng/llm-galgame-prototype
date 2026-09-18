@@ -12,6 +12,8 @@ export interface ControlsHooks {
   onModeToggle(next: PlaybackMode): void;
   /** Opens the combined settings popover (volumes / mute / text speed). */
   onOpenSettings(): void;
+  /** Toggles the 回看 panel (reading history + voice replay). */
+  onOpenBacklog(): void;
   /** Booth restart: opens a fresh session; current progress is lost. */
   onRestart(): void;
 }
@@ -32,6 +34,7 @@ export class ControlsBar {
   private readonly root: HTMLElement;
   private readonly modeBtn: HTMLButtonElement;
   private readonly settingsBtn: HTMLButtonElement;
+  private readonly backlogBtn: HTMLButtonElement;
   private readonly restartBtn: HTMLButtonElement;
   private readonly sessionChip: HTMLButtonElement;
   private readonly statusDot: HTMLElement;
@@ -71,6 +74,13 @@ export class ControlsBar {
       this.hooks.onOpenSettings();
     });
 
+    this.backlogBtn = document.createElement("button");
+    this.backlogBtn.type = "button";
+    this.backlogBtn.className = "ctl ctl--backlog";
+    this.backlogBtn.addEventListener("click", () => {
+      this.hooks.onOpenBacklog();
+    });
+
     this.restartBtn = document.createElement("button");
     this.restartBtn.type = "button";
     this.restartBtn.className = "ctl ctl--restart";
@@ -102,6 +112,7 @@ export class ControlsBar {
     wrap.append(
       this.modeBtn,
       this.settingsBtn,
+      this.backlogBtn,
       this.restartBtn,
       status,
       this.sessionChip,
@@ -110,6 +121,7 @@ export class ControlsBar {
 
     this.renderMode();
     this.renderSettings();
+    this.renderBacklog();
     this.renderRestart();
   }
 
@@ -134,6 +146,10 @@ export class ControlsBar {
 
   setSettingsOpen(open: boolean): void {
     this.settingsBtn.classList.toggle("ctl--active", open);
+  }
+
+  setBacklogOpen(open: boolean): void {
+    this.backlogBtn.classList.toggle("ctl--active", open);
   }
 
   setConnection(state: ConnectionState): void {
@@ -178,6 +194,10 @@ export class ControlsBar {
 
   private renderSettings(): void {
     setText(this.settingsBtn, "设置");
+  }
+
+  private renderBacklog(): void {
+    setText(this.backlogBtn, "回看");
   }
 
   private renderRestart(): void {

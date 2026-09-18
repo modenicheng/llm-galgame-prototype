@@ -61,6 +61,12 @@ interface FakeAudioContextResult {
   addModule: Mock;
   /** The worklet node's port — lets tests simulate drained(lineId). */
   port: { postMessage: ReturnType<typeof vi.fn>; onmessage: ((e: MessageEvent) => void) | null };
+  /** BufferSource fakes created via createBufferSource (replay tests). */
+  sources: Array<{
+    source: { buffer: unknown; connect: Mock; onended: (() => void) | null };
+    start: Mock;
+    stop: Mock;
+  }>;
 }
 
 function makeFakeAudioContext(noWorklet = false): FakeAudioContextResult {
@@ -68,10 +74,29 @@ function makeFakeAudioContext(noWorklet = false): FakeAudioContextResult {
   const node = { port, connect: vi.fn() };
   const gain = { gain: { value: 1 }, connect: vi.fn() };
   const addModule = vi.fn().mockResolvedValue(undefined);
+  const sources: FakeAudioContextResult["sources"] = [];
   const context = {
     audioWorklet: noWorklet ? undefined : { addModule },
     createAudioWorkletNode: noWorklet ? undefined : vi.fn(() => node),
     createGain: vi.fn(() => gain),
+    // Replay (ClipPlayer) path: whole-buffer playback through a gain node.
+    createBuffer: vi.fn((_channels: number, length: number, sampleRate: number) => ({
+      length,
+      sampleRate,
+      getChannelData: () => new Float32Array(length),
+      copyToChannel: (data: Float32Array) => data.length,
+    })),
+    createBufferSource: vi.fn(() => {
+      const source = {
+        buffer: null as unknown,
+        connect: vi.fn(),
+        onended: null as (() => void) | null,
+        start: vi.fn(),
+        stop: vi.fn(),
+      };
+      sources.push({ source, start: source.start, stop: source.stop });
+      return source;
+    }),
     destination: {},
     resume: vi.fn().mockResolvedValue(undefined),
     addEventListener: vi.fn(),
@@ -79,7 +104,7 @@ function makeFakeAudioContext(noWorklet = false): FakeAudioContextResult {
     sampleRate: 22050,
     currentTime: 0,
   } as unknown as AudioContext;
-  return { context, addModule, port };
+  return { context, addModule, port, sources };
 }
 
 /** A fetch stub that routes /api/config and /api/audio/synthesize. */
@@ -271,6 +296,7 @@ interface SetupResult {
   synthesizeCalls: unknown[];
   addModule: ReturnType<typeof vi.fn>;
   port: { postMessage: ReturnType<typeof vi.fn>; onmessage: ((e: MessageEvent) => void) | null };
+  sources: FakeAudioContextResult["sources"];
 }
 
 async function setupApp(overrides: { db?: AudioDb; fetchImpl?: typeof fetch } = {}): Promise<SetupResult> {
@@ -282,11 +308,11 @@ async function setupApp(overrides: { db?: AudioDb; fetchImpl?: typeof fetch } = 
     webSocketImpl: FakeWebSocket as unknown as WebSocketCtor,
     db: overrides.db ?? db,
   });
-  const { context, addModule, port } = makeFakeAudioContext();
+  const { context, addModule, port, sources } = makeFakeAudioContext();
   await app.start(context);
   const ws = FakeWebSocket.last as FakeWebSocket;
   ws.open(); // → client.ready
-  return { app, ws, db: overrides.db ?? db, fetchImpl, synthesizeCalls, addModule, port };
+  return { app, ws, db: overrides.db ?? db, fetchImpl, synthesizeCalls, addModule, port, sources };
 }
 
 /** Yield to the event loop so IDB (setImmediate) and fetch chains settle. */
@@ -956,5 +982,214 @@ describe("GameApp", () => {
     ws.receive(descriptorMsg("line-1", "cache-1"));
     await flush();
     expect(synthesizeCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 回看（backlog）：presented-line history + replay from the IndexedDB cache.
+// Replay reads the SAME complete assets the live stream persisted — never a
+// re-synthesis request (§22: the browser only ever POSTs live descriptors).
+// ---------------------------------------------------------------------------
+
+function projectionSnapshot(projection: Record<string, unknown>): string {
+  return JSON.stringify({ type: "projection.snapshot", projection });
+}
+
+describe("Backlog 回看", () => {
+  it("collects presented lines with replay audio identity from descriptors", async () => {
+    const { app, ws } = await setupApp();
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await vi.waitFor(() => {
+      expect(app.state().audioPlaying).toBe(true);
+    });
+    ws.receive(taskStatusMsg("t-1", "line-1", "finished"));
+    await flush();
+
+    expect(app.backlogEntries()).toHaveLength(1);
+    expect(app.backlogEntries()[0]).toMatchObject({
+      type: "dialogue",
+      lineId: "line-1",
+      speaker: "苏遥",
+      text: "夜色正浓。",
+      cacheKey: "cache-1",
+      sampleRate: 22050,
+    });
+  });
+
+  it("replays a past line from the finished cache asset (no re-synthesis)", async () => {
+    const { app, ws, synthesizeCalls, sources } = await setupApp();
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await vi.waitFor(() => {
+      expect(app.state().audioPlaying).toBe(true);
+    });
+    ws.receive(taskStatusMsg("t-1", "line-1", "finished"));
+    await flush();
+    const synthCount = synthesizeCalls.length;
+
+    app.setBacklogOpen(true);
+    const result = await app.replayLine("line-1");
+    expect(result).toBe("started");
+    expect(app.state().replayLineId).toBe("line-1");
+    // The whole asset was decoded into one buffer at the descriptor rate…
+    expect(sources).toHaveLength(1);
+    expect(sources[0]!.source.buffer).toMatchObject({ sampleRate: 22050 });
+    expect(sources[0]!.start).toHaveBeenCalledTimes(1);
+    // …and replay never asks the server to synthesize anything.
+    expect(synthesizeCalls).toHaveLength(synthCount);
+
+    // Natural end clears the replay marker.
+    sources[0]!.source.onended!();
+    expect(app.state().replayLineId).toBeNull();
+  });
+
+  it("replaying another line stops the in-flight replay", async () => {
+    const { app, ws, sources } = await setupApp();
+    ws.receive(playbackReady(1, "line-1", "第一句。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await vi.waitFor(() => {
+      expect(app.state().audioPlaying).toBe(true);
+    });
+    ws.receive(taskStatusMsg("t-1", "line-1", "finished"));
+    await flush();
+    app.setBacklogOpen(true);
+    // A second line arrives while suspended; its asset finishes streaming.
+    ws.receive(playbackReady(2, "line-2", "第二句。"));
+    ws.receive(descriptorMsg("line-2", "cache-2"));
+    await flush(); // download starts and drains during suspension
+    ws.receive(taskStatusMsg("t-2", "line-2", "finished"));
+    await flush();
+
+    expect(await app.replayLine("line-1")).toBe("started");
+    expect(await app.replayLine("line-2")).toBe("started");
+    expect(sources[0]!.stop).toHaveBeenCalledTimes(1); // first replay halted
+    expect(sources[1]!.start).toHaveBeenCalledTimes(1);
+    expect(app.state().replayLineId).toBe("line-2");
+  });
+
+  it("suspends live voice and story advance while open, resumes on close", async () => {
+    const { app, ws } = await setupApp();
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await vi.waitFor(() => {
+      expect(app.state().audioPlaying).toBe(true);
+    });
+
+    app.setBacklogOpen(true);
+    expect(app.state().backlogOpen).toBe(true);
+    expect(app.state().audioPlaying).toBe(false);
+
+    // A new line presents while suspended: history grows, but no playback
+    // starts and no advance command is smuggled out.
+    ws.receive(playbackReady(2, "line-2", "她轻声说。"));
+    ws.receive(descriptorMsg("line-2", "cache-2"));
+    await flush();
+    expect(app.backlogEntries().map((e) => e.lineId)).toEqual(["line-1", "line-2"]);
+    expect(app.state().audioPlaying).toBe(false);
+    expect(
+      sentCommands(ws).some(
+        (c) => (c.command as { type?: string } | undefined)?.type === "advance",
+      ),
+    ).toBe(false);
+
+    // Close: the current line's voice re-arms from the buffered samples
+    // (its asset finished while suspended).
+    ws.receive(taskStatusMsg("t-2", "line-2", "finished"));
+    await flush();
+    app.setBacklogOpen(false);
+    expect(app.state().backlogOpen).toBe(false);
+    await vi.waitFor(() => {
+      expect(app.state().audioPlaying).toBe(true);
+    });
+  });
+
+  it("advance is suppressed while the backlog is open", async () => {
+    const { app, ws } = await setupApp();
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    await flush();
+    app.setBacklogOpen(true);
+    const before = sentCommands(ws).length;
+    app.advance();
+    expect(sentCommands(ws)).toHaveLength(before);
+    app.setBacklogOpen(false);
+    app.advance();
+    expect(sentCommands(ws)).toHaveLength(before + 1);
+  });
+
+  it("keeps invalidated lines text-only: replay reports unavailable", async () => {
+    const { app, ws } = await setupApp();
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await flush();
+    ws.receive(
+      JSON.stringify({ type: "audio.invalidated", lineId: "line-1", reason: "branch_discarded" }),
+    );
+    await flush();
+
+    app.setBacklogOpen(true);
+    // Text stays (the player already read it) but the audio identity is gone.
+    expect(app.backlogEntries()[0]).toMatchObject({ cacheKey: null, sampleRate: 0 });
+    expect(await app.replayLine("line-1")).toBe("unavailable");
+    expect(await app.replayLine("ghost")).toBe("unavailable");
+    expect(app.state().replayLineId).toBeNull();
+  });
+
+  it("a reconnect projection seeds the backlog without duplicating lines", async () => {
+    // Fresh page: the restore is the only history source — recentLines in
+    // order, then the current line's re-presentation is deduped.
+    const { app, ws } = await setupApp();
+    ws.receive(
+      projectionSnapshot({
+        sessionId: "sess-restore",
+        phase: "running",
+        recentLines: [
+          { type: "dialogue", line_id: "line-0", speaker: "苏遥", text: "开头。" },
+          { type: "dialogue", line_id: "line-1", speaker: "苏遥", text: "第一句。" },
+        ],
+        currentLine: { type: "dialogue", line_id: "line-1", speaker: "苏遥", text: "第一句。" },
+      }),
+    );
+    await flush();
+    expect(app.backlogEntries().map((e) => e.lineId)).toEqual(["line-0", "line-1"]);
+
+    // Same-page reconnect: lines already in the history are not duplicated.
+    ws.receive(playbackReady(2, "line-2", "第二句。"));
+    await flush();
+    ws.receive(
+      projectionSnapshot({
+        sessionId: "sess-restore",
+        phase: "running",
+        recentLines: [
+          { type: "dialogue", line_id: "line-1", speaker: "苏遥", text: "第一句。" },
+          { type: "dialogue", line_id: "line-2", speaker: "苏遥", text: "第二句。" },
+        ],
+        currentLine: { type: "dialogue", line_id: "line-2", speaker: "苏遥", text: "第二句。" },
+      }),
+    );
+    await flush();
+    expect(app.backlogEntries().map((e) => e.lineId)).toEqual(["line-0", "line-1", "line-2"]);
+  });
+
+  it("a session restart clears the backlog, replay and suspension", async () => {
+    const { app, ws } = await setupApp();
+    ws.receive(
+      JSON.stringify({
+        type: "runtime.output",
+        sequence: 0,
+        output: { type: "session_started", sessionId: "sess-one", location: "/sessions/sess-one" },
+      }),
+    );
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await flush();
+    app.setBacklogOpen(true);
+    expect(app.state().backlogOpen).toBe(true);
+
+    ws.receive(projectionSnapshot({ sessionId: "sess-two", phase: "running", recentLines: [] }));
+    await flush();
+    expect(app.backlogEntries()).toHaveLength(0);
+    expect(app.state().backlogOpen).toBe(false);
+    expect(app.state().replayLineId).toBeNull();
   });
 });

@@ -107,6 +107,12 @@
 - **玩家音频设置**（2026-09-19）：语音/BGM 音量双通道分离，与静音、字速一起
   收进控制条「设置」浮层（`web/src/ui/settings-menu.ts`）；偏好经 localStorage
   持久化（`web/src/storage/player-settings.ts`），刷新自动恢复。
+- **回看面板**（2026-09-19）：`web/src/ui/backlog-overlay.ts` 历史对话浏览 +
+  缓存语音回放。回放走 IndexedDB 既有 complete 资产（`web/src/audio/
+  clip-player.ts` 整段 AudioBuffer 一次性播放，音量随语音通道），不做重合成；
+  资产缺失的行回退纯文本。打开期间故事推进挂起（AudioCoordinator
+  `setSuspended`：样本照常累积、arm/EOF 完结被门控），关闭从当前行恢复；
+  `Esc`/`L` 开关，结局/报错/重开自动关闭并清空历史。
 
 ### 持久化
 - `sessions/<sessionId>/` 会话目录：`events.jsonl` + narrative 记忆三件套

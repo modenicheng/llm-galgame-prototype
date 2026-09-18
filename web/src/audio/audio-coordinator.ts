@@ -47,6 +47,12 @@ export class AudioCoordinator {
   private mode: PlaybackMode = "manual";
   private volume = 1;
   private muted = false;
+  /**
+   * 回看挂起（app 在回看面板打开时置位）：样本照常入队、累积，但永不
+   * arm 起播，EOF 也不触发空行完结（完结会引发 app 的自动推进）。
+   * 恢复由 app 在关面板时解除挂起并 start() 当前行。
+   */
+  private suspended = false;
 
   private currentLineId: string | null = null;
   private playbackStarted = false;
@@ -189,6 +195,12 @@ export class AudioCoordinator {
     }
     if (!this.playbackStarted) {
       if (this.linePendingCount(lineId) === 0 || this.workletNode === null) {
+        if (this.suspended) {
+          // 挂起中不完结：finishLine 会触发 onLinePlaybackFinished →
+          // 自动推进，玩家还在回看面板里读历史。恢复时 start() 接管。
+          this.producerEof.add(lineId);
+          return;
+        }
         // Nothing playable (empty stream) or no playback path (degraded
         // environment) — the line is done without ever starting.
         this.finishLine(lineId);
@@ -261,6 +273,23 @@ export class AudioCoordinator {
     this.mode = mode;
   }
 
+  /**
+   * 回看挂起/恢复。挂起即停：撤掉待起的 start 计时、清空 worklet 在播
+   * 内容并退回未起播态——未喂入 worklet 的 pending 样本保持累积（挂起期
+   * 下载/缓存的当前行样本不丢），恢复时 start() 会按剩余样本重新武装。
+   */
+  setSuspended(suspended: boolean): void {
+    this.suspended = suspended;
+    if (!suspended) return;
+    this.cancelStartTimer();
+    this.postWorkletMessage({ type: "clear" });
+    if (this.currentLineId !== null) {
+      this.playbackStarted = false;
+      this.startupSamples = this.linePendingCount(this.currentLineId);
+      this.fedForCurrentLine = this.startupSamples;
+    }
+  }
+
   /** False when the environment lacks AudioWorklet (text-only mode). */
   get available(): boolean {
     return this.workletNode !== null;
@@ -327,6 +356,9 @@ export class AudioCoordinator {
   private armPlaybackStart(): void {
     if (this.playbackStarted || this.startTimer !== null) {
       return; // already started or already counting down
+    }
+    if (this.suspended) {
+      return; // 回看挂起：样本继续攒，不起播
     }
     const lineId = this.currentLineId;
     if (lineId === null) {

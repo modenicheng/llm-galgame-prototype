@@ -18,9 +18,11 @@ import type { PublicWebConfig } from "@shared/wire/public-web-config.js";
 import type { ServerMessage } from "@shared/wire/server-message.js";
 import { AudioCoordinator, type AudioCoordinatorEvents, type PlaybackMode } from "./audio/audio-coordinator.js";
 import { AudioDownloader } from "./audio/audio-downloader.js";
+import { ClipPlayer } from "./audio/clip-player.js";
 import { PcmDecoder } from "./audio/pcm-decoder.js";
 import { RuntimeClient, type ConnectionState, type RuntimeCommandWire, type WebSocketCtor } from "./runtime/runtime-client.js";
 import { GameViewModel, type RuntimePlayableEventWire, type ViewModelState } from "./runtime/game-view-model.js";
+import { BacklogStore, type BacklogEntry } from "./runtime/backlog-store.js";
 import type { BgmController } from "./stage/bgm-controller.js";
 import type { StageCueWire } from "./stage/stage-types.js";
 import { AudioDb } from "./storage/audio-db.js";
@@ -102,6 +104,10 @@ export interface GameAppState {
   showLineIds: boolean;
   /** Non-null when the last start() attempt failed (P2 start-failure wedge). */
   startError: string | null;
+  /** 回看面板开着：剧情推进（点击/自动）被挂起，语音停播。 */
+  backlogOpen: boolean;
+  /** 正在回放的行（回看面板）；null = 无回放在播。 */
+  replayLineId: string | null;
 }
 
 interface DescriptorEntry {
@@ -137,12 +143,15 @@ const PRIORITY_RANK: Record<AudioPriority, number> = {
 export class GameApp {
   private readonly options: GameAppOptions;
   private readonly viewModel = new GameViewModel();
+  private readonly backlog = new BacklogStore();
   private readonly db: AudioDb;
   private readonly bgmController: BgmController | null;
   private readonly listeners = new Set<(s: GameAppState) => void>();
 
   private client: RuntimeClient | null = null;
   private coordinator: AudioCoordinator | null = null;
+  /** 回看面板的缓存音频回放器（start 时随 AudioContext 创建）。 */
+  private clipPlayer: ClipPlayer | null = null;
   private writer: AudioCacheWriter | null = null;
   private reader: AudioCacheReader | null = null;
   private cleaner: AudioCacheCleaner | null = null;
@@ -178,6 +187,13 @@ export class GameApp {
   private readingTimer: ReturnType<typeof setTimeout> | null = null;
   /** Auto-mode pause before the post-playback advance (§9.3). */
   private pauseTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 回看面板开着：故事推进挂起（点击被遮罩挡、自动定时器全撤）。 */
+  private backlogOpen = false;
+  /** 当前正在回放的行（回看面板）；null = 无回放。 */
+  private replayLineId: string | null = null;
+  /** Last projection-seq seen in the view model — a bump seeds the backlog
+   * from `recentLines` (reconnect restore covers the lost window's tail). */
+  private lastProjectionSeq = 0;
 
   constructor(options: GameAppOptions) {
     this.options = options;
@@ -259,6 +275,10 @@ export class GameApp {
       this.writer = new AudioCacheWriter(this.db, writeOptions);
       this.reader = new AudioCacheReader(this.db);
       this.cleaner = new AudioCacheCleaner(this.db, CLEANER_DEFAULTS);
+      // 回看回放器与主管线共享同一个已解锁的 AudioContext。
+      this.clipPlayer = new ClipPlayer(context);
+      this.clipPlayer.setVolume(this.voiceVolume);
+      this.clipPlayer.setMuted(this.muted);
       this.downloader = new AudioDownloader({
         token: this.options.token,
         writer: this.writer,
@@ -310,6 +330,7 @@ export class GameApp {
     this.stopBufferReports();
     this.cancelReadingTimer();
     this.cancelPauseTimer();
+    this.stopReplay();
     if (this.cleanerTimer !== null) {
       clearTimeout(this.cleanerTimer);
       this.cleanerTimer = null;
@@ -340,6 +361,8 @@ export class GameApp {
       configSource: this.configSource,
       showLineIds: this.config.game.show_line_ids,
       startError: this.startError,
+      backlogOpen: this.backlogOpen,
+      replayLineId: this.replayLineId,
     };
   }
 
@@ -357,6 +380,7 @@ export class GameApp {
 
   /** Manual advance: halt local playback immediately and ask the runtime. */
   advance(): void {
+    if (this.backlogOpen) return; // 回看打开时剧情不推进（遮罩挡点击，这里挡键盘路径）
     this.cancelReadingTimer();
     this.cancelPauseTimer();
     this.coordinator?.stop();
@@ -414,6 +438,7 @@ export class GameApp {
   setVoiceVolume(v: number): void {
     this.voiceVolume = clampUnit(v);
     this.coordinator?.setVolume(this.voiceVolume);
+    this.clipPlayer?.setVolume(this.voiceVolume); // 回放即语音，同一路电平
     this.emitState();
   }
 
@@ -427,12 +452,138 @@ export class GameApp {
     this.muted = muted;
     this.coordinator?.setMuted(muted);
     this.bgmController?.setMuted(muted);
+    this.clipPlayer?.setMuted(muted);
     this.emitState();
   }
 
   setTextSpeed(charsPerSec: number): void {
     this.textSpeed = clampSpeed(charsPerSec);
     this.emitState();
+  }
+
+  // -------------------------------------------------------------------------
+  // 回看（backlog）：历史浏览 + 缓存语音回放
+  //
+  // 语音回放走 IndexedDB 性能缓存而不是重新合成：播过的行其 complete 资产
+  // 本来就逐块落在缓存里（本会话资产受 activeCacheKeys 保护，不被清理器
+  // 逐出），回放零服务端开销、零合成延迟、与直播听到的是同一次采样。
+  // 资产缺失（文本降级/跨局逐出）时该行回退纯文本回看，绝不触发重合成。
+  // -------------------------------------------------------------------------
+
+  /** 回看面板的历史快照（旧→新）。 */
+  backlogEntries(): readonly BacklogEntry[] {
+    return this.backlog.list();
+  }
+
+  /**
+   * 打开/关闭回看面板。打开 = 挂起故事推进：停掉在播语音、撤掉自动推进
+   * 定时器（阅读回退/交互后停顿），服务器仍在生成、面板照常追加新行。
+   * 关闭 = 从当前行恢复（音频续不上时由阅读回退/玩家点击接管）。
+   */
+  setBacklogOpen(open: boolean): void {
+    if (open === this.backlogOpen) return;
+    this.backlogOpen = open;
+    if (open) {
+      this.stopReplay();
+      this.cancelReadingTimer();
+      this.cancelPauseTimer();
+      // 挂起而非丢弃：在播语音即刻停止，当前行未播的样本留在管线里，
+      // 关面板时 start() 从剩余样本续播（playbackStarted 翻转归 coordinator）。
+      this.coordinator?.setSuspended(true);
+      this.audioPlaying = false;
+    } else {
+      this.resumeLiveVoice();
+    }
+    this.emitState();
+  }
+
+  /**
+   * Replay a past line from the cache. Returns "unavailable" when the line
+   * has no replayable audio (no descriptor / invalidated / asset not
+   * complete) — the panel then keeps it text-only.
+   */
+  async replayLine(lineId: string): Promise<"started" | "unavailable"> {
+    const entry = this.backlog.get(lineId);
+    if (this.clipPlayer === null || this.reader === null) return "unavailable";
+    if (entry === undefined || entry.cacheKey === null) return "unavailable";
+    const cacheKey = entry.cacheKey;
+    const sampleRate =
+      entry.sampleRate > 0 ? entry.sampleRate : this.config.audio.format.sampleRate;
+    let samples: Int16Array;
+    try {
+      samples = await this.decodeCacheAsset(cacheKey);
+    } catch {
+      return "unavailable";
+    }
+    // Defensive: the backlog gate already halts live voice, but a replay
+    // must never overlap it even if the gate is ever bypassed.
+    if (this.coordinator?.isPlaying() === true) {
+      this.coordinator.stop();
+      this.audioPlaying = false;
+    }
+    this.clipPlayer.setVolume(this.voiceVolume);
+    this.clipPlayer.setMuted(this.muted);
+    this.stopReplay(); // switch replays: stops the previous clip cleanly
+    if (samples.length === 0) return "unavailable";
+    this.replayLineId = lineId;
+    this.clipPlayer.play(samples, sampleRate, () => {
+      if (this.replayLineId === lineId) {
+        this.replayLineId = null;
+        this.emitState();
+      }
+    });
+    this.emitState();
+    return "started";
+  }
+
+  /** Halt the in-flight replay, if any. */
+  stopReplay(): void {
+    this.clipPlayer?.stop();
+    if (this.replayLineId !== null) {
+      this.replayLineId = null;
+      this.emitState();
+    }
+  }
+
+  /** Whole-asset decode for replay (lines are short; a full buffer is fine). */
+  private async decodeCacheAsset(cacheKey: string): Promise<Int16Array> {
+    const decoder = new PcmDecoder();
+    const chunks: Int16Array[] = [];
+    let total = 0;
+    for await (const chunk of this.reader!.readChunks(cacheKey)) {
+      const samples = decoder.push(chunk);
+      if (samples.length > 0) {
+        chunks.push(samples);
+        total += samples.length;
+      }
+    }
+    const tail = decoder.flush();
+    if (tail.length > 0) {
+      chunks.push(tail);
+      total += tail.length;
+    }
+    const samples = new Int16Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      samples.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return samples;
+  }
+
+  /** Backlog open → close: re-arm the current line's voice + auto pacing. */
+  private resumeLiveVoice(): void {
+    if (this.backlogOpen) return;
+    this.coordinator?.setSuspended(false);
+    const view = this.viewModel.state();
+    if (view.mode !== "PLAYING" || view.currentLine === undefined) return;
+    const lineId = view.currentLine.line_id;
+    if (lineId !== this.currentLineId) return; // stale view — the next line re-arms
+    this.ensureEnqueued(lineId);
+    this.coordinator?.start(lineId);
+    void this.ensureAudio(lineId);
+    this.scheduleReadingFallback();
+    this.reconcileAudio();
   }
 
   // -------------------------------------------------------------------------
@@ -464,6 +615,13 @@ export class GameApp {
   private handleViewNotify(): void {
     const view = this.viewModel.state();
     this.observeSessionChange(view.sessionId);
+    // A projection restore (reconnect) bumps projectionSeq: seed the backlog
+    // from recentLines so the lost window's tail re-enters the history
+    // (push dedupes; the current line's own re-presentation is a no-op).
+    if (view.projectionSeq !== this.lastProjectionSeq) {
+      this.lastProjectionSeq = view.projectionSeq;
+      for (const line of view.recentLines) this.pushBacklogLine(line);
+    }
     if (view.mode === "PLAYING" && view.currentLine !== undefined) {
       if (view.currentLine.line_id !== this.currentLineId) {
         this.onCurrentLine(view.currentLine.line_id, view.currentLine);
@@ -503,11 +661,39 @@ export class GameApp {
     }
     this.cacheDecoders.clear();
     this.currentLineId = null;
+    // 重开 = 新故事：回看历史是旧会话的，一并清掉；回放与挂起态不跨会话。
+    this.backlog.clear();
+    this.stopReplay();
+    this.cancelReadingTimer();
+    this.cancelPauseTimer();
+    this.backlogOpen = false;
+  }
+
+  /** Feed one presented line into the backlog, attaching replay audio when
+   * the descriptor is already known (it usually arrives before the line). */
+  private pushBacklogLine(line: RuntimePlayableEventWire): void {
+    this.backlog.push({
+      type: line.type,
+      lineId: line.line_id,
+      ...(line.speaker !== undefined ? { speaker: line.speaker } : {}),
+      text: line.text,
+    });
+    const descriptor = this.descriptors.get(line.line_id);
+    if (descriptor !== undefined) {
+      this.backlog.attachAudio(
+        line.line_id,
+        descriptor.descriptor.cacheKey,
+        descriptor.descriptor.format.sampleRate,
+      );
+    }
   }
 
   private onCurrentLine(lineId: string, line: RuntimePlayableEventWire): void {
     this.currentLineId = lineId;
+    this.pushBacklogLine(line);
     this.cancelReadingTimer();
+    // 回看打开：语音与自动推进全部挂起（关面板时 resumeLiveVoice 接管）。
+    if (this.backlogOpen) return;
     this.coordinator?.stop(); // advance while mid-line halts playback (§9.3)
     this.ensureEnqueued(lineId);
     this.coordinator?.start(lineId);
@@ -544,13 +730,16 @@ export class GameApp {
       existing.retries = 0;
     }
     this.descriptors.set(lineId, entry);
+    // 回看行补上回放标识（描述符通常先于行本身到达）。
+    this.backlog.attachAudio(lineId, descriptor.cacheKey, descriptor.format.sampleRate);
 
     const isCurrent = lineId === this.currentLineId;
     this.ensureEnqueued(lineId);
     if (isCurrent) {
       // The segment may exist now (enqueued at descriptor time) — start the
       // buffered samples; this also cancels the no-audio reading fallback.
-      this.coordinator?.start(lineId);
+      // 回看挂起时不 start（armPlaybackStart 已被 coordinator 门控兜底）。
+      if (!this.backlogOpen) this.coordinator?.start(lineId);
       this.cancelReadingTimer();
     }
     void this.ensureAudio(lineId);
@@ -563,12 +752,15 @@ export class GameApp {
     entry.descriptor = { ...entry.descriptor, priority };
     if (lineId === this.currentLineId) {
       this.ensureEnqueued(lineId);
-      this.coordinator?.start(lineId);
+      if (!this.backlogOpen) this.coordinator?.start(lineId); // 回看挂起：不起播
     }
     this.reconcileAudio();
   }
 
   private onInvalidated(lineId: string): void {
+    // 行被丢弃（分支剪除/修复重生成）：其回放资产随之作废，文本保留——
+    // 已播出的文字是玩家读过的历史。
+    this.backlog.invalidateAudio(lineId);
     const entry = this.descriptors.get(lineId);
     if (entry !== undefined && entry.state === "downloading" && entry.abort !== null) {
       entry.abort.abort(); // the downloader catch marks the cache partial
@@ -855,6 +1047,7 @@ export class GameApp {
   /** §9.3 no-audio fallback: auto mode advances by reading-time estimate. */
   private scheduleReadingFallback(): void {
     this.cancelReadingTimer();
+    if (this.backlogOpen) return; // 回看挂起：不自动推进
     const lineId = this.currentLineId;
     if (lineId === null || this.playbackMode !== "auto") return;
     const entry = this.descriptors.get(lineId);

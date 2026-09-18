@@ -31,6 +31,7 @@ import {
   type PlayerSettings,
 } from "./storage/player-settings.js";
 import { SettingsMenu } from "./ui/settings-menu.js";
+import { BacklogOverlay } from "./ui/backlog-overlay.js";
 import { setText, show } from "./ui/dom.js";
 import "./ui/styles.css";
 
@@ -119,6 +120,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     {
       onModeToggle: (mode) => app.setMode(mode),
       onOpenSettings: () => toggleSettings(),
+      onOpenBacklog: () => toggleBacklog(),
       onRestart: () => {
         // Mid-session restart loses progress; the end-screen path does not
         // need this guard (nothing is left to lose).
@@ -164,11 +166,45 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   );
   // 浮层（设置/回看）打开期间控制条常显，否则鼠标离开角落时入口随栏淡出。
   const syncControlsPinned = (): void => {
-    refs.controlsRoot.classList.toggle("controls--pinned", settingsMenu.isOpen());
+    refs.controlsRoot.classList.toggle(
+      "controls--pinned",
+      settingsMenu.isOpen() || backlogOverlay.isOpen,
+    );
   };
   const toggleSettings = (): void => {
     settingsMenu.toggle();
+    controls.setSettingsOpen(settingsMenu.isOpen());
     syncControlsPinned();
+  };
+
+  // ---------------------------------------------------------------------------
+  // 回看（backlog）：历史浏览 + 缓存语音回放。打开 = app 挂起故事推进；
+  // 面板期间新行照常追加。Esc/L 可开关；结局/报错/重开自动关闭。
+  // ---------------------------------------------------------------------------
+  const backlogOverlay = new BacklogOverlay(refs.backlogRoot, {
+    onClose: () => closeBacklog(),
+    onReplay: (lineId) => {
+      void app.replayLine(lineId); // 不可回放时状态由 render 路由刷新
+    },
+    onStopReplay: () => app.stopReplay(),
+  });
+  const openBacklog = (): void => {
+    if (backlogOverlay.isOpen) return;
+    app.setBacklogOpen(true);
+    backlogOverlay.open(app.backlogEntries(), app.state().replayLineId);
+    controls.setBacklogOpen(true);
+    syncControlsPinned();
+  };
+  const closeBacklog = (): void => {
+    if (!backlogOverlay.isOpen) return;
+    app.setBacklogOpen(false);
+    backlogOverlay.close();
+    controls.setBacklogOpen(false);
+    syncControlsPinned();
+  };
+  const toggleBacklog = (): void => {
+    if (backlogOverlay.isOpen) closeBacklog();
+    else openBacklog();
   };
   const endScreen = new EndScreen(refs.endRoot, {
     onRestart: () => beginRestart(),
@@ -208,11 +244,31 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
       if (event.key === "Escape") {
         event.preventDefault();
         settingsMenu.close();
+        controls.setSettingsOpen(false);
         syncControlsPinned();
       }
       return;
     }
+    // 回看面板打开时同样独占：Esc/L 关闭，其余按键不推进剧情
+    // （点击与自动推进已被 app 挂起，这里挡键盘路径）。
+    if (backlogOverlay.isOpen) {
+      if (event.key === "Escape" || event.key === "l" || event.key === "L") {
+        event.preventDefault();
+        closeBacklog();
+      }
+      return;
+    }
     const mode = app.state().view.mode;
+    // L（log）：gal 惯例回看快捷键；开场/结局页不响应。
+    if (
+      (event.key === "l" || event.key === "L") &&
+      mode !== "BOOTSTRAP" &&
+      mode !== "ENDING"
+    ) {
+      event.preventDefault();
+      openBacklog();
+      return;
+    }
     // Esc has no native button behavior, so it is handled BEFORE the
     // button-target guard below: with a preview button focused (Tab), Esc
     // must still reach cancelPreview instead of being swallowed.
@@ -271,6 +327,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
       lastInteractionId = null;
       draftByInteractionId.clear();
       stageRenderer.clear();
+      closeBacklog(); // 回看是旧会话的历史，随新会话一起收起
       if (restartPending) endRestartPending();
     } else if (view.sessionId !== undefined) {
       lastSessionId = view.sessionId;
@@ -279,6 +336,10 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     show(refs.startRoot, !started && mode === "BOOTSTRAP");
     show(refs.endRoot, mode === "ENDING");
     show(refs.controlsRoot, mode !== "BOOTSTRAP" && mode !== "ENDING");
+    // 结局/报错时回看面板自动收起（重开入口在结束页上）。
+    if ((mode === "ENDING" || mode === "ERROR") && backlogOverlay.isOpen) {
+      closeBacklog();
+    }
 
     show(refs.dialogueRoot, mode === "PLAYING");
     show(refs.previewRoot, mode === "INPUT_PREVIEW");
@@ -334,8 +395,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
       if (line !== undefined) {
         dialogueBox.setLine(line, state.showLineIds);
       }
-    } else if (mode === "INPUT_PREVIEW") {
-      const text = view.currentPreview?.text ?? "";
+    } else if (mode === "INPUT_PREVIEW") {      const text = view.currentPreview?.text ?? "";
       if (modeChanged || text !== lastPreviewText) {
         lastPreviewText = text;
         const interactionId = interactionIdOf(view.currentInteraction);
@@ -353,6 +413,12 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
       // generation traces stay off the player screen by design — the
       // operator diagnoses via /monitor. The controls-bar restart button
       // remains the recovery entry point.
+    }
+
+    // 回看面板开着：随状态刷新（新行追加 / 回放指示变化；update 内部有
+    // diff，列表形状未变时零 DOM 操作）。
+    if (backlogOverlay.isOpen) {
+      backlogOverlay.update(app.backlogEntries(), state.replayLineId);
     }
 
     // Stage picture (§86): re-render only when the view model hands us a

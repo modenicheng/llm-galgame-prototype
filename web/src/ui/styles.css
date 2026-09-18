@@ -1054,6 +1054,171 @@ button {
 }
 
 /* --------------------------------------------------------------------------
+   Backlog 回看 — 历史对话回看面板（读档式滚动列表 + 缓存语音回放）。
+   挂在 16:9 舞台框内盖住舞台（z 序高于 scene 低于视口级控制条）；显隐由
+   hidden 驱动，入场用 veil-in（同 .stage__veil，纯 opacity）。
+   -------------------------------------------------------------------------- */
+
+.backlog {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+  padding: 3% 4%;
+  background: linear-gradient(180deg, rgba(7, 9, 13, 0.78), rgba(5, 7, 10, 0.88));
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: veil-in 280ms var(--ease-out) both;
+}
+
+.backlog__panel {
+  display: flex;
+  flex-direction: column;
+  width: min(920px, 100%);
+  min-height: 0;
+  /* 缩放系与场景内 UI 对齐：以 1280 参考宽的设计 px 表达。 */
+  font-size: clamp(12px, 1.15vmin + 4px, 26px);
+}
+
+.backlog__header {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.backlog__title {
+  font-family: var(--font-title);
+  font-weight: 400;
+  font-size: 1.5em;
+  letter-spacing: 0.4em;
+  color: var(--lantern-soft);
+  text-shadow: 0 0 18px rgba(232, 167, 92, 0.4);
+}
+
+.backlog__count {
+  font-family: var(--font-mono);
+  font-size: 0.72em;
+  letter-spacing: 0.1em;
+  color: var(--paper-faint);
+}
+
+.backlog__close {
+  margin-left: auto;
+  padding: 0.3em 0.9em;
+  font-size: 0.78em;
+  letter-spacing: 0.22em;
+  color: var(--paper-dim);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  transition:
+    color 180ms var(--ease-out),
+    border-color 180ms var(--ease-out);
+}
+
+.backlog__close:hover {
+  color: var(--lantern-soft);
+  border-color: rgba(232, 167, 92, 0.5);
+}
+
+.backlog__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 6px 12px 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(232, 167, 92, 0.35) transparent;
+}
+
+.backlog__item {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 16px;
+  text-align: left;
+  font-size: 0.92em;
+  line-height: 1.7;
+  letter-spacing: 0.03em;
+  color: var(--paper);
+  background: linear-gradient(90deg, rgba(20, 25, 34, 0.8), rgba(13, 16, 22, 0.8));
+  border: 1px solid rgba(232, 167, 92, 0.12);
+  border-left: 3px solid var(--lantern-deep);
+  border-radius: 4px;
+  transition:
+    border-color 180ms var(--ease-out),
+    background-color 180ms var(--ease-out),
+    box-shadow 180ms var(--ease-out);
+}
+
+.backlog__item:hover:not(:disabled) {
+  border-color: rgba(232, 167, 92, 0.4);
+  border-left-color: var(--lantern);
+  background: linear-gradient(90deg, rgba(28, 34, 46, 0.88), rgba(17, 21, 30, 0.88));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.backlog__item--narration {
+  border-left-color: rgba(127, 168, 163, 0.55);
+}
+
+.backlog__item--narration .backlog__speaker {
+  color: var(--jade);
+}
+
+.backlog__item--playing {
+  border-color: rgba(232, 167, 92, 0.6);
+  border-left-color: var(--lantern);
+  box-shadow: 0 0 18px rgba(232, 167, 92, 0.2);
+}
+
+.backlog__item--noaudio {
+  opacity: 0.55;
+}
+
+.backlog__speaker {
+  flex: 0 0 5.5em;
+  font-weight: 600;
+  font-size: 0.88em;
+  letter-spacing: 0.18em;
+  color: var(--lantern-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.backlog__text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.backlog__cue {
+  flex: 0 0 auto;
+  align-self: center;
+  font-size: 0.72em;
+  letter-spacing: 0.14em;
+  color: var(--lantern);
+}
+
+.backlog__item--noaudio .backlog__cue {
+  color: var(--paper-faint);
+}
+
+.backlog__empty {
+  margin-top: 2em;
+  text-align: center;
+  font-size: 0.9em;
+  letter-spacing: 0.2em;
+  color: var(--paper-faint);
+}
+
+/* --------------------------------------------------------------------------
    Start overlay — the autoplay-unlock gate
    -------------------------------------------------------------------------- */
 
