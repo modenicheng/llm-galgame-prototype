@@ -11,7 +11,9 @@
   position: fixed;
   inset: 0;
   display: grid;
-  grid-template-columns: minmax(420px, 45%) 1fr;
+  /* 三列：写手面板宽由 --mon-writer-w（splitter 拖拽写入，localStorage
+     持久化）驱动，缺省回落到原 45% 设计值；8px 为列 splitter 轨道。 */
+  grid-template-columns: var(--mon-writer-w, minmax(420px, 45%)) 8px minmax(360px, 1fr);
   grid-template-rows: minmax(0, 1fr) auto;
   background: #0b0b0d;
   color: #d6d6da;
@@ -20,6 +22,19 @@
   line-height: 1.45;
   /* DSL / 等宽渲染统一用更纱黑体（web/public/fonts/sarasa.css）。 */
   --mon-mono: "Sarasa Gothic SC", ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+/* 拖拽 splitter 期间：全局锁光标与选区（指针捕获后指针可离开手柄）。 */
+body.mon-splitting-x,
+body.mon-splitting-x * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+body.mon-splitting-y,
+body.mon-splitting-y * {
+  cursor: row-resize !important;
+  user-select: none !important;
 }
 
 .mon-root * {
@@ -134,13 +149,53 @@
 .mon-writer {
   grid-column: 1;
   grid-row: 1;
+  margin: 8px 0 8px 8px;
+}
+
+/* 分栏拖拽手柄：轨道本身透明，悬停/拖拽时 ::after 显示强调色细条；
+   ::after 外扩 3px 扩大命中区。 */
+.mon-splitter {
+  position: relative;
+  z-index: 5;
+  touch-action: none;
+}
+
+.mon-splitter--col {
+  grid-column: 2;
+  grid-row: 1;
+  cursor: col-resize;
+}
+
+.mon-splitter--col::after {
+  inset: 0 -3px;
+}
+
+.mon-splitter--row {
+  cursor: row-resize;
+}
+
+.mon-splitter--row::after {
+  inset: -3px 0;
+}
+
+.mon-splitter::after {
+  content: "";
+  position: absolute;
+  background: transparent;
+  transition: background-color 120ms ease;
+}
+
+.mon-splitter:hover::after,
+.mon-splitter.is-dragging::after {
+  background: rgba(255, 87, 34, 0.38);
 }
 
 .mon-right {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
   display: grid;
-  grid-template-rows: minmax(180px, 42%) minmax(0, 1fr);
+  /* 上:下由 --mon-right-top-h（行 splitter 拖拽写入）驱动，缺省回落 42%。 */
+  grid-template-rows: var(--mon-right-top-h, minmax(180px, 42%)) 8px minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
 }
@@ -322,21 +377,68 @@
   padding-top: 4px;
 }
 
-/* 生成片历史：同片被覆盖的生成折叠在此（原位替换展示，数据未删）。 */
-.writer-slice-history {
-  margin: 6px 0 0 15px;
-  border-left: 2px solid #292932;
-  padding-left: 10px;
+/* 修复续写的小型横幅：插在原片之后、作为块内多次生成的分割，刻意弱于
+ * 完整 boundary（更小字号、细左边条、非 sticky）。状态色语义与 boundary
+ * 一致：流式蓝 / 失败红 / 完成暗绿。 */
+.writer-repair-banner {
+  margin: 8px 10px 0 15px;
+  padding: 4px 10px 5px;
+  border-left: 2px solid #42424c;
+  border-radius: 0 4px 4px 0;
+  background: rgba(255, 255, 255, 0.025);
+  font-family: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
 }
 
-.writer-slice-history-label {
+.writer-repair-banner.state-streaming {
+  border-left-color: var(--mon-live);
+}
+
+.writer-repair-banner.state-failed {
+  border-left-color: var(--mon-fail);
+}
+
+.writer-repair-banner.state-done {
+  border-left-color: var(--mon-ok-dim);
+}
+
+.writer-repair-banner.state-cancelled {
+  border-left-color: #4d4d57;
+  opacity: 0.72;
+}
+
+.writer-repair-banner .writer-request-title {
+  gap: 6px;
   font-size: 11px;
-  color: #8a8a93;
-  margin: 2px 0 4px;
+  color: #9a9aa4;
 }
 
+.writer-repair-banner .writer-request-title strong {
+  font-weight: 600;
+  color: #b9b9c2;
+}
+
+.writer-repair-banner .writer-request-meta {
+  margin: 1px 0 0 13px;
+  font-size: 10.5px;
+}
+
+.writer-repair-banner .writer-request-notice {
+  margin: 2px 0 0 13px;
+  font-size: 10.5px;
+}
+
+.writer-repair-banner .writer-record-link {
+  font-size: 10.5px;
+}
+
+.writer-repair-chip {
+  font-size: 10px;
+  padding: 0 6px;
+}
+
+/* 同轮重试 / 被覆盖修复轮的折叠块（展开审计，数据未删）。 */
 .writer-history-item {
-  margin: 4px 0;
+  margin: 4px 0 4px 15px;
 }
 
 .writer-history-item > summary {
@@ -367,7 +469,9 @@
   content: "▾ ";
 }
 
-.writer-history-item .writer-request-boundary {
+/* 折叠块内的横幅退化为普通流（不参与 sticky 跟随）。 */
+.writer-history-item .writer-request-boundary,
+.writer-history-item .writer-repair-banner {
   position: static;
   margin-top: 6px;
 }
@@ -376,6 +480,10 @@
   font-size: 11px;
   color: var(--mon-warn);
   margin: 12px 0 4px;
+}
+
+.dsl-row.is-repaired .dsl-no {
+  color: var(--mon-warn);
 }
 
 .dsl-row {
@@ -791,8 +899,38 @@
 .mon-tabbody {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  display: flex;
+  overflow: hidden;
+  padding: 0;
+}
+
+/* 每个 tab 独立滚动容器：切 tab 天然保留各自的阅读位置，也让日志类
+ * tab 的跟随滚底（follow-tail）只作用于自己的面板。 */
+.mon-tabpane {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
   padding: 10px;
+}
+
+/* 日志 tab 的「跟随最新」chip：sticky 悬在面板底部，仅在停止跟随时出现。 */
+.mon-jump-bottom {
+  position: sticky;
+  bottom: 6px;
+  display: none;
+  margin: 6px 8px 0 auto;
+  padding: 3px 12px;
+  font: inherit;
+  font-size: 11px;
+  color: #ffb09e;
+  background: #221410;
+  border: 1px solid rgba(255, 87, 34, 0.45);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.mon-jump-bottom.is-shown {
+  display: block;
 }
 
 /* ------------------------------------------------------------ story graph */

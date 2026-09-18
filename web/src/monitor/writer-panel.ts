@@ -1,10 +1,13 @@
 /**
  * One chronological, auto-following document of writer generations grouped
  * into slices（生成片）: a failed generation and its Game-level repair
- * continuations share one slice. The latest generation replaces the original
- * IN PLACE (原位替换，防平铺追加); superseded generations stay collapsed under
- * the slice — data and logs are never dropped, click to expand for audit.
- * Request boundaries carry latency, token, repair and parse telemetry.
+ * continuations share one slice. Document order mirrors PLAY order: the
+ * original generation first (its streamed lines reached the player), each
+ * repair continuation inserted AFTER it under a small subdued in-block
+ * banner. In-place replacement/collapse only happens BETWEEN repair rounds
+ * (failed rounds were discarded unreplayed) — the original block is never
+ * collapsed. Request boundaries carry latency, token, repair and parse
+ * telemetry.
  */
 import type { MonitorModel, WriterAttemptModel, WriterTaskModel } from "./monitor-model.js";
 import type { MonitorServerEvent } from "@shared/wire/monitor-message.js";
@@ -37,6 +40,8 @@ const REPAIR_KIND_LABELS: Record<string, string> = {
   form_prompt_merge: "提示并入",
   visual_swap: "台词头纠正",
   strip_continue: "断行续写",
+  sentinel_autoclose: "补哨兵",
+  narration_label: "剥旁白标签",
 };
 
 /** Distance from the bottom inside which the panel keeps following. */
@@ -67,11 +72,13 @@ interface RequestSection {
   generation: number;
   /** 片内修复续写次数（任务数 − 1，展示在片边界上）。 */
   repairsInSlice: number;
+  /** 横幅形态：原片=完整 boundary；修复轮次=块内小型 banner。 */
+  banner: "full" | "mini";
   boundary: HTMLElement;
   title: HTMLElement;
   meta: HTMLElement;
   notice: HTMLElement;
-  /** 历史块折叠头；主生成块为 null（信息直接写在片边界上）。 */
+  /** 折叠头（同轮重试等）；无折叠时为 null。 */
   summary: HTMLElement | null;
   view: DslStreamView;
   renderedText: string;
@@ -100,6 +107,15 @@ export interface WriterPanelRefs {
   foot: HTMLElement;
 }
 
+/** 工具栏生成片过滤（纯展示层：只隐藏整片，不改数据与底部累计）。 */
+export type SliceFilter = "all" | "failed" | "repairs";
+
+const SLICE_FILTERS: { id: SliceFilter; label: string }[] = [
+  { id: "all", label: "全部" },
+  { id: "failed", label: "仅失败" },
+  { id: "repairs", label: "仅修复" },
+];
+
 export class WriterPanel {
   private readonly sections = new Map<string, RequestSection>();
   /** Live slice sections keyed by sliceKey (incremental document sync). */
@@ -113,6 +129,9 @@ export class WriterPanel {
   private programmaticScrollUntil = 0;
   private highlightKey: string | null = null;
   private highlightView: DslStreamView | null = null;
+  private sliceFilter: SliceFilter = "all";
+  /** 已同步到 DOM 的过滤条件——片的 signature 不含它，切换时需整体重建。 */
+  private appliedFilter: SliceFilter = "all";
 
   constructor(
     private readonly model: MonitorModel,
@@ -189,7 +208,7 @@ export class WriterPanel {
   // Slice grouping（生成片：原始生成 + 其 Game 级修复续写共享同片）
   // -------------------------------------------------------------------------
 
-  private orderedSlices(): SliceGroup[] {
+  private orderedSlices(filter: SliceFilter = this.sliceFilter): SliceGroup[] {
     const groups = new Map<string, {
       sliceKey: string;
       taskType: string;
@@ -243,6 +262,18 @@ export class WriterPanel {
       });
     }
     slices.sort((a, b) => a.startedAt - b.startedAt || a.sliceKey.localeCompare(b.sliceKey));
+    return this.applySliceFilter(slices, filter);
+  }
+
+  private applySliceFilter(slices: SliceGroup[], filter: SliceFilter): SliceGroup[] {
+    if (filter === "failed") {
+      return slices.filter((slice) =>
+        slice.attempts.some((entry) => entry.attempt.state === "failed"),
+      );
+    }
+    if (filter === "repairs") {
+      return slices.filter((slice) => slice.repairs > 0);
+    }
     return slices;
   }
 
@@ -251,6 +282,15 @@ export class WriterPanel {
   // -------------------------------------------------------------------------
 
   private syncDocument(): void {
+    if (this.appliedFilter !== this.sliceFilter) {
+      // 切换过滤：片的 signature 不含过滤条件，整体重建文档最省心。
+      this.appliedFilter = this.sliceFilter;
+      this.sliceSections.clear();
+      this.sections.clear();
+      this.highlightKey = null;
+      this.highlightView = null;
+      this.refs.stream.textContent = "";
+    }
     const slices = this.orderedSlices();
     if (slices.length === 0) {
       if (this.sliceSections.size > 0) {
@@ -261,7 +301,15 @@ export class WriterPanel {
         this.refs.stream.textContent = "";
       }
       if (this.refs.stream.childElementCount === 0) {
-        this.refs.stream.appendChild(el("div", "mon-empty", "暂无生成请求（等待玩家开始）"));
+        this.refs.stream.appendChild(
+          el(
+            "div",
+            "mon-empty",
+            this.appliedFilter === "all"
+              ? "暂无生成请求（等待玩家开始）"
+              : "当前过滤条件下没有生成片",
+          ),
+        );
       }
       return;
     }
@@ -329,56 +377,82 @@ export class WriterPanel {
     }
   }
 
-  /** Build one slice section element: latest generation in place, history collapsed. */
+  /**
+   * Build one slice section: 原片在前（完整 boundary，永不折叠——它的流式
+   * 内容是玩家实际看到过的），修复续写按轮次插在原片之后，用块内小型
+   * banner 分割；覆盖折叠只发生在修复轮次之间（失败轮次未播出）。
+   */
   private buildSliceElement(slice: SliceGroup): HTMLElement {
     const section = el("section", "writer-request");
     section.dataset.sliceKey = slice.sliceKey;
     if (slice.repairs > 0) section.dataset.repairs = String(slice.repairs);
 
-    // 原位替换：片主体永远展示最新生成；早先生成折叠进 history 审计。
-    const primary = slice.attempts[slice.attempts.length - 1]!;
-    const primaryBlock = this.buildBlock(slice, primary, null);
-    section.append(primaryBlock.boundary, primaryBlock.body);
-    this.sections.set(primary.attempt.attemptId, primaryBlock.section);
-
-    if (slice.attempts.length > 1) {
-      const history = el("div", "writer-slice-history");
-      history.appendChild(
-        el(
-          "div",
-          "writer-slice-history-label",
-          `被覆盖的生成 ×${slice.attempts.length - 1}（展开审计，数据未删）`,
-        ),
-      );
-      // Newest-first: the most recently superseded generation is the one an
-      // auditor usually wants (closest to what the player actually saw).
-      for (let i = slice.attempts.length - 2; i >= 0; i -= 1) {
-        const entry = slice.attempts[i]!;
-        const details = el("details", "writer-history-item");
-        const summary = el("summary", "writer-history-summary");
-        details.appendChild(summary);
-        const block = this.buildBlock(slice, entry, summary);
-        details.append(block.boundary, block.body);
-        history.appendChild(details);
-        this.sections.set(entry.attempt.attemptId, block.section);
-      }
-      section.appendChild(history);
+    // 按生成轮次分组（1=原片，2+=修复续写轮次），组内保持尝试先后。
+    const rounds: SliceAttempt[][] = [];
+    for (const entry of slice.attempts) {
+      const round = (rounds[entry.generation - 1] ??= []);
+      round.push(entry);
     }
 
+    rounds.forEach((round, roundIndex) => {
+      const isRepair = roundIndex > 0;
+      const isLatestRound = roundIndex === rounds.length - 1;
+      const latest = round[round.length - 1]!;
+      const bannerKind = isRepair ? "mini" : "full";
+
+      if (isRepair && !isLatestRound) {
+        // 被更新的修复轮覆盖：旧修复轮折叠在原位（数据未删，展开审计）。
+        const details = el("details", "writer-history-item");
+        details.appendChild(
+          el(
+            "summary",
+            "writer-history-summary",
+            `被覆盖的修复 · 生成 #${roundIndex + 1} · ${STATE_LABELS[latest.attempt.state]} · ${fmtTime(latest.attempt.startedAt)}`,
+          ),
+        );
+        const block = this.buildBlock(slice, latest, null, "mini");
+        this.sections.set(latest.attempt.attemptId, block.section);
+        details.append(block.boundary, block.body);
+        section.appendChild(details);
+        return;
+      }
+
+      const block = this.buildBlock(slice, latest, null, bannerKind);
+      this.sections.set(latest.attempt.attemptId, block.section);
+      section.append(block.boundary, block.body);
+
+      // 同轮重试（网络层重发等，未播出）折叠在该轮次块之后。
+      if (round.length > 1) {
+        const details = el("details", "writer-history-item");
+        details.appendChild(
+          el("summary", "writer-history-summary", `重试 ×${round.length - 1}（展开审计，数据未删）`),
+        );
+        for (const entry of round.slice(0, -1)) {
+          const retryBlock = this.buildBlock(slice, entry, null, bannerKind);
+          details.append(retryBlock.boundary, retryBlock.body);
+          this.sections.set(entry.attempt.attemptId, retryBlock.section);
+        }
+        section.appendChild(details);
+      }
+    });
     return section;
   }
 
-  /** Build one attempt block (boundary header + stream view). */
+  /** Build one attempt block（原片=完整 boundary；修复轮次=块内小型 banner）。 */
   private buildBlock(
     slice: SliceGroup,
     entry: SliceAttempt,
     summary: HTMLElement | null,
+    banner: "full" | "mini",
   ): {
     section: RequestSection;
     boundary: HTMLElement;
     body: HTMLElement;
   } {
-    const boundary = el("header", "writer-request-boundary");
+    const boundary = el(
+      "header",
+      banner === "mini" ? "writer-repair-banner" : "writer-request-boundary",
+    );
     const title = el("div", "writer-request-title");
     const meta = el("div", "writer-request-meta");
     const notice = el("div", "writer-request-notice");
@@ -398,6 +472,7 @@ export class WriterPanel {
       attempt: entry.attempt,
       generation: entry.generation,
       repairsInSlice: slice.repairs,
+      banner,
       boundary,
       title,
       meta,
@@ -440,22 +515,26 @@ export class WriterPanel {
   }
 
   private updateBoundary(request: RequestSection): void {
-    const { task, attempt, boundary, title, meta, notice, summary } = request;
-    boundary.className = `writer-request-boundary state-${attempt.state}`;
+    const { task, attempt, boundary, title, meta, notice, summary, banner } = request;
+    boundary.className =
+      banner === "mini"
+        ? `writer-repair-banner state-${attempt.state}`
+        : `writer-request-boundary state-${attempt.state}`;
     const taskLabel = TASK_TYPE_LABELS[task.taskType] ?? task.taskType;
 
     title.textContent = "";
     title.appendChild(el("span", `mon-dot state-${attempt.state}`));
-    // 原位替换语义：同一生成片的修复续写不追加新块，主边界升计数。
-    title.appendChild(
-      el(
-        "strong",
-        undefined,
-        request.repairsInSlice > 0
-          ? `${taskLabel} · 生成 #${request.generation}（修复续写 ×${request.repairsInSlice}）`
-          : `${taskLabel} · 生成 #${request.generation}`,
-      ),
-    );
+    if (banner === "mini") {
+      // 修复轮次的小横幅：弱化、块内、作为多次生成的分割。
+      title.appendChild(el("strong", undefined, `修复续写 · 生成 #${request.generation}`));
+    } else {
+      title.appendChild(el("strong", undefined, `${taskLabel} · 生成 #${request.generation}`));
+      if (request.repairsInSlice > 0) {
+        title.appendChild(
+          el("span", "mon-chip writer-repair-chip", `修复续写 ×${request.repairsInSlice}`),
+        );
+      }
+    }
     title.appendChild(el("span", "writer-request-time", fmtTime(attempt.startedAt)));
     title.appendChild(el("span", `writer-request-state state-${attempt.state}`, STATE_LABELS[attempt.state]));
     // 落盘记录入口：该 attempt 的原始流全文（其余文件见记录目录 index）。
@@ -557,6 +636,19 @@ export class WriterPanel {
     bar.appendChild(
       el("span", "writer-document-count", `${slices.length} 片 · ${attempts} 次请求`),
     );
+    for (const option of SLICE_FILTERS) {
+      const chip = el(
+        "button",
+        `mon-chip writer-filter${this.sliceFilter === option.id ? " is-active" : ""}`,
+        option.label,
+      );
+      chip.addEventListener("click", () => {
+        if (this.sliceFilter === option.id) return;
+        this.sliceFilter = option.id;
+        this.render();
+      });
+      bar.appendChild(chip);
+    }
     const follow = el(
       "button",
       `mon-chip writer-follow${this.followTail ? " is-active" : ""}`,
@@ -573,7 +665,8 @@ export class WriterPanel {
   private renderFoot(): void {
     const foot = this.refs.foot;
     foot.textContent = "";
-    const slices = this.orderedSlices();
+    // foot 是全量累计口径，不随工具栏过滤变化。
+    const slices = this.orderedSlices("all");
     const attempts = slices.flatMap((slice) => slice.attempts.map((entry) => entry.attempt));
     const active = attempts.filter((attempt) => attempt.state === "streaming").length;
     const totals = attempts.reduce(

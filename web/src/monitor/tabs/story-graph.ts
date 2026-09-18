@@ -120,6 +120,7 @@ export function renderStoryGraph(
   graph: StoryGraphModel,
   pressure: { interactionCount: number; wrapupAt: number; closingPushAt: number; maxAt: number },
   branches: Record<string, { label: string; state: string; eventCount: number; dialogueCount: number }>,
+  context?: { eventCount?: number },
 ): void {
   container.textContent = "";
 
@@ -207,7 +208,18 @@ export function renderStoryGraph(
     endNode.appendChild(el("div", "prompt", graph.ending.text));
     flow.appendChild(endNode);
   } else if (graph.nodes.length === 0) {
-    flow.appendChild(el("div", "mon-empty", "还没有已提交的剧情事件"));
+    // 区分「真·空会话」与「已有事件但第一次交互还没开」——否则与状态栏的
+    // 事件计数互相矛盾。
+    const eventCount = context?.eventCount ?? 0;
+    flow.appendChild(
+      el(
+        "div",
+        "mon-empty",
+        eventCount > 0
+          ? `已提交 ${eventCount} 条事件，还没有交互节点（等待第一次表单）`
+          : "还没有已提交的剧情事件",
+      ),
+    );
   }
 
   container.appendChild(flow);

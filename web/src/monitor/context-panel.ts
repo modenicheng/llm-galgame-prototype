@@ -43,6 +43,8 @@ export class ContextPanel {
 
   render(): void {
     const list = this.refs.list;
+    // 重建时保持阅读位置（context 事件全量重渲染，别把审计员顶回顶部）。
+    const keepScroll = list.scrollTop;
     list.textContent = "";
     const tasks = this.model.contextTasks;
     if (tasks.length === 0) {
@@ -54,6 +56,7 @@ export class ContextPanel {
     for (const task of tasks) {
       list.appendChild(this.renderItem(task.id, task.kind, task.state, task.startedAt, task.endedAt, task.detail, task.output, task.error));
     }
+    list.scrollTop = keepScroll;
   }
 
   private renderItem(

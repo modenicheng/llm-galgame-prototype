@@ -26,10 +26,16 @@ const REPAIR_LABELS: Record<string, string> = {
   visual_swap: "台词头纠正",
   strip_continue: "断行续写",
   sentinel_autoclose: "补哨兵",
+  narration_label: "剥旁白标签",
 };
 
 function num(value: number | undefined): string {
   return value === undefined ? "0" : String(value);
+}
+
+/** 服务端统计是浮点均值，直接插值会显示 2525.3999999999999ms 之类的原值。 */
+function fmtMs(value: number | undefined): string {
+  return `${Math.round(value ?? 0)}ms`;
 }
 
 function card(title: string, rows: [string, string][]): HTMLElement {
@@ -72,14 +78,14 @@ export function renderMetrics(container: HTMLElement, metrics: MetricsSnapshotVi
   );
   grid.appendChild(
     card("延迟", [
-      ["p50", `${llm.latency_ms.p50}ms`],
-      ["p95", `${llm.latency_ms.p95}ms`],
-      ["最大", `${llm.latency_ms.max}ms`],
+      ["p50", fmtMs(llm.latency_ms.p50)],
+      ["p95", fmtMs(llm.latency_ms.p95)],
+      ["最大", fmtMs(llm.latency_ms.max)],
       ["样本", num(llm.latency_ms.samples)],
-      ["首字 p50", `${llm.ttft_ms?.p50 ?? 0}ms`],
-      ["首字 p95", `${llm.ttft_ms?.p95 ?? 0}ms`],
+      ["首字 p50", fmtMs(llm.ttft_ms?.p50)],
+      ["首字 p95", fmtMs(llm.ttft_ms?.p95)],
       ...(llm.thinking_ms && llm.thinking_ms.samples > 0
-        ? ([["思考 p50", `${llm.thinking_ms.p50}ms`]] as [string, string][])
+        ? ([["思考 p50", fmtMs(llm.thinking_ms.p50)]] as [string, string][])
         : []),
     ]),
   );

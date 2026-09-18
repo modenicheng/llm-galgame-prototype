@@ -195,7 +195,7 @@ describe("MonitorModel → WriterPanel live flow", () => {
     });
   });
 
-  it("replaces a failed generation in place when its repair shares the slice id", () => {
+  it("inserts a slice's repair after it under a mini banner (original stays visible)", () => {
     const model = new MonitorModel();
     const container = makeContainer();
     const toolbar = document.createElement("div");
@@ -257,22 +257,28 @@ describe("MonitorModel → WriterPanel live flow", () => {
         ],
       });
 
-      // 原位替换：不追加新 section，仍只有一片。
+      // 仍只有一片；原片不被折叠——它的流式内容是玩家实际看到过的。
       const sections = container.querySelectorAll(".writer-request");
       expect(sections).toHaveLength(1);
       const section = sections[0]!;
-      // 片边界升计数：生成 #2 + 修复续写 ×1。
-      expect(section.querySelector(".writer-request-boundary")?.textContent).toContain("生成 #2");
-      expect(section.querySelector(".writer-request-boundary")?.textContent).toContain("修复续写 ×1");
-      // 片主体展示的是最新生成（修复续写）的流，不是原始输出。
+      const boundary = section.querySelector(".writer-request-boundary")!;
+      expect(boundary.textContent).toContain("生成 #1");
+      expect(boundary.textContent).toContain("修复续写 ×1");
       const primaryStream = section.querySelector(":scope > .writer-request-stream") as HTMLElement;
-      expect(primaryStream.textContent).toContain("修复续写第一行。");
-      expect(primaryStream.textContent).not.toContain("原始生成第一行。");
-      // 原始生成折叠进 history，数据保留可审计。
-      const historyItems = section.querySelectorAll(".writer-history-item");
-      expect(historyItems).toHaveLength(1);
-      expect(historyItems[0]!.textContent).toContain("原始生成第一行。");
-      expect(historyItems[0]!.querySelector("summary")?.textContent).toContain("生成 #1");
+      expect(primaryStream.textContent).toContain("原始生成第一行。");
+
+      // 修复续写以小型 banner 插在原片之后，文档顺序 = 播放顺序。
+      const banner = section.querySelector(".writer-repair-banner") as HTMLElement;
+      expect(banner.textContent).toContain("修复续写 · 生成 #2");
+      const repairStream = banner.nextElementSibling as HTMLElement;
+      expect(repairStream.classList.contains("writer-request-stream")).toBe(true);
+      expect(repairStream.textContent).toContain("修复续写第一行。");
+      expect(
+        primaryStream.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+
+      // 单修复轮：没有任何"被覆盖"折叠。
+      expect(section.querySelectorAll("details")).toHaveLength(0);
     });
   });
 

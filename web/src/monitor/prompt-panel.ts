@@ -82,6 +82,11 @@ export class PromptPanel {
 
   render(): void {
     const list = this.refs.list;
+    // 跨重渲染保持审计员的阅读位置：钉住的 attempt 未变时恢复 scrollTop；
+    // 跟随模式换到新 attempt（或旧 attempt 被环淘汰）时回顶（最新项在顶部，
+    // 即旧行为）。
+    const prevExpanded = this.expandedAttemptId;
+    const keepScroll = list.scrollTop;
     list.textContent = "";
 
     const system = this.model.writerSystemPrompt;
@@ -162,6 +167,8 @@ export class PromptPanel {
         list.appendChild(this.renderItem(item));
       }
     }
+    list.scrollTop =
+      prevExpanded !== null && this.expandedAttemptId === prevExpanded ? keepScroll : 0;
   }
 
   // -------------------------------------------------------------------------
