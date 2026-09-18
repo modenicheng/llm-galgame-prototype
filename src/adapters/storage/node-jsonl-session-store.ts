@@ -123,6 +123,7 @@ export class NodeJsonlSessionStore implements SessionStorePort {
         nextTurn?: number;
         lastEventSeq?: number;
         recapThroughSeq?: number;
+        memoryWatermark?: number;
         ending?: EndEvent;
         resumeInteraction?: { turn: number; interaction: InteractionEvent; stage?: StageCue[] };
       };
@@ -141,6 +142,9 @@ export class NodeJsonlSessionStore implements SessionStorePort {
             : {}),
           ...(typeof parsed.recapThroughSeq === "number" && Number.isInteger(parsed.recapThroughSeq) && parsed.recapThroughSeq >= 0
             ? { recapThroughSeq: parsed.recapThroughSeq }
+            : {}),
+          ...(typeof parsed.memoryWatermark === "number" && Number.isInteger(parsed.memoryWatermark) && parsed.memoryWatermark >= 0
+            ? { memoryWatermark: parsed.memoryWatermark }
             : {}),
           ...(isEndEvent(parsed.ending) ? { ending: parsed.ending } : {}),
           ...(isResumeInteraction(parsed.resumeInteraction) ? { resumeInteraction: parsed.resumeInteraction } : {}),

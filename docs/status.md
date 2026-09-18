@@ -45,6 +45,14 @@
   才升 L3。长回合护栏 `max_events_between_interactions`（默认 24）：自上次交互
   的文本事件超限后附"尽快交互"提示。+ `restart_session` 命令（应用级重建）。
   恢复时从 events.jsonl 重建交互计数与收束级别。
+- **会话记忆代理**（2026-09-18，落地 09-17 记忆审计定稿）：event 模式专属的
+  事件流投影器（`src/story/memory-agent.ts` 合并层 + `MemoryAgentAdapter`）。
+  从增量提交事件提取人物 emotion/goal/relationship、canon 事实（≤12 键，
+  scenario_* 钉住）、线程推进（前向迁移校验，不得覆盖 L1 的 ready 翻转；
+  ≤8 条），merge-only 写入 StoryState——summarizeState 的既有槽位零管道
+  改造注入。单飞 + `memoryWatermark` 水位随快照成对持久化；失败只跳过
+  本批，绝不杀 run loop。种子 purpose 生命周期：首个交互提交后转中性
+  锚点（不再以现在时常驻）。
 
 ### 长线剧情（NarrativeDirector，spec 见 superpowers）
 - 第 1+2 步「记忆过去」：committed events → episodes / threads / setups / anchors，
@@ -98,11 +106,17 @@
   缓冲仍是展平 `RuntimeBufferEvent[]`；prelude+main 同组提交已由组编译保证。
   （原"会话恢复闭环"缺口已由 `3743ba8` 会话持久化恢复关闭：load/resume、
   事件日志恢复、快照元数据、视觉状态与交互游标恢复均已落地。）
-- **beat 播放时机**：提交时立即应用（stage_beat_ready），不做缓冲时序。
+- ~~beat 播放时机~~：已于 2026-09-17 修复——RuntimeBeatEvent 进播放队列，
+  beat 组舞台 cue 在播放位生效（c8cb600），不再是提交即应用。
 - **舞台动画**：背景 crossfade / 角色 fade 为 CSS transition 基础版；无更复杂的
   转场/动画系统。
-- **BGM 转场**：直接切换，无淡入淡出；音量/静音有 API，无自动 ducking。
+- ~~BGM 转场~~：直接切换的缺口已由 `f876e2d` 关闭——bgm_playback 可配置
+  淡入淡出 + 裁切窗口循环。自动 ducking 仍无。
 - **CLI 音频**：`media.audio.enabled=false` 默认纯文本（CLI 不接 TTS 播放）。
+- **存档槽位/任意进度存读**：仍为路线图项（现为整会话目录级管理）。
+- **记忆代理监控接线**：memory agent 的 LLM 调用已计入
+  `metrics.requests.memory_agent`，但监控 context 面板尚未给它独立
+  task kind（wire `MonitorContextTaskKind` 待扩 "memory"）。
 
 ## 近期提交锚点
 

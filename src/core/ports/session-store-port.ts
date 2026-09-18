@@ -32,6 +32,11 @@ export interface RuntimeSnapshot {
    * snapshots — callers treat it as unknown.
    */
   recapThroughSeq?: number;
+  /**
+   * Event 模式记忆代理水位：seq ≤ 此值的事件已被提取进 StoryState
+   * （人物状态 / canon / 线程）。旧快照缺省——按已全部处理。
+   */
+  memoryWatermark?: number;
   /** The terminal ending, when this snapshot represents an ended session. */
   ending?: EndEvent;
   /** A form that was open when the process was interrupted. */

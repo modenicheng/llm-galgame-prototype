@@ -28,6 +28,8 @@ export interface LLMRequestCounts {
   narrative_consolidation: number;
   /** Rolling recap of history events that slid out of the window. */
   recap_summarization: number;
+  /** Event mode: session memory agent (character/canon/thread projection). */
+  memory_agent: number;
   speculative: number;
 }
 
@@ -171,6 +173,7 @@ export class Metrics {
     plot_plan: 0,
     narrative_consolidation: 0,
     recap_summarization: 0,
+    memory_agent: 0,
     speculative: 0,
   };
   private inputTokens = 0;
@@ -457,6 +460,7 @@ export class Metrics {
       plot_plan: 0,
       narrative_consolidation: 0,
       recap_summarization: 0,
+      memory_agent: 0,
       speculative: 0,
     };
     this.inputTokens = 0;

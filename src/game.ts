@@ -85,6 +85,8 @@ import type {
   StoryState,
 } from "./story/types.js";
 import type { RecapSummarizerPort } from "./core/ports/recap-summarizer-port.js";
+import type { SessionMemoryAgentPort } from "./core/ports/session-memory-agent-port.js";
+import { applyMemoryProposal } from "./story/memory-agent.js";
 import type { GameMonitorState } from "./core/runtime/monitor-state.js";
 import { toMonitorTimelineEntry } from "./core/runtime/monitor-state.js";
 import type { RuntimeStatus } from "./status.js";
@@ -209,6 +211,12 @@ export interface GamePorts {
    * only (serializeStoryContext-based, no LLM).
    */
   recapSummarizer?: RecapSummarizerPort;
+  /**
+   * Event 模式会话记忆代理（2026-09-18 记忆审计定稿落地）：从增量提交
+   * 事件提取人物状态 / canon / 线程推进，merge-only 写入 StoryState。
+   * Omitted → 不启用（长线模式由 NarrativeDirector 负责，不冲突）。
+   */
+  memoryAgent?: SessionMemoryAgentPort;
 }
 
 /** Raised when the driver sends `shutdown`. */
@@ -323,6 +331,15 @@ export class Game {
   /** 在飞的 recap 压缩（单飞）；flush 等待它落定后再写快照。 */
   private recapInFlight: Promise<void> | null = null;
   private readonly recapSummarizer: RecapSummarizerPort | undefined;
+  /** Event 模式会话记忆代理；缺省 = 关闭。 */
+  private readonly memoryAgent: SessionMemoryAgentPort | undefined;
+  /** 记忆代理已处理到的事件 seq（快照持久化，与 state 成对恢复）。 */
+  private memoryWatermark = 0;
+  /** 在飞的记忆提取（单飞）；快照落盘前等待它，状态与水位成对入盘。 */
+  private memoryInFlight: Promise<void> | null = null;
+  private pendingMemoryEvents: StoredEvent[] = [];
+  /** 种子 purpose 只改写一次（首个交互提交后转中性）。 */
+  private seedPurposeRewritten = false;
   /** 分级收束级别：0 无 / 1 wrapup（L1 软提示）/ 2 closing（L2 强提示）。 */
   private endingLevel: EndingLevel = 0;
   /** L3 保险丝：已达最大互动次数 → 后续生成强制收束结局。 */
@@ -371,6 +388,13 @@ export class Game {
   private currentDsl: DslSourceLocation | null = null;
   /** Per-branch tail state (docs §56): keyed by option id. */
   private readonly branchTailStates = new Map<string, VisualState>();
+  /**
+   * 舞台警告（隐形说话自动登台等），随下一次模型请求注入用户 prompt
+   * 后清空。分支预取的警告先按 option id 暂存，选中分支时才转正——
+   * 未选中分支的异常不污染后续上下文。
+   */
+  private pendingStageWarnings: string[] = [];
+  private readonly branchStageWarnings = new Map<string, string[]>();
   /** Input-bridge prefetch controllers, keyed by interaction id. */
   private readonly bridgeControllers = new Map<string, AbortController>();
   /**
@@ -388,13 +412,6 @@ export class Game {
   private resumeInteraction: RuntimeSnapshot["resumeInteraction"] | undefined;
   /** Next continuation turn persisted for process restart recovery. */
   private nextResumeTurn = 1;
-  /**
-   * 舞台警告（隐形说话自动登台等），随下一次模型请求注入用户 prompt
-   * 后清空。分支预取的警告先按 option id 暂存，选中分支时才转正——
-   * 未选中分支的异常不污染后续上下文。
-   */
-  private pendingStageWarnings: string[] = [];
-  private readonly branchStageWarnings = new Map<string, string[]>();
   /** Terminal ending restored from a previously completed session. */
   private restoredEnding: EndEvent | undefined;
 
@@ -414,6 +431,7 @@ export class Game {
     this.diagnostics = ports.diagnostics ?? silentDiagnosticSink;
     this.narrativeDirector = ports.narrativeDirector;
     this.recapSummarizer = ports.recapSummarizer;
+    this.memoryAgent = ports.memoryAgent;
     this.sessionId = ports.sessionId ?? this.ids.nextSessionId();
     this.interactionPolicy = new InteractionPolicy(config.interaction);
     this.storyState = ports.initialStoryState ?? createInitialState();
@@ -589,6 +607,7 @@ export class Game {
             phase: "ended",
             nextTurn: outcome.nextTurn,
             lastEventSeq: this.seq - 1,
+            memoryWatermark: this.memoryWatermark,
             ending,
           });
           this.emit({ type: "session_ended", ending });
@@ -648,6 +667,7 @@ export class Game {
                 phase: "ended",
                 nextTurn: outcome.nextTurn,
                 lastEventSeq: this.seq - 1,
+                memoryWatermark: this.memoryWatermark,
                 ending,
               });
               this.emit({ type: "session_ended", ending });
@@ -680,6 +700,7 @@ export class Game {
             phase: "ended",
             nextTurn: outcome.nextTurn,
             lastEventSeq: this.seq - 1,
+            memoryWatermark: this.memoryWatermark,
             ending,
           });
           this.emit({ type: "session_ended", ending });
@@ -939,6 +960,7 @@ export class Game {
     const endingPhase = this.currentEndingPhase();
     const requestInteraction = this.shouldRequestInteraction();
     const interactionProgress = this.interactionProgress();
+    const stageWarnings = this.drainStageWarnings();
     segment.done = this.runTrackedJob(jobId, label, async () => {
       const genHandle =
         kind === "opening"
@@ -948,6 +970,7 @@ export class Game {
               signal: controller.signal,
               ...(brief !== undefined ? { brief } : {}),
               tailVisualState: this.tailVisualState,
+              ...(stageWarnings !== undefined ? { stageWarnings } : {}),
               sliceId,
             })
           : this.generator.generateContinuation({
@@ -958,9 +981,9 @@ export class Game {
               signal: controller.signal,
               ...(brief !== undefined ? { brief } : {}),
               tailVisualState: this.tailVisualState,
+              ...(stageWarnings !== undefined ? { stageWarnings } : {}),
               ...(repairReason !== undefined ? { repairReason } : {}),
               sliceId,
-    const stageWarnings = this.drainStageWarnings();
               ...(repair?.remainingLines !== undefined
                 ? { remainingLines: repair.remainingLines }
                 : {}),
@@ -970,7 +993,6 @@ export class Game {
               ...(requestInteraction ? { requestInteraction } : {}),
               ...(interactionProgress !== undefined ? { interactionProgress } : {}),
             });
-              ...(stageWarnings !== undefined ? { stageWarnings } : {}),
 
       // 泵：把 handle 的事件流喂进段队列（与旧 onGroup 直连语义等价）。
       const pump = (async () => {
@@ -981,7 +1003,6 @@ export class Game {
 
       try {
         const envelope = await genHandle.done;
-              ...(stageWarnings !== undefined ? { stageWarnings } : {}),
         await pump;
         // 段结束状态由 envelope 携带（旧 onSegmentEnd 语义）；envelope.groups
         // 已通过 handle 事件流到达，不再重复喂养（避免双份）。
@@ -1423,6 +1444,7 @@ export class Game {
           phase: "ended",
           nextTurn: turn + 1,
           lastEventSeq: this.seq - 1,
+          memoryWatermark: this.memoryWatermark,
           ending: event,
         });
         this.emit({ type: "session_ended", ending: event });
@@ -1441,6 +1463,7 @@ export class Game {
       this.interactionCount += 1;
       this.textEventsSinceInteraction = 0;
       this.updateEndingPressure();
+      this.rewriteSeedPurposeOnce();
       const context = [...priorContext, ...segment.events];
       // §8.4: the interaction is now formally opened (policy already passed
       // in handleDslGroup). Record its mode for consecutive-input tracking.
@@ -1513,6 +1536,9 @@ export class Game {
         restored.snapshot.recapThroughSeq ?? fallbackStart,
         lastSeq,
       );
+      // 记忆代理水位：旧快照无标记时按"已全部处理"——不回补整局历史
+      // （一次性大提取既贵又晚），从现在起只处理增量。
+      this.memoryWatermark = Math.min(restored.snapshot.memoryWatermark ?? lastSeq, lastSeq);
       this.tailVisualState = restored.snapshot.visualState ?? this.replayVisualState(restored.events);
       this.renderedVisualState = this.tailVisualState;
       this.nextResumeTurn = restored.snapshot.nextTurn ?? this.nextTurnAfter(restored.events);
@@ -1925,6 +1951,11 @@ export class Game {
   /**
    * Assign stable line_ids to an interaction's bridge narration and buffer
    * it. Bridge events never enter the formal event log.
+   *
+   * 同时返回 `stageWarnings`：本组编译中出现的舞台异常（隐形说话自动
+   * 登台等）的人类可读描述。是否入队由调用方决定——只有真正播出的
+   * 路径（直播段/选中分支/输入响应）才把警告带给下一次模型请求；
+   * 被丢弃的预取分支不得污染后续上下文。
    */
   private compileGroup(
     draft: EventGroupDraft,
@@ -1935,6 +1966,7 @@ export class Game {
     interaction: InteractionEvent | null;
     cues: StageCue[];
     tailState: VisualState;
+    stageWarnings: string[];
   } {
     const diagnostics: AssetDiagnostic[] = [];
     const compiled = compileEventGroup(draft, {
@@ -1948,14 +1980,10 @@ export class Game {
       this.metrics.recordAssetDiagnostic(diagnostic.code);
       console.warn(`[assets] ${diagnostic.code}: ${diagnostic.id}`);
     }
+    const stageWarnings = this.collectStageWarnings(diagnostics, baseState, compiled.group.prelude, compiled.tailState);
     const main = compiled.group.main;
     if (main.type === "dialogue") {
       const event: RuntimeDialogueEvent = {
-   *
-   * 同时返回 `stageWarnings`：本组编译中出现的舞台异常（隐形说话自动
-   * 登台等）的人类可读描述。是否入队由调用方决定——只有真正播出的
-   * 路径（直播段/选中分支/输入响应）才把警告带给下一次模型请求；
-   * 被丢弃的预取分支不得污染后续上下文。
         type: "dialogue",
         characterId: main.characterId,
         speaker: main.speaker,
@@ -1966,7 +1994,6 @@ export class Game {
       if (draft.source !== undefined) this.dslSourceByLineId.set(event.line_id, draft.source);
       return { playable: event, interaction: null, cues: compiled.group.prelude, tailState: compiled.tailState, stageWarnings };
     }
-    stageWarnings: string[];
     if (main.type === "narration") {
       const event: RuntimeNarrationEvent = {
         type: "narration",
@@ -1980,7 +2007,6 @@ export class Game {
     if (main.type === "interaction") {
       const interaction = this.buildRuntimeInteraction(main.interaction, turn);
       if (draft.source !== undefined) {
-    const stageWarnings = this.collectStageWarnings(diagnostics, baseState, compiled.group.prelude, compiled.tailState);
         this.dslSourceByInteractionId.set(interaction.interaction_id, draft.source);
       }
       return { playable: null, interaction, cues: compiled.group.prelude, tailState: compiled.tailState, stageWarnings };
@@ -2061,6 +2087,8 @@ export class Game {
     // playback buffer and crash advanceBufferedEvent on the next segment.
     if (segment.terminal !== null) return;
     this.tailVisualState = tailState;
+    // 直播段一定会播出——编译期舞台异常直接转正。
+    if (stageWarnings.length > 0) this.queueStageWarnings(stageWarnings);
 
     if (playable !== null) {
       segment.events.push(playable);
@@ -2087,8 +2115,6 @@ export class Game {
       }
       const context = [...history, ...segment.events];
       segment.branchManager = this.createBranchManagerForTerminal(interaction, turn, context);
-    // 直播段一定会播出——编译期舞台异常直接转正。
-    if (stageWarnings.length > 0) this.queueStageWarnings(stageWarnings);
       // The terminal group is the contract boundary of this segment.
       this.generationScheduler.cancelActivePath();
       return;
@@ -2213,6 +2239,7 @@ export class Game {
     this.bridgeControllers.set(interactionId, controller);
 
     const bridgeBrief = this.makeBrief(turn + 1);
+    const bridgeStageWarnings = this.drainStageWarnings();
     const handle = this.generator.generateInputBridge({
       turn: turn + 1,
       state: this.storyState,
@@ -2220,6 +2247,7 @@ export class Game {
       signal: controller.signal,
       ...(bridgeBrief !== undefined ? { brief: bridgeBrief } : {}),
       tailVisualState: this.tailVisualState,
+      ...(bridgeStageWarnings !== undefined ? { stageWarnings: bridgeStageWarnings } : {}),
     });
 
     const promise = (async () => {
@@ -2239,7 +2267,6 @@ export class Game {
           }
         }
         // Bridge contract: 1–2 narration lines (docs §34). Anything else
-    const bridgeStageWarnings = this.drainStageWarnings();
         // is discarded — the confirm flow must never see a broken bridge.
         if (events.length < 1 || events.length > 2) {
           this.metrics.recordSchemaValidationFailure();
@@ -2247,7 +2274,6 @@ export class Game {
             "Bridge",
             `输入过渡旁白数量非法（${events.length}），已丢弃`,
           );
-      ...(bridgeStageWarnings !== undefined ? { stageWarnings: bridgeStageWarnings } : {}),
           return;
         }
         for (const event of events) this.bridgeLineIds.add(event.line_id);
@@ -2332,6 +2358,7 @@ export class Game {
       this.status.setJob("selected-branch-retry", "已选分支重试", "running");
       try {
         const retryBrief = this.makeBrief(turn + 1);
+        const retryStageWarnings = this.drainStageWarnings();
         const handle = this.generator.generateBranchPrefetch({
           turn: turn + 1,
           state: this.storyState,
@@ -2340,12 +2367,15 @@ export class Game {
           option: selected,
           ...(retryBrief !== undefined ? { brief: retryBrief } : {}),
           tailVisualState: this.tailVisualState,
+          ...(retryStageWarnings !== undefined ? { stageWarnings: retryStageWarnings } : {}),
         });
         await handle.done;
         const groups: EventGroupDraft[] = [];
         for await (const group of handle.events) groups.push(group);
         const result = this.materializeDslGroups(groups, this.tailVisualState, turn);
         this.branchTailStates.set(selected.id, result.tailState);
+        // 重试路径重新物化了选中分支——直接转正其编译期舞台异常。
+        if (result.stageWarnings.length > 0) this.queueStageWarnings(result.stageWarnings);
         preview = result.events;
         this.media.registerCandidate(selected.id, preview);
       } finally {
@@ -2358,7 +2388,6 @@ export class Game {
     // tail (docs §56): the next generation continues from where the branch
     // actually leaves the stage. For a live-selected branch whose request
     // has not resolved yet, derive the tail from the committed prefix's
-        const retryStageWarnings = this.drainStageWarnings();
     // stage cues.
     const branchTail = this.branchTailStates.get(selected.id);
     if (branchTail !== undefined) {
@@ -2367,16 +2396,19 @@ export class Game {
       const cues: StageCue[] = [];
       for (const event of preview) {
         const stage = (event as { stage?: StageCue[] }).stage;
-          ...(retryStageWarnings !== undefined ? { stageWarnings: retryStageWarnings } : {}),
         if (stage !== undefined) cues.push(...stage);
       }
       if (cues.length > 0) {
         this.tailVisualState = this.reduce(this.tailVisualState, cues);
       }
     }
-        // 重试路径重新物化了选中分支——直接转正其编译期舞台异常。
-        if (result.stageWarnings.length > 0) this.queueStageWarnings(result.stageWarnings);
+    // 选中分支的编译期舞台异常转正；其余分支的暂存警告一并作废。
+    const selectedWarnings = this.branchStageWarnings.get(selected.id);
+    if (selectedWarnings !== undefined) {
+      this.queueStageWarnings(selectedWarnings);
+    }
     this.branchTailStates.clear();
+    this.branchStageWarnings.clear();
 
     this.media.activateCandidate(selected.id);
     this.media.registerActive(preview);
@@ -2402,13 +2434,7 @@ export class Game {
     // §10.2 lifecycle: the interaction is the active command scope from
     // `interaction_opened` until it resolves.
     this.activeInteractionId = scopeId;
-    // 选中分支的编译期舞台异常转正；其余分支的暂存警告一并作废。
-    const selectedWarnings = this.branchStageWarnings.get(selected.id);
-    if (selectedWarnings !== undefined) {
-      this.queueStageWarnings(selectedWarnings);
-    }
     const presentation = this.openInteractionStage(scopeId);
-    this.branchStageWarnings.clear();
     this.currentDsl = this.dslSourceByInteractionId.get(scopeId) ?? null;
     this.emit({
       type: "interaction_opened",
@@ -2898,6 +2924,7 @@ export class Game {
         // branches never execute, so their states stay isolated here.
         let branchState = this.tailVisualState;
         const prefetchBrief = this.makeBrief(turn + 1);
+        const prefetchStageWarnings = this.drainStageWarnings();
         const handle = this.generator.generateBranchPrefetch({
           turn: turn + 1,
           state: this.storyState,
@@ -2907,15 +2934,19 @@ export class Game {
           signal,
           ...(prefetchBrief !== undefined ? { brief: prefetchBrief } : {}),
           tailVisualState: this.tailVisualState,
+          ...(prefetchStageWarnings !== undefined ? { stageWarnings: prefetchStageWarnings } : {}),
         });
         // 泵：与旧 onGroup 直连语义等价——组到达即编译并喂给 onEvent
         // （branch-local visual state 逐组折叠）。beat 组没有播放队列可占位：
         // 其 cue 折叠进下一行随播放生效（mergeBeatCues）。
         let pendingBeatCues: StageCue[] = [];
+        // 分支本地的舞台异常：仅在该分支被选中时转正（见 select 路径）。
+        const branchWarnings: string[] = [];
         const pump = (async () => {
           for await (const group of handle.events) {
             const { playable, cues, tailState, stageWarnings } = this.compileGroup(group, branchState, turn);
             branchState = tailState;
+            branchWarnings.push(...stageWarnings);
             if (playable !== null) {
               const event = this.mergeBeatCues(pendingBeatCues, playable);
               pendingBeatCues = [];
@@ -2924,7 +2955,6 @@ export class Game {
             } else if (group.main.type === "beat") {
               pendingBeatCues.push(...cues);
             }
-        const prefetchStageWarnings = this.drainStageWarnings();
           }
         })();
         try {
@@ -2934,19 +2964,16 @@ export class Game {
           // 抛错，泵的拒绝会成为未处理拒绝（Node unhandledRejection=throw
           // 崩溃进程）。带拒绝处理排空后再抛原始错误（与 I1 相同模式）。
           await pump.catch(() => undefined);
-          ...(prefetchStageWarnings !== undefined ? { stageWarnings: prefetchStageWarnings } : {}),
           throw error;
         }
         await pump;
         this.branchTailStates.set(option.id, branchState);
+        if (branchWarnings.length > 0) this.branchStageWarnings.set(option.id, branchWarnings);
         return materialized;
-        // 分支本地的舞台异常：仅在该分支被选中时转正（见 select 路径）。
-        const branchWarnings: string[] = [];
       },
       onReady: (option, branchEvents) => {
         this.media.registerCandidate(option.id, branchEvents);
       }
-            branchWarnings.push(...stageWarnings);
     });
 
     return manager;
@@ -2968,7 +2995,6 @@ export class Game {
     const stage = [...beatCues, ...(playable.stage ?? [])];
     return stage.length > 0 ? { ...playable, stage } : playable;
   }
-        if (branchWarnings.length > 0) this.branchStageWarnings.set(option.id, branchWarnings);
 
   /**
    * Compile DSL groups into materialized playable events, chaining the
@@ -2983,9 +3009,11 @@ export class Game {
     let state = baseState;
     let pendingBeatCues: StageCue[] = [];
     const events: RuntimePlayableEvent[] = [];
+    const stageWarnings: string[] = [];
     for (const draft of groups) {
       const { playable, cues, tailState, stageWarnings: groupWarnings } = this.compileGroup(draft, state, turn);
       state = tailState;
+      stageWarnings.push(...groupWarnings);
       if (playable !== null) {
         events.push(this.mergeBeatCues(pendingBeatCues, playable));
         pendingBeatCues = [];
@@ -3009,11 +3037,9 @@ export class Game {
     }
     return { events, tailState: state, stageWarnings };
   }
-    const stageWarnings: string[] = [];
 
   /**
    * Two-phase free-text input commit, driven by commands and a streaming
-      stageWarnings.push(...groupWarnings);
    * InputResponseSession.
    *
    * - `interaction_opened` (input mode) → await `preview_input`
@@ -3265,6 +3291,7 @@ export class Game {
     let responseState = this.tailVisualState;
 
     const brief = this.makeBrief(turn + 1);
+    const requestStageWarnings = this.drainStageWarnings();
     const handle = this.generator.generateInputResponse({
       turn: turn + 1,
       state: this.storyState,
@@ -3274,11 +3301,13 @@ export class Game {
       signal: controller.signal,
       ...(brief !== undefined ? { brief } : {}),
       tailVisualState: this.tailVisualState,
+      ...(requestStageWarnings !== undefined ? { stageWarnings: requestStageWarnings } : {}),
     });
 
     // 泵：把 handle 的事件流喂进 staging 路径（与旧 onGroup 直连等价）。
     // 中止后的迟到组照旧丢弃并计数。beat 组的 cue 折叠进下一行随播放生效。
     let pendingBeatCues: StageCue[] = [];
+    const responseWarnings: string[] = [];
     const pump = (async () => {
       for await (const group of handle.events) {
         if (controller.signal.aborted) {
@@ -3287,11 +3316,11 @@ export class Game {
         }
         const { playable, cues, tailState, stageWarnings } = this.compileGroup(group, responseState, turn);
         responseState = tailState;
+        responseWarnings.push(...stageWarnings);
         if (playable !== null) {
           const event = this.mergeBeatCues(pendingBeatCues, playable);
           pendingBeatCues = [];
           this.stageResponseEvent(responseSession, event);
-    const requestStageWarnings = this.drainStageWarnings();
         } else if (group.main.type === "beat") {
           pendingBeatCues.push(...cues);
         }
@@ -3301,13 +3330,11 @@ export class Game {
     // 泵的拒绝会成为未处理拒绝（Node unhandledRejection=throw 崩溃进程）。
     // 创建即挂上永不抛错的拒绝处理器（成功后 await pump 仍能看到拒绝，
     // 由下方 ok 处理器标记失败）。
-      ...(requestStageWarnings !== undefined ? { stageWarnings: requestStageWarnings } : {}),
     void pump.catch(() => undefined);
 
     // 单一反应（非 .then().catch()）：确认命令处理时会话状态已落定——
     // 修复决策在确认点不会与失败反应竞速。ok 处理器现在先排空泵（I2），
     // 落定多出若干微任务，但确认点的 setTimeout(0) 排空覆盖同一轮
-    const responseWarnings: string[] = [];
     // macrotask，分类确定性保持不变。
     const promise = handle.done
       .then(
@@ -3316,7 +3343,6 @@ export class Game {
           // I2：泵可能仍在处理最终一批组（final burst）——先排空泵再读取
           // responseState，保证预测尾部（docs §79）包含全部组的 stage 贡献。
           // 泵拒绝（组编译失败）与 done 拒绝同语义：标记失败，不得让会话
-        responseWarnings.push(...stageWarnings);
           // 停留在 generating。
           try {
             await pump;
@@ -3336,6 +3362,8 @@ export class Game {
           // tail (docs §79): the next generation continues from where the
           // response leaves the stage.
           this.tailVisualState = responseState;
+          // 回应确认播出——其编译期舞台异常随之转正。
+          if (responseWarnings.length > 0) this.queueStageWarnings(responseWarnings);
           responseSession.markReady();
           this.status.setJob(
             "input-response",
@@ -3362,8 +3390,6 @@ export class Game {
 
   /**
    * Stage one response event, measuring the confirm → first-line window.
-          // 回应确认播出——其编译期舞台异常随之转正。
-          if (responseWarnings.length > 0) this.queueStageWarnings(responseWarnings);
    */
   private stageResponseEvent(
     responseSession: InputResponseSession,
@@ -3530,6 +3556,7 @@ export class Game {
             })),
           };
           const onDemandBrief = this.makeBrief(turn + 1);
+          const onDemandStageWarnings = this.drainStageWarnings();
           const handle = this.generator.generateBranchPrefetch({
             turn: turn + 1,
             state: this.storyState,
@@ -3538,6 +3565,7 @@ export class Game {
             option: { id: selected.id, text: selected.text },
             ...(onDemandBrief !== undefined ? { brief: onDemandBrief } : {}),
             tailVisualState: this.tailVisualState,
+            ...(onDemandStageWarnings !== undefined ? { stageWarnings: onDemandStageWarnings } : {}),
           });
           await handle.done;
           const groups: EventGroupDraft[] = [];
@@ -3547,6 +3575,8 @@ export class Game {
           // adoptSelectedBranch — otherwise continuations generate from a
           // stale visual state.
           this.tailVisualState = result.tailState;
+          // 按需物化的分支一定被选中播出——编译期舞台异常随之转正。
+          if (result.stageWarnings.length > 0) this.queueStageWarnings(result.stageWarnings);
           preview = result.events;
           this.registerBuffered(preview);
           // 与 adoptSelectedBranch 一致：按需生成的行也要进入媒体时间线，
@@ -3556,7 +3586,6 @@ export class Game {
           this.status.removeJob("on-demand-branch");
         }
       }
-          const onDemandStageWarnings = this.drainStageWarnings();
 
       return {
         type: "choice",
@@ -3565,7 +3594,6 @@ export class Game {
         ...(liveSelection ? { liveSelection } : {}),
       };
     }
-            ...(onDemandStageWarnings !== undefined ? { stageWarnings: onDemandStageWarnings } : {}),
   }
 
   private countBufferedDialogues(): number {
@@ -3575,8 +3603,6 @@ export class Game {
   }
 
   private async recordPlayerChoice(option: ChoiceOption, turn: number): Promise<void> {
-          // 按需物化的分支一定被选中播出——编译期舞台异常随之转正。
-          if (result.stageWarnings.length > 0) this.queueStageWarnings(result.stageWarnings);
     const stored: StoredPlayerChoiceEvent = {
       type: "player_choice",
       choice_id: option.id,
@@ -3643,7 +3669,66 @@ export class Game {
       this.storyState = reconcileStoryState(this.storyState, batch, {
         knownCharacterIds: this.knownCharacterIds(),
       });
+      this.scheduleMemoryUpdate(batch);
     });
+  }
+
+  /**
+   * Event 模式会话记忆代理（2026-09-18 落地）：把新提交事件批次交给
+   * LLM 提取人物状态 / canon / 线程推进，merge-only 写入 StoryState。
+   * 单飞：提取期间新到的批次由本轮结束后追平。失败只跳过本批
+   * （水位照常推进，at-most-once）——绝不阻断 run loop。
+   */
+  private scheduleMemoryUpdate(batch: readonly StoredEvent[]): void {
+    if (this.memoryAgent === undefined || this.config.narrative.mode !== "event") return;
+    this.pendingMemoryEvents.push(...batch);
+    if (this.memoryInFlight !== null) return;
+    this.memoryInFlight = (async () => {
+      try {
+        while (this.pendingMemoryEvents.length > 0) {
+          const events = this.pendingMemoryEvents;
+          this.pendingMemoryEvents = [];
+          const proposal = await this.memoryAgent!.derive(events, this.storyState);
+          const lastTurn = events.at(-1)?.turn ?? 0;
+          if (proposal !== null) {
+            const next = applyMemoryProposal(this.storyState, proposal, {
+              knownCharacterIds: this.knownCharacterIds(),
+              turn: lastTurn,
+            });
+            if (next !== null) {
+              this.storyState = next;
+              this.diagnostics.info(
+                "Game",
+                `记忆代理已应用状态更新（事件 seq ${events[0]?.seq}-${events.at(-1)?.seq}，水位推进到 ${events.at(-1)?.seq}）`,
+              );
+            }
+          }
+          this.memoryWatermark = Math.max(this.memoryWatermark, events.at(-1)?.seq ?? 0);
+        }
+      } finally {
+        this.memoryInFlight = null;
+      }
+    })();
+  }
+
+  /**
+   * 种子 purpose 生命周期（阶段 0）：event 模式下种子全文以现在时常驻
+   * Purpose 槽，把模型锚死在"种子当下"。首个交互提交后改写为中性锚点
+   * ——开局情境已落地，后续走向以已提交事件为准。
+   */
+  private rewriteSeedPurposeOnce(): void {
+    if (this.seedPurposeRewritten) return;
+    if (this.config.narrative.mode !== "event") return;
+    const title = this.storyState.canon.scenario_title;
+    if (typeof title !== "string" || title.trim() === "") return;
+    this.seedPurposeRewritten = true;
+    this.storyState = {
+      ...this.storyState,
+      scene: {
+        ...this.storyState.scene,
+        purpose: `「${title}」的开局情境已演出；当前走向以已发生事件与在场人物为准`,
+      },
+    };
   }
 
   /** 已注册角色 id 集合——reconcile 用它挡住幻影发言者入库（上下文污染）。 */
@@ -3665,6 +3750,10 @@ export class Game {
   }
 
   private async saveCurrentStateSnapshot(): Promise<void> {
+    // 在飞的记忆提取落定后再写快照：state 与水位成对入盘。
+    if (this.memoryInFlight !== null) {
+      await this.memoryInFlight;
+    }
     await this.store.saveSnapshot({
       state: this.storyState,
       visualState: this.renderedVisualState,
@@ -3674,6 +3763,7 @@ export class Game {
       nextTurn: this.nextTurnAfter(this.events),
       lastEventSeq: this.seq - 1,
       recapThroughSeq: this.recapThroughSeq,
+      memoryWatermark: this.memoryWatermark,
       ...(this.resumeInteraction !== undefined
         ? { resumeInteraction: this.resumeInteraction }
         : {}),
@@ -3690,6 +3780,10 @@ export class Game {
     // 在飞的 recap 压缩落定后再写快照：recent_summary 与水位成对入盘。
     if (this.recapInFlight !== null) {
       await this.recapInFlight;
+    }
+    // 记忆代理同理：state 与 memoryWatermark 成对入盘。
+    if (this.memoryInFlight !== null) {
+      await this.memoryInFlight;
     }
     await this.saveCurrentStateSnapshot();
   }

@@ -50,6 +50,7 @@ import { JsonNarrativeMemoryStore } from "../adapters/storage/json-narrative-mem
 import { NarrativeConsolidatorAdapter } from "../adapters/llm/narrative-consolidator-adapter.js";
 import { PlotPlannerAdapter } from "../adapters/llm/plot-planner-adapter.js";
 import { RecapSummarizerAdapter } from "../adapters/llm/recap-summarizer-adapter.js";
+import { MemoryAgentAdapter } from "../adapters/llm/memory-agent-adapter.js";
 import { loadStoryPlan } from "../adapters/static/story-plan-loader.js";
 import type { NarrativeDirectorPort } from "../core/ports/narrative-director-port.js";
 import {
@@ -306,6 +307,15 @@ export async function createRuntimeApplication(
       monitor,
     );
 
+    // Event 模式会话记忆代理（2026-09-18 记忆审计定稿落地）：从增量
+    // 提交事件提取人物状态 / canon / 线程推进，merge-only 写入 StoryState。
+    // 仅 event 模式装配（长线模式由 NarrativeDirector 负责）；失败在
+    // Game 内隔离，只跳过本批。
+    const memoryAgent =
+      config.narrative.mode === "event"
+        ? new MemoryAgentAdapter({ apiKey, api: config.api, diagnostics, metrics })
+        : undefined;
+
     return new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {
       store,
       clock: new SystemClock(),
@@ -313,6 +323,7 @@ export async function createRuntimeApplication(
       sessionId,
       diagnostics,
       recapSummarizer,
+      ...(memoryAgent !== undefined ? { memoryAgent } : {}),
       ...(initialStoryState !== undefined ? { initialStoryState } : {}),
       ...(narrativeDirector ? { narrativeDirector } : {}),
     }, assetCatalog);
