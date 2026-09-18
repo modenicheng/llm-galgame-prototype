@@ -1158,14 +1158,6 @@ export class StoryGenerator {
             });
           }
 
-          let parsed: DslLine;
-          try {
-            parsed = parseDslLine(
-              labelStripped ?? swapRepair?.line ?? closingRepair?.line ?? trimmed,
-              this.knownSpeakers,
-            );
-          } catch (error) {
-            if (error instanceof DslProtocolError) {
           // 旁白自标注标签（`旁白：正文` / `旁白: 正文`）——确定性剥掉，
           // 标签不进玩家正文、不造「旁白」名牌，上报监控计为修复。
           const labelStripped = trimmed.startsWith("旁白")
@@ -1179,6 +1171,14 @@ export class StoryGenerator {
             });
           }
 
+          let parsed: DslLine;
+          try {
+            parsed = parseDslLine(
+              labelStripped ?? swapRepair?.line ?? closingRepair?.line ?? trimmed,
+              this.knownSpeakers,
+            );
+          } catch (error) {
+            if (error instanceof DslProtocolError) {
               observer?.onLine(attemptId, lineIndex, { kind: null, error: error.message });
               if (await tryStripContinue(error, rawLines.length - 1, lineIndex)) continue outer;
               rejectLine(error, trimmed);
@@ -1432,14 +1432,6 @@ export class StoryGenerator {
                     message: `已将台词头 ${tailSwap.from} 规范化为 ${tailSwap.to}（角色 id 不是立绘变体）。`,
                   });
                 }
-                const tailParsed = parseDslLine(
-                  tailLabel ?? tailSwap?.line ?? closingRepair?.line ?? trimmed,
-                  this.knownSpeakers,
-                );
-                if (
-                  tailParsed.kind === "segment_end" &&
-                  tailParsed.reason === "interaction" &&
-                  tailParsed.nonce === nonce &&
                 const tailLabel = trimmed.startsWith("旁白")
                   ? stripNarrationLabel(trimmed, this.knownSpeakers)
                   : null;
@@ -1450,6 +1442,14 @@ export class StoryGenerator {
                     message: `已剥离旁白自标注前缀：“${trimmed.slice(0, 40)}” → “${tailLabel.slice(0, 40)}”。`,
                   });
                 }
+                const tailParsed = parseDslLine(
+                  tailLabel ?? tailSwap?.line ?? closingRepair?.line ?? trimmed,
+                  this.knownSpeakers,
+                );
+                if (
+                  tailParsed.kind === "segment_end" &&
+                  tailParsed.reason === "interaction" &&
+                  tailParsed.nonce === nonce &&
                   allowedReasons.includes(tailParsed.reason) &&
                   parser.hasOpenInteraction()
                 ) {
