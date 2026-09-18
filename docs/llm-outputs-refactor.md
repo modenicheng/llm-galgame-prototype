@@ -738,6 +738,11 @@ stage-types）：VisualState → DOM。背景 crossfade、人物 fade、variant 
 音频流水线按 `characterId` → character registry → voice profile 查音色；
 旧事件只有 speaker 时 fallback 旧映射。`苏遥(神秘女子)` 不得被当成新 speaker 导致静音。
 
+provider 除云端 `dashscope` 外还有 `local`（本机推理，默认对接 tts-server 的
+qwentts.cpp C++ 后端；Python 引擎 fallback）与 `mock`/`disabled`；音色绑定随
+provider 分支（`providers.local.voice` vs `providers.dashscope.voice_id_env`）。
+合成失败不杀 run：任务标记 failed，该行降级纯文本播放。
+
 ---
 
 # 68. 主模型 Prompt 结构
@@ -940,7 +945,8 @@ src/
 ├─ adapters/
 │  ├─ llm/                  # openai-compatible-generator（DSL 流式）/
 │  │                        # narrative-consolidator-adapter / plot-planner-adapter
-│  ├─ tts/                  # dashscope-cosyvoice-provider / mock
+│  ├─ tts/                  # dashscope-cosyvoice-provider / local-qwen3-tts-provider（本机
+│  │                        # 推理，双方言 openai|tts-server，见 tts-server/README）/ mock
 │  ├─ storage/              # node-jsonl-session-store / json-narrative-memory-store
 │  └─ static/               # story-plan-loader
 ├─ runtime/                 # playback-buffer（展平事件）

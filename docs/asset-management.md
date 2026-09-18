@@ -425,7 +425,7 @@ BGM 控制器（`web/src/stage/bgm-controller.ts`）按 manifest 里的 `playbac
 
 ## 8.3 语音（TTS）链路与资产目录的关系
 
-TTS 是与素材目录并行的独立链路：`config.yaml` 的 `characters.<id>.voice_profile` → `voices.yaml` 的逻辑音色 profile（semantic 描述 + dashscope voice-id 环境变量）→ `AudioIntentPlanner` 逐行台词产出合成意图 → 浏览器经 `/api/audio/synthesize` 拉流。当前校园分支 `synthesis.provider: disabled` 且 `characters: {}`，每行台词静默降级为纯文本，不阻塞启动。启用步骤见 §9.5；音色创建细节见 `docs/agents/TTS-音色配置指南.md`（`pnpm verify:voice-guide` 校验其完整性）。
+TTS 是与素材目录并行的独立链路：`config.yaml` 的 `characters.<id>.voice_profile` → `voices.yaml` 的逻辑音色 profile（semantic 描述 + provider 绑定：本地为 `providers.local.voice`，云端为 `providers.dashscope.voice_id_env`）→ `AudioIntentPlanner` 逐行台词产出合成意图 → 浏览器经 `/api/audio/synthesize` 拉流。当前校园分支 `synthesis.provider: local`（tts-server 本机推理，树莓娘+四配角五角色已绑定本地音色，无需 API key）；tts-server 未启动时逐句降级为纯文本，不阻塞启动。启用步骤见 §9.5；音色创建细节见 `tts-server/README.md`（本地路径）与 `docs/agents/TTS-音色配置指南.md`（云端路径）。
 
 注意：**立绘资产与音色配置互不感知**。给树莓娘加新表情变体不需要动 voices.yaml；给树莓娘配音不需要动 resources.yaml——两者只在 `characters` 这一层（一个用 `sprite_set`，一个用 `voice_profile`）交汇于 `config.yaml`/`resources.yaml` 的角色绑定。
 
@@ -461,10 +461,19 @@ TTS 是与素材目录并行的独立链路：`config.yaml` 的 `characters.<id>
 
 ## 9.5 启用语音
 
+本地推理（校园分支当前路径，无需 API key）：
+
+1. `voices.yaml` 新增/确认 profile（`semantic` + `providers.local { model: local-qwen3-tts, voice: <registry 键>, voice_revision: N }`）；
+2. tts-server 侧确保该音色已注册（`tts-server/voices/registry.json`；音色构建/重建见 `tts-server/README.md`）；
+3. `config.yaml`：`characters: { <角色id>: { voice_profile: <profile> } }`；`synthesis.provider: local` 且 `sample_rate: 24000`；
+4. 验证：启动 `tts-server\start-qwentts.cmd` 后跑一段剧情试听（服务单独冒烟用 `tts-server/tools/client.py`）；音色重建后 bump `voice_revision` 使缓存失效。
+
+云端 DashScope（备用路径）：
+
 1. `voices.yaml` 新增/确认 profile（`semantic` + `providers.dashscope { model, voice_id_env }`）；
 2. `.env` 按 `voice_id_env` 填音色 id（来源三选一：系统音色/控制台复刻/控制台设计，见 `.env.example` 注释）；
 3. `config.yaml`：`characters: { <角色id>: { voice_profile: <profile> } }`；`synthesis.provider: dashscope`；
-4. 验证：`node scripts/probe-tts-params.mjs <profile> "<台词>"` 合成一行试听；展位运行前评估是否回退 `disabled`（文本优先策略，见 `docs/campus-ops-event-runbook.md`）。
+4. 验证：`node scripts/probe-tts-params.mjs <profile> "<台词>"` 合成一行试听。
 
 ## 9.6 验证清单（任何资产变更后）
 

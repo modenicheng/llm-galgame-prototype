@@ -1,6 +1,6 @@
 # 实施进度对照（status）
 
-> 快照日期：**2026-09-04**，对照 `main` 分支代码。本文是唯一的进度权威文档；
+> 快照日期：**2026-09-18**，对照 `feat/campus-ops-raspberry` 分支代码。本文是唯一的进度权威文档；
 > 设计规范见 `docs/llm-outputs-refactor.md`，变更记录见 `docs/changelog.md`。
 > 后续开发完成/变更条目时请同步更新本文。
 
@@ -74,14 +74,28 @@
 - **UiProjection.visualState**：重连恢复完整视觉状态（§107）。
 
 ### 音频（TTS V2/V3 管线）
-- **合成**：DashScope 双模型族（`voices.yaml` V3 逻辑音色逐档案配 `model`，`.env` 放
-  voice-id），PCM 流式（`pcm_s16le`）；TTS 按 `characterId` 查音色（§67），旁白不配音。
-  - `cosyvoice*`：SpeechSynthesizer 端点（参数在 input，支持 rate/pitch/volume/seed）。
-  - `qwen3-tts*`（flash/instruct/vc/vd）：multimodal-generation 端点（text/voice，参数
-    不支持自动丢弃），固定 24000 Hz PCM；flash/vc 带 WAV 容器头（provider 剥离），
-    instruct 为裸 PCM（直通）；仅 instruct 模型支持 `instructions`。
-  - 启动校验：qwen3 档案要求 `synthesis.sample_rate: 24000`；跨族音色（按 id 前缀）
-    直接报错（两族复刻/设计音色不互用）。真 key 冒烟：四模型×克隆音色全部通过。
+- **合成 provider 四选一**（`media.audio.synthesis.provider`）：`local`（本机
+  推理，**当前默认**）/ `dashscope`（云端）/ `mock`（确定性正弦波 PCM，
+  不写盘）/ `disabled`（纯文本）。
+  - `local`（2026-09-18，`src/adapters/tts/local-qwen3-tts-provider.ts`）：
+    对接 `tts-server/` 本机推理（RTX 5060）。默认方言 `openai` → **qwentts.cpp
+    C++ 后端**（OpenAI 兼容 `POST /v1/audio/speech`，127.0.0.1:9766；首包
+    ~530ms、四路吞吐 RTF ~0.09、显存 ~2.4G、无预热）；`.env` 设
+    `LOCAL_TTS_DIALECT=tts-server` 切 Python 引擎（9765，保留作 fallback），
+    `LOCAL_TTS_BASE_URL` 覆盖地址。音色在 `voices.yaml` `providers.local.voice`
+    （键 = `tts-server/voices/registry.json`），五音色单模型（树莓娘 paimeng
+    克隆 + 四配角内置音色克隆）、固定 24 kHz 流式 PCM、句子级浪批处理与取消；
+    克隆路径不支持 rate/pitch/volume/seed/instructions（对齐 qwen3-tts-vc
+    语义）。客户端 abort → 主动 `reader.cancel` → 服务端浪级剔除。
+    服务部署/构建/音色重建见 `tts-server/README.md`。
+  - dashscope 双模型族（`voices.yaml` V3 逻辑音色逐档案配 `model`，`.env` 放
+    voice-id），PCM 流式（`pcm_s16le`）；TTS 按 `characterId` 查音色（§67），旁白不配音。
+    - `cosyvoice*`：SpeechSynthesizer 端点（参数在 input，支持 rate/pitch/volume/seed）。
+    - `qwen3-tts*`（flash/instruct/vc/vd）：multimodal-generation 端点（text/voice，参数
+      不支持自动丢弃），固定 24000 Hz PCM；flash/vc 带 WAV 容器头（provider 剥离），
+      instruct 为裸 PCM（直通）；仅 instruct 模型支持 `instructions`。
+    - 启动校验：qwen3 档案要求 `synthesis.sample_rate: 24000`；local 档案同样
+      校验 24000；跨族音色（按 id 前缀）直接报错（两族复刻/设计音色不互用）。
 - **调度**：`audio-intent-planner` / `performance-compiler` / `tts-task-service` /
   `cache-key`，播放水位参数（startup_buffer / low_watermark / target_buffer）。
   缓存键含 model/采样率，换模型族自然失效。
@@ -120,11 +134,14 @@
 
 ## 近期提交锚点
 
-- `85f6346` forced ending 贯穿 repair、泵排空、flush 加固
-- `9085caf` event 模式 max_interactions + restart_session
-- `fcdb58c` 会话目录统一 + director flush on shutdown
-- `3f3bb69` 文档修正 + DESIGN.md 归档
-- `14e3d8a..3618dd6` NarrativeDirector 第 3 步（Task 1–9）
+- `72aed79` 默认后端切 qwentts.cpp——local provider 双方言（openai/tts-server）
+- `f0069fc` 会话记忆代理——事件流投影人物/设定/线程入 StoryState
+- `9253fe6` 隐形说话自动显形兜底 + stageWarnings 舞台警告注入
+- `24a1442`/`22fe8ce` 确定性补哨兵 + 固定尾任务字面固定尾
+- `c424076`/`c9699d3` 写手 DSL 流全量落盘 + /monitor/records 只读路由
+- `b2010be` 修复续写动态预算 + 丢弃重试 + sliceId 监控原位替换
+- `c8cb600` RuntimeBeatEvent 进播放队列——beat 组舞台 cue 在播放位生效
+- `ee94050` monitor 面板布局重构——列/行分割器 + 日志页几何跟随渲染
 
 ## 校园技术社团值班分支（campus-ops-raspberry，2026-09-08）
 
@@ -145,7 +162,8 @@
   （female_A/female_B/male_A/male_B，各 base + smile/surprised/embarrassed，
   2026-09-15 接入，AI 原创随仓库分发）；BITNP 其余素材未授权不接入（来源审计见
   `docs/superpowers/notes/campus-ops-source-audit.md`）。
-- **文本优先**：`synthesis.provider: disabled`，音频缺省不阻塞启动。
+- **本地语音**：`synthesis.provider: local`（tts-server 本机推理，无需 TTS
+  key；服务未启动时合成失败降级纯文本，不阻塞运行）。
 - **现场文档**：`docs/campus-ops-event-runbook.md`（一人操作/重开/指定种子）。
 - **展位 UI 重开闭环（Task 6，2026-09-14）**：结束页与控制条"重开"均发送
   `restart_session`，宿主原地重建新会话（新 ID → 种子轮换），ws rebase 对

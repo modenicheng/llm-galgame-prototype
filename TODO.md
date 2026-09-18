@@ -47,7 +47,10 @@
 
 ## 2. 语音合成优化
 
-- 现状：DashScope CosyVoice + PCM 流式 + IndexedDB 缓存 + 播放水位调度已跑通。
+- 现状：**本机推理已上线**（tts-server：默认 qwentts.cpp C++ 后端，Python 引擎
+  保留作 fallback；单模型五音色——树莓娘克隆 + 四配角、24 kHz 流式 PCM、
+  句子级浪批处理与取消）；云端 DashScope 双模型族、PCM 流式、IndexedDB 缓存、
+  播放水位调度均已跑通。
 - 方向：
   - 质量：情感/韵律与剧情情绪、角色状态联动。
   - 延迟：首包时间、缓冲水位参数、合成并发与预取策略。

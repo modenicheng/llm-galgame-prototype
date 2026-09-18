@@ -26,8 +26,9 @@ TTS 音色创建与绑定见 [docs/agents/TTS-音色配置指南.md](./docs/agen
 - 不限制互动次数（`narrative.mode: event` + `max_interactions: 0`），
   简单事件可以很快结束，复杂事件可以多轮展开；结局由模型依据本局
   已确认的事实自然生成（`@end` 仅为引擎终止标记）。
-- 文本优先：`synthesis.provider: disabled`，不依赖 TTS key；树莓娘立绘为
-  项目自制占位图，BITNP 官方素材未经授权不接入。
+- 本地语音：树莓娘（paimeng 克隆）与四配角共五音色由本机 GPU 推理服务合成
+  （`synthesis.provider: local`，不需要任何 TTS API key，启动方式见下文
+  「TTS 语音」）；BITNP 官方素材未经授权不接入。
 - 树莓娘资产仅限内部流通：所有树莓娘资产不入库、不上传，只能直接复制分发
   （详见 [assets/ATTRIBUTION.md](./assets/ATTRIBUTION.md)）。
 - 现场运行（一人操作、重开、指定种子）见
@@ -56,11 +57,47 @@ pnpm dev
 pnpm dev --debug-runtime
 ```
 
-## TTS 语音（可选）
+开发/运维监控面板（编剧 LLM 流式解析、缓冲水位、剧情图、提示词审计；只读，
+不面向玩家）：服务启动时控制台会打印 `/monitor?token=...` 链接，详见
+[docs/monitor-dashboard.md](./docs/monitor-dashboard.md)。
 
-默认 `config.yaml` 的 `media.audio.synthesis.provider: dashscope` 会启用 DashScope 语音合成，
-启动时需要 `.env` 中已配置 `DASHSCOPE_API_KEY` 及 `voices.yaml` 引用的音色变量
-（创建与绑定方法见 [docs/agents/TTS-音色配置指南.md](./docs/agents/TTS-音色配置指南.md)）。
+## TTS 语音
+
+`config.yaml` → `media.audio.synthesis.provider` 四选一：
+
+| provider | 说明 |
+|---|---|
+| `local` | **当前默认**。本机 GPU 推理（`tts-server/`，Qwen3-TTS-12Hz-1.7B-Base），无需 TTS API key |
+| `dashscope` | 云端 DashScope 合成，需 `DASHSCOPE_API_KEY` 与 `voices.yaml` 引用的音色变量 |
+| `mock` | 异步媒体调度验证：按种子生成正弦波 PCM 流，不写盘、不含真实语音 |
+| `disabled` | 纯文本运行 |
+
+### 本地推理（local，当前默认）
+
+两条引擎二选一，游戏侧默认对接 **qwentts.cpp**（`LOCAL_TTS_BASE_URL` 可覆盖地址）：
+
+1. **qwentts.cpp（C++/GGML，当前默认后端）**——OpenAI 兼容协议，
+   `127.0.0.1:9766`；首包 ~530ms、四路吞吐 RTF ~0.09、显存 ~2.4G、无预热：
+
+   ```bash
+   tts-server\start-qwentts.cmd   # 起 server + 注册五音色
+   ```
+
+   控制台出现 `ready on http://127.0.0.1:9766 - voices registered` 即就绪。
+   服务本体部署在 `D:\tmp\qwentts.cpp`（本仓库外），构建方法与性能数据见
+   [tts-server/README.md](./tts-server/README.md)。
+
+2. **Python 引擎（fallback）**——`tts-server/server.py`，`127.0.0.1:9765`，
+   首次启动 torch.compile 预热 4–7 分钟。游戏侧切换：`.env` 设
+   `LOCAL_TTS_DIALECT=tts-server`。
+
+音色绑定在 `voices.yaml` 的 `providers.local.voice`（键 = `tts-server/voices/registry.json`
+的音色键：`paimeng`/`xuwanqing`/`linxiaoman`/`xiayiming`/`hanche`），
+输出固定 24 kHz 流式 PCM（`synthesis.sample_rate: 24000`）。
+tts-server 未启动时游戏照常运行：每句合成重试耗尽后该句降级为纯文本，不阻塞播放。
+
+### 云端 DashScope（dashscope）
+
 合成模型在 `voices.yaml` 逐音色配置，支持两个模型族（可混布）：
 
 - `cosyvoice*`（v3-flash / v3.5-flash）：SpeechSynthesizer 端点，支持语速/音调/音量/种子；
@@ -68,7 +105,7 @@ pnpm dev --debug-runtime
   音色需在该族下单独复刻/设计（与 CosyVoice 音色不互用），
   启用时 `synthesis.sample_rate` 必须为 24000。
 
-不配置 TTS 时，把 `synthesis.provider` 改为 `disabled` 即可纯文本运行（CLI 同理）。
+音色创建与绑定方法见 [docs/agents/TTS-音色配置指南.md](./docs/agents/TTS-音色配置指南.md)。
 
 ## 验证媒体调度
 
@@ -77,8 +114,9 @@ pnpm dev --debug-runtime
 ```yaml
 media:
   audio:
-    enabled: true
-    provider: mock
+    synthesis:
+      provider: mock
 ```
 
-程序会在 `assets/audio/` 写入按 `line_id` 命名的调度演示 JSON，不包含真实音频。
+mock provider 按行种子生成正弦波 PCM（确定性、可复现），走与真实 provider
+完全相同的调度/缓存/播放链路，便于无 GPU 环境验证调度逻辑。

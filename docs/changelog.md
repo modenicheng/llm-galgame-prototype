@@ -3,6 +3,57 @@
 > 摘编自原 `docs/llm-outputs-refactor.md` §114–§118（该文件 2026-09-04 拆分，
 > 全文见 git 历史）。当前进度权威见 `docs/status.md`。
 
+## 2026-09-17 ~ 2026-09-18 本地 TTS、记忆代理与展位打磨
+
+**本地语音合成（tts-server，provider `local`）**
+- `local-qwen3-tts` provider：对接 `tts-server/` 本机推理（RTX 5060）；音色绑
+  `voices.yaml` `providers.local.voice`（树莓娘 paimeng 克隆 + 四配角内置音色
+  克隆，单模型五音色），固定 24 kHz 流式 PCM，句子级浪批处理、句间取消、
+  abort 主动 `reader.cancel`（6d7c716、a58ec65）。
+- 默认后端切 **qwentts.cpp**（C++/GGML）：OpenAI 兼容 `/v1/audio/speech` 流式
+  方言；首包 ~530ms、四路吞吐 RTF ~0.09、显存 ~2.4G、无预热；Python 引擎经
+  `LOCAL_TTS_DIALECT=tts-server` 保留作 fallback（72aed79）。
+- `config.yaml` 默认 `synthesis.provider: local`；服务未启动时合成任务失败
+  降级纯文本，不阻塞运行。
+
+**会话记忆代理（event 模式）**（f0069fc）
+- `memory-agent`：从增量提交事件投影人物 emotion/goal/relationship、canon
+  事实（≤12 键）、线程推进，merge-only 写入 StoryState；单飞 + 水位随快照
+  持久化，失败只跳过本批不杀 run loop；种子 purpose 首个交互后转中性锚点。
+
+**DSL 协议硬化**
+- 全 `@` 前缀命令语法 + 分层修复 + 结构化错误（ee1e1ea、e92836f、97798db、
+  82f0ac6、262b383）；确定性补哨兵：finish_reason=stop 单理由任务本地合成
+  `@end`（24a1442）、固定尾任务改字面固定尾（22fe8ce）；`@ending` 结局元数据
+  指令（4e8e84a）；旁白自标注标签确定性剥离（c54501b）；全角冒号规范化按
+  注册说话人门控（b8be38e）；09-17 六路审计修复（1279333、2da9f37、b6a9439）。
+
+**运行时与生成质量**
+- 修复续写动态预算 + 失败段丢弃重试 + sliceId 监控原位替换（b2010be）；
+  fail-fast 修复续写（6365683）；RuntimeBeatEvent 进播放队列——beat cue 在
+  播放位生效（c8cb600）；写手思考链 thinking 接入 + 请求/结果遥测（28d7a85）；
+  recap 滚动前情梗概管线 + 长回合护栏收紧（0fca9f7）；舞台状态注入保真化 +
+  REDUNDANT_STAGE_CUE 兜底（3414a39）；隐形说话自动显形兜底 + stageWarnings
+  注入（9253fe6）。
+- 提示词：campus 提示词与种子去 AI 味改写（96a2f61）；四配角定名许晚晴/
+  林小满/夏一鸣/韩澈（c32d2d2）。
+
+**监控与可观测**
+- 连续编剧流监控面板 + `/monitor` 只读通道（0b907ac、605a853）；编剧输入
+  提示词审计 tab（2b082ce）；写手 DSL 流输入输出全量落盘 + `/monitor/records`
+  只读路由（c424076、c9699d3）；面板布局重构——列/行分割器 + 日志页几何
+  跟随渲染（ee94050）。
+
+**资产与前端**
+- 立绘 presentation 推导 + 16:9 letterbox 舞台（933cf41、a3da111）；群像
+  立绘重绘对齐树莓娘头身比 + ground 地面线（86aa5d9、51fdf1b）；realcugan
+  2x 立绘/背景 + 北食堂/操场昼夜重渲染注册（b265e66、20a5d21）；自托管
+  webfonts（e8765f5）；表单期舞台遮罩 + 玩家端样式打磨（3b844c8）；标题入场
+  去 filter 动画修永糊（72d7927）；输入预览 Esc 取消修复（c079ec9）；
+  ErrorBanner 移除——生成痕迹不上玩家端（03a203e）；BGM 裁切窗口循环 +
+  淡入淡出（f876e2d）。
+- 构建：npm → pnpm 迁移（a41906e）。
+
 ## 2026-09-16 存档统计与管理（session archive）
 
 补齐跨会话持久化视角（此前只有单会话读写与 load/resume，无任何列表/统计/

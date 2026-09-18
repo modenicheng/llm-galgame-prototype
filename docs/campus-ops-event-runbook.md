@@ -20,9 +20,12 @@
    4 个自制 AI 通用配角立绘（`assets/characters/{female_A,female_B,male_A,
    male_B}/`）随仓库分发，克隆后即有，无需单独准备。
    文件不齐会在加载时报错。
-2. `.env` 中配置 `OPENAI_API_KEY`（文本模式不需要任何 TTS key）。
-3. `pnpm install && pnpm dev`，浏览器自动打开本地页面。
-4. 首局即自动从一条叙事种子开始（开场会点明"此刻在处理什么事"）。
+2. `.env` 中配置 `OPENAI_API_KEY`（本地 TTS 不需要任何 API key）。
+3. 启动本地语音服务（有 NVIDIA GPU 的机器）：运行 `tts-server\start-qwentts.cmd`，
+   等控制台出现 `tts-server (C++) ready on http://127.0.0.1:9766 - voices registered`。
+   没有独显或不想开语音可跳过——游戏照常运行，台词以纯文本推进。
+4. `pnpm install && pnpm dev`，浏览器自动打开本地页面。
+5. 首局即自动从一条叙事种子开始（开场会点明"此刻在处理什么事"）。
 
 ### 指定演示种子（可选）
 
@@ -39,15 +42,18 @@ CAMPUS_SCENARIO_SEED_ID=projector-on-but-blank pnpm dev
 为避免"一局停不下来"（现场曾出现 5 分半、6 次交互仍未收束，最后人工关进程），
 引擎现在按交互次数分级加压，让故事自然走向结局：
 
-| 阈值 | 默认 | 行为 |
+| 阈值 | 当前配置 | 行为 |
 |---|---|---|
-| `wrapup_interactions` | 6 | 开始提示模型"进入收束阶段"（玩家基本无感） |
-| `closing_push_interactions` | 8 | 强提示"不再开新交互、直接收束"，并停止后台分支预取 |
-| `max_interactions` | 10 | 运行时保险丝：强制收束，模型仍不配合就合成简短结局兜底 |
+| `wrapup_interactions` | 3 | 开始提示模型"进入收束阶段"（玩家基本无感） |
+| `closing_push_interactions` | 6 | 强提示"不再开新交互、直接收束"，并停止后台分支预取 |
+| `max_interactions` | 8 | 运行时保险丝：强制收束，模型仍不配合就合成简短结局兜底 |
 
-另有两道失控护栏：同一局内很久没出现交互点（默认累计 24 条文本）会提示模型
-尽快交还话语权；生成连续截断失败（默认修复链 2 次）会转入收束提示、再失败
-才触发保险丝。正常一局只会经历前两级提示，几乎不会触达硬上限。
+（引擎缺省为 6/8/10，本分支 `config.yaml` 的 `narrative.event` 收得更紧。）
+
+另有两道失控护栏：同一局内很久没出现交互点（当前配置累计 10 条文本，
+`max_events_between_interactions`）会提示模型尽快交还话语权；生成连续截断
+失败（修复链 2 次，`max_consecutive_repairs`）会转入收束提示、再失败才触发
+保险丝。正常一局只会经历前两级提示，几乎不会触达硬上限。
 调参见 `config.yaml` 的 `narrative.event` / `generation.max_consecutive_repairs`。
 
 ## 每局之间（重开）
@@ -69,9 +75,13 @@ CAMPUS_SCENARIO_SEED_ID=projector-on-but-blank pnpm dev
 
 ## 音频策略
 
-- 当前为**文本优先**模式（`media.audio.synthesis.provider: disabled`），
-  不依赖 TTS 服务，不播放语音；页面以字幕推进。
-- 若页面无声/无音频按钮，属预期现象，不是故障。
+- 默认**本地语音**（`media.audio.synthesis.provider: local`）：角色台词由
+  本机 GPU 推理服务合成（树莓娘 + 四配角五音色），不需要 TTS API key，
+  也不依赖外网。
+- 开局前先启动 `tts-server\start-qwentts.cmd`（见「启动」第 3 步）；服务
+  未启动时游戏照常运行，台词静默降级为纯文本，页面无声不是故障。
+  中途补启服务后，从下一句台词起自动恢复语音，无需重开游戏。
+- 想完全关闭语音：`config.yaml` 把 `synthesis.provider` 改为 `disabled`。
 
 ## 玩家引导（最少必要）
 
@@ -85,6 +95,7 @@ CAMPUS_SCENARIO_SEED_ID=projector-on-but-blank pnpm dev
 | 现象 | 处理 |
 |---|---|
 | 生成卡住 / 报错横幅 | 点击控制条"重开"开始新一局（若正卡在生成中，最多等当前段超时约 60 秒后重开生效）；连续失败时检查网络与 API key。 |
+| 没有语音 / 页面无声 | 看 tts-server 窗口是否出现 "ready on ... 9766 - voices registered"；没启动就补启（下一句起自动恢复）。仍无声时确认 `config.yaml` 的 `synthesis.provider: local` 未被改动。 |
 | 开场不在校园场景 | 点控制条会话角标复制会话 ID，反馈给开发；确认运行的是本分支（`narrative.mode: event`）。 |
 | 内容越界（权限/隐私异常） | 复制会话 ID 并截图（报错横幅自带 ID）；边界规则已写入提示词，出现持续越界需回修。 |
 
