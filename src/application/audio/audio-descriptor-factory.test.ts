@@ -2,10 +2,10 @@
  * Tests for AudioDescriptorFactory: voice resolution, descriptor/recipe
  * shapes, env-based voice IDs, mock bindings, and deterministic seeds.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { AudioDescriptorFactory, type AudioDescriptorFactoryOptions } from "./audio-descriptor-factory.js";
 import type { VoicesConfig } from "../../config/voices.js";
-import type { LinePerformance, PerformanceCompiler } from "./performance-compiler.js";
+import { PerformanceCompilerImpl, type LinePerformance, type PerformanceCompiler } from "./performance-compiler.js";
 import type { RuntimePlayableEvent } from "../../schema.js";
 import type { InternalAudioRecipe } from "./internal-audio-recipe.js";
 
@@ -294,5 +294,52 @@ describe("AudioDescriptorFactory", () => {
     expect(identity.recipe.pauseBeforeMs).toBe(0);
     // A non-zero pause must change the audio identity.
     expect(withPause.recipe.cacheKey).not.toBe(identity.recipe.cacheKey);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 导演声音指导（角色音频特征设计 V1）
+// ---------------------------------------------------------------------------
+
+describe("AudioDescriptorFactory — voiceDirectionFor", () => {
+  it("forwards the direction of the line's speaker into the compiler", () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const recordingCompiler: PerformanceCompiler = {
+      compile: (input) => {
+        seen.push(input as unknown as Record<string, unknown>);
+        return { rate: 1, pitch: 1, volume: 1, pauseBeforeMs: 0, pauseAfterMs: 0 };
+      },
+    };
+    const factory = makeFactory({
+      compiler: recordingCompiler,
+      voiceDirectionFor: (speakerId) =>
+        speakerId === "suyao" ? { volume: "whisper", note: "夜谈压低声音" } : undefined,
+    });
+    factory.build(dialogue("suyao", "小声点。", "l21"), { type: "active" }, "current");
+    expect(seen[0]?.direction).toEqual({ volume: "whisper", note: "夜谈压低声音" });
+  });
+
+  it("changes the compiled recipe and cacheKey when direction differs", () => {
+    const realCompiler = new PerformanceCompilerImpl();
+    const withDirection = makeFactory({
+      compiler: realCompiler,
+      voiceDirectionFor: () => ({ volume: "whisper", delivery: "gentle" }),
+    }).build(dialogue("suyao", "小声点。", "l22"), { type: "active" }, "current")!;
+    const without = makeFactory({ compiler: realCompiler }).build(
+      dialogue("suyao", "小声点。", "l22"),
+      { type: "active" },
+      "current",
+    )!;
+    expect(withDirection.recipe.volume).toBe(20);
+    // direction delivery 仍受调色板过滤：gentle 在 allowed 内才进语气段。
+    expect(withDirection.recipe.instruction).toContain("温柔");
+    expect(withDirection.recipe.cacheKey).not.toBe(without.recipe.cacheKey);
+  });
+
+  it("never consults the direction source for narration", () => {
+    const probe = vi.fn(() => undefined);
+    const factory = makeFactory({ voiceDirectionFor: probe });
+    expect(factory.build(narration("旁白一行。", "l23"), { type: "active" }, "current")).toBeNull();
+    expect(probe).not.toHaveBeenCalled();
   });
 });

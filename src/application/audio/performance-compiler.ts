@@ -25,21 +25,52 @@ export interface LinePerformance {
     | "surprised"
     | "disgusted";
   intensity?: 0 | 1 | 2 | 3;
-  pace?: "very_slow" | "slow" | "normal" | "fast" | "very_fast";
-  energy?: "very_low" | "low" | "normal" | "high" | "very_high";
-  volume?: "whisper" | "soft" | "normal" | "loud";
-  delivery?: Array<
-    | "restrained"
-    | "hesitant"
-    | "firm"
-    | "gentle"
-    | "cold"
-    | "playful"
-    | "breathless"
-    | "tearful"
-  >;
+  pace?: Pace;
+  energy?: Energy;
+  volume?: VolumeLevel;
+  delivery?: DeliveryTag[];
   pause_before_ms?: number;
   pause_after_ms?: number;
+}
+
+// ---------------------------------------------------------------------------
+// 表演词汇表（运行时真源）——LinePerformance 的类型与导演指导的运行时校验
+// 共用同一份词表（docs/superpowers/specs/2026-09-16-character-voice-design.md）。
+// ---------------------------------------------------------------------------
+
+export const DELIVERY_TAGS = [
+  "restrained",
+  "hesitant",
+  "firm",
+  "gentle",
+  "cold",
+  "playful",
+  "breathless",
+  "tearful",
+] as const;
+export type DeliveryTag = (typeof DELIVERY_TAGS)[number];
+
+export const PACE_VALUES = ["very_slow", "slow", "normal", "fast", "very_fast"] as const;
+export type Pace = (typeof PACE_VALUES)[number];
+
+export const ENERGY_VALUES = ["very_low", "low", "normal", "high", "very_high"] as const;
+export type Energy = (typeof ENERGY_VALUES)[number];
+
+export const VOLUME_VALUES = ["whisper", "soft", "normal", "loud"] as const;
+export type VolumeLevel = (typeof VOLUME_VALUES)[number];
+
+/**
+ * 导演逐场景声音指导（角色音频特征设计 §3.2）：作用于某说话人在当前场景
+ * 的全部台词，优先级高于演员逐行意图。`note` 只进 free 档 instruction
+ * （fixed_emotion 档是纯情绪句式，自由文字没有落点）。
+ */
+export interface VoiceDirectionTarget {
+  delivery?: DeliveryTag;
+  pace?: Pace;
+  energy?: Energy;
+  volume?: VolumeLevel;
+  /** ≤40 字自由提示（截断在导演解析侧），预算内自然让位给画像与语气段。 */
+  note?: string;
 }
 
 /** Provider-level numeric/instruction parameters after compilation. */
@@ -62,6 +93,8 @@ export interface PerformanceCompileInput {
   forbiddenDelivery?: string[];
   /** Optional LLM-provided performance intent for this line. */
   performance?: LinePerformance;
+  /** 导演场景指导（优先于逐行意图）；缺省 = 无指导。 */
+  direction?: VoiceDirectionTarget;
   /** DashScope instruction policy: free-form (cloned/designed voices —
    *  default), fixed_emotion (system voices), or none. */
   instructionMode?: InstructionMode;
@@ -76,8 +109,6 @@ export interface PerformanceCompiler {
 // ---------------------------------------------------------------------------
 
 /** Delivery style → stable Chinese label (feeds the compiled instruction). */
-type DeliveryTag = NonNullable<LinePerformance["delivery"]>[number];
-
 const DELIVERY_LABELS: Record<DeliveryTag, string> = {
   restrained: "克制",
   hesitant: "犹豫",
@@ -89,7 +120,7 @@ const DELIVERY_LABELS: Record<DeliveryTag, string> = {
   tearful: "含泪",
 };
 
-const PACE_RATE: Record<NonNullable<LinePerformance["pace"]>, number> = {
+const PACE_RATE: Record<Pace, number> = {
   very_slow: 0.85,
   slow: 0.92,
   normal: 1.0,
@@ -97,7 +128,7 @@ const PACE_RATE: Record<NonNullable<LinePerformance["pace"]>, number> = {
   very_fast: 1.15,
 };
 
-const ENERGY_PITCH: Record<NonNullable<LinePerformance["energy"]>, number> = {
+const ENERGY_PITCH: Record<Energy, number> = {
   very_low: 0.9,
   low: 0.95,
   normal: 1.0,
@@ -105,7 +136,7 @@ const ENERGY_PITCH: Record<NonNullable<LinePerformance["energy"]>, number> = {
   very_high: 1.1,
 };
 
-const VOLUME_LEVEL: Record<NonNullable<LinePerformance["volume"]>, number> = {
+const VOLUME_LEVEL: Record<VolumeLevel, number> = {
   whisper: 20,
   soft: 35,
   normal: 50,
@@ -138,16 +169,12 @@ function clampPause(value: unknown): number {
 }
 
 /**
- * Filter the LLM's delivery suggestions against the character profile
- * (§14.1): a tag survives only when it is explicitly allowed (an empty /
- * absent allowed list means "no restriction") and never forbidden. Unknown
- * tags and duplicates are dropped so identical inputs stay identical.
+ * Filter delivery tag candidates against the character profile (§14.1): a
+ * tag survives only when it is explicitly allowed (an empty / absent allowed
+ * list means "no restriction") and never forbidden. Unknown tags and
+ * duplicates are dropped so identical inputs stay identical.
  */
-function filterDelivery(
-  input: PerformanceCompileInput,
-  perf: LinePerformance,
-): DeliveryTag[] {
-  const raw = perf.delivery;
+function filterDelivery(input: PerformanceCompileInput, raw: unknown): DeliveryTag[] {
   if (!Array.isArray(raw)) return [];
   const allowed = Array.isArray(input.allowedDelivery) ? input.allowedDelivery : [];
   const forbidden = Array.isArray(input.forbiddenDelivery) ? input.forbiddenDelivery : [];
@@ -170,15 +197,17 @@ function filterDelivery(
 /**
  * Compose the provider instruction: the character's base description is the
  * voice anchor; surviving delivery tags are appended as `语气：…。`;
- * high intensity (2–3) adds `情绪强烈。`. Trailing clauses are dropped
- * first, then the base is truncated, to stay within the vendor's weighted
- * 100-char budget. Deterministic — identical inputs produce identical
- * output, which is what makes the result cacheKey-safe.
+ * high intensity (2–3) adds `情绪强烈。`; the director's free note is the
+ * last clause. Trailing clauses are dropped first, then the base is
+ * truncated, to stay within the vendor's weighted 100-char budget — so the
+ * note yields before the voice anchor. Deterministic — identical inputs
+ * produce identical output, which is what makes the result cacheKey-safe.
  */
 function buildInstruction(
   base: string,
   delivery: DeliveryTag[],
   intensity: LinePerformance["intensity"],
+  note: string | undefined,
 ): string | undefined {
   const parts: string[] = [];
   if (base.length > 0) parts.push(base);
@@ -187,6 +216,9 @@ function buildInstruction(
   }
   if (intensity === 2 || intensity === 3) {
     parts.push("情绪强烈。");
+  }
+  if (note !== undefined && note.length > 0) {
+    parts.push(note);
   }
   while (parts.length > 1 && weightedLength(parts.join("")) > INSTRUCTION_BUDGET) {
     parts.pop();
@@ -268,19 +300,27 @@ export class PerformanceCompilerImpl implements PerformanceCompiler {
       const base = typeof input.baseDescription === "string" ? input.baseDescription.trim() : "";
       const perf = input.performance;
       const validPerf = perf !== null && typeof perf === "object" ? perf : undefined;
-      const kept = validPerf ? filterDelivery(input, validPerf) : [];
+      const direction =
+        input.direction !== null && typeof input.direction === "object" ? input.direction : undefined;
+      // 导演指导优先于演员逐行意图（角色音频特征设计 §3.3）；delivery 候选
+      // 里导演标签前置，仍受同一调色板过滤（§14.1）。
+      const deliveryCandidates =
+        direction?.delivery !== undefined
+          ? [direction.delivery, ...(validPerf?.delivery ?? [])]
+          : validPerf?.delivery;
+      const kept = filterDelivery(input, deliveryCandidates);
 
       const mode: InstructionMode = input.instructionMode ?? "free";
       let instruction: string | undefined;
       if (mode === "fixed_emotion") {
         instruction = buildFixedEmotionInstruction(validPerf);
       } else if (mode === "free") {
-        instruction = buildInstruction(base, kept, validPerf?.intensity);
+        instruction = buildInstruction(base, kept, validPerf?.intensity, direction?.note);
       }
       const result: CompiledPerformance = {
-        rate: lookup(PACE_RATE, validPerf?.pace, IDENTITY_PARAMS.rate),
-        pitch: lookup(ENERGY_PITCH, validPerf?.energy, IDENTITY_PARAMS.pitch),
-        volume: lookup(VOLUME_LEVEL, validPerf?.volume, IDENTITY_PARAMS.volume),
+        rate: lookup(PACE_RATE, direction?.pace ?? validPerf?.pace, IDENTITY_PARAMS.rate),
+        pitch: lookup(ENERGY_PITCH, direction?.energy ?? validPerf?.energy, IDENTITY_PARAMS.pitch),
+        volume: lookup(VOLUME_LEVEL, direction?.volume ?? validPerf?.volume, IDENTITY_PARAMS.volume),
         pauseBeforeMs: clampPause(validPerf?.pause_before_ms),
         pauseAfterMs: clampPause(validPerf?.pause_after_ms),
       };

@@ -25,10 +25,27 @@ import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { GraphStorePort } from "../../core/ports/graph-store-port.js";
 import type { OutlineStorePort } from "../../core/ports/outline-store-port.js";
 import type { StoredEvent } from "../../schema.js";
+import {
+  DELIVERY_TAGS,
+  ENERGY_VALUES,
+  PACE_VALUES,
+  VOLUME_VALUES,
+  type DeliveryTag,
+  type Energy,
+  type Pace,
+  type VoiceDirectionTarget,
+  type VolumeLevel,
+} from "../audio/performance-compiler.js";
 import { serializeStoryContext } from "../../story/context-builder.js";
 
 /** 表单模式（与 InteractionPolicy/InteractionFormSnapshot 同口径）。 */
 export type FormMode = "choice" | "input" | "hybrid";
+
+/** 在场角色的音频调色板（供导演发 voice 指导时对齐词汇）。 */
+export interface SpeakerVoicePalette {
+  allowedDelivery?: string[];
+  forbiddenDelivery?: string[];
+}
 
 /** 导演产出（M4.1 ③）：会话内工作态，不入图契约。 */
 export interface SceneDirective {
@@ -41,13 +58,22 @@ export interface SceneDirective {
   endingPressure: boolean;
   /** 相位门：allowed_modes 收窄（缺省 = 不收窄）。 */
   formModes?: FormMode[];
+  /**
+   * 角色音频指导（角色音频特征设计 §3.2，V1）：说话人 id → 指导。
+   * 由音频管线按行查询（VoiceDirectionHub），经编译器进缓存键。
+   */
+  voice?: Record<string, VoiceDirectionTarget>;
 }
 
 const DIRECTIVE_SYSTEM_PROMPT =
   "你是 GalGame 导演。输入场景信息与既有记忆，输出本场景的演出指令 JSON：" +
-  '{sceneGoal, defenseBeats:[string], endingPressure:boolean}。' +
+  '{sceneGoal, defenseBeats:[string], endingPressure:boolean, voice?}。' +
   "sceneGoal ≤120 字；defenseBeats 是针对离谱输入的引回要点（可为空数组）；" +
-  "endingPressure 仅在剧情明显接近终章时为 true。只给指令，不写台词。";
+  "endingPressure 仅在剧情明显接近终章时为 true。" +
+  "voice 是可选的角色音频指导，仅当场景状态要求声音变化时给出，形如 " +
+  '{"角色id":{"delivery":"breathless","volume":"whisper","note":"夜谈压低声音"}}；' +
+  "delivery 只能取 restrained/hesitant/firm/gentle/cold/playful/breathless/tearful 之一，" +
+  "volume 只能取 whisper/soft/normal/loud，note ≤40 字。只给指令，不写台词。";
 
 interface DirectorServiceOptions {
   runner: AgentRunnerPort;
@@ -58,6 +84,11 @@ interface DirectorServiceOptions {
   outline?: OutlineStorePort;
   /** M3.6 ③：canon 读取（晋升事实进导演输入）。导演可见、演员不可见。 */
   canon?: CanonStorePort;
+  /**
+   * 角色音频调色板查询（角色音频特征设计 V1）：按说话人取 allowed/forbidden
+   * 语气（author semantic 或 per-game 设计）；缺省 = 不渲染调色板段。
+   */
+  speakerPalette?: (characterId: string) => SpeakerVoicePalette | undefined;
   diagnostics?: DiagnosticSink;
 }
 
@@ -73,6 +104,9 @@ export class DirectorService {
   private readonly judge: ConfluenceJudgePort | undefined;
   private readonly outline: OutlineStorePort | undefined;
   private readonly canon: CanonStorePort | undefined;
+  private readonly speakerPalette:
+    | ((characterId: string) => SpeakerVoicePalette | undefined)
+    | undefined;
   private readonly diagnostics: DiagnosticSink;
   /** 场景 id → 本场景 directive（会话内工作态缓存）。 */
   private readonly directives = new Map<string, SceneDirective>();
@@ -84,6 +118,7 @@ export class DirectorService {
     this.judge = options.judge;
     this.outline = options.outline;
     this.canon = options.canon;
+    this.speakerPalette = options.speakerPalette;
     this.diagnostics = options.diagnostics ?? silentDiagnosticSink;
     // M3.6 ③：canon 后台预热（fire-and-forget；未就绪时导演输入无 canon 段）。
     void this.canon?.load().catch((err: unknown) => {
@@ -108,6 +143,8 @@ export class DirectorService {
     sceneId: string;
     scenePurpose: string;
     recentSummary: string;
+    /** 在场角色 id（场景状态键集），用于渲染音频调色板段。 */
+    cast?: string[];
   }): Promise<SceneDirective> {
     const tools = this.buildTools();
     // M4.3 相位门工具的 sceneId 经闭包绑定（修复共享可变字段的并发问题）。
@@ -116,12 +153,14 @@ export class DirectorService {
         ? this.executeNarrowFormModes(input.sceneId, argsJson)
         : this.executeTool(name, argsJson);
     const canonSection = this.renderCanonSection();
+    const voicePaletteSection = this.renderVoicePaletteSection(input.cast);
     const user = [
       "===== 场景 =====",
       `sceneId: ${input.sceneId}`,
       `目的: ${input.scenePurpose}`,
       "===== 最近剧情摘要 =====",
       input.recentSummary === "" ? "（暂无）" : input.recentSummary,
+      ...(voicePaletteSection !== undefined ? [voicePaletteSection] : []),
       ...(canonSection !== undefined ? [canonSection] : []),
     ].join("\n");
 
@@ -147,6 +186,9 @@ export class DirectorService {
         directive.sceneGoal = parsed.sceneGoal;
       }
       directive.defenseBeats = parsed.defenseBeats;
+      if (parsed.voice !== undefined) {
+        directive.voice = parsed.voice;
+      }
     }
     // narrowFormModes 的结果不覆盖——相位门是显式工具调用，先于最终文本落缓存。
     const previous = this.directives.get(input.sceneId);
@@ -162,6 +204,7 @@ export class DirectorService {
     sceneId: string;
     scenePurpose: string;
     recentSummary: string;
+    cast?: string[];
   }): void {
     if (this.directiveRunning) return;
     this.directiveRunning = true;
@@ -188,6 +231,29 @@ export class DirectorService {
     );
     this.narrowFormModes(sceneId, allowed);
     return Promise.resolve(`已收窄 ${sceneId} → [${allowed.join(", ")}]`);
+  }
+
+  /**
+   * 在场角色音频调色板段（角色音频特征设计 V1）：只列有调色板数据的角色；
+   * 无查询器/无在场角色/全员无数据 → 省略整段。
+   */
+  private renderVoicePaletteSection(cast: string[] | undefined): string | undefined {
+    if (this.speakerPalette === undefined || cast === undefined || cast.length === 0) {
+      return undefined;
+    }
+    const lines: string[] = [];
+    for (const id of cast) {
+      const palette = this.speakerPalette(id);
+      if (palette === undefined) continue;
+      const allowed = palette.allowedDelivery ?? [];
+      const forbidden = palette.forbiddenDelivery ?? [];
+      if (allowed.length === 0 && forbidden.length === 0) continue;
+      const parts = [`- ${id}`];
+      if (allowed.length > 0) parts.push(`语气可用 [${allowed.join(", ")}]`);
+      if (forbidden.length > 0) parts.push(`忌用 [${forbidden.join(", ")}]`);
+      lines.push(parts.join("："));
+    }
+    return lines.length > 0 ? ["===== 在场角色音频调色板 =====", ...lines].join("\n") : undefined;
   }
 
   /**
@@ -412,13 +478,23 @@ export class DirectorService {
   }
 
   private parseDirective(text: string):
-    | { sceneGoal?: string; defenseBeats: string[]; endingPressure: boolean }
+    | {
+        sceneGoal?: string;
+        defenseBeats: string[];
+        endingPressure: boolean;
+        voice?: Record<string, VoiceDirectionTarget>;
+      }
     | undefined {
     const match = /\{[\s\S]*\}/.exec(text);
     if (match === null) return undefined;
     try {
       const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-      const directive: { sceneGoal?: string; defenseBeats: string[]; endingPressure: boolean } = {
+      const directive: {
+        sceneGoal?: string;
+        defenseBeats: string[];
+        endingPressure: boolean;
+        voice?: Record<string, VoiceDirectionTarget>;
+      } = {
         defenseBeats: [],
         endingPressure: parsed.endingPressure === true,
       };
@@ -430,9 +506,49 @@ export class DirectorService {
           .filter((b): b is string => typeof b === "string")
           .slice(0, 5);
       }
+      const voice = parseVoiceDirections(parsed.voice);
+      if (voice !== undefined) {
+        directive.voice = voice;
+      }
       return directive;
     } catch {
       return undefined;
     }
   }
+}
+
+/**
+ * voice 段解析（角色音频特征设计 §3.2）：逐条目校验词表（越界字段丢弃）、
+ * note 截 40 字；空目标/空表 → undefined。确定性——相同输入相同输出。
+ */
+function parseVoiceDirections(
+  raw: unknown,
+): Record<string, VoiceDirectionTarget> | undefined {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<string, VoiceDirectionTarget> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const v = value as Record<string, unknown>;
+    const target: VoiceDirectionTarget = {};
+    if (typeof v.delivery === "string" && (DELIVERY_TAGS as readonly string[]).includes(v.delivery)) {
+      target.delivery = v.delivery as DeliveryTag;
+    }
+    if (typeof v.pace === "string" && (PACE_VALUES as readonly string[]).includes(v.pace)) {
+      target.pace = v.pace as Pace;
+    }
+    if (typeof v.energy === "string" && (ENERGY_VALUES as readonly string[]).includes(v.energy)) {
+      target.energy = v.energy as Energy;
+    }
+    if (typeof v.volume === "string" && (VOLUME_VALUES as readonly string[]).includes(v.volume)) {
+      target.volume = v.volume as VolumeLevel;
+    }
+    if (typeof v.note === "string") {
+      const note = v.note.trim().slice(0, 40);
+      if (note !== "") target.note = note;
+    }
+    if (Object.keys(target).length > 0) {
+      out[id.slice(0, 64)] = target;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }

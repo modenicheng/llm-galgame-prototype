@@ -269,3 +269,128 @@ describe("DirectorService", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// voice 指导与音频调色板（角色音频特征设计 V1）
+// ---------------------------------------------------------------------------
+
+function makeVoiceRunner(payload: unknown) {
+  return {
+    runLoop: vi.fn(async (request: { system: string; user: string }) => ({
+      text: JSON.stringify(payload),
+      // 捕获 prompt 供调色板断言
+      captured: request,
+    })),
+  };
+}
+
+describe("DirectorService — voice 指导与调色板", () => {
+  let root: string;
+  let store: GameGraphStore;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), "director-voice-"));
+    store = new GameGraphStore(root, "game_director_voice_test");
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("parses the voice section into the directive, dropping invalid entries", async () => {
+    const runner = makeVoiceRunner({
+      sceneGoal: "夜谈",
+      defenseBeats: [],
+      endingPressure: false,
+      voice: {
+        苏遥: { delivery: "breathless", volume: "whisper", note: "  夜谈压低声音  ", pace: "mega" },
+        旁白: { delivery: "screaming", note: 42 },
+        林澈: "不是对象",
+      },
+    });
+    const service = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+    });
+    const directive = await service.refreshDirective({
+      sceneId: "天台",
+      scenePurpose: "夜谈",
+      recentSummary: "",
+    });
+    expect(directive.voice).toEqual({
+      苏遥: { delivery: "breathless", volume: "whisper", note: "夜谈压低声音" },
+    });
+    expect(service.getDirective("天台")?.voice).toEqual(directive.voice);
+  });
+
+  it("omits voice when the model gives none or only invalid targets", async () => {
+    for (const payload of [
+      { sceneGoal: "x", defenseBeats: [], endingPressure: false },
+      { sceneGoal: "x", defenseBeats: [], endingPressure: false, voice: { 苏遥: { pace: 7 } } },
+      { sceneGoal: "x", defenseBeats: [], endingPressure: false, voice: [1, 2] },
+    ]) {
+      const runner = makeVoiceRunner(payload);
+      const service = new DirectorService({
+        runner: runner as unknown as AgentRunnerPort,
+        store,
+      });
+      const directive = await service.refreshDirective({
+        sceneId: "教室",
+        scenePurpose: "日常",
+        recentSummary: "",
+      });
+      expect(directive.voice).toBeUndefined();
+    }
+  });
+
+  it("renders the palette section for cast members with palette data", async () => {
+    const runner = makeVoiceRunner({ sceneGoal: "x", defenseBeats: [], endingPressure: false });
+    const service = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+      speakerPalette: (id) =>
+        id === "苏遥"
+          ? { allowedDelivery: ["gentle", "firm"], forbiddenDelivery: ["cold"] }
+          : undefined,
+    });
+    await service.refreshDirective({
+      sceneId: "教室",
+      scenePurpose: "日常",
+      recentSummary: "",
+      cast: ["苏遥", "林澈"],
+    });
+    const user = (runner.runLoop.mock.calls[0]?.[0] as { user: string }).user;
+    expect(user).toContain("===== 在场角色音频调色板 =====");
+    expect(user).toContain("- 苏遥：语气可用 [gentle, firm]：忌用 [cold]");
+    expect(user).not.toContain("林澈");
+  });
+
+  it("omits the palette section without a palette provider or cast", async () => {
+    const runner = makeVoiceRunner({ sceneGoal: "x", defenseBeats: [], endingPressure: false });
+    const service = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+    });
+    await service.refreshDirective({
+      sceneId: "教室",
+      scenePurpose: "日常",
+      recentSummary: "",
+      cast: ["苏遥"],
+    });
+    let user = (runner.runLoop.mock.calls[0]?.[0] as { user: string }).user;
+    expect(user).not.toContain("音频调色板");
+
+    const paletteService = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+      speakerPalette: () => ({ allowedDelivery: ["gentle"] }),
+    });
+    await paletteService.refreshDirective({
+      sceneId: "教室",
+      scenePurpose: "日常",
+      recentSummary: "",
+    });
+    user = (runner.runLoop.mock.calls[1]?.[0] as { user: string }).user;
+    expect(user).not.toContain("音频调色板");
+  });
+});

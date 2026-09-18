@@ -267,3 +267,75 @@ describe("instruction modes", () => {
     ).toBe(withPunct);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 导演声音指导合并（角色音频特征设计 V1）
+// ---------------------------------------------------------------------------
+
+describe("PerformanceCompilerImpl — 导演指导合并", () => {
+  it("direction overrides the per-line performance intent", () => {
+    const result = compile({
+      baseDescription: BASE,
+      performance: { pace: "very_fast", volume: "loud", delivery: ["playful"] },
+      direction: { pace: "very_slow", volume: "whisper", delivery: "restrained" },
+    });
+    expect(result.rate).toBe(0.85);
+    expect(result.volume).toBe(20);
+    // 导演 delivery 前置，逐行意图仍参与（同一调色板过滤）。
+    expect(result.instruction).toBe(`${BASE}语气：克制、俏皮。`);
+  });
+
+  it("applies direction alone with the note appended to the instruction", () => {
+    const result = compile({
+      baseDescription: BASE,
+      direction: { delivery: "breathless", note: "夜谈压低声音" },
+    });
+    expect(result.instruction).toBe(`${BASE}语气：气促。夜谈压低声音`);
+    expect(result.rate).toBe(1.0);
+    expect(result.pitch).toBe(1.0);
+    expect(result.volume).toBe(50);
+  });
+
+  it("drops the note first when the instruction overflows the budget", () => {
+    const longBase = "青".repeat(40); // 80 weighted
+    const result = compile({
+      baseDescription: longBase,
+      direction: { delivery: "firm", note: "这句要狠一点" }, // 80 + 12 + 24 = 116 > 100
+    });
+    // note 让位，语气段保留（二者合计 96 ≤ 100）。
+    expect(result.instruction).toBe(`${longBase}语气：坚定。`);
+  });
+
+  it("fixed_emotion mode ignores direction note and delivery", () => {
+    const result = compile({
+      baseDescription: BASE,
+      instructionMode: "fixed_emotion",
+      performance: { emotion: "sad" },
+      direction: { delivery: "breathless", note: "夜谈压低声音" },
+    });
+    expect(result.instruction).toBe("你说话的情感是sad。");
+  });
+
+  it("degrades unknown direction fields to identity values (never throws)", () => {
+    const result = compile({
+      baseDescription: BASE,
+      direction: {
+        pace: "mega" as unknown as "fast",
+        volume: 11 as unknown as "soft",
+      },
+    });
+    expect(result.rate).toBe(1.0);
+    expect(result.volume).toBe(50);
+    expect(result.instruction).toBe(BASE);
+  });
+
+  it("keeps identical output for identical inputs (cacheKey safety)", () => {
+    const input: PerformanceCompileInput = {
+      baseDescription: BASE,
+      allowedDelivery: ["gentle", "firm"],
+      performance: { delivery: ["gentle"] },
+      direction: { volume: "soft", delivery: "gentle" },
+    };
+    expect(compile(input)).toEqual(compile(input));
+  });
+});

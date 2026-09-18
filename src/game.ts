@@ -200,6 +200,11 @@ export class Game implements InteractionHost {
   /** M5.3：宿主回溯预备的恢复点（下一次 run() 直接走恢复路径）。 */
   private pendingRestore: RestorePoint | null = null;
 
+  /** 当前模型场景 id（音频指导桥按它查询导演场景指令；角色音频特征设计 §4.2）。 */
+  get currentSceneId(): string {
+    return this.storyState.scene.id;
+  }
+
   /**
    * M5.3 回溯入口（宿主调用）：在目标决策节点开启 retrace 新周目（活跃
    * 周目弃局记账、图零删除）。调用前 run 循环已因 RetraceRequestedError
@@ -1561,6 +1566,8 @@ export class Game implements InteractionHost {
           sceneId,
           scenePurpose: this.storyState.scene.purpose,
           recentSummary: this.storyState.recent_summary,
+          // 在场角色（音频调色板段数据源，角色音频特征设计 V1）。
+          cast: Object.keys(this.storyState.characters),
         });
       }
     });

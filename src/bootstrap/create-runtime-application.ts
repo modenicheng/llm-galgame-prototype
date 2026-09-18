@@ -30,7 +30,7 @@ import type { CanonStorePort } from "../core/ports/canon-store-port.js";
 import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
 import { CanonAdjudicatorAdapter } from "../adapters/llm/canon-adjudicator-adapter.js";
 import { AgentRunnerAdapter } from "../adapters/llm/agent-runner-adapter.js";
-import { DirectorService } from "../application/director/director-service.js";
+import { DirectorService, type SpeakerVoicePalette } from "../application/director/director-service.js";
 import { CanonPromoter } from "../application/canon/canon-promoter.js";
 import type {
   OutlineMaintainerPort,
@@ -41,6 +41,8 @@ import { RuntimeStatus } from "../runtime/status.js";
 import { UiProjectionStoreImpl } from "../application/ui/ui-projection-store.js";
 import { AudioCatalogServiceImpl } from "../application/audio/audio-catalog-service.js";
 import { AudioDescriptorFactory } from "../application/audio/audio-descriptor-factory.js";
+import { VoiceDirectionHub } from "../application/audio/voice-direction-hub.js";
+import type { VoiceDirectionTarget } from "../application/audio/performance-compiler.js";
 import { AudioIntentPlanner } from "../application/audio/audio-intent-planner.js";
 import {
   TtsTaskServiceImpl,
@@ -145,6 +147,7 @@ function buildAudioStack(
   config: AppConfig,
   voices: Awaited<ReturnType<typeof loadVoices>>,
   provider: TtsProviderPort | null,
+  voiceDirectionFor?: (speakerId: string) => VoiceDirectionTarget | undefined,
 ): {
   catalog: AudioCatalogServiceImpl;
   planner: AudioIntentPlanner;
@@ -168,6 +171,7 @@ function buildAudioStack(
     env: process.env,
     compiler: new PerformanceCompilerImpl(),
     seedFor: (lineId) => fnv1a(lineId),
+    ...(voiceDirectionFor !== undefined ? { voiceDirectionFor } : {}),
   });
   const planner = new AudioIntentPlanner({
     catalog,
@@ -231,6 +235,7 @@ function buildDirectorService(options: {
   confluenceEnabled: boolean;
   outline?: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort } | undefined;
   canon: CanonStorePort;
+  speakerPalette?: (characterId: string) => SpeakerVoicePalette | undefined;
 }): DirectorService {
   const { gamesRoot, gameId, apiKey, api } = options;
   return new DirectorService({
@@ -241,6 +246,7 @@ function buildDirectorService(options: {
     ...(options.outline !== undefined ? { outline: options.outline.store } : {}),
     // M3.6 ③：canon 晋升事实进导演输入。
     canon: options.canon,
+    ...(options.speakerPalette !== undefined ? { speakerPalette: options.speakerPalette } : {}),
     ...(options.confluenceEnabled
       ? {
           judge: new ConfluenceJudgeAdapter({
@@ -305,10 +311,14 @@ export async function createRuntimeApplication(
   );
 
   const provider = selectTtsProvider(config, voices);
+  // 导演声音指导桥（角色音频特征设计 §4.2）：hub 先于会话存在，
+  // buildGameFor 建完 game 后重绑 source。
+  const voiceDirectionHub = new VoiceDirectionHub();
   const { catalog, planner, ttsTasks, taskStatusListeners } = buildAudioStack(
     config,
     voices,
     provider,
+    voiceDirectionHub.for.bind(voiceDirectionHub),
   );
 
   const projection = new UiProjectionStoreImpl();
@@ -343,6 +353,16 @@ export async function createRuntimeApplication(
     confluenceEnabled,
     outline,
     canon: canonStore,
+    // V1：author semantic 调色板进导演输入（V2 起 per-game 设计优先）。
+    speakerPalette: (characterId) => {
+      const entry = config.characters[characterId];
+      const profile = entry !== undefined ? voices.profiles[entry.voice_profile] : undefined;
+      if (profile === undefined) return undefined;
+      return {
+        allowedDelivery: profile.semantic.allowed_delivery,
+        forbiddenDelivery: profile.semantic.forbidden_delivery,
+      };
+    },
   });
   const graphCoordinator = buildGraphCoordinator(
     gamesRoot,
@@ -399,7 +419,7 @@ export async function createRuntimeApplication(
       narrativeDirector = service;
     }
 
-    return new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {
+    const game = new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {
       graph: graphCoordinator,
       clock: new SystemClock(),
       ids: new SessionIdGenerator(),
@@ -409,6 +429,12 @@ export async function createRuntimeApplication(
       ...(narrativeDirector ? { narrativeDirector } : {}),
       director,
     }, assetCatalog);
+    // 声音指导桥重绑（角色音频特征设计 §4.2）：restart 重建会话后新 game
+    // 顶替旧绑定；查询当前场景的 directive.voice。
+    voiceDirectionHub.setSource((speakerId) =>
+      director.getDirective(game.currentSceneId)?.voice?.[speakerId],
+    );
+    return game;
   };
 
   // One session id for the whole runtime: the game's session file AND the

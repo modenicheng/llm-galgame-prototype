@@ -26,6 +26,7 @@ import type {
   CompiledPerformance,
   LinePerformance,
   PerformanceCompiler,
+  VoiceDirectionTarget,
 } from "./performance-compiler.js";
 import { ttsLog } from "./tts-log.js";
 
@@ -42,6 +43,11 @@ export interface AudioDescriptorFactoryOptions {
   compiler: PerformanceCompiler;
   /** Deterministic per-line seed (same line always synthesizes the same audio). */
   seedFor: (lineId: string) => number;
+  /**
+   * 导演声音指导查询（角色音频特征设计 §4.2）：按说话人取当前场景的
+   * VoiceDirectionTarget；缺省/未绑定 = 无指导。
+   */
+  voiceDirectionFor?: (speakerId: string) => VoiceDirectionTarget | undefined;
 }
 
 export interface BuildAudioResult {
@@ -88,12 +94,14 @@ export class AudioDescriptorFactory {
 
     const binding = this.resolveBinding(character.voiceProfile, character.speakerId);
     const voiceId = resolveVoiceId(binding, this.options.env) ?? "";
+    const direction = this.options.voiceDirectionFor?.(character.speakerId);
     const compiled = this.options.compiler.compile({
       baseDescription: profile.semantic.base_description,
       allowedDelivery: profile.semantic.allowed_delivery,
       forbiddenDelivery: profile.semantic.forbidden_delivery,
       instructionMode: binding.instruction_mode,
       ...(performance !== undefined ? { performance } : {}),
+      ...(direction !== undefined ? { direction } : {}),
     });
 
     const seed = this.options.seedFor(event.line_id);
