@@ -16,6 +16,7 @@
 | `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md` | 长期记忆强化与复核体系（facts/beliefs/lessons/audit）下一阶段设计，待实施 |
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
 | `docs/agents/TTS-音色配置指南.md` | 音色创建与绑定操作指南 |
+| `docs/local-tts.md` | 本地 TTS 引擎部署指南（qwentts.cpp / Python tts-server，provider: local） |
 | `DESIGN.md` | 已归档（model-jsonl 时代旧架构，仅历史参考） |
 
 ## 已完成

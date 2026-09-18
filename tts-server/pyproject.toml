@@ -1,0 +1,21 @@
+[project]
+name = "tts-server"
+version = "0.1.0"
+description = "Local Qwen3-TTS streaming inference server for the galgame runtime (RTX 5060 laptop, uv-managed)"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "qwen-tts",
+    "fastapi",
+    "uvicorn",
+    "aiohttp",
+    # torch must be the CUDA build (Blackwell needs cu128). PyPI hosts
+    # CPU-only wheels on Windows — install from the pytorch index or a
+    # local wheel, e.g.
+    #   uv pip install torch==2.11.0+cu128 \
+    #     --index-url https://download.pytorch.org/whl/cu128
+    "torch>=2.11",
+    # Windows has no official Triton wheels; triton-windows powers
+    # torch.compile (RTF 2.5 -> 1.1 single-stream). Match the torch version.
+    "triton-windows>=3.8",
+]

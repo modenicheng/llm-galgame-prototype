@@ -3,9 +3,9 @@
 本文面向协作者:如何**创建**自己的音色(三种方式),以及如何把它**绑定**到游戏里。
 
 > **本地音色（campus 分支当前默认，不走 DashScope）**：树莓娘与四配角的语音由
-> 本机推理服务（`tts-server/`）合成，绑定字段是 `providers.local.voice`
-> （键 = `tts-server/voices/registry.json` 的音色名），**不需要任何 API key**；
-> 音色构建/重建与服务启动见 [`tts-server/README.md`](../../tts-server/README.md)。
+> 本机推理服务合成，绑定字段是 `providers.local.voice`（键 = 引擎注册表里的
+> 音色名），**不需要任何 API key**；引擎部署、音色制作与注册见
+> [`docs/local-tts.md`](../local-tts.md)。
 > 本文其余部分针对云端 DashScope 音色（`synthesis.provider: dashscope`）。
 
 音色的核心只有两个字段:

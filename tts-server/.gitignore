@@ -1,0 +1,5 @@
+.venv/
+.inductor-cache/
+__pycache__/
+# 本地并行放置的上游源码克隆（自带 .git），不入库
+tts-server/qwentts/

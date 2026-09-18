@@ -30,4 +30,6 @@ assets/characters/raspberry/
 # 为 AI 原创、经项目负责人确认随仓库分发；产出源 output/image-gen/cast/
 # 仍被上方 output/ 规则忽略（见 assets/ATTRIBUTION.md）。
 config.tts-story.yaml
-tts-server/
+# tts-server 引擎代码入库（协作者可复现）；参考音频与一切派生 latent
+# 属内容资产，仍不入库（树莓娘声音仅限内部流通，见 assets/ATTRIBUTION.md）。
+tts-server/voices/

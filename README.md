@@ -76,23 +76,22 @@ pnpm dev --debug-runtime
 
 两条引擎二选一，游戏侧默认对接 **qwentts.cpp**（`LOCAL_TTS_BASE_URL` 可覆盖地址）：
 
-1. **qwentts.cpp（C++/GGML，当前默认后端）**——OpenAI 兼容协议，
-   `127.0.0.1:9766`；首包 ~530ms、四路吞吐 RTF ~0.09、显存 ~2.4G、无预热：
+1. **qwentts.cpp（C++/GGML，当前默认后端）**——OpenAI 兼容协议，默认
+   `127.0.0.1:9766`，显存约 2.5 GB（Q8_0）、无预热：
 
    ```bash
-   tts-server\start-qwentts.cmd   # 起 server + 注册五音色
+   tts-server\start-qwentts.cmd   # 起 server + 注册音色（部署根目录用 QWENTTS_HOME 指定）
    ```
 
-   控制台出现 `ready on http://127.0.0.1:9766 - voices registered` 即就绪。
-   服务本体部署在 `D:\tmp\qwentts.cpp`（本仓库外），构建方法与性能数据见
-   [tts-server/README.md](./tts-server/README.md)。
-
-2. **Python 引擎（fallback）**——`tts-server/server.py`，`127.0.0.1:9765`，
-   首次启动 torch.compile 预热 4–7 分钟。游戏侧切换：`.env` 设
+2. **Python 引擎（fallback）**——`tts-server/server.py`，默认 `127.0.0.1:9765`，
+   首次启动 torch.compile 预热数分钟。游戏侧切换：`.env` 设
    `LOCAL_TTS_DIALECT=tts-server`。
 
-音色绑定在 `voices.yaml` 的 `providers.local.voice`（键 = `tts-server/voices/registry.json`
-的音色键：`paimeng`/`xuwanqing`/`linxiaoman`/`xiayiming`/`hanche`），
+两个引擎的完整部署指南（构建、模型下载、音色制作与注册、排障）见
+[docs/local-tts.md](./docs/local-tts.md)。
+
+音色绑定在 `voices.yaml` 的 `providers.local.voice`（键 = 引擎注册表里的
+音色名，本仓库默认五音色：`paimeng`/`xuwanqing`/`linxiaoman`/`xiayiming`/`hanche`），
 输出固定 24 kHz 流式 PCM（`synthesis.sample_rate: 24000`）。
 tts-server 未启动时游戏照常运行：每句合成重试耗尽后该句降级为纯文本，不阻塞播放。
 
