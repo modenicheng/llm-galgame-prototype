@@ -25,6 +25,7 @@ import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { GraphStorePort } from "../../core/ports/graph-store-port.js";
 import type { OutlineStorePort } from "../../core/ports/outline-store-port.js";
 import type { StoredEvent } from "../../schema.js";
+import type { IdentityValidationIssue } from "../../core/narrative/memory-operation.js";
 import {
   DELIVERY_TAGS,
   ENERGY_VALUES,
@@ -71,6 +72,7 @@ const DIRECTIVE_SYSTEM_PROMPT =
   "endingPressure 仅在剧情明显接近终章时为 true。" +
   "voice 是可选的角色音频指导，仅当场景状态要求声音变化时给出，形如 " +
   '{"角色id":{"delivery":"breathless","volume":"whisper","note":"夜谈压低声音"}}；' +
+  "voice 的键只能是用户消息「在场角色」清单中的稳定 ID——显示名/未知 ID 会被拒绝，" +
   `delivery 只能取 ${DELIVERY_TAGS.join("/")} 之一，` +
   `volume 只能取 ${VOLUME_VALUES.join("/")}，` +
   `pace 只能取 ${PACE_VALUES.join("/")}，` +
@@ -145,7 +147,11 @@ export class DirectorService {
     sceneId: string;
     scenePurpose: string;
     recentSummary: string;
-    /** 在场角色 id（场景状态键集），用于渲染音频调色板段。 */
+    /**
+     * 在场角色稳定 ID——场景名单权威（M2 §6.2：来自会话/场景计划 cast
+     * 上下文，不从累计 state.keys 重建）。voice 键严格按它校验；缺席 =
+     * 空允许集合（严格为空，任何键都拒）。
+     */
     cast?: string[];
   }): Promise<SceneDirective> {
     const tools = this.buildTools();
@@ -156,12 +162,14 @@ export class DirectorService {
         : this.executeTool(name, argsJson);
     const canonSection = this.renderCanonSection();
     const voicePaletteSection = this.renderVoicePaletteSection(input.cast);
+    const castSection = this.renderCastSection(input.cast);
     const user = [
       "===== 场景 =====",
       `sceneId: ${input.sceneId}`,
       `目的: ${input.scenePurpose}`,
       "===== 最近剧情摘要 =====",
       input.recentSummary === "" ? "（暂无）" : input.recentSummary,
+      ...(castSection !== undefined ? [castSection] : []),
       ...(voicePaletteSection !== undefined ? [voicePaletteSection] : []),
       ...(canonSection !== undefined ? [canonSection] : []),
     ].join("\n");
@@ -177,7 +185,10 @@ export class DirectorService {
       tools,
       executeTool,
     });
-    const parsed = this.parseDirective(text);
+    // M2 §6.2（R18）：voice 键严格按场景名单校验——显示名/未知键结构化
+    // 拒绝（UNKNOWN_CHARACTER_ID + 路径 + 原值），不静默截断、不静默接受。
+    const allowedCast = new Set(input.cast ?? []);
+    const parsed = this.parseDirective(text, allowedCast);
     // M3.5 ①：收束压力取「模型判定 ∨ 大纲确定性信号」——大纲信号是充分
     // 条件，模型判定保留（提前收束的演出自由度）；演员只见方向性指令，
     // 不见结局候选本身（§5.2 防火墙）。
@@ -206,6 +217,7 @@ export class DirectorService {
     sceneId: string;
     scenePurpose: string;
     recentSummary: string;
+    /** 在场角色稳定 ID（场景名单权威，M2 §6.2——见 refreshDirective）。 */
     cast?: string[];
   }): void {
     if (this.directiveRunning) return;
@@ -233,6 +245,18 @@ export class DirectorService {
     );
     this.narrowFormModes(sceneId, allowed);
     return Promise.resolve(`已收窄 ${sceneId} → [${allowed.join(", ")}]`);
+  }
+
+  /**
+   * 在场角色段（M2 §6.2）：voice 键的权威清单。空名单也渲染——明确告知
+   * 模型无可用键（严格为空），不退化为不限。
+   */
+  private renderCastSection(cast: string[] | undefined): string {
+    const ids = cast ?? [];
+    if (ids.length === 0) {
+      return "===== 在场角色 =====\n（无）voice 必须省略——没有可指导的说话人。";
+    }
+    return ["===== 在场角色 =====", ...ids.map((id) => `- ${id}`)].join("\n");
   }
 
   /**
@@ -479,7 +503,10 @@ export class DirectorService {
     return JSON.stringify({ characterId, known: false });
   }
 
-  private parseDirective(text: string): ParsedDirective | undefined {
+  private parseDirective(
+    text: string,
+    allowedCast: ReadonlySet<string>,
+  ): ParsedDirective | undefined {
     const match = /\{[\s\S]*\}/.exec(text);
     if (match === null) return undefined;
     try {
@@ -496,7 +523,17 @@ export class DirectorService {
           .filter((b): b is string => typeof b === "string")
           .slice(0, 5);
       }
-      const voice = parseVoiceDirections(parsed.voice);
+      const { voice, issues } = parseVoiceDirections(parsed.voice, allowedCast);
+      if (issues.length > 0) {
+        // 结构化诊断（§6.2 code/path/value）——拒绝不静默：每个违规键
+        // 独立成条，保留完整原值（不截断）。
+        this.diagnostics.warn(
+          "DirectorService",
+          `voice 指导键非场景名单稳定 ID，已拒绝（§6.2）：${issues
+            .map((issue) => `${issue.path}=${issue.value}（${issue.code}）`)
+            .join("；")}`,
+        );
+      }
       if (voice !== undefined) {
         directive.voice = voice;
       }
@@ -507,7 +544,7 @@ export class DirectorService {
   }
 }
 
-/** 模型指令 JSON 的校验产物（voice 已过词表校验）。 */
+/** 模型指令 JSON 的校验产物（voice 已过词表 + 场景名单键校验）。 */
 interface ParsedDirective {
   sceneGoal?: string;
   defenseBeats: string[];
@@ -523,15 +560,34 @@ function pickEnum<T extends string>(value: unknown, values: readonly T[]): T | u
 }
 
 /**
- * voice 段解析（角色音频特征设计 §3.2）：逐条目校验词表（越界字段丢弃）、
- * note 截 40 字；空目标/空表 → undefined。确定性——相同输入相同输出。
+ * voice 段解析（角色音频特征设计 §3.2 + M2 §6.2 键严格化）：
+ * - 逐条目校验词表（越界字段丢弃）、note 截 40 字；
+ * - 键必须是场景名单（allowedCast）中的稳定 ID——显示名/未知键结构化拒绝
+ *   （UNKNOWN_CHARACTER_ID，含完整原值，绝不截断、绝不映射、绝不静默
+ *   接受）。空名单严格为空：任何键都拒；
+ * - 空目标/空表 → voice=undefined。确定性——相同输入相同输出。
  */
 function parseVoiceDirections(
   raw: unknown,
-): Record<string, VoiceDirectionTarget> | undefined {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  allowedCast: ReadonlySet<string>,
+): {
+  voice: Record<string, VoiceDirectionTarget> | undefined;
+  issues: IdentityValidationIssue[];
+} {
+  const issues: IdentityValidationIssue[] = [];
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return { voice: undefined, issues };
+  }
   const out: Record<string, VoiceDirectionTarget> = {};
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!allowedCast.has(id)) {
+      issues.push({
+        code: "UNKNOWN_CHARACTER_ID",
+        path: `voice.${id}`,
+        value: id,
+      });
+      continue;
+    }
     if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
     const v = value as Record<string, unknown>;
     const target: VoiceDirectionTarget = {};
@@ -548,8 +604,8 @@ function parseVoiceDirections(
       if (note !== "") target.note = note;
     }
     if (Object.keys(target).length > 0) {
-      out[id.slice(0, 64)] = target;
+      out[id] = target;
     }
   }
-  return Object.keys(out).length > 0 ? out : undefined;
+  return { voice: Object.keys(out).length > 0 ? out : undefined, issues };
 }

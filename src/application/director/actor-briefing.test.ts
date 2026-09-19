@@ -6,8 +6,14 @@
  * - 有 directive 时含防守/收束段；无 directive 时与现行为等价。
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { buildActorBriefing } from "./actor-briefing.js";
+import { DirectorService } from "./director-service.js";
+import type { AgentRunnerPort } from "../../core/ports/agent-runner-port.js";
+import { GameGraphStore } from "../../adapters/storage/game-graph-store.js";
 import type { MemoryProjection } from "../../core/narrative/memory-projection.js";
 import { buildDslUserPrompt } from "../../story/context-builder.js";
 import { createInitialState } from "../../story/state.js";
@@ -134,5 +140,143 @@ describe("buildActorBriefing", () => {
     expect(briefing).not.toContain("worldSetting");
     const prompt = buildDslUserPrompt(4, makeBriefingCtx(briefing));
     expect(prompt).not.toContain(canonSecret);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M2 §5.2 负向快照：导演持有大纲/canon/他周目数据的完整视图，但演员剪报
+// （MemoryProjection + SceneDirective）只输出方向性指令——结局候选文本、
+// 大纲全量 purpose、canon 秘密、已弃周目剧情绝不出现在演员 prompt。
+// ---------------------------------------------------------------------------
+
+describe("actor briefing firewall — negative snapshots against a real DirectorService", () => {
+  let root: string;
+  let store: GameGraphStore;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), "actor-leak-"));
+    store = new GameGraphStore(root, "game_actor_leak_test");
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** 结局候选/大纲/canon/他周目里的秘密文本（出现即算泄露）。 */
+  const ENDING_SECRET = "结局候选A：主角黑化毁灭学园（未实现大纲 purpose）";
+  const CANON_SECRET = "canon 晋升事实：旧终端通往平行世界（第 3 周目证据）";
+  const PRIOR_RUN_SECRET = "已弃周目：上一轮回里苏遥已经死过一次";
+
+  function makeOutlineWithSecrets() {
+    return {
+      getOutline: () => ({
+        revision: 1,
+        nodes: [
+          { id: "act_1", kind: "act" as const, status: "realized" as const, purpose: "第一章" },
+          { id: "act_2", kind: "act" as const, status: "realized" as const, purpose: "第二章" },
+          { id: "ending_a", kind: "ending" as const, status: "planned" as const, purpose: ENDING_SECRET },
+          { id: "ending_b", kind: "ending" as const, status: "planned" as const, purpose: "结局候选B：全员生还" },
+        ],
+      }),
+      load: vi.fn(async () => ({ revision: 1, nodes: [] })),
+      applyRevision: vi.fn(async () => 2),
+    };
+  }
+
+  function makeCanonWithSecrets() {
+    return {
+      getCanon: () => ({
+        revision: 1,
+        worldSetting: "",
+        characters: [],
+        promotedFacts: [
+          {
+            id: "canon_1",
+            content: CANON_SECRET,
+            evidenceRuns: ["run_2", "run_3"],
+            judgedBy: "canon-adjudicator",
+            promotedAt: "2026-09-18T00:00:00.000Z",
+          },
+        ],
+        exceptions: [],
+      }),
+      load: vi.fn(async () => ({ revision: 1, worldSetting: "", characters: [], promotedFacts: [], exceptions: [] })),
+      saveScaffold: vi.fn(),
+      applyPromotion: vi.fn(async () => 2),
+    };
+  }
+
+  it("ending candidates, canon secrets, and prior-run history never leak into the actor briefing", async () => {
+    // 导演侧可见的全量数据：结局候选（大纲）、canon 晋升事实（跨周目）。
+    const runner = {
+      runLoop: vi.fn(async (request: {
+        user: string;
+        tools: Array<{ name: string }>;
+        executeTool: (name: string, args: string) => Promise<string>;
+      }) => {
+        // 导演的工具循环确实可以回放场景史（D7：含已弃周目——导演取材
+        // 来源；秘密文本从这里只进导演侧）。
+        await request.executeTool("readSceneHistory", JSON.stringify({ sceneId: "旧校舍" }));
+        return {
+          text: JSON.stringify({
+            sceneGoal: "查清终端来历",
+            defenseBeats: [],
+            endingPressure: false,
+          }),
+        };
+      }),
+    };
+    const director = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+      outline: makeOutlineWithSecrets(),
+      canon: makeCanonWithSecrets(),
+    });
+    const directive = await director.refreshDirective({
+      sceneId: "旧校舍",
+      scenePurpose: "调查终端",
+      recentSummary: "玩家进入旧校舍。",
+      cast: ["suyao"],
+    });
+
+    // SceneDirective 只有方向性指令：endingPressure 是布尔，不是候选文本。
+    const briefing = buildActorBriefing({
+      memoryBrief: makeBriefWithSections(),
+      rawEventCount: 8,
+      directive,
+    });
+    expect(briefing).not.toContain(ENDING_SECRET);
+    expect(briefing).not.toContain("结局候选");
+    expect(briefing).not.toContain(CANON_SECRET);
+    expect(briefing).not.toContain(PRIOR_RUN_SECRET);
+    expect(briefing).toContain("[场景指令]");
+
+    // 演员侧最终 prompt（buildDslUserPrompt 渲染）同样干净。
+    const prompt = buildDslUserPrompt(4, makeBriefingCtx(briefing));
+    expect(prompt).not.toContain(ENDING_SECRET);
+    expect(prompt).not.toContain(CANON_SECRET);
+    expect(prompt).not.toContain(PRIOR_RUN_SECRET);
+  });
+
+  it("the director's own prompt DOES see canon (director-visible): the firewall is the briefing boundary", async () => {
+    const runner = {
+      runLoop: vi.fn(async (_request: { user: string }) => ({
+        text: JSON.stringify({ sceneGoal: "x", defenseBeats: [], endingPressure: false }),
+      })),
+    };
+    const director = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+      canon: makeCanonWithSecrets(),
+    });
+    await director.refreshDirective({
+      sceneId: "旧校舍",
+      scenePurpose: "调查",
+      recentSummary: "",
+      cast: ["suyao"],
+    });
+    const directorUser = (runner.runLoop.mock.calls[0]?.[0] as { user: string }).user;
+    // 对照组：导演输入含 canon 秘密（导演可见），剪报边界才是防火墙位置。
+    expect(directorUser).toContain(CANON_SECRET);
   });
 });
