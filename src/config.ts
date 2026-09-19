@@ -164,10 +164,10 @@ export interface AppConfig {
   interaction: InteractionPolicyConfig;
   /**
    * DSL 协议版本（C4）：服务端按请求路由 v1/v2 语法；每局固定，不逐行
-   * 猜版本，也不向模型同时教两套。默认仍为 1（legacy 冻结于
-   * core/protocol/gal-dsl/legacy-line-parser.ts）；2 = 身份/文本/表演
-   * 分离语法（parseDslV2Line + compileSegmentV2）。翻默认值属于独立发布
-   * 决策，不在本任务内。
+   * 猜版本，也不向模型同时教两套。默认 = 2（Ruling 15 翻默认：身份/
+   * 文本/表演分离语法，parseDslV2Line + compileSegmentV2）；1 = legacy
+   * 冻结语法（core/protocol/gal-dsl/legacy-line-parser.ts），仅经显式
+   * 配置或旧存档的 legacy reader 进入。回滚 = 在 config.yaml 显式写 1。
    */
   dsl: {
     protocol_version: 1 | 2;
@@ -498,9 +498,10 @@ const ConfigSchema = z.object({
   interaction: InteractionPolicyConfigSchema,
   dsl: z
     .object({
-      protocol_version: z.union([z.literal(1), z.literal(2)]).default(1),
+      // Ruling 15：缺省 2（v2 分离语法）。显式写 1 = legacy 冻结路径。
+      protocol_version: z.union([z.literal(1), z.literal(2)]).default(2),
     })
-    .default({ protocol_version: 1 }),
+    .default({ protocol_version: 2 }),
   narrative: NarrativeConfigSchema,
   debug: z
     .object({

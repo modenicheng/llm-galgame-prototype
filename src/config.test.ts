@@ -821,11 +821,11 @@ describe("loadConfig validation errors", () => {
 });
 
 // ---------------------------------------------------------------------------
-// dsl.protocol_version（C4：版本路由配置旋钮；默认不翻）
+// dsl.protocol_version（C4：版本路由配置旋钮；Ruling 15 已翻默认 = 2）
 // ---------------------------------------------------------------------------
 
 describe("dsl.protocol_version", () => {
-  it("缺省 = 1（v1 冻结语法；默认不翻）", async () => {
+  it("缺省 = 2（Ruling 15 翻默认；v1 只经显式配置进入）", async () => {
     const filePath = await writeTempYaml(
       "dsl-default",
       [
@@ -842,6 +842,31 @@ describe("dsl.protocol_version", () => {
         "    enabled: false",
         "game:",
         "  history_events: 80",
+      ].join("\n"),
+    );
+    const config = await loadConfig(filePath);
+    expect(config.dsl.protocol_version).toBe(2);
+  });
+
+  it("显式 1 = legacy 冻结路径（回滚开关）", async () => {
+    const filePath = await writeTempYaml(
+      "dsl-v1-explicit",
+      [
+        "api:",
+        "  provider: openai_compatible",
+        "  model: test-model",
+        "  base_url: https://api.example.com",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 3",
+        "media:",
+        "  audio:",
+        "    enabled: false",
+        "game:",
+        "  history_events: 80",
+        "dsl:",
+        "  protocol_version: 1",
       ].join("\n"),
     );
     const config = await loadConfig(filePath);

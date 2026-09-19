@@ -1899,7 +1899,8 @@ export class Game implements InteractionHost {
         ? this.branchCharacterStates.get(branchOptionId)
         : undefined;
     return {
-      // 窄测试 config 可缺 dsl 块（zod 缺省 1）；直连构造的对象兜底 1。
+      // 生产 config 必经 loadConfig（zod 缺省 2，Ruling 15）；直连构造
+      // 且缺 dsl 块的对象（窄测试）兜底 1，不改它们的会话语义。
       protocolVersion: this.config.dsl?.protocol_version ?? 1,
       rosterRevision: registry.roster.revision,
       // 场景参与者 = 本局 roster 全体（含电话/画外角色；不从立绘推导）。

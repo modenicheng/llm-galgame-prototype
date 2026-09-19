@@ -28,7 +28,7 @@ import { AsyncEventQueue } from "../runtime/async-event-queue.js";
  * 都不允许再出现。
  */
 export interface GenerationIdentity {
-  /** 会话 DSL 协议版本（config dsl.protocol_version；默认 1，未翻）。 */
+  /** 会话 DSL 协议版本（config dsl.protocol_version；zod 缺省 2，Ruling 15）。 */
   protocolVersion: 1 | 2;
   /** 本局 registry 的 roster revision（身份版本，绑定快照与预取副本）。 */
   rosterRevision: string;

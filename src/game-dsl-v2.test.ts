@@ -11,10 +11,15 @@
  * - 预取分支的预测名牌状态按 branchCharacterStates 生命周期隔离/转正；
  * - v2 协议错误恰好触发一次尾部修复（生成器编排，边界 = 已提交前缀），
  *   双败走既有段失败路径（repairReason 修复续写）；
- * - knob 缺省仍为 1（无显式配置零行为变化），v1 会话与接线前逐字节
+ * - knob 缺省 = 2（Ruling 15 翻默认：无显式 protocol_version 的新局即
+ *   v2 会话）；v1 会话仍经显式 protocol_version: 1 进入，与接线前逐字节
  *   一致（fixture 钉死——main 自己的场景，接线前 HEAD 89ef14e 录制）。
  */
 import { describe, it, expect, vi } from "vitest";
+import { writeFile, unlink } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { loadConfig } from "./config.js";
 import type { AppConfig } from "./config.js";
 import { Game } from "./game.js";
 import type { GamePorts } from "./game.js";
@@ -577,29 +582,76 @@ describe("v2 runtime decode — knob=2 session end-to-end", () => {
     expect(harness.controller.ended()).toBe(true);
   });
 
-  it("keeps the default knob at 1 (no behavior change without explicit config)", async () => {
+  it("default knob is 2: a fresh config with no dsl override starts a v2 session (Ruling 15)", async () => {
+    // 真实生产路径：YAML → loadConfig → zod 缺省（dsl 块缺席）。
+    // 直连 makeTestConfig 不经 zod（缺 dsl 块走 Game 的 ?? 1 兜底），
+    // 钉不住「缺省协议」语义，必须从 loadConfig 起步。
+    // （适配 main：media.audio 无 enabled 键——用 main 最小 YAML 的
+    // planner 形状；refill 0 < target 6 满足 main 的 zod 约束。）
+    const yamlPath = path.join(tmpdir(), `dsl-default-v2-${process.pid}-${Date.now()}.yaml`);
+    await writeFile(
+      yamlPath,
+      [
+        "api:",
+        "  model: test-model",
+        "  base_url: https://api.test.example.com",
+        "  api_key_env: TEST_KEY",
+        "generation:",
+        "  temperature: 1.0",
+        "prefetch:",
+        "  branch_dialogue_lines: 2",
+        "media:",
+        "  audio:",
+        "    planner:",
+        "      candidate_prefetch_lines: 2",
+        "game:",
+        "  sessions_dir: sessions",
+        "text_buffer:",
+        "  start_threshold_lines: 1",
+        "  target_lines: 6",
+        "  refill_threshold_lines: 0",
+      ].join("\n"),
+      "utf8",
+    );
+    let config: AppConfig;
+    try {
+      config = await loadConfig(yamlPath);
+    } finally {
+      await unlink(yamlPath);
+    }
+    // 缺省协议 = 2（Ruling 15 翻默认）。
+    expect(config.dsl.protocol_version).toBe(2);
+
     const harness = makeGame(
       {
         lines(_taskType, nonce) {
-          // v1 语法（裸旁白行）在默认 v1 会话下正常解码。
-          return ["开场旁白第一句。", "开场旁白第二句。", `@end ${nonce} ending`];
+          // v2-only 语法（@n/@say）：v1 冻结解析器对它们是 UNKNOWN_COMMAND，
+          // 解码成功本身就证明走的是 v2 路径。
+          return [
+            "@n 教学楼的走廊尽头，灯还亮着一盏。",
+            "@n 夜风把宣传栏的纸页吹得哗哗作响。",
+            "@say female_A 你终于来了。",
+            `@end ${nonce} ending`,
+          ];
         },
         repair() {
           return "";
         },
       },
-      // 不携带 dsl 覆盖 → zod 缺省 protocol_version = 1。
-      makeTestConfig({
-        text_buffer: { start_threshold_lines: 1, target_lines: 6, refill_threshold_lines: -1 },
-      }),
+      config,
     );
 
     await expect(harness.game.run()).resolves.toBeUndefined();
-    expect(harness.requests.openings[0]!.identity.protocolVersion).toBe(1);
+    // 会话身份按新缺省进入 v2。
+    expect(harness.requests.openings[0]!.identity.protocolVersion).toBe(2);
+    // 任务协议卡是 v2 版（卡 meta 行「DSL 协议版本 2」注入首个 user 消息）。
+    const firstUser = harness.calls[0]!.messages.filter((m) => m.role === "user")[0]!.content;
+    expect(firstUser).toContain("DSL 协议版本 2；身份版本");
+    // v2 解码路径：v2-only 语法全部播出（2 旁白 + 1 台词），无修复调用。
     expect(harness.controller.countPlayback("narration")).toBe(2);
-    expect(harness.controller.ended()).toBe(true);
-    // v1 路径没有任何 v2 尾部修复调用。
+    expect(harness.controller.countPlayback("dialogue")).toBe(1);
     expect(harness.calls.filter((call) => call.kind === "repair")).toHaveLength(0);
+    expect(harness.controller.ended()).toBe(true);
   });
 
   it("v1 sessions stay byte-identical to the pre-wiring decode (fixture pin)", async () => {
@@ -619,11 +671,15 @@ describe("v2 runtime decode — knob=2 session end-to-end", () => {
         },
       },
       makeTestConfig({
+        // v1 只经显式配置进入（Ruling 15 后缺省 = 2）。
+        dsl: { protocol_version: 1 },
         text_buffer: { start_threshold_lines: 1, target_lines: 6, refill_threshold_lines: -1 },
       }),
     );
 
     await expect(harness.game.run()).resolves.toBeUndefined();
+    // 显式 1 的会话身份确为 v1。
+    expect(harness.requests.openings[0]!.identity.protocolVersion).toBe(1);
 
     // 落盘事件逐字节钉死（nonce 不进事件；id/seq/时间戳全确定性）。
     const actual = JSON.stringify(
