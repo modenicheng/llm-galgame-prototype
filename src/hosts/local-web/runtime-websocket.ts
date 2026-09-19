@@ -17,7 +17,7 @@ import type {
   AudioCatalogService,
 } from "../../application/audio/audio-catalog-service.js";
 import type { TaskStatusEvent } from "../../application/audio/tts-task-service.js";
-import { ClientMessageSchema } from "../../shared/wire/schemas.js";
+import { ClientMessageSchema, STALE_WIRE_CLOSE_CODE, WIRE_PROTOCOL_VERSION } from "../../shared/wire/schemas.js";
 import type { ServerMessage } from "../../shared/wire/server-message.js";
 import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
 import type { RuntimeCommand } from "../../core/runtime/runtime-command.js";
@@ -141,7 +141,7 @@ export class RuntimeWebSocket {
       if (state) state.alive = true;
     });
     ws.on("message", (data) => {
-      this.onMessage(data);
+      this.onMessage(data, ws);
     });
     ws.on("close", () => {
       unsubGame();
@@ -161,7 +161,7 @@ export class RuntimeWebSocket {
     });
   }
 
-  private onMessage(raw: unknown): void {
+  private onMessage(raw: unknown, ws: WebSocket): void {
     let parsed: unknown;
     try {
       parsed = JSON.parse(String(raw));
@@ -182,9 +182,21 @@ export class RuntimeWebSocket {
         this.game.dispatch(message.command);
         break;
       }
+      case "client.ready": {
+        // C7 wire 版本闸门：旧页面（升级前打开的标签）不携带/携带过旧的
+        // wireVersion——按既有 close-code 拒绝模式明确断开并给出升级/重连
+        // 说明，不静默降级（speakerId 稳定 ID 语义对旧客户端不可见）。
+        if (message.wireVersion !== WIRE_PROTOCOL_VERSION) {
+          ws.close(
+            STALE_WIRE_CLOSE_CODE,
+            `wire-version-stale: client ${message.wireVersion ?? "none"} != server ` +
+              `${WIRE_PROTOCOL_VERSION}; refresh the page to upgrade`,
+          );
+        }
+        break;
+      }
       case "audio.cache_report":
       case "audio.buffer_report":
-      case "client.ready":
         // Acknowledged; no wire reply. Metrics/logging are the host's concern.
         break;
     }

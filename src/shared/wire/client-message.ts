@@ -34,4 +34,9 @@ export type ClientMessage =
         audioWorklet: boolean;
         indexedDb: boolean;
       };
+      /**
+       * C7：客户端 wire 协议版本（见 shared/wire/schemas.ts 的
+       * WIRE_PROTOCOL_VERSION）。旧客户端不携带——服务端会明确拒绝。
+       */
+      wireVersion?: number;
     };

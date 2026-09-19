@@ -12,7 +12,12 @@
  * The RuntimeCommand union lives in core; the wire schemas encode its shape,
  * so the browser works with the z.infer'd wire form instead.
  */
-import { RuntimeCommandSchema, ServerMessageSchema } from "@shared/wire/schemas.js";
+import {
+  RuntimeCommandSchema,
+  ServerMessageSchema,
+  STALE_WIRE_CLOSE_CODE,
+  WIRE_PROTOCOL_VERSION,
+} from "@shared/wire/schemas.js";
 import type { ClientMessage } from "@shared/wire/client-message.js";
 import type { ServerMessage } from "@shared/wire/server-message.js";
 import type { z } from "zod";
@@ -143,7 +148,7 @@ export class RuntimeClient {
     this.setConnectionState("connecting");
     ws.onopen = () => this.handleOpen(ws);
     ws.onmessage = (ev) => this.handleMessage(ev, ws);
-    ws.onclose = () => this.handleClose(ws);
+    ws.onclose = (ev) => this.handleClose(ws, ev);
     ws.onerror = () => {
       // The close event follows and drives lifecycle/reconnect.
     };
@@ -188,10 +193,20 @@ export class RuntimeClient {
     this.options.onServerMessage(msg);
   }
 
-  private handleClose(ws: WebSocketLike): void {
+  private handleClose(ws: WebSocketLike, ev: CloseEvent): void {
     if (this.ws !== ws) return;
     this.ws = null;
     this.setConnectionState("closed");
+    if (ev.code === STALE_WIRE_CLOSE_CODE) {
+      // C7：旧 wire 协议的页面（升级前打开的标签）——重连只会再次被拒，
+      // 停止重连并给出明确升级路径（刷新页面拿新客户端）。
+      this.manuallyClosed = true;
+      console.warn(
+        `RuntimeClient: wire protocol stale (server closed ${STALE_WIRE_CLOSE_CODE}: ${ev.reason})` +
+          " — refresh the page to upgrade the client.",
+      );
+      return;
+    }
     if (!this.manuallyClosed) {
       this.scheduleReconnect();
     }
@@ -235,6 +250,8 @@ export class RuntimeClient {
             typeof AudioWorkletNode !== "undefined"),
         indexedDb: typeof indexedDB !== "undefined",
       },
+      // C7：上报 wire 协议版本——服务端据此拒绝过旧客户端（4002 close）。
+      wireVersion: WIRE_PROTOCOL_VERSION,
     };
   }
 }

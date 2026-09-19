@@ -38,6 +38,13 @@ class FakeWebSocket {
     this.onclose?.({} as CloseEvent);
   }
 
+  /** Simulate a server close with a code/reason (C7 wire gate tests). */
+  closeWith(code: number, reason: string): void {
+    this.closed = true;
+    this.readyState = 3;
+    this.onclose?.({ code, reason } as CloseEvent);
+  }
+
   open(): void {
     this.readyState = 1;
     this.onopen?.({} as Event);
@@ -91,14 +98,44 @@ describe("RuntimeClient", () => {
     const ready = JSON.parse(ws.sent[0]!) as {
       type: string;
       capabilities: Record<string, unknown>;
+      wireVersion?: number;
     };
     expect(ready.type).toBe("client.ready");
     expect(typeof ready.capabilities.audioWorklet).toBe("boolean");
     expect(typeof ready.capabilities.indexedDb).toBe("boolean");
+    // C7：ready 携带 wire 协议版本（服务端据此拒绝过旧客户端）。
+    expect(typeof ready.wireVersion).toBe("number");
     expect(onConnectionChange.mock.calls.map((c) => c[0])).toEqual([
       "connecting",
       "open",
     ]);
+  });
+
+  it("C7：wire 版本过旧被服务端 close(4002) 时不重连，给出升级提示", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const onConnectionChange = vi.fn();
+    const client = makeClient({ onConnectionChange });
+
+    const connected = client.connect();
+    const ws = FakeWebSocket.instances[0]!;
+    ws.open();
+    await connected;
+
+    ws.closeWith(4002, "wire-version-stale: refresh the page to upgrade");
+
+    // 不安排任何重连：推进足够长时间也不开新 socket。
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(onConnectionChange.mock.calls.map((c) => c[0])).toEqual([
+      "connecting",
+      "open",
+      "closed",
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0])).toContain("refresh");
+    warn.mockRestore();
+    vi.useRealTimers();
   });
 
   it("drops stale runtime.output by monotonic sequence", async () => {
