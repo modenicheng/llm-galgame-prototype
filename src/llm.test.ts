@@ -7,7 +7,11 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { StoryGenerator, generateNonce } from "./adapters/llm/openai-compatible-generator.js";
+import {
+  StoryGenerator,
+  GeneratorPortFacade,
+  generateNonce,
+} from "./adapters/llm/openai-compatible-generator.js";
 import type { AppConfig } from "./config.js";
 import type { PromptBundle } from "./prompts.js";
 import type { StoryContextEvent, InteractionEvent } from "./schema.js";
@@ -32,9 +36,11 @@ import type { VisualState } from "./core/presentation/types.js";
 import type { ModelAssetCatalog } from "./core/assets/types.js";
 import { parseDslSegmentText } from "./core/protocol/gal-dsl/text-pipeline.js";
 import type {
+  AnyStreamedGroup,
   EventGroupDraft,
   SegmentEndStatus,
 } from "./core/protocol/gal-dsl/types.js";
+import type { GenerationIdentity } from "./core/ports/story-generator-port.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers — reusable fixtures, no real network calls
@@ -1167,5 +1173,594 @@ describe("DSL mode generation", () => {
     expect(fallbackCard).toBe(explicitCard);
     // 回退不是空卡：示例说话人来自兼容 cast 的首个 NPC（v1 表面用注册名）。
     expect(fallbackCard).toContain("角色甲");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DSL v2 mode generation — 版本路由的流式解码 + createV2SegmentGate 逐组
+// 语义门（main-v2-adapter：dsl.protocol_version=2 的运行时接线；Ruling 16
+// per-group gated forwarding + 一次尾部修复）。port 自 campus
+// a1b7aac/c41582e/cb7804b 的 llm.test.ts「DSL v2 mode generation」——
+// main 无 DslStreamObserver（campus 专属监控缝），观察者断言改为按调用
+// 形状（调用次数 / assistant 前缀 / 指令内容）断言，语义不变。
+// ---------------------------------------------------------------------------
+
+describe("DSL v2 mode generation", () => {
+  const V2_TEST_ASSETS: AssetCatalog = {
+    guidance: "",
+    backgrounds: { corridor: { id: "corridor", src: "c.jpg", description: "走廊" } },
+    bgm: {},
+    soundEffects: {},
+    spriteSets: {
+      female_A: {
+        id: "female_A",
+        variants: {
+          base: { id: "base", src: "a.png", description: "" },
+          smile: { id: "smile", src: "a2.png", description: "" },
+        },
+      },
+    },
+  };
+
+  /** v2 roster：带 presentation（looks），供 @ch/@name 语义编译。 */
+  function v2RosterRegistry(): RosterRegistry {
+    return createCharacterRegistry(
+      buildCharacterRoster({
+        schemaVersion: 2,
+        scopeId: "llm-v2-test",
+        playerId: "player_one",
+        characters: [
+          { id: "player_one", name: "玩家", control: "player", initialLabel: "你", persona: "玩家。" },
+          {
+            id: "female_A",
+            name: "许晚晴",
+            control: "npc",
+            initialLabel: "神秘女子",
+            persona: "温柔学姐。",
+            presentation: {
+              defaultLook: "base",
+              defaultPosition: "right",
+              looks: {
+                base: { spriteSet: "female_A", variant: "base" },
+                smile: { spriteSet: "female_A", variant: "smile" },
+              },
+            },
+          },
+        ],
+      }),
+      V2_TEST_ASSETS,
+    );
+  }
+
+  function makeV2Generator(): StoryGenerator {
+    const config = makeTestConfig({
+      generation: { temperature: 1.0, max_tokens: 500, repair_attempts: 0 },
+    });
+    return new StoryGenerator(
+      config,
+      makeTestPrompts(),
+      makeTestInstructions(),
+      DUMMY_API_KEY,
+      undefined,
+      undefined,
+      V2_TEST_ASSETS,
+      v2RosterRegistry(),
+    );
+  }
+
+  function v2Identity(): GenerationIdentity {
+    return {
+      protocolVersion: 2,
+      rosterRevision: "test-revision",
+      cast: {
+        allowedSpeakerIds: ["female_A"],
+        sceneParticipantIds: ["player_one", "female_A"],
+      },
+      characterState: { labels: Object.create(null) },
+    };
+  }
+
+  interface MockTurn {
+    stream?: boolean;
+    messages: Array<{ role: string; content: string }>;
+  }
+
+  /** mock client：流式吐行；stream:false（尾部修复）返回 repairText。 */
+  function mockV2Client(
+    gen: StoryGenerator,
+    lines: (nonce: string) => string[],
+    repairText: (nonce: string) => string,
+  ): ReturnType<typeof vi.fn> {
+    const streamOf = (ls: string[]): AsyncGenerator<unknown> =>
+      (async function* () {
+        for (const line of ls) {
+          yield { choices: [{ delta: { content: `${line}\n` } }] };
+        }
+        yield { choices: [{ delta: {}, finish_reason: "stop" }] };
+      })();
+    const create = vi.fn(async (request: MockTurn) => {
+      const user = request.messages.filter((m) => m.role === "user")[0]!.content;
+      const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(user)?.[1] ?? "aaaa";
+      if (request.stream === false) {
+        return {
+          choices: [{ message: { content: repairText(nonce) } }],
+        };
+      }
+      return streamOf(lines(nonce));
+    });
+    (gen as any).client = { chat: { completions: { create } } };
+    return create;
+  }
+
+  // -------------------------------------------------------------------------
+  // Ruling 16：per-group gated forwarding——组在它自己通过校验的瞬间转发，
+  // 不再等整段语义门收尾。消费侧用 GenerationHandle.events（与 Game 泵同
+  // 通道）断言「组 1 在段结束前已到达」。
+  // -------------------------------------------------------------------------
+
+  it("forwards group 1 while group 2's lines are still arriving (stream-as-you-play parity)", async () => {
+    const gen = makeV2Generator();
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    let paused = false;
+    const create = vi.fn(async (request: MockTurn) => {
+      const user = request.messages.filter((m) => m.role === "user")[0]!.content;
+      const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(user)?.[1] ?? "aaaa";
+      if (request.stream === false) {
+        return { choices: [{ message: { content: "" } }] };
+      }
+      return (async function* () {
+        // 组 1：主事件行到达即闭合（narration）。
+        yield { choices: [{ delta: { content: "@n 走廊的灯亮着。\n" } }] };
+        // 组 2 的前奏行已到达但组未闭合——流在此暂停。
+        yield { choices: [{ delta: { content: "@bg corridor\n" } }] };
+        paused = true;
+        await streamGate;
+        paused = false;
+        yield { choices: [{ delta: { content: "@say female_A 你来了。\n" } }] };
+        yield { choices: [{ delta: { content: `@end ${nonce} ending\n` } }] };
+        yield { choices: [{ delta: {}, finish_reason: "stop" }] };
+      })();
+    });
+    (gen as any).client = { chat: { completions: { create } } };
+
+    const facade = new GeneratorPortFacade(gen);
+    const handle = facade.generateOpening({
+      turn: 1,
+      state: createInitialState(),
+      identity: v2Identity(),
+    });
+    const arrived: AnyStreamedGroup[] = [];
+    const consumer = (async () => {
+      for await (const group of handle.events) arrived.push(group);
+    })();
+
+    // 组 1 在流仍暂停（组 2 未闭合、哨兵未到、段未结束）时已到达消费者。
+    while (arrived.length < 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(paused).toBe(true);
+    expect(arrived).toHaveLength(1);
+    expect(arrived[0]!.main).toEqual({ type: "narration", text: "走廊的灯亮着。" });
+
+    releaseStream();
+    const envelope = await handle.done;
+    await consumer;
+    expect(arrived).toHaveLength(2);
+    expect(arrived[1]!.main).toMatchObject({ type: "dialogue", characterId: "female_A" });
+    expect((arrived[1] as { prelude: Array<Record<string, unknown>> }).prelude).toEqual([
+      { type: "background", assetId: "corridor" },
+    ]);
+    expect(envelope.groups).toHaveLength(2);
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "ending" });
+  });
+
+  it("mid-stream semantic failure in group 3: groups 1-2 stay played, repair rewrites the tail only", async () => {
+    const gen = makeV2Generator();
+    const order: string[] = [];
+    const create = vi.fn(async (request: MockTurn) => {
+      const user = request.messages.filter((m) => m.role === "user")[0]!.content;
+      const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(user)?.[1] ?? "aaaa";
+      if (request.stream === false) {
+        order.push("repair-call");
+        return {
+          choices: [
+            {
+              message: {
+                // 只重写未提交尾部（第 3 行起）：坏 look 组 + 哨兵。
+                content: [
+                  "@ch female_A show look=smile position=left",
+                  "@say female_A 第三句（修复）。",
+                  `@end ${nonce} ending`,
+                ].join("\n"),
+              },
+            },
+          ],
+        };
+      }
+      return (async function* () {
+        for (const line of [
+          "@n 走廊的灯亮着。", // 组 1：立即提交转发。
+          "@say female_A 第二句。", // 组 2：立即提交转发。
+          "@ch female_A show look=bad_look position=left",
+          "@say female_A 第三句。", // 组 3 闭合 → UNKNOWN_LOOK → 停流。
+          `@end ${nonce} ending`, // 不再消费。
+        ]) {
+          yield { choices: [{ delta: { content: `${line}\n` } }] };
+        }
+        yield { choices: [{ delta: {}, finish_reason: "stop" }] };
+      })();
+    });
+    (gen as any).client = { chat: { completions: { create } } };
+
+    const groups: Array<Record<string, unknown>> = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      identity: v2Identity(),
+      onGroup: (group: Record<string, unknown>) => {
+        order.push(`group:${(group.main as { type: string }).type}`);
+        groups.push(group);
+      },
+    });
+
+    // 组 1-2 在修复调用之前已转发（边流边播）；修复轮只产出第三个组。
+    expect(order).toEqual([
+      "group:narration",
+      "group:dialogue",
+      "repair-call",
+      "group:dialogue",
+    ]);
+    // 恰好一次修复：原流 + 修复，共 2 次 LLM 调用。
+    expect(create).toHaveBeenCalledTimes(2);
+    const repairRequest = create.mock.calls[1]![0] as MockTurn;
+    // 修复调用：assistant 前缀 = 已提交（已播出）的 1-2 行；重写点从第 3 行起。
+    const assistant = repairRequest.messages.find((m) => m.role === "assistant");
+    expect(assistant?.content).toBe("@n 走廊的灯亮着。\n@say female_A 第二句。\n");
+    expect(repairRequest.messages.at(-1)!.content).toContain("UNKNOWN_LOOK");
+    // 组 1-2 原样保留（未被重写），修复轮补齐第三个组。
+    expect(groups).toHaveLength(3);
+    expect(groups[0]!.main).toEqual({ type: "narration", text: "走廊的灯亮着。" });
+    expect(groups[1]!.main).toMatchObject({ type: "dialogue", text: "第二句。" });
+    expect(groups[2]).toMatchObject({
+      main: { type: "dialogue", characterId: "female_A", text: "第三句（修复）。" },
+    });
+    expect(
+      (groups[2]!.prelude as Array<{ type: string; variant?: { value: string } }>)[0],
+    ).toMatchObject({ type: "character_patch", variant: { op: "set", value: "smile" } });
+    expect(envelope.groups).toHaveLength(3);
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "ending" });
+  });
+
+  it("structural failure at line 1: nothing forwarded, whole-text repair without assistant prefix", async () => {
+    const gen = makeV2Generator();
+    const create = mockV2Client(
+      gen,
+      (nonce) => [
+        // v1 台词头：v2 会话下第 1 行即结构错误（UNKNOWN_COMMAND）。
+        "许晚晴: 你不该来这里。",
+        "@say female_A 你来了。",
+        `@end ${nonce} ending`,
+      ],
+      // 边界为 0：整段都是尾部，修复输出必须自带完整段（含哨兵）。
+      (nonce) => ["@say female_A 你来了。", `@end ${nonce} ending`].join("\n"),
+    );
+
+    const groups: Array<Record<string, unknown>> = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      identity: v2Identity(),
+      onGroup: (group: Record<string, unknown>) => groups.push(group),
+    });
+
+    expect(create).toHaveBeenCalledTimes(2);
+    const repairRequest = create.mock.calls[1]![0] as MockTurn;
+    expect(repairRequest.stream).toBe(false);
+    // 无已提交组 → 无 assistant 前缀（campus c41582e 语义在逐组粒度下保持）。
+    expect(repairRequest.messages.some((m) => m.role === "assistant")).toBe(false);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.main).toMatchObject({
+      type: "dialogue",
+      characterId: "female_A",
+      text: "你来了。",
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "ending" });
+  });
+
+  it("outer user-cancel declines the one tail repair (fail path preserves the played prefix)", async () => {
+    const gen = makeV2Generator();
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    const create = vi.fn(async (request: MockTurn) => {
+      const user = request.messages.filter((m) => m.role === "user")[0]!.content;
+      const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(user)?.[1] ?? "aaaa";
+      if (request.stream === false) {
+        throw new Error("尾部修复调用不应发生（外层取消必须让修复方返回 null）。");
+      }
+      return (async function* () {
+        yield { choices: [{ delta: { content: "@n 走廊的灯亮着。\n" } }] };
+        // 组 1 已提交转发；流在此暂停——取消在此之后、坏行之前落地。
+        await streamGate;
+        yield { choices: [{ delta: { content: "许晚晴: 你不该来这里。\n" } }] };
+        yield { choices: [{ delta: { content: `@end ${nonce} ending\n` } }] };
+        yield { choices: [{ delta: {}, finish_reason: "stop" }] };
+      })();
+    });
+    (gen as any).client = { chat: { completions: { create } } };
+
+    const controller = new AbortController();
+    const groups: Array<Record<string, unknown>> = [];
+    const promise = (gen as any).generateOpening(
+      1,
+      createInitialState(),
+      controller.signal,
+      {
+        identity: v2Identity(),
+        onGroup: (group: Record<string, unknown>) => groups.push(group),
+      },
+    );
+
+    // 等组 1 到达（确认已提交转发），再取消外层信号并放行坏行。
+    while (groups.length < 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    controller.abort();
+    releaseStream();
+
+    // 坏行仍触发停流，但修复方守卫看到已取消的外层信号 → 拒绝修复：
+    // 走既有失败路径（已转发的组 1 保留），且绝不发起第二次 LLM 调用。
+    await expect(promise).rejects.toThrow(/UNKNOWN_COMMAND/);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(groups).toHaveLength(1);
+  });
+
+  it("routes v2 requests through the v2 sink + compiler (labelOps + displayLabel)", async () => {
+    const gen = makeV2Generator();
+    mockV2Client(
+      gen,
+      (nonce) => [
+        "@bg corridor",
+        "@say female_A 你来了。",
+        "@name female_A set 神秘学姐",
+        "@say female_A 跟我来。",
+        `@end ${nonce} ending`,
+      ],
+      () => "",
+    );
+
+    const groups: Array<Record<string, unknown>> = [];
+    const ends: SegmentEndStatus[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      identity: v2Identity(),
+      onGroup: (group: Record<string, unknown>) => groups.push(group),
+      onSegmentEnd: (status: SegmentEndStatus) => ends.push(status),
+    });
+
+    // 分组（§36–§39）：@bg 累积进下一个主事件的组（@say）→ 2 组。
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toMatchObject({
+      prelude: [{ type: "background", assetId: "corridor" }],
+      labelOps: [],
+      main: { type: "dialogue", characterId: "female_A", displayLabel: "神秘女子" },
+    });
+    expect(groups[1]).toMatchObject({
+      labelOps: [{ characterId: "female_A", label: "神秘学姐" }],
+      main: { type: "dialogue", displayLabel: "神秘学姐", text: "跟我来。" },
+    });
+    expect(ends).toEqual([{ kind: "complete", nonce: expect.any(String), reason: "ending" }]);
+    expect(envelope.groups).toHaveLength(2);
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "ending" });
+  });
+
+  it("rejects v1 syntax on a v2 request (no silent downgrade to the legacy parser)", async () => {
+    const gen = makeV2Generator();
+    mockV2Client(gen, () => ["许晚晴: 你不该来这里。", "@end aaaa buffer"], () => "");
+
+    await expect(
+      (gen as any).generateOpening(1, createInitialState(), undefined, {
+        identity: v2Identity(),
+      }),
+    ).rejects.toThrow(/UNKNOWN_COMMAND/);
+  });
+
+  it("deterministically closes an open v2 form before the interaction sentinel (materialized @/?)", async () => {
+    const gen = makeV2Generator();
+    // 表单缺 @/?：本地补齐物化进规范文本（语义门重解析看到闭合表单）。
+    const create = mockV2Client(
+      gen,
+      (nonce) => [
+        "@? 接下来怎么做？",
+        "@+ 跟着她走",
+        "@+ 转身离开",
+        `@end ${nonce} interaction`,
+      ],
+      () => "",
+    );
+
+    const groups: Array<Record<string, unknown>> = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      identity: v2Identity(),
+      onGroup: (group: Record<string, unknown>) => groups.push(group),
+    });
+
+    // 确定性补齐不烧 LLM 修复轮：只有一次流式调用。
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.main).toMatchObject({
+      type: "interaction",
+      interaction: { mode: "choice", prompt: "接下来怎么做？" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+  });
+
+  it("runs exactly one tail repair on a v2 protocol error and adopts the fixed tail", async () => {
+    const gen = makeV2Generator();
+    const create = mockV2Client(
+      gen,
+      (nonce) => [
+        "@n 走廊的灯亮着。",
+        "@ch female_A show look=bad_look position=left",
+        "@say female_A 你来了。",
+        `@end ${nonce} ending`,
+      ],
+      (nonce) =>
+        [
+          "@ch female_A show look=smile position=left",
+          "@say female_A 你来了。",
+          `@end ${nonce} ending`,
+        ].join("\n"),
+    );
+
+    const groups: Array<Record<string, unknown>> = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      identity: v2Identity(),
+      onGroup: (group: Record<string, unknown>) => groups.push(group),
+    });
+
+    // 恰好一次尾部修复：原流 + 修复调用，共 2 次 LLM 请求。
+    expect(create).toHaveBeenCalledTimes(2);
+    const repairRequest = create.mock.calls[1]![0] as MockTurn;
+    expect(repairRequest.stream).toBe(false);
+    // 修复调用：assistant = 已提交前缀（第一行旁白），user = 修复指令。
+    const assistant = repairRequest.messages.find((m) => m.role === "assistant");
+    expect(assistant?.content).toBe("@n 走廊的灯亮着。\n");
+    const instruction = repairRequest.messages.at(-1)!;
+    expect(instruction.content).toContain("UNKNOWN_LOOK");
+    // 原子性：坏组（@ch + @say）整体不落地，修复后重写尾部的组被采纳。
+    expect(groups).toHaveLength(2);
+    expect(groups[0]!.main).toMatchObject({ type: "narration", text: "走廊的灯亮着。" });
+    expect(groups[1]).toMatchObject({
+      labelOps: [],
+      main: { type: "dialogue", characterId: "female_A", displayLabel: "神秘女子", text: "你来了。" },
+    });
+    expect((groups[1]!.prelude as Array<{ type: string; variant?: { value: string } }>)[0]).toMatchObject({
+      type: "character_patch",
+      variant: { op: "set", value: "smile" },
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "ending" });
+  });
+
+  it("repairs a structural (v1-syntax) line once in a v2 session and adopts the corrected output", async () => {
+    const gen = makeV2Generator();
+    const create = mockV2Client(
+      gen,
+      (nonce) => [
+        "@n 走廊的灯亮着。",
+        // v1 台词头语法：v2 请求下是结构错误（UNKNOWN_COMMAND），中段触发。
+        "许晚晴: 你不该来这里。",
+        "@say female_A 你来了。",
+        `@end ${nonce} ending`,
+      ],
+      // 修复输出：只重写未提交尾部（第 2 行起）——Ruling 16 逐组转发下，
+      // 第 1 行的旁白组已在结构错误前提交转发，不可（也不必）重写。
+      // 适配记录：原断言「结构错误重置提交边界为 0、修复不带 assistant
+      // 前缀」随批式门（解析在全段分组之前）一并退役；行 1 结构错误仍
+      // 边界为 0（见「structural failure at line 1」测试钉住）。
+      (nonce) => ["@say female_A 你来了。", `@end ${nonce} ending`].join("\n"),
+    );
+
+    const groups: Array<Record<string, unknown>> = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      identity: v2Identity(),
+      onGroup: (group: Record<string, unknown>) => groups.push(group),
+    });
+
+    // 结构失败同样获得恰好一次尾部修复（campus v2decode review Important）：
+    // 原流 + 修复共 2 次调用——停流用的 abort 不泄漏进修复阶段。
+    expect(create).toHaveBeenCalledTimes(2);
+    const repairRequest = create.mock.calls[1]![0] as MockTurn;
+    expect(repairRequest.stream).toBe(false);
+    // 提交边界 = 已转发的第 1 行（旁白组）：修复调用带该 assistant 前缀，
+    // 只重写其后的坏行尾部。
+    const assistant = repairRequest.messages.find((m) => m.role === "assistant");
+    expect(assistant?.content).toBe("@n 走廊的灯亮着。\n");
+    // 已提交的旁白组原样保留；修复轮补写对白（displayLabel = initialLabel）。
+    expect(groups).toHaveLength(2);
+    expect(groups[0]!.main).toMatchObject({ type: "narration", text: "走廊的灯亮着。" });
+    expect(groups[1]!.main).toMatchObject({
+      type: "dialogue",
+      characterId: "female_A",
+      displayLabel: "神秘女子",
+      text: "你来了。",
+    });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "ending" });
+  });
+
+  it("fails through the existing failure path when the repaired tail is still invalid", async () => {
+    const gen = makeV2Generator();
+    const create = mockV2Client(
+      gen,
+      (nonce) => [
+        "@n 走廊的灯亮着。",
+        "@ch female_A show look=bad_look position=left",
+        "@say female_A 你来了。",
+        `@end ${nonce} ending`,
+      ],
+      (nonce) =>
+        [
+          "@ch female_A show look=still_bad position=left",
+          "@say female_A 你来了。",
+          `@end ${nonce} ending`,
+        ].join("\n"),
+    );
+
+    const groups: Array<Record<string, unknown>> = [];
+    await expect(
+      (gen as any).generateOpening(1, createInitialState(), undefined, {
+        identity: v2Identity(),
+        onGroup: (group: Record<string, unknown>) => groups.push(group),
+      }),
+    ).rejects.toThrow(/UNKNOWN_LOOK/);
+
+    // 双败：修复只试一次（共 2 次调用），已提交前缀照旧转发。
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.main).toMatchObject({ type: "narration", text: "走廊的灯亮着。" });
+  });
+
+  it("autocloses a naturally-stopped single-reason v2 stream that omitted the sentinel", async () => {
+    const gen = makeV2Generator();
+    const create = mockV2Client(
+      gen,
+      // input_bridge 是单理由任务（buffer）；自然结束但漏哨兵 → 本地补齐。
+      () => ["@n 走廊恢复安静。"],
+      () => "",
+    );
+
+    const groups: Array<Record<string, unknown>> = [];
+    const interaction: InteractionEvent = {
+      type: "interaction",
+      interaction_id: "interaction_1",
+      mode: "input",
+      prompt: "你想说什么？",
+      input: { kind: "free_text", placeholder: "……", max_length: 100 },
+    };
+    const envelope = await (gen as any).generateInputBridge(
+      1,
+      createInitialState(),
+      interaction,
+      undefined,
+      {
+        identity: v2Identity(),
+        onGroup: (group: Record<string, unknown>) => groups.push(group),
+      },
+    );
+
+    expect(create).toHaveBeenCalledTimes(1); // 不烧修复轮
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.main).toMatchObject({ type: "narration", text: "走廊恢复安静。" });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "buffer" });
+  });
+
+  it("fails loudly when a v2 identity arrives without a roster registry", async () => {
+    const gen = makeTestGenerator();
+    mockV2Client(gen, (nonce) => ["@say female_A 你来了。", `@end ${nonce} buffer`], () => "");
+
+    await expect(
+      (gen as any).generateOpening(1, createInitialState(), undefined, {
+        identity: v2Identity(),
+      }),
+    ).rejects.toThrow(/registry/);
   });
 });

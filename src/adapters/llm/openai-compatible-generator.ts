@@ -13,18 +13,38 @@ import type { CharacterRegistry } from "../../core/characters/types.js";
 import type { GenerationIdentity } from "../../core/ports/story-generator-port.js";
 import { toModelCatalog } from "../../core/assets/catalog.js";
 import type { AssetCatalog, ModelAssetCatalog } from "../../core/assets/types.js";
-import type { VisualState } from "../../core/presentation/types.js";
+import type {
+  VisualState,
+  VisualStateReducer,
+} from "../../core/presentation/types.js";
 import { StreamLineDecoder } from "../../core/protocol/gal-dsl/stream-decoder.js";
-import { parseDslLine } from "../../core/protocol/gal-dsl/line-parser.js";
-import { DslSegmentParser } from "../../core/protocol/gal-dsl/segment-validator.js";
+import { parseDslLine, parseDslV2Line } from "../../core/protocol/gal-dsl/line-parser.js";
+import {
+  DslSegmentParser,
+  DslSegmentParserV2,
+} from "../../core/protocol/gal-dsl/segment-validator.js";
+import {
+  createV2SegmentGate,
+  type V2GateCommit,
+} from "../../core/protocol/gal-dsl/compiler.js";
+import {
+  dslTaskCapability,
+  formatV2RepairInstruction,
+} from "../../core/protocol/gal-dsl/capabilities.js";
 import {
   repairDslClosingLine,
   repairSwappedVisualSlots,
 } from "../../core/protocol/gal-dsl/closing-repair.js";
+import { createVisualStateReducer } from "../../core/presentation/reducer.js";
+import { createPresentationDefaultsFromRoster } from "../../core/presentation/defaults.js";
 import {
   DslProtocolError,
   formatDslErrorDetail,
+  type AnyStreamedGroup,
+  type CompiledEventGroupV2,
+  type DslDiagnosticV2,
   type DslLine,
+  type DslLineV2,
   type EventGroupDraft,
   type SegmentEndReason,
   type SegmentEndStatus,
@@ -132,11 +152,12 @@ export function generateNonce(): string {
 
 export interface GenerationStreamOptions {
   /**
-   * Called as soon as one complete EventGroup is committed and forwarded
+   * Called as soon as one complete group is committed and forwarded
    * (docs §36). The runtime may publish it immediately; a later failure
-   * then preserves the already-forwarded prefix.
+   * then preserves the already-forwarded prefix. v1 会话为
+   * EventGroupDraft；v2 会话为 CompiledEventGroupV2（AnyStreamedGroup）。
    */
-  onGroup?: (group: EventGroupDraft) => void;
+  onGroup?: (group: AnyStreamedGroup) => void;
   /** Called once when the segment ends cleanly (docs §44–§51). */
   onSegmentEnd?: (status: SegmentEndStatus) => void;
   /**
@@ -238,6 +259,20 @@ type DslAttemptOutcome =
   | { kind: "retry"; reason: string }
   | { kind: "fail"; error: Error };
 
+/**
+ * v2 结构化诊断 → 修复指令/失败信息共用的可读明细（码 + 绝对行号 +
+ * 合法取值表；与 v1 的 FastAPI-style detail 同一角色）。
+ */
+function formatV2DiagnosticDetail(diagnostic: DslDiagnosticV2): string {
+  const lines = [
+    `第 ${diagnostic.line} 行 DSL 错误 [${diagnostic.code}]：${diagnostic.message}`,
+  ];
+  if (diagnostic.legalValues !== undefined && diagnostic.legalValues.length > 0) {
+    lines.push(`合法取值：${diagnostic.legalValues.join(" | ")}`);
+  }
+  return lines.join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // StoryGenerator
 // ---------------------------------------------------------------------------
@@ -258,6 +293,13 @@ export class StoryGenerator {
    * 也不注入任务协议卡。
    */
   private readonly characterRegistry: CharacterRegistry | undefined;
+  /**
+   * v2 语义编译门（createV2SegmentGate，Ruling 16 逐组门控）用的纯
+   * reducer——由 roster 严格派生（与 Game 的 reducer 同构：同一 defaults
+   * 派生 + 同一 createVisualStateReducer）。registry 缺席时严格缺席，
+   * v2 请求随即在 requestDslEnvelope 入口被响亮拒绝（不静默降级 v1）。
+   */
+  private readonly v2Reduce: VisualStateReducer | undefined;
   /** 资源目录原稿（任务协议卡的示例素材来源；模型目录是其投影）。 */
   private readonly assetCatalog: AssetCatalog | undefined;
 
@@ -287,6 +329,13 @@ export class StoryGenerator {
     this.modelCatalog = catalog ? toModelCatalog(catalog) : undefined;
     this.assetCatalog = catalog;
     this.characterRegistry = characterRegistry;
+    // v2 语义门 reducer：与 characterRegistry 严格同生同灭（派生关系，
+    // 不单独判空）；生成器门与 Game 的重折叠共用同一纯函数族。
+    if (characterRegistry !== undefined) {
+      this.v2Reduce = createVisualStateReducer(
+        createPresentationDefaultsFromRoster(characterRegistry),
+      );
+    }
     // C7：行头归一化的已知说话人集合从 roster 派生（正式 name + 稳定 ID），
     // 不再走资产目录 characters 兼容形状。
     if (characterRegistry !== undefined) {
@@ -651,14 +700,15 @@ export class StoryGenerator {
   /**
    * DSL-mode streaming request (docs §40–§51).
    *
-   * Retry-policy layer: drives per-attempt `attemptDslStream` and decides
-   * between repair-and-retry, fail-preserving-prefix, and success. All
-   * error strings are load-bearing — they double as the repair instruction
-   * for the next attempt and are asserted by tests verbatim.
+   * Retry-policy layer: drives per-attempt `attemptDslStream` /
+   * `attemptDslStreamV2` and decides between repair-and-retry,
+   * fail-preserving-prefix, and success. All error strings are
+   * load-bearing — they double as the repair instruction for the next
+   * attempt and are asserted by tests verbatim.
    */
   private async requestDslEnvelope(
     type: LLMRequestCounts extends Record<infer K, number> ? K : never,
-    taskType: string,
+    taskType: BaseDslTaskType,
     allowedReasons: readonly SegmentEndReason[],
     nonce: string,
     userPrompt: string,
@@ -667,6 +717,18 @@ export class StoryGenerator {
   ): Promise<GenerationEnvelope> {
     let lastError = "";
     const attempts = this.config.generation.repair_attempts + 1;
+    // main-v2-adapter v2 接线（port 自 campus a1b7aac）：会话协议版本随
+    // 请求身份携带（C5 §5.1）。v2 = 严格流式解码（v2 sink）+
+    // createV2SegmentGate 逐组语义门；v1 = 冻结的 legacy 流式路径（逐字节
+    // 不变）。缺省/缺 identity = v1。
+    const protocolV2 = options?.identity?.protocolVersion === 2;
+    // v2Reduce 由 characterRegistry 严格派生（构造器），这里只判 registry。
+    if (protocolV2 && this.characterRegistry === undefined) {
+      throw new Error(
+        "v2 会话需要 roster registry：StoryGenerator 构造时未注入 characterRegistry，" +
+          "无法执行 compileSegmentV2 语义编译（拒绝静默降级为 v1 解码）。",
+      );
+    }
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -675,16 +737,27 @@ export class StoryGenerator {
       // (provider-internal `lastError` and/or Game-level options.repairReason).
       const repairInstruction = this.buildRepairInstruction(lastError, options?.repairReason);
 
-      const outcome = await this.attemptDslStream(
-        type,
-        taskType,
-        allowedReasons,
-        nonce,
-        `${userPrompt}${repairInstruction}`,
-        signal,
-        options,
-        lastError,
-      );
+      const outcome = protocolV2
+        ? await this.attemptDslStreamV2(
+            type,
+            taskType,
+            allowedReasons,
+            nonce,
+            `${userPrompt}${repairInstruction}`,
+            signal,
+            options,
+            lastError,
+          )
+        : await this.attemptDslStream(
+            type,
+            taskType,
+            allowedReasons,
+            nonce,
+            `${userPrompt}${repairInstruction}`,
+            signal,
+            options,
+            lastError,
+          );
       if (outcome.kind === "complete") return outcome.envelope;
       if (outcome.kind === "fail") throw outcome.error;
       lastError = outcome.reason;
@@ -1233,6 +1306,453 @@ export class StoryGenerator {
         kind: "retry",
         reason: `本段缺少结束哨兵 @end：输出可能在末尾被截断，或写完正文就停笔。最后一行必须是 @end ${nonce} <reason>（nonce 原样照抄任务提示，reason 取 ${allowedReasons.join("/")}）`,
       };
+    } catch (error) {
+      if (signal?.aborted || isAbortError(error)) throw error;
+      this.metrics?.recordLLMRequest(type, usage, Date.now() - callStart);
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // v2 流式路径（main-v2-adapter，port 自 campus a1b7aac + c41582e +
+  // cb7804b 的逐组门控转发；Ruling 16）。
+  //
+  // 与 v1 attemptDslStream 的分工：v1 路径整体冻结（逐字节不变）。v2 路径
+  // 严格解码——流式行经 parseDslV2Line + DslSegmentParserV2（v2 sink）做
+  // 结构校验与哨兵状态机，规范文本（rawLines）逐行喂 createV2SegmentGate
+  //（registry/cast/visualState/characterState 都取自本请求：identity 四件套
+  // + tailVisualState）。组在它自己通过语义校验的瞬间即转发（per-group
+  // gated forwarding，恢复 v1 的边流边播延迟）——v2 的提交原子性在编译器
+  // 内按组保证，坏组任何产物（cue/名牌/主事件）都不落地；已转发组永不
+  // 重写，因此任何首个失败（结构/能力/组语义/哨兵缺失）的修复边界都是
+  // 已提交前缀，恰好一次未提交尾部修复（非流式 LLM 补写，assistant 前缀
+  // = 已提交前缀）；双败走既有段失败/重试路径（有已提交前缀 → fail 保留
+  // 前缀；无 → retry）。
+  // -----------------------------------------------------------------------
+
+  private async attemptDslStreamV2(
+    type: LLMRequestCounts extends Record<infer K, number> ? K : never,
+    taskType: BaseDslTaskType,
+    allowedReasons: readonly SegmentEndReason[],
+    nonce: string,
+    userPrompt: string,
+    signal: AbortSignal | undefined,
+    options: GenerationStreamOptions | undefined,
+    /** Failure reason of the PREVIOUS attempt — only for the err= log field. */
+    priorFailure: string,
+  ): Promise<DslAttemptOutcome> {
+    const registry = this.characterRegistry;
+    const reduce = this.v2Reduce;
+    // requestDslEnvelope 已在入口拦截；这里是类型收窄守卫。
+    if (registry === undefined || reduce === undefined) {
+      throw new Error("v2 会话需要 roster registry（StoryGenerator 未注入 characterRegistry）。");
+    }
+    const identity = options?.identity;
+    if (identity === undefined) {
+      throw new Error("v2 会话的生成请求必须携带 GenerationIdentity（C5 §5.1 身份四件套）。");
+    }
+
+    const maxTokens = this.config.generation.max_tokens;
+    const callStart = Date.now();
+    let firstLineMs = 0;
+    let streamChars = 0;
+    let lineIndex = 0;
+    let failureReason = "";
+    /** 规范输出行（trim、非空、非围栏）——与 splitV2RawLines 逐行等价。 */
+    const rawLines: string[] = [];
+    const allGroups: CompiledEventGroupV2[] = [];
+    /**
+     * 语义门（增量式，Ruling 16）：规范行喂入即按组编译提交，组在它自己
+     * 通过校验的瞬间转发（emitCommits）。首个失败封口——已提交前缀（含预
+     * 测状态）就是尾部修复的边界；结构/能力/哨兵错误不再重置边界为 0
+     * （已转发组无法收回，修复只重写它们之后的原文）。
+     */
+    const gateBase = {
+      expectedNonce: nonce,
+      task: taskType,
+      registry,
+      cast: identity.cast,
+      reduce,
+      visualState: options?.tailVisualState ?? { characters: {} },
+      characterState: identity.characterState,
+      ...(this.assetCatalog !== undefined ? { catalog: this.assetCatalog } : {}),
+    };
+    const gate = createV2SegmentGate({ ...gateBase, lineOffset: 0 });
+    /** 首个门失败（sink 结构重导出 / 能力 / 组语义 / 哨兵缺失）。 */
+    let gateDiagnostic: DslDiagnosticV2 | null = null;
+
+    /** 组提交即转发；软诊断随组即时落地（metrics + console 出口）。 */
+    const emitCommits = (commits: readonly V2GateCommit[]): void => {
+      for (const commit of commits) {
+        allGroups.push(commit.group);
+        options?.onGroup?.(commit.group);
+        for (const diagnostic of commit.assetDiagnostics) {
+          this.metrics?.recordAssetDiagnostic(diagnostic.code);
+          console.warn(`[assets] ${diagnostic.code}: ${diagnostic.id}`);
+        }
+      }
+    };
+    /** 喂一行进语义门；失败 → 记录首个诊断并停流（返回 false = 停止消费）。 */
+    const feedGate = (line: string): boolean => {
+      const fed = gate.pushLine(line);
+      if (!fed.ok) {
+        gateDiagnostic = fed.diagnostic;
+        activeController.abort();
+        return false;
+      }
+      emitCommits(fed.commits);
+      return true;
+    };
+    const usage = { input: 0, output: 0 };
+    let finishReason: string | null = null;
+    /** ending 哨兵 epilogue 窗口收齐后停止消费（结局残留不解析）。 */
+    let endingSettled = false;
+    // 当前权威控制器：主流阶段绑定 SSE 流；结构失败用它停流，语义门的
+    // 修复调用前换新（v2decode review Important，campus c41582e：停流用的
+    // abort 不得泄漏进修复阶段，否则结构类错误永远拿不到那一次尾部修复）。
+    // onAbort 闭包读的是变量本身——外层取消信号始终桥接到「当前」控制器，
+    // 与 v1 strip-continue 的换流同模式。
+    let activeController = new AbortController();
+    const onAbort = () => activeController.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      const sse = await this.client.chat.completions.create(
+        {
+          model: this.config.api.model,
+          temperature: this.config.generation.temperature,
+          ...(this.config.api.token_limit_field === "max_tokens"
+            ? { max_tokens: maxTokens }
+            : { max_completion_tokens: maxTokens }),
+          // DeepSeek reasoning models: thinking toggle as a TOP-LEVEL field.
+          ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
+          messages: [
+            { role: "system" as const, content: this.systemPrompt },
+            { role: "user" as const, content: userPrompt },
+          ],
+          stream: true,
+        } as ChatCompletionCreateParamsStreaming,
+        { signal: activeController.signal },
+      );
+
+      const parser = new DslSegmentParserV2({ expectedNonce: nonce, allowedReasons });
+      const decoder = new StreamLineDecoder();
+
+      /**
+       * 解析并喂入一行（trim 后、非空、非围栏）。成功时返回要追加进规范
+       * 文本的行（interaction 哨兵前的确定性 @/? 补齐也物化在这里）；
+       * 结构失败返回错误——规范文本不被触碰，语义门从原文重导出同一
+       * 错误并接管修复。行号语义与 v1 一致：lineIndex 在调用前已推进。
+       */
+      const consumeLine = (
+        rawLine: string,
+      ): { ok: true; canonical: string[] } | { ok: false; error: DslProtocolError } => {
+        let parsed: DslLineV2;
+        try {
+          parsed = parseDslV2Line(rawLine);
+        } catch (error) {
+          if (!(error instanceof DslProtocolError)) throw error;
+          return { ok: false, error };
+        }
+        const canonical: string[] = [];
+        // 收尾协议共享修复（与 v1 同语义）：interaction 哨兵前表单未闭合
+        // → 本地补 @/?（物化进规范文本，语义门重解析时看到同一形状）。
+        // 空表单收不了尾（EMPTY_FORM）：交给语义门按原文重导出并修复
+        //（v1 同场景走剔除续写，v2 走一次尾部修复）。
+        if (
+          parsed.kind === "segment_end" &&
+          parsed.reason === "interaction" &&
+          parsed.nonce === nonce &&
+          allowedReasons.includes(parsed.reason) &&
+          parser.hasOpenInteraction()
+        ) {
+          try {
+            parser.closeOpenInteraction();
+          } catch (error) {
+            if (!(error instanceof DslProtocolError)) throw error;
+            return { ok: false, error };
+          }
+          canonical.push("@/?");
+          console.warn(`[LLM] ${type} v2 交互表单缺少 @/?，已在 interaction 段尾前补齐。`);
+        }
+        try {
+          parser.pushLine({ ...parsed, lineIndex: lineIndex - 1 });
+        } catch (error) {
+          if (!(error instanceof DslProtocolError)) throw error;
+          return { ok: false, error };
+        }
+        canonical.push(rawLine);
+        if (parser.isEndingSettled()) endingSettled = true;
+        return { ok: true, canonical };
+      };
+
+      /** 结构性失败：abort 当前控制器停流；语义门（含那一次尾部修复）在
+       * 门入口前用换新的控制器接管处置——停流的 abort 不影响修复调用。 */
+      const structuralFailure = (error: DslProtocolError, rawLine: string): void => {
+        failureReason = formatDslErrorDetail(error, lineIndex, rawLine);
+        console.warn(
+          `[LLM] ${type} v2 结构校验失败，第 ${lineIndex} 行 "${rawLine}" [${error.code}]`,
+        );
+        activeController.abort();
+      };
+
+      // SSE chunks → 完整行：首行计时与字符计量都在这一层（与 v1 的
+      // makeLineStream 同构；v2 无续写流，单解码器贯穿全段）。
+      const lines = (async function* (): AsyncGenerator<string> {
+        for await (const rawChunk of sse) {
+          const chunk = rawChunk as {
+            choices?: Array<{
+              delta?: { content?: string | null };
+              finish_reason?: string | null;
+            }>;
+          };
+          const chunkFinish = chunk.choices?.[0]?.finish_reason;
+          if (chunkFinish) finishReason = chunkFinish;
+          const content = chunk.choices?.[0]?.delta?.content;
+          if (!content) continue;
+          if (firstLineMs === 0) firstLineMs = Date.now();
+          streamChars += content.length;
+          yield* decoder.push(content);
+        }
+      })();
+
+      for await (const rawLine of lines) {
+        if (endingSettled) break;
+        lineIndex += 1;
+        const trimmed = rawLine.trim();
+        if (trimmed.startsWith("```") || trimmed.endsWith("```")) continue;
+        if (trimmed.length === 0) continue;
+        const consumed = consumeLine(trimmed);
+        if (!consumed.ok) {
+          // 坏行留在规范文本里：诊断从 sink 错误直接携带（与批式门对同一
+          // 原文重解析同码同文，行号 = 规范行号），修复按已提交边界裁尾。
+          rawLines.push(trimmed);
+          gateDiagnostic = {
+            code: consumed.error.code,
+            message: consumed.error.message,
+            line: rawLines.length,
+            task: taskType,
+            attempt: "attempt:0",
+          };
+          structuralFailure(consumed.error, trimmed);
+          break;
+        }
+        rawLines.push(...consumed.canonical);
+        // 逐行喂语义门：组一闭合即编译提交转发；门失败（能力/组语义/门内
+        // 哨兵）即刻停流——已提交前缀已转发，修复只重写未提交尾部。
+        let gateStopped = false;
+        for (const canonicalLine of consumed.canonical) {
+          if (!feedGate(canonicalLine)) {
+            gateStopped = true;
+            break;
+          }
+        }
+        if (gateStopped) break;
+        if (endingSettled) break;
+      }
+
+      // 无换行尾行（与 v1 §49–§50 同语义）：能干净解析才保留，残片丢弃。
+      // 门已失败时同样不收尾（流已在失败行处停住，残片一并留给尾部修复）。
+      if (!endingSettled && failureReason === "" && gateDiagnostic === null) {
+        const tail = decoder.flush();
+        if (tail !== null) {
+          const trimmed = tail.trim();
+          if (
+            trimmed.length > 0 &&
+            !trimmed.startsWith("```") &&
+            !trimmed.endsWith("```")
+          ) {
+            lineIndex += 1;
+            const consumed = consumeLine(trimmed);
+            if (consumed.ok) {
+              rawLines.push(...consumed.canonical);
+              for (const canonicalLine of consumed.canonical) {
+                if (!feedGate(canonicalLine)) break;
+              }
+            } else {
+              this.metrics?.recordSchemaValidationFailure();
+              console.warn(
+                `[LLM] ${type} v2 输出在末尾被截断，已丢弃残片（截断于第 ${lineIndex} 行）`,
+              );
+            }
+          }
+        }
+      }
+
+      // 确定性补哨兵（与 v1 同判据）：自然结束 + 单一收束理由 + 无打开
+      // 表单 → 本地合成 @end（物化进规范文本，门按同形状收束）。
+      if (
+        failureReason === "" &&
+        gateDiagnostic === null &&
+        !endingSettled &&
+        finishReason === "stop" &&
+        allowedReasons.length === 1 &&
+        !parser.hasOpenInteraction() &&
+        parser.finish().status.kind !== "complete"
+      ) {
+        const fixedReason = allowedReasons[0]!;
+        try {
+          parser.pushLine({ kind: "segment_end", nonce, reason: fixedReason });
+          const synthLine = `@end ${nonce} ${fixedReason}`;
+          rawLines.push(synthLine);
+          lineIndex += 1;
+          feedGate(synthLine);
+          console.warn(
+            `[LLM] ${type} v2 输出自然结束但漏写段尾哨兵，已本地补「${synthLine}」（理由取本任务固定尾部）。`,
+          );
+        } catch {
+          // 合成行被拒（理论不可达：nonce/reason 均来自本任务参数）：
+          // parser 状态未被消费，落回语义门按原文处置。
+        }
+      }
+
+      const latencyMs = Date.now() - callStart;
+      usage.output = Math.ceil(streamChars / 4);
+      console.log(
+        `[LLM] ${type}(${taskType}) v2 ${latencyMs}ms lines=${lineIndex} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${failureReason || priorFailure || "ok"}`,
+      );
+
+      // 空输出（只有围栏不算）。
+      if (lineIndex === 0) {
+        this.metrics?.recordLLMRequest(type, usage, latencyMs);
+        return { kind: "retry", reason: "模型返回空内容。" };
+      }
+
+      // 修复阶段换新控制器：失败停流时 activeController 已 abort——语义门的
+      // 一次尾部修复必须仍可发起（否则结构类错误永远拿不到修复）。旧控制器
+      // 就地作废（自然结束的流 abort 无害）；外层取消信号经 onAbort 桥接到
+      // 新控制器，真取消照旧让修复方返回 null。
+      const streamController = activeController;
+      activeController = new AbortController();
+      streamController.abort();
+
+      /** 一次尾部修复调用（非流式）：assistant 前缀 = 已提交前缀（已播出，
+       * 修复只重写 boundary 之后的原文，尾部定位与指令都来自诊断行号 +
+       * 能力卡单源）。 */
+      const requestTailRepair = async (
+        diagnostic: DslDiagnosticV2,
+        boundary: number,
+        instruction: string,
+      ): Promise<string | null> => {
+        if (signal?.aborted || activeController.signal.aborted) return null;
+        const prefix = rawLines.slice(0, boundary).join("\n");
+        this.metrics?.recordSchemaValidationFailure();
+        console.warn(
+          `[LLM] ${type} v2 第 ${diagnostic.line} 行 [${diagnostic.code}] 触发一次尾部修复：重写第 ${boundary + 1} 行起的未提交尾部。${diagnostic.message.slice(0, 80)}`,
+        );
+        try {
+          const response = await this.client.chat.completions.create(
+            {
+              model: this.config.api.model,
+              temperature: this.config.generation.temperature,
+              ...(this.config.api.token_limit_field === "max_tokens"
+                ? { max_tokens: maxTokens }
+                : { max_completion_tokens: maxTokens }),
+              ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
+              messages: [
+                { role: "system" as const, content: this.systemPrompt },
+                { role: "user" as const, content: userPrompt },
+                ...(prefix.trim() !== ""
+                  ? [{ role: "assistant" as const, content: `${prefix}\n` }]
+                  : []),
+                { role: "user" as const, content: instruction },
+              ],
+              stream: false,
+            },
+            { signal: activeController.signal },
+          );
+          const content = (
+            response as { choices?: Array<{ message?: { content?: string | null } }> }
+          ).choices?.[0]?.message?.content;
+          if (typeof content !== "string" || content.trim() === "") return null;
+          return content;
+        } catch (error) {
+          if (signal?.aborted || isAbortError(error)) return null;
+          console.warn(`[LLM] ${type} v2 尾部修复调用失败：`, error);
+          return null;
+        }
+      };
+
+      // 哨兵收束检查（组已随流逐个转发；此处只判定段是否完整收束）。
+      let status: SegmentEndStatus | undefined;
+      let repairApplied = false;
+      if (gateDiagnostic === null) {
+        const finished = gate.finish();
+        if (finished.ok) {
+          status = finished.status;
+        } else {
+          gateDiagnostic = finished.diagnostic;
+        }
+      }
+
+      // 恰好一次未提交尾部修复：重写已提交边界之后的全部原文（含坏行与
+      // 尚未冲刷成组的 pending 行）。修复轮门在已提交前缀的预测状态上继续
+      // ——前缀不重放、不重复，修复轮的组同样一校验通过即转发。
+      if (gateDiagnostic !== null) {
+        const boundary = gate.committedThroughLine; // 1 基绝对 = 无偏移切片下标
+        const instruction = formatV2RepairInstruction(
+          dslTaskCapability(taskType),
+          [gateDiagnostic],
+          nonce,
+        );
+        const repaired = await requestTailRepair(gateDiagnostic, boundary, instruction);
+        if (repaired !== null) {
+          repairApplied = true;
+          const repairGate = createV2SegmentGate({
+            ...gateBase,
+            visualState: gate.visualState,
+            characterState: gate.characterState,
+            lineOffset: boundary,
+            attempt: "attempt:1",
+          });
+          const fed = repairGate.pushText(repaired);
+          if (fed.ok) {
+            emitCommits(fed.commits);
+            const finished = repairGate.finish();
+            if (finished.ok) {
+              status = finished.status;
+              gateDiagnostic = null;
+            } else {
+              gateDiagnostic = finished.diagnostic;
+            }
+          } else {
+            gateDiagnostic = fed.diagnostic;
+          }
+        }
+      }
+
+      const firstDiagnostic = gateDiagnostic;
+      if (firstDiagnostic === null && status !== undefined) {
+        this.metrics?.recordLLMRequest(type, usage, latencyMs);
+        options?.onSegmentEnd?.(status);
+        return {
+          kind: "complete",
+          envelope: {
+            events: [],
+            groups: allGroups,
+            segmentEnd: status,
+          },
+        };
+      }
+
+      // 双败（或修复被拒/取消）：走既有失败语义——有已转发前缀 → fail
+      // （保留前缀给运行时修复链），无 → retry（下一 attempt 带修复指令）。
+      const detail =
+        firstDiagnostic !== null ? formatV2DiagnosticDetail(firstDiagnostic) : failureReason;
+      this.metrics?.recordSchemaValidationFailure();
+      console.warn(
+        `[LLM] ${type} v2 校验失败${repairApplied ? "（修复后仍失败）" : ""}：${detail}`,
+      );
+      this.metrics?.recordLLMRequest(type, usage, latencyMs);
+      if (allGroups.length > 0) {
+        return {
+          kind: "fail",
+          error: new Error(`DSL 流校验失败，已保留前面可播放的内容。${detail}`),
+        };
+      }
+      return { kind: "retry", reason: detail };
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) throw error;
       this.metrics?.recordLLMRequest(type, usage, Date.now() - callStart);

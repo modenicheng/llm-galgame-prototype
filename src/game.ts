@@ -53,7 +53,9 @@ import type { MetricsSnapshot } from "./runtime/metrics.js";
 import { PlaybackBuffer } from "./runtime/playback-buffer.js";
 import { compileEventGroup } from "./core/protocol/gal-dsl/compiler.js";
 import type {
+  AnyStreamedGroup,
   AssetDiagnostic,
+  CompiledEventGroupV2,
   DslInteractionDraft,
   EventGroupDraft,
   SegmentEndStatus,
@@ -103,7 +105,7 @@ import type {
   CharacterRegistry as CoreCharacterRegistry,
   CharacterRuntimeState,
 } from "./core/characters/types.js";
-import { createCharacterRuntimeState } from "./core/characters/types.js";
+import { createCharacterRuntimeState, withCharacterLabel } from "./core/characters/types.js";
 import { cloneCharacterRuntimeState } from "./story/event-projection.js";
 import {
   legacyGenerationIdentity,
@@ -152,6 +154,24 @@ export interface GamePorts {
 
 /** §8.4: keep only the most recent formally-opened interaction modes. */
 const MAX_INTERACTION_MODE_HISTORY = 8;
+
+/**
+ * 名牌复位 = 移除覆盖键（v2 labelOps 的 reset 分支；resolveCharacterLabel
+ * 自动落回 initialLabel）。与 compiler 侧同名语义的本地纯函数——预测状态
+ * 折叠不允许反向依赖编译器内部助手。（port 自 campus a1b7aac。）
+ */
+function withoutRuntimeLabel(
+  state: CharacterRuntimeState,
+  characterId: string,
+): CharacterRuntimeState {
+  const labels = Object.create(null) as Record<string, string>;
+  for (const key of Object.keys(state.labels)) {
+    if (Object.hasOwn(state.labels, key) && key !== characterId) {
+      labels[key] = state.labels[key]!;
+    }
+  }
+  return { labels };
+}
 
 export class Game implements InteractionHost {
   /** @internal 交互驱动接缝（M4.5）。 */
@@ -272,7 +292,8 @@ export class Game implements InteractionHost {
    * C5 §5.1：本局名牌运行时状态（v1 期间无持久改名来源，保持空——投影
    * 的名牌快照来自事件自身；v2 语义编译接入后由 label 操作更新）。
    */
-  private characterState: CharacterRuntimeState = createCharacterRuntimeState();
+  /** @internal 交互驱动接缝（M4.5）：输入回应确认播出的 v2 labelOps 转正。 */
+  characterState: CharacterRuntimeState = createCharacterRuntimeState();
   /** C2 角色注册表；缺席 = legacy 兼容会话。 */
   /** @internal 交互驱动接缝（M4.5）。 */
   readonly characterRegistry: CoreCharacterRegistry | undefined;
@@ -680,6 +701,17 @@ export class Game implements InteractionHost {
       () => this.generationScheduler.completeActivePath(live.taskId),
     );
     await live.done.catch(() => undefined);
+    // v2（port 自 campus a1b7aac）：live 分支收尾后其泵才把预测状态写进
+    // branch* 表（adoptSelectedBranch 走 live 路径时表还空着）——此刻统一
+    // 转正：视觉尾部取代选择快照的 cue 派生（含选中后才到达的组），名牌
+    // 副本随分支 promote（v1 的标签副本与主状态恒等，转正无行为差异）。
+    // 转正后连同迟到未选分支的残留条目一并清空。
+    const liveTail = this.branchTailStates.get(live.branchId);
+    const liveLabels = this.branchCharacterStates.get(live.branchId);
+    if (liveTail !== undefined) this.tailVisualState = liveTail;
+    if (liveLabels !== undefined) this.characterState = liveLabels;
+    this.branchTailStates.clear();
+    this.branchCharacterStates.clear();
     const selectedEvents = [...live.events];
     return this.startActiveSegment(
       "continuation",
@@ -749,7 +781,7 @@ export class Game implements InteractionHost {
     // group is compiled (character resolution + stage cues) against the
     // current tail visual state and flattened into runtime events carrying
     // `stage`.
-    const onGroup = (group: EventGroupDraft): void => {
+    const onGroup = (group: AnyStreamedGroup): void => {
       this.handleDslGroup(segment, history, turn, group);
     };
     const onSegmentEnd = (status: SegmentEndStatus): void => {
@@ -1226,6 +1258,91 @@ export class Game implements InteractionHost {
   }
 
   /**
+   * v2（main-v2-adapter，port 自 campus a1b7aac）：应用一个已编译的 v2
+   * 组——compileSegmentV2 在生成器语义门内原子提交的产物（坏组任何
+   * cue/名牌/主事件都不落地）。提交只做三件事：cue 用同一 reducer 折叠出
+   * 预测舞台尾部（与门内归约同构），labelOps 折叠出预测名牌状态，主事件
+   * 物化为运行时事件（对白 speaker = 编译时刻的名牌快照 displayLabel，
+   * §4.2 @say 行）。
+   */
+  private applyCompiledGroupV2(
+    group: CompiledEventGroupV2,
+    baseState: VisualState,
+    labels: CharacterRuntimeState,
+    turn: number,
+  ): {
+    playable: RuntimeDialogueEvent | RuntimeNarrationEvent | null;
+    interaction: InteractionEvent | null;
+    cues: StageCue[];
+    tailState: VisualState;
+    nextLabels: CharacterRuntimeState;
+  } {
+    const tailState = this.reduce(baseState, group.prelude);
+    let nextLabels = labels;
+    for (const op of group.labelOps) {
+      nextLabels =
+        "label" in op
+          ? withCharacterLabel(nextLabels, op.characterId, op.label)
+          : withoutRuntimeLabel(nextLabels, op.characterId);
+    }
+    const main = group.main;
+    if (main.type === "dialogue") {
+      const event: RuntimeDialogueEvent = {
+        type: "dialogue",
+        characterId: main.characterId,
+        speaker: main.displayLabel,
+        text: main.text,
+        line_id: this.nextLineId(),
+        ...(group.prelude.length > 0 ? { stage: group.prelude } : {}),
+      };
+      return { playable: event, interaction: null, cues: group.prelude, tailState, nextLabels };
+    }
+    if (main.type === "narration") {
+      const event: RuntimeNarrationEvent = {
+        type: "narration",
+        text: main.text,
+        line_id: this.nextLineId(),
+        ...(group.prelude.length > 0 ? { stage: group.prelude } : {}),
+      };
+      return { playable: event, interaction: null, cues: group.prelude, tailState, nextLabels };
+    }
+    if (main.type === "interaction") {
+      const interaction = this.interactionDriver.buildRuntimeInteraction(main.interaction, turn);
+      return { playable: null, interaction, cues: group.prelude, tailState, nextLabels };
+    }
+    // beat — 纯舞台节点，无主事件。
+    return { playable: null, interaction: null, cues: group.prelude, tailState, nextLabels };
+  }
+
+  /**
+   * 版本路由提交（port 自 campus a1b7aac）：v1 草组走冻结的 compileGroup
+   * （行为逐字节不变，nextLabels 原样奉还）；v2 已编译组走
+   * applyCompiledGroupV2（预测名牌状态随组推进）。判别式 = 组上的
+   * labelOps 字段——契约见 AnyStreamedGroup（labelOps 为
+   * CompiledEventGroupV2 专属必填字段，EventGroupDraft 永不新增同名成员；
+   * 改显式 tag 须全量迁移）。
+   */
+  /** @internal 交互驱动接缝（M4.5）。 */
+  compileRoutedGroup(
+    draft: AnyStreamedGroup,
+    baseState: VisualState,
+    labels: CharacterRuntimeState,
+    turn: number,
+  ): {
+    playable: RuntimeDialogueEvent | RuntimeNarrationEvent | null;
+    interaction: InteractionEvent | null;
+    cues: StageCue[];
+    tailState: VisualState;
+    /** v2：labelOps 折叠后的预测名牌状态；v1：原引用（无操作）。 */
+    nextLabels: CharacterRuntimeState;
+  } {
+    if ("labelOps" in draft) {
+      return this.applyCompiledGroupV2(draft, baseState, labels, turn);
+    }
+    return { ...this.compileGroup(draft, baseState, turn), nextLabels: labels };
+  }
+
+  /**
    * Route one streamed DSL group into the active segment: compile it
    * against the tail state, update the predictive tail state, and either
    * buffer a playable event, open an interaction (policy-checked), or
@@ -1235,9 +1352,10 @@ export class Game implements InteractionHost {
     segment: ActiveSegment,
     history: StoryContextEvent[],
     turn: number,
-    draft: EventGroupDraft,
+    draft: AnyStreamedGroup,
   ): void {
-    const { playable, interaction, cues, tailState } = this.compileGroup(draft, this.tailVisualState, turn);
+    const { playable, interaction, cues, tailState, nextLabels } =
+      this.compileRoutedGroup(draft, this.tailVisualState, this.characterState, turn);
     // §50: the interaction is the segment's contract boundary. Groups that
     // arrive afterwards (the model's in-flight tail, streamed between the
     // form and `@end`) are never meant to play — the run loop already
@@ -1245,6 +1363,9 @@ export class Game implements InteractionHost {
     // playback buffer and crash advanceBufferedEvent on the next segment.
     if (segment.terminal !== null) return;
     this.tailVisualState = tailState;
+    // v2：labelOps 折叠出的预测名牌状态即时转正（直播段一定播出）；
+    // v1 路径 nextLabels === 原引用，赋值无行为差异。
+    this.characterState = nextLabels;
 
     if (playable !== null) {
       segment.events.push(playable);
@@ -1486,18 +1607,32 @@ export class Game implements InteractionHost {
   /**
    * Compile DSL groups into materialized playable events, chaining the
    * visual state across groups. Used by branch prefetch and input-response
-   * paths (docs §56, §79).
+   * paths (docs §56, §79). v2 组同样可用：预测名牌状态沿组链接力折叠
+   * （tailLabels），调用方按各自的确认/丢弃边界决定是否转正。
+   * （labels 链 port 自 campus a1b7aac。）
    */
   materializeDslGroups(
-    groups: EventGroupDraft[],
+    groups: AnyStreamedGroup[],
     baseState: VisualState,
     turn: number,
-  ): { events: RuntimePlayableEvent[]; tailState: VisualState } {
+    labels: CharacterRuntimeState,
+  ): {
+    events: RuntimePlayableEvent[];
+    tailState: VisualState;
+    tailLabels: CharacterRuntimeState;
+  } {
     let state = baseState;
+    let labelState = labels;
     const events: RuntimePlayableEvent[] = [];
     for (const draft of groups) {
-      const { playable, tailState } = this.compileGroup(draft, state, turn);
+      const { playable, tailState, nextLabels } = this.compileRoutedGroup(
+        draft,
+        state,
+        labelState,
+        turn,
+      );
       state = tailState;
+      labelState = nextLabels;
       if (playable !== null) {
         events.push(playable);
       } else {
@@ -1507,7 +1642,7 @@ export class Game implements InteractionHost {
         );
       }
     }
-    return { events, tailState: state };
+    return { events, tailState: state, tailLabels: labelState };
   }
 
   /**

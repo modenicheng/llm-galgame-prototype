@@ -48,7 +48,13 @@ import type {
   StoryContextEvent,
   RuntimePlayableEvent,
 } from "../schema.js";
-import type { DslInteractionDraft, EventGroupDraft } from "../core/protocol/gal-dsl/types.js";
+import type {
+  AnyStreamedGroup,
+  DslInteractionDraft,
+} from "../core/protocol/gal-dsl/types.js";
+import type {
+  CharacterRuntimeState,
+} from "../core/characters/types.js";
 import type {
   StageCue,
   VisualState,
@@ -83,6 +89,11 @@ export interface InteractionHost {
   branchTailStates: Map<string, VisualState>;
   /** C5 §5.1：每预取分支的名牌状态副本（绑定 registry revision）。 */
   branchCharacterStates: Map<string, import("../core/characters/types.js").CharacterRuntimeState>;
+  /**
+   * C5 §5.1：本局名牌运行时状态。v2 会话由 labelOps 预测折叠推进（直播
+   * 段/确认播出的输入回应当场转正；预取分支经 promote 转正）。
+   */
+  characterState: CharacterRuntimeState;
   bridgeLineIds: Set<string>;
   responseLineIds: Set<string>;
   buffered: Map<string, RuntimePlayableEvent>;
@@ -106,19 +117,27 @@ export interface InteractionHost {
   takePendingFastForward(): import("../core/ports/run-graph-port.js").RestorePoint | undefined;
   nextLineId(): string;
   materializeDslGroups(
-    groups: EventGroupDraft[],
+    groups: AnyStreamedGroup[],
     baseState: VisualState,
     turn: number,
-  ): { events: RuntimePlayableEvent[]; tailState: VisualState };
-  compileGroup(
-    draft: EventGroupDraft,
+    labels: CharacterRuntimeState,
+  ): {
+    events: RuntimePlayableEvent[];
+    tailState: VisualState;
+    tailLabels: CharacterRuntimeState;
+  };
+  /** 版本路由提交：v1 草组走冻结的 compileGroup；v2 编译组只应用。 */
+  compileRoutedGroup(
+    draft: AnyStreamedGroup,
     baseState: VisualState,
+    labels: CharacterRuntimeState,
     turn: number,
   ): {
     playable: RuntimeDialogueEvent | RuntimeNarrationEvent | null;
     interaction: InteractionEvent | null;
     cues: StageCue[];
     tailState: VisualState;
+    nextLabels: CharacterRuntimeState;
   };
   registerBuffered(events: RuntimePlayableEvent[]): void;
   advanceBufferedEvent(event: import("../schema.js").RuntimeBufferEvent): void;
@@ -179,7 +198,7 @@ export class InteractionDriver {
 
     const promise = (async () => {
       try {
-        const groups: EventGroupDraft[] = [];
+        const groups: AnyStreamedGroup[] = [];
         for await (const group of handle.events) groups.push(group);
         await handle.done;
         if (controller.signal.aborted) return;
@@ -270,10 +289,19 @@ export class InteractionDriver {
         tailVisualState: this.host.tailVisualState,
       });
       await handle.done;
-      const groups: EventGroupDraft[] = [];
+      const groups: AnyStreamedGroup[] = [];
       for await (const group of handle.events) groups.push(group);
-      const result = this.host.materializeDslGroups(groups, this.host.tailVisualState, turn);
+      const result = this.host.materializeDslGroups(
+        groups,
+        this.host.tailVisualState,
+        turn,
+        // 重试路径（port 自 campus a1b7aac）：预取失败时分支副本尚未落表
+        //（泵在失败前不写表），从主状态重新播种；折叠结果回表，随统一的
+        // promote/clear 生命周期。
+        this.host.branchCharacterStates.get(selected.id) ?? this.host.characterState,
+      );
       this.host.branchTailStates.set(selected.id, result.tailState);
+      this.host.branchCharacterStates.set(selected.id, result.tailLabels);
       preview = result.events;
       this.host.media.registerCandidate(selected.id, preview);
       this.host.status.removeJob("selected-branch-retry");
@@ -416,10 +444,10 @@ export class InteractionDriver {
         // C5 §5.1：名牌状态同样按分支持副本（绑定本局 roster revision）；
         // 预测性改名只落副本，未选/取消/修复失败随分支丢弃。
         // C6（C5 评审 minor，port 自 campus 0b8de2e）：身份只克隆一次——
-        // 预取请求与分支名牌副本共用同一份 characterState（两者都只读；
-        // 下次派生再另行克隆）。
+        // 预取请求与分支名牌副本共用同一份 characterState（请求侧只读；
+        // v2 的 labelOps 折叠在泵内逐组重绑，不污染发出去的那份快照）。
         const branchIdentity = this.host.generationIdentity(option.id);
-        const branchLabels = branchIdentity.characterState;
+        let branchLabels = branchIdentity.characterState;
         const prefetchBrief = this.host.makeBriefing(turn + 1);
         const handle = this.host.generator.generateBranchPrefetch({
           identity: branchIdentity,
@@ -433,11 +461,27 @@ export class InteractionDriver {
           tailVisualState: this.host.tailVisualState,
         });
         // 泵：与旧 onGroup 直连语义等价——组到达即编译并喂给 onEvent
-        // （branch-local visual state 逐组折叠）。
+        // （branch-local visual state 逐组折叠；v2 的 labelOps 同步折进
+        // 分支名牌副本，port 自 campus a1b7aac + cb7804b）。
         const pump = (async () => {
           for await (const group of handle.events) {
-            const { playable, tailState } = this.host.compileGroup(group, branchState, turn);
+            // handoff/取消后的迟到组不再折叠：预测状态必须与玩家可见的
+            // 已提交前缀一致（迟到事件被消费侧丢弃，不播放）。
+            if (signal.aborted) break;
+            const { playable, tailState, nextLabels } = this.host.compileRoutedGroup(
+              group,
+              branchState,
+              branchLabels,
+              turn,
+            );
             branchState = tailState;
+            // v2：预测名牌操作（@name）折叠进分支副本——未选/取消即丢弃，
+            // 选中才随 promote 转正（与 branchTailStates 同一生命周期）。
+            branchLabels = nextLabels;
+            // 逐组即时落表（v1 仅在收尾落表，最终值相同）：live 选择/handoff
+            // 可能在泵收尾前读取预测状态，表内容必须与已到达的组同步。
+            this.host.branchTailStates.set(option.id, branchState);
+            this.host.branchCharacterStates.set(option.id, branchLabels);
             if (playable !== null) {
               materialized.push(playable);
               onEvent(playable);
@@ -706,6 +750,9 @@ export class InteractionDriver {
     // DSL mode: response groups compile against a response-local visual
     // state seeded from the current tail (docs §79).
     let responseState = this.host.tailVisualState;
+    // v2（port 自 campus a1b7aac）：回应的 labelOps 先折进本地预测副本，
+    // 确认播出才转正（与 responseState 同一确认/丢弃边界）。
+    let responseLabels = this.host.characterState;
 
     const brief = this.host.makeBriefing(turn + 1);
     const handle = this.host.generator.generateInputResponse({
@@ -728,8 +775,14 @@ export class InteractionDriver {
           this.host.metrics.recordStaleInputEventDropped();
           continue;
         }
-        const { playable, tailState } = this.host.compileGroup(group, responseState, turn);
+        const { playable, tailState, nextLabels } = this.host.compileRoutedGroup(
+          group,
+          responseState,
+          responseLabels,
+          turn,
+        );
         responseState = tailState;
+        responseLabels = nextLabels;
         if (playable !== null) {
           this.stageResponseEvent(responseSession, playable);
         }
@@ -771,6 +824,9 @@ export class InteractionDriver {
           // tail (docs §79): the next generation continues from where the
           // response leaves the stage.
           this.host.tailVisualState = responseState;
+          // v2：确认播出的回应，其预测名牌操作（@name）一并转正；被取消/
+          // 失败的回应从未到达这里——预测副本随之丢弃。
+          this.host.characterState = responseLabels;
           responseSession.markReady();
           this.host.status.setJob(
             "input-response",
@@ -977,9 +1033,18 @@ export class InteractionDriver {
           tailVisualState: this.host.tailVisualState,
         });
         await handle.done;
-        const groups: EventGroupDraft[] = [];
+        const groups: AnyStreamedGroup[] = [];
         for await (const group of handle.events) groups.push(group);
-        const result = this.host.materializeDslGroups(groups, this.host.tailVisualState, turn);
+        const result = this.host.materializeDslGroups(
+          groups,
+          this.host.tailVisualState,
+          turn,
+          this.host.characterState,
+        );
+        // 按需物化的分支一定被选中播出（port 自 campus a1b7aac）：预测
+        // 尾部与预测名牌操作一并转正。
+        this.host.tailVisualState = result.tailState;
+        this.host.characterState = result.tailLabels;
         preview = result.events;
         this.host.registerBuffered(preview);
         this.host.status.removeJob("on-demand-branch");

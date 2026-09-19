@@ -131,24 +131,66 @@ registry、后装配 generator/state/director/audio**；三处 roster cast 派�
   双分支字节一致；character-contract.test.ts 以钉子数据为唯一事实源——
   V1/R09 接线）。它是待消除行为的钉子，不是未来兼容规范。
 
-### 3.4 v2 当前接线范围（main 诚实边界）
+### 3.4 v2 当前接线范围（已接通运行时解码；缺省仍 = 1，翻默认另行决策）
 
-`protocol_version: 2` 在 main 生效于**协议卡与身份上下文层**：
+`protocol_version: 2` 现已**端到端接通**运行时流式解码（port 自校园侧
+a1b7aac/c41582e/1ca3579/cb7804b，适配 main 的 M4.5 交互驱动与图运行时）；
+缺省仍是 1——无显式配置的新局行为与接线前逐字节一致
+（`game-dsl-v2.test.ts` 用接线前 HEAD 89ef14e 录制的 main 自有 fixture
+钉死），默认值翻 2 是独立决策（§8）：
 
-- 协议卡（每个生成请求把双版本语法卡拼在任务模板之前）、任务头与
-  `GenerationIdentity` 携带版本（C5/C6）。
+- 协议卡（模型拿到的语法说明与示例）、任务头与 `GenerationIdentity`
+  携带版本（C5/C6）。
 - **编译层全量闭环**：`compileSegmentV2`（解析→分组→能力→身份/资源
   语义→原子提交）与恰好一次尾部修复 `compileSegmentV2WithRepair` 在
   单测（compiler-v2/line-parser-v2/text-pipeline-v2/protocol-card 等）
   与离线评估 harness（`scripts/evaluate-character-dsl.ts`，V1 移植）全量
   回放。
-- **流式生成循环仍按 v1 行解码**：main 尚未接入按版本路由的 v2 流式
-  解码（校园侧后续 v2 接线落地的 `attemptDslStreamV2` 路径不在 main）。
-  因此「打开 v2 严格生成」（§8）的前置在 main **未完成**——协议卡教 v2
-  而解码走 v1 的组合不可上线。这是本规范最重要的诚实边界，翻默认值
-  前必须先补齐该接线并跑在线评估。
-- v2 语义门需要 roster registry：registry 缺席的窄测试/legacy 会话不得
-  声明 v2。
+- **流式解码按版本路由**（openai-compatible-generator.ts
+  `requestDslEnvelope` → `attemptDslStreamV2`）：v1 会话走冻结的
+  legacy 流式路径（逐字节不变）；v2 会话用严格行解码（`parseDslV2Line`
+  + `DslSegmentParserV2` v2 sink），规范行**逐行喂增量式段门**
+  `createV2SegmentGate`（compiler.ts；与 `compileSegmentV2` 共用同一批
+  内部件，registry/cast/visualState/characterState 均取自本请求的身份
+  四件套 + tailVisualState）。
+- **逐组门控转发（Ruling 16，per-group gated forwarding）**：组在它
+  自己通过语义校验的瞬间（主事件行闭合该组）即编译提交并转发
+  （`onGroup`/`GenerationHandle.events`，与 v1 同为边流边播）。v2 的
+  提交原子性仍在编译器内**按组**保证——坏组任何 cue/名牌/主事件都不
+  落地；已转发组永不重写，因此首个失败（结构/能力/组语义/哨兵缺失）
+  的修复边界恒为已提交前缀。批式入口 `compileSegmentV2` 契约不变
+  （C4 测试继续钉批式行为；两入口 ok 路径逐字段等价，
+  compiler-v2.test.ts 等价性测试钉死），唯一有意语义差：错误按首次
+  遭遇顺序浮出（批式先全段 walk + 能力巡检再分组编译），故中段结构/
+  能力错误不再把提交边界重置为 0——已播出的组收不回，修复只重写其后
+  的原文（第 1 行即失败时边界仍为 0，整段都是尾部）。
+- **恰好一次尾部修复**：任一门失败时由生成器发起一次非流式补写——
+  assistant 前缀 = 已提交前缀（无提交组时不带前缀）；修复轮门
+  （`attempt:1`）在已提交前缀的预测状态上继续（lineOffset = 提交边界，
+  offset 不双计），修复轮的组同样一校验通过即转发；停流用的 abort 不
+  泄漏进修复调用（失败后换新取消控制器；外层用户取消仍会让修复方拒绝
+  发起）。修复后仍失败 → 既有段失败路径（有已转发前缀 → fail 保留
+  前缀，无 → retry），Game 级修复续写（repairReason）照常接管。v2 不
+  使用 v1 的 strip-continue。
+- **Game 侧提交路由**（game.ts `compileRoutedGroup`，判别式
+  `"labelOps" in group`；main 的分支泵/回应泵在 interaction-driver.ts）：
+  v1 草组走冻结的 `compileEventGroup`；v2 已编译组
+  （`CompiledEventGroupV2`）只应用——cue 用同一 reducer 折叠预测舞台
+  尾部、labelOps 折叠预测名牌状态、对白 speaker = 编译时刻名牌快照
+  displayLabel。预测名牌状态沿 C5 生命周期流转：直播段即时转正、预取
+  分支逐组折叠进 `branchCharacterStates` 副本（逐组即时落表，选中
+  promote / 未选丢弃，live handoff 路径在收尾后统一转正并清残留）、
+  输入回应确认播出才转正。Game 侧本就逐组消费（直播段泵 + 预取泵都走
+  `handle.events`），逐组转发只是把到达时刻提前到各组校验通过点。
+- v2 语义门需要 roster registry：identity 声明 v2 而 StoryGenerator 未
+  注入 characterRegistry 时响亮报错，不静默降级为 v1 解码。
+
+离线评估 harness（evaluate-character-dsl-harness）继续覆盖纯编译层
+回放；运行时路径由 `game-dsl-v2.test.ts`（knob=2 端到端：名牌快照进
+事件、@ch exit 退场、预取分支隔离与 promote、一次尾部修复、双败走段
+失败路径、缺省旋钮仍 = 1、main 自有 v1 fixture 逐字节钉死）与
+`llm.test.ts`（DSL v2 mode generation：边流边播、中段失败保留已播组、
+结构修复、外层取消拒绝修复等）钉住。
 
 ## 4. 玩家边界
 
@@ -263,9 +305,9 @@ main 的持久化是**剧情图快照**（校园是 state.v2.json 信封——�
 - 旧 reader 与新 writer 分离：回滚旧 runtime 时，v4 快照（版本高于旧
   程序支持）显式拒绝读取（版本闸门报错），旧档原文件仍可恢复。
 - **F1/M1 入口未完成的分支不能打开 v2 严格生成**。main 的 M1 入口已完成
-  （registry 装配先于演员），但 §3.4 的流式 v2 解码未接线——**main 当前
-  不得宣称「只改提示词即可上线 v2」**；离线评估（§9）绿 ≠ 在线改善已
-  证实（TBD-online 未采样）。
+  （registry 装配先于演员），§3.4 的流式 v2 解码也已接线（逐组门控转发
+  + 一次尾部修复）；翻默认前剩下的前置是**在线评估**（TBD-online 未
+  采样）——离线评估（§9）绿 ≠ 在线改善已证实。
 
 ## 9. 验证命令
 
