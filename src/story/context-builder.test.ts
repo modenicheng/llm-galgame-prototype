@@ -6,9 +6,11 @@ import { describe, it, expect } from "vitest";
 import {
   buildDslUserPrompt,
   buildSystemContext,
+  serializeStoryContext,
   type ContextInput,
   type DslContextInput,
 } from "./context-builder.js";
+import { RENAME_IDENTITY_CASE } from "../test-support/character-contract-cases.js";
 import { createInitialState } from "./state.js";
 import type { MemoryProjection } from "../core/narrative/memory-projection.js";
 import type { PromptBundle } from "../prompts.js";
@@ -247,5 +249,35 @@ describe("buildDslUserPrompt", () => {
     const prompt = buildDslUserPrompt(4, ctx);
     expect(prompt).not.toContain("导演便签");
     expect(prompt).not.toContain("记忆已整理至事件");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1 契约向量（计划 R01）——期望行为规格，当前红灯：改名（台词头
+// (显示名) 槽）后 serializeStoryContext 只回放 event.speaker（显示名
+// 「神秘女子」），稳定 characterId female_A 从发给模型的历史里消失，
+// 模型在下一请求无从得知 神秘女子 = female_A，只能凭显示名写行头，
+// 身份链断裂（幻影说话人/立绘 cue 被丢/音色丢失皆由此起）。C2+ 转绿。
+// ---------------------------------------------------------------------------
+
+describe("C1 contract vector — identity after rename (R01)", () => {
+  it("serialized history still carries the stable characterId after a display-name rename", () => {
+    // 事件形状与运行时落盘一致（编译产物：characterId=female_A，
+    // speaker=改名标签）。全链路推导见 src/character-contract.test.ts。
+    const events: StoryContextEvent[] = [
+      {
+        type: "dialogue",
+        characterId: RENAME_IDENTITY_CASE.characterId,
+        speaker: RENAME_IDENTITY_CASE.renamedLabel,
+        text: RENAME_IDENTITY_CASE.dialogueText,
+        line_id: "line_contract_r01",
+        seq: 1,
+        turn: 1,
+        timestamp: "2026-09-19T00:00:00.000Z",
+        source: "model",
+      },
+    ];
+
+    expect(serializeStoryContext(events)).toContain(RENAME_IDENTITY_CASE.characterId);
   });
 });

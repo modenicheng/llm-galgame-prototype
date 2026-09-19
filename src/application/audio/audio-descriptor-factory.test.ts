@@ -8,6 +8,10 @@ import type { VoicesConfig } from "../../config/voices.js";
 import { PerformanceCompilerImpl, type LinePerformance, type PerformanceCompiler } from "./performance-compiler.js";
 import type { RuntimePlayableEvent } from "../../schema.js";
 import type { InternalAudioRecipe } from "./internal-audio-recipe.js";
+import {
+  RENAME_IDENTITY_CASE,
+  VOICE_PROFILE_STABILITY_CASE,
+} from "../../test-support/character-contract-cases.js";
 
 const stubCompiler: PerformanceCompiler = {
   compile: () => ({
@@ -341,5 +345,79 @@ describe("AudioDescriptorFactory — voiceDirectionFor", () => {
     const factory = makeFactory({ voiceDirectionFor: probe });
     expect(factory.build(narration("旁白一行。", "l23"), { type: "active" }, "current")).toBeNull();
     expect(probe).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1 契约向量（计划 R02）——期望行为规格，当前红灯：同一 characterId
+// （female_A）的事件，speaker 从注册名「许晚晴」换成改名标签「神秘女子」
+// 后，resolveCharacter 的 byId（characters 无 female_A 键）/ bySpeaker
+// （键是 xuwanqing）/ byName（名字是许晚晴）三路全 miss，build 返回
+// null——角色一行台词静默失去声音。音色必须跨标签稳定。C2+ 转绿。
+// ---------------------------------------------------------------------------
+
+describe("C1 contract vector — voice profile stability across labels (R02)", () => {
+  const contractVoices: VoicesConfig = {
+    version: 3,
+    profiles: {
+      [VOICE_PROFILE_STABILITY_CASE.voiceProfile]: {
+        semantic: {
+          base_description: "温柔娴静的学姐声",
+          allowed_delivery: ["gentle"],
+          forbidden_delivery: ["cold"],
+        },
+        providers: {
+          dashscope: {
+            model: "cosyvoice-v2",
+            voice_id_env: VOICE_PROFILE_STABILITY_CASE.voiceIdEnv,
+            voice_revision: 2,
+            instruction_mode: "free",
+          },
+        },
+      },
+    },
+  };
+  const contractCharacters: AudioDescriptorFactoryOptions["characters"] = {
+    [VOICE_PROFILE_STABILITY_CASE.ttsConfigKey]: {
+      name: VOICE_PROFILE_STABILITY_CASE.ttsConfigName,
+      voice_profile: VOICE_PROFILE_STABILITY_CASE.voiceProfile,
+    },
+  };
+
+  function contractFactory(): AudioDescriptorFactory {
+    return makeFactory({
+      characters: contractCharacters,
+      voices: contractVoices,
+      env: { [VOICE_PROFILE_STABILITY_CASE.voiceIdEnv]: VOICE_PROFILE_STABILITY_CASE.voiceId },
+    });
+  }
+
+  it("keeps the same voice identity for a renamed label as for the original name", () => {
+    const base = {
+      type: "dialogue" as const,
+      text: RENAME_IDENTITY_CASE.dialogueText,
+      line_id: VOICE_PROFILE_STABILITY_CASE.lineId,
+      characterId: RENAME_IDENTITY_CASE.characterId,
+    };
+    const original = contractFactory().build(
+      { ...base, speaker: VOICE_PROFILE_STABILITY_CASE.ttsConfigName },
+      { type: "active" },
+      "current",
+    );
+    const renamed = contractFactory().build(
+      { ...base, speaker: RENAME_IDENTITY_CASE.renamedLabel },
+      { type: "active" },
+      "current",
+    );
+
+    // 原名版本靠 byName 兜底命中音色（现状，绿）：
+    expect(original).not.toBeNull();
+    expect(original!.recipe.voiceId).toBe(VOICE_PROFILE_STABILITY_CASE.voiceId);
+
+    // 缺陷（红灯）：改名标签版本解析不到任何角色 → null。
+    expect(renamed, "改名标签事件必须仍解析出音色").not.toBeNull();
+    expect(renamed!.recipe.voiceId).toBe(original!.recipe.voiceId);
+    expect(renamed!.recipe.voiceRevision).toBe(original!.recipe.voiceRevision);
+    expect(renamed!.descriptor.speakerId).toBe(RENAME_IDENTITY_CASE.characterId);
   });
 });

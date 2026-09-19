@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { parseDslLine, interpretEndingEpilogue } from "./line-parser.js";
 import { DslProtocolError } from "./types.js";
 import type { DslErrorCode } from "./types.js";
+import { PARSE_COLON_DIVERGENCE_CASE } from "../../../test-support/character-contract-cases.js";
 
 /** Assert that parsing `line` throws a DslProtocolError with exactly `code`. */
 function expectCode(line: string, code: DslErrorCode): void {
@@ -128,6 +129,29 @@ describe("parseDslLine", () => {
     expect(parseDslLine("他说“走吧”：然后转身。")).toEqual({
       kind: "narration",
       text: "他说“走吧”：然后转身。",
+    });
+  });
+
+  // --- C1 契约向量（计划 R09）：解析对照，固定当前行为 ---
+
+  it("C1/R09 解析对照（待消除）：未注册说话人的半角/全角冒号结果不同", () => {
+    // 固定【当前】缺陷行为：说话人未注册（不在 knownSpeakers）时，
+    // 「神秘女子: 台词」半角冒号走 dialogue 正则直接命中，凭空造出
+    // speaker=神秘女子 的幻影身份；「神秘女子：台词」全角冒号因说话人
+    // 未注册不做归一化，整行降级 narration——同一句台词因冒号全半角
+    // 不同而走向两种身份。标注 待消除：后续任务统一该分歧时此用例
+    // 必须随之改写；它是缺陷快照，不是未来兼容规范。
+    const speakers = new Set(["苏遥", "林澈"]); // 神秘女子 未注册
+    expect(parseDslLine(PARSE_COLON_DIVERGENCE_CASE.asciiColonLine, speakers)).toEqual({
+      kind: "dialogue",
+      speaker: PARSE_COLON_DIVERGENCE_CASE.unregisteredSpeaker,
+      text: PARSE_COLON_DIVERGENCE_CASE.dialogueText,
+      visual: { hasVisual: false, resetVisual: false },
+      name: { hasName: false, resetName: false },
+    });
+    expect(parseDslLine(PARSE_COLON_DIVERGENCE_CASE.fullwidthColonLine, speakers)).toEqual({
+      kind: "narration",
+      text: PARSE_COLON_DIVERGENCE_CASE.fullwidthColonLine,
     });
   });
 
