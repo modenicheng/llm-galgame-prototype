@@ -5,29 +5,37 @@
 # ID join）。素材描述仍在 assets/resources.yaml（背景/音乐/立绘），config.yaml
 # 只保留 provider/profile 等音频配置——角色到 profile 的绑定由本名册给出。
 #
-# 内容契约（计划 §3.3，M1 内容评审确认）：林澈 = 玩家控制角色
-# （playerId=linche，主角视角），苏遥 = NPC。这是明确的内容契约变化：
-# 旧林澈模型对白只作回放兼容，新生成不得替玩家发声（模型不写玩家台词、
-# 不替玩家做选择或确认）。若产品意图是「林澈也是 NPC，另有无名玩家」，
-# 必须在内容评审中显式改此定义——不允许两种解释并存。
+# 内容契约（用户裁定 2026-09-19：林澈=NPC、玩家无名第一视角）：本裁定取代
+# f758fe2 的主解读（林澈=玩家）而采用其备选解读（计划 §3.3 alternative
+# reading）。静态 fallback 世界的玩家 = 无名实体（id=player，initialLabel=
+# 你，无正式姓名、无立绘、无音色，persona 只含控制契约，对齐 campus 侧
+# characters.yaml 的 player 条目模式）。林澈降为普通 NPC（保留人物卡，可
+# 正常发声）；苏遥仍为 NPC。「模型不得替玩家生成台词/选择/确认对白」防线
+# 全部指向该无名实体——模型可写林澈与苏遥的台词，不得写玩家的。
 #
 # revision 由加载器按 C2 规范化投影计算，不在文件内手写。
 schemaVersion: 2
 scopeId: main-fallback-world
-playerId: linche
+playerId: player
 characters:
+  - id: player
+    name: 玩家
+    control: player
+    initialLabel: 你
+    persona: |
+      玩家角色由玩家本人控制：模型不替玩家做选择，也不生成玩家的台词、
+      选择或确认对白；玩家的话语一律由运行时创建（玩家输入）。玩家以
+      第一视角（「你」）在场，没有正式姓名。
   - id: linche
     name: 林澈
-    control: player
+    control: npc
     initialLabel: 林澈
     persona: |
-      玩家控制角色（主角视角）。高中生，理性克制，观察力强。说话简洁，
-      偶尔带冷幽默；面对异常现象先求证再行动，不轻易流露情绪。
+      NPC。高中生，理性克制，观察力强。说话简洁，偶尔带冷幽默；面对
+      异常现象先求证再行动，不轻易流露情绪。
       银灰偏淡紫色齐肩长发、明亮浅蓝色眼睛，深海军蓝中式立领短袖上衣，
       金色滚边和盘扣，白色短裤与过膝袜；双手常藏在身后、身体微微前倾，
       气质精致、主动、俏皮，兼具社交伪装能力。
-      注意：该角色由玩家控制——模型不得替林澈生成台词、选择或确认对白，
-      也不得描述林澈未经过玩家选择的心理活动。
     presentation:
       defaultLook: calm
       defaultPosition: right

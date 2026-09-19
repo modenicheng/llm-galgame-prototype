@@ -197,13 +197,22 @@ describe("createRuntimeApplication", () => {
     // The Game exposes the metrics collector the CLI prints from.
     expect(app.game.getMetrics()).toBeDefined();
     // M1 registry 端口：无世界启动 = 静态 fallback 世界 roster（characters.yaml
-    // 由 M1 落盘；玩家契约 playerId=linche，苏遥为 NPC）。
+    // 由 M1 落盘；玩家契约按用户裁定 2026-09-19：playerId=player 无名玩家，
+    // 林澈/苏遥均为 NPC）。
     expect(app.characterRegistry.mode).toBe("roster");
     const roster = app.characterRegistry.registry?.roster;
     expect(roster).toBeDefined();
-    expect(roster!.playerId).toBe("linche");
-    expect(app.characterRegistry.registry?.require("linche").control).toBe("player");
+    expect(roster!.playerId).toBe("player");
+    expect(app.characterRegistry.registry?.require("player").control).toBe("player");
+    expect(app.characterRegistry.registry?.require("linche").control).toBe("npc");
     expect(app.characterRegistry.registry?.require("suyao").control).toBe("npc");
+    // 「模型不得替玩家生成台词/选择/确认对白」防线指向无名玩家实体：
+    // 可发声 cast = 全体 NPC（林澈可被模型演绎），玩家不在其中。
+    const npcIds = roster!.characters
+      .filter((c) => c.control === "npc")
+      .map((c) => c.id)
+      .sort();
+    expect(npcIds).toEqual(["linche", "suyao"]);
   });
 
   it("accepts an explicit configPath and reloads the config from disk", async () => {
@@ -600,9 +609,11 @@ function dashscopeConfig(): AppConfig {
       // roster 来自当前游戏 canon：动态无素材角色完整存在。
       expect(registry!.require("guest_01").control).toBe("npc");
       expect(registry!.roster.playerId).toBe("player_one");
-      // fallback cast 不掺入生成世界（独立身份命名空间）。
+      // fallback cast 不掺入生成世界（独立身份命名空间：linche/suyao/player
+      // 三个静态条目都不得出现）。
       expect(registry!.get("linche")).toBeUndefined();
       expect(registry!.get("suyao")).toBeUndefined();
+      expect(registry!.get("player")).toBeUndefined();
 
       // 人物卡为派生产物：world/prompts/characters.txt 被（重）生成为
       // 携带 canon roster revision 的派生卡，并进入运行时 prompt。
