@@ -150,7 +150,13 @@ export interface ConsolidationOutcome {
   rejected: RejectedOp[];
   /** 本次全部 §6.2 身份/引用问题（episode + ops，按拒绝记录顺序）。 */
   identityIssues: readonly IdentityValidationIssue[];
-  /** identity = 提案携带身份视图并按 §6.2 校验；legacy = 无身份权威。 */
+  /**
+   * identity = 提案携带身份视图并按 §6.2 校验；legacy = 无身份权威。
+   * 命名澄清（C8-port minor）：此处的 "legacy" 只指「无身份权威参与
+   * 校验」（身份视图/registry 缺席），与 dsl.protocol_version 的 legacy
+   * v1 协议无关——任一协议版本的会话都可能以 identity 或 legacy 模式
+   * 整理记忆，二者不构成同一根轴。
+   */
   validationMode: "identity" | "legacy";
 }
 
@@ -696,7 +702,8 @@ function emptyOutcome(): ConsolidationOutcome {
     findings: [],
     rejected: [],
     identityIssues: [],
-    // 无提案可校验（port 缺席/失败/空批次）：没有身份权威参与。
+    // 无提案可校验（port 缺席/失败/空批次）：没有身份权威参与
+    // （"legacy" = 无身份权威，非 v1 协议——见字段声明处命名澄清）。
     validationMode: "legacy",
   };
 }

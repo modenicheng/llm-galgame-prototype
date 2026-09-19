@@ -337,16 +337,17 @@ describe("character identity contract — shared vectors (C1)", () => {
     // 直接命中，凭空造出 speaker=神秘女子 的幻影身份；全角冒号因说话人
     // 未注册不做归一化，整行降级 narration。同一句台词、两种冒号、两种
     // 身份——固定为待消除行为快照，不作为未来兼容规范。
+    // 断言直接展开 pinnedAsciiOutcome/pinnedFullwidthOutcome：共享向量里
+    // 的钉子数据是唯一事实源，两处不一致（向量或解析器漂移）都会在此红灯。
     const ascii = parseDslLine(PARSE_COLON_DIVERGENCE_CASE.asciiColonLine);
     const fullwidth = parseDslLine(PARSE_COLON_DIVERGENCE_CASE.fullwidthColonLine);
 
     expect(ascii).toMatchObject({
-      kind: "dialogue",
-      speaker: PARSE_COLON_DIVERGENCE_CASE.unregisteredSpeaker,
+      ...PARSE_COLON_DIVERGENCE_CASE.pinnedAsciiOutcome,
       text: PARSE_COLON_DIVERGENCE_CASE.dialogueText,
     });
     expect(fullwidth).toMatchObject({
-      kind: "narration",
+      ...PARSE_COLON_DIVERGENCE_CASE.pinnedFullwidthOutcome,
       text: PARSE_COLON_DIVERGENCE_CASE.fullwidthColonLine,
     });
   });

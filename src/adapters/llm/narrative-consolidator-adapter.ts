@@ -117,9 +117,6 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
       });
     this.model = opts.api.model;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
-    // 注：main 侧不存在 campus 的 this.registry 未赋值缺陷——main 以
-    // `private readonly opts` 参数属性持有注册表（this.opts.registry 恒
-    // 可用），C5 的注入自始生效。
   }
 
   async consolidate(request: ConsolidationRequest): Promise<ConsolidationResult> {
@@ -231,8 +228,12 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
       }
       if (identity.canonicalLocations !== undefined) {
         parts.push("===== 当前地点 ID =====");
+        // C8-port minor（V1 扫尾）：渲染源与校验权威同源——校验读
+        // view.canonicalLocations（memory-consolidator validateReferenceTags），
+        // 提示也渲染该集合本身，不再回读 request.stateLocation 字符串；
+        // 两源同派生时逐字节等值，漂移时提示与校验不会各自为政。
         parts.push(
-          `episode.locations 只能引用：${request.stateLocation}（其他地点标签将被拒绝）。`,
+          `episode.locations 只能引用：${[...identity.canonicalLocations].join("、")}（其他地点标签将被拒绝）。`,
         );
       }
     } else {
