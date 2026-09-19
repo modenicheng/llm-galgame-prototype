@@ -6,9 +6,10 @@
  * 记忆；需要路人时由内容包/世界生成先注册无素材 NPC。两角色可共享素材
  * 或音色，但身份不合并。
  *
- * 端口（bootstrap 接线）：`CharacterRegistryProvider` 以显式 legacy 模式
- * 为缺省——roster 由 F1/M1 的 characters.yaml 加载器提供之前，运行时
- * 身份仍走资产目录 legacy 注册表（兼容边界）。
+ * 端口（bootstrap 接线）：M1 起 `CharacterRegistryProvider` 缺省为 roster
+ * 模式（生成世界 = 当前游戏 canon；无世界启动 = characters.yaml 内容包）；
+ * legacy 模式仅保留给 pre-M1 旧世界（canon 无 control 元信息）的兼容
+ * 边界。
  */
 import type { AssetCatalog } from "../assets/types.js";
 import { hasSpriteVariant } from "../assets/catalog.js";
@@ -365,8 +366,8 @@ export function createCharacterRegistry(
 export type CharacterRegistryMode = "legacy" | "roster";
 
 /**
- * bootstrap 接线端口。legacy 模式是 C2 的显式缺省：F1/M1 提供
- * characters.yaml roster 之前，运行时行为保持不变。
+ * bootstrap 接线端口。M1 起 roster 模式为缺省（characters.yaml / 每游戏
+ * canon）；legacy 模式是 pre-M1 旧世界的显式兼容边界。
  */
 export interface CharacterRegistryProvider {
   readonly mode: CharacterRegistryMode;

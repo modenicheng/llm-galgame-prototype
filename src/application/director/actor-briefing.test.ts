@@ -114,4 +114,25 @@ describe("buildActorBriefing", () => {
     expect(prompt).not.toContain(outlineSecret);
     expect(prompt).toContain("调查旧校舍的终端");
   });
+
+  it("M1：canon 全量（世界真相/他周目知识）不进演员剪报——受控参数边界保持", () => {
+    // M1 起角色名册/canon 由 roster 真源提供，但演员侧输入形状不变：
+    // ActorBriefingInput 上不存在 canon/roster 字段，结构上无法注入全量
+    // canon（含结局候选、晋升事实、他周目知识）。
+    const canonSecret = "canon 晋升事实：旧终端通往平行世界（第 3 周目证据）";
+    const briefing = buildActorBriefing({
+      memoryBrief: makeBriefWithSections(),
+      rawEventCount: 8,
+      directive: {
+        sceneId: "scene_1",
+        sceneGoal: "调查旧校舍的终端",
+        defenseBeats: [],
+        endingPressure: false,
+      },
+    });
+    expect(briefing).not.toContain(canonSecret);
+    expect(briefing).not.toContain("worldSetting");
+    const prompt = buildDslUserPrompt(4, makeBriefingCtx(briefing));
+    expect(prompt).not.toContain(canonSecret);
+  });
 });

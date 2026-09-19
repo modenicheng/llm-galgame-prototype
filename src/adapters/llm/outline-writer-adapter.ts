@@ -17,6 +17,7 @@ import {
   VOLUME_VALUES,
 } from "../../application/audio/performance-compiler.js";
 import { CharacterVoiceDesignSchema } from "../../application/outline/outline-writer.js";
+import { CharacterLabelSchema } from "../../core/characters/types.js";
 import type { OutlineOp } from "../../core/ports/outline-store-port.js";
 import type {
   OutlineMaintainerPort,
@@ -36,8 +37,13 @@ const VOICE_CONTRACT =
 
 const SYSTEM_PROMPT =
   "你是 GalGame 编剧。输入玩家的世界描述，输出开局前的世界设计 JSON：" +
-  "{worldSetting, characters:[{id,name,description,spriteBinding?,voice?}], outline:[{id,purpose,kind,status,location?}]}。" +
+  "{worldSetting, characters:[{id,name,control,initialLabel?,description,spriteBinding?,voice?}], outline:[{id,purpose,kind,status,location?}]}。" +
   "worldSetting 是世界观设定（≤500 字）。characters 2~5 名角色，description ≤200 字。" +
+  "control 是角色控制类型（player=玩家控制 / npc=模型演绎）：恰好一名 player（玩家视角角色），其余全部 npc；" +
+  "不得给 player 角色设计 voice，也不得在剧情中替 player 角色写台词、选择或确认对白——玩家话语只来自玩家输入。" +
+  "initialLabel 是初始名牌（可选，匿名起点可用如「神秘女子」，缺省用 name）。" +
+  "id 是稳定机器键（字母开头，字母/数字/下划线/连字符），行头与角色卡都用它指名。"
+  +
   VOICE_CONTRACT +
   "outline 是幕级大纲：至少 2 个 kind=act 的幕节点按剧情顺序排列，最后恰好 1~2 个 kind=ending 的结局节点；" +
   "所有节点 status 固定为 planned；id 用 `ol_` 前缀且全局唯一（结局节点 id 以 `ol_end_` 开头）。" +
@@ -47,6 +53,8 @@ const SYSTEM_PROMPT =
 const DraftCharacterSchema = z.object({
   id: z.string().min(1).max(64),
   name: z.string().min(1).max(64),
+  control: z.enum(["player", "npc"]),
+  initialLabel: z.exactOptional(CharacterLabelSchema),
   description: z.string().min(1).max(500),
   spriteBinding: z.exactOptional(z.string().min(1).max(64)),
   // 画像 schema 唯一真源在 outline-writer.ts（与 voice-design.json 落盘共用）。
@@ -63,7 +71,27 @@ const RawOutlineNodeSchema = z.object({
 
 const RawWorldDraftSchema = z.object({
   worldSetting: z.string().min(1).max(2000),
-  characters: z.array(DraftCharacterSchema).min(1).max(8),
+  characters: z
+    .array(DraftCharacterSchema)
+    .min(1)
+    .max(8)
+    // M1 玩家契约：生成世界必须恰好一名玩家控制角色，且玩家不允许音频画像。
+    .refine(
+      (characters) =>
+        characters.filter((character) => character.control === "player").length === 1,
+      { message: "characters 必须恰好包含 1 名 control=player 的玩家角色（不能没有，也不能多名）" },
+    )
+    .refine(
+      (characters) =>
+        characters.every(
+          (character) => character.control !== "player" || character.voice === undefined,
+        ),
+      { message: "玩家控制角色（control=player）不允许 voice 音频画像——模型不替玩家发声" },
+    )
+    .refine(
+      (characters) => new Set(characters.map((character) => character.id)).size === characters.length,
+      { message: "角色 id 必须唯一" },
+    ),
   outline: z
     .array(RawOutlineNodeSchema)
     .min(3)

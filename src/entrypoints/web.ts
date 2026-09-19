@@ -14,6 +14,7 @@ import {
 } from "../hosts/local-web/last-game.js";
 import { WorldGenerator } from "../application/world/world-generator.js";
 import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
+import { loadAssetCatalog } from "../application/assets/asset-catalog-loader.js";
 import { GameGraphStore } from "../adapters/storage/game-graph-store.js";
 import { OutlineStore } from "../adapters/storage/outline-store.js";
 import { buildGraphView, buildSettlementView, buildGalleryView } from "../application/graph/graph-view.js";
@@ -61,9 +62,14 @@ async function main(): Promise<void> {
   writeLastGameId(DEFAULT_GAMES_ROOT, app.gameId);
   // M3.3 直通开玩：POST /api/worlds → 生成世界 → 装配新 RuntimeApplication
   // → 宿主进程内换绑。生成失败大声报错（500 透传），不回退旧世界。
+  // M1：创建前校验需要素材目录（spriteBinding 引用）与 author 角色表
+  // （动态-author 冲突检测）。
+  const worldAssets = await loadAssetCatalog(config.assets.catalog);
   const worldService = new WorldGenerator({
     writer: new OutlineWriterAdapter({ apiKey: loadApiKey(config), api: config.api }),
     gamesRoot: DEFAULT_GAMES_ROOT,
+    assets: worldAssets,
+    authorCharacterIds: Object.keys(worldAssets.characters),
   });
   const host = new LocalWebHost({
     config,

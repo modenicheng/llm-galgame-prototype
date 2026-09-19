@@ -12,6 +12,7 @@ import type { MemoryDigest } from "../../core/graph/types.js";
 import type { CanonSnapshot } from "../../core/ports/canon-store-port.js";
 import type { RunReview } from "../../core/ports/review-store-port.js";
 import type { OutlineOp } from "../../core/ports/outline-store-port.js";
+import type { CharacterControl } from "../../core/characters/types.js";
 import {
   DELIVERY_TAGS,
   ENERGY_VALUES,
@@ -64,8 +65,19 @@ export interface DraftCharacter {
   id: string;
   name: string;
   description: string;
+  /**
+   * M1 控制类型（权威元信息，随 canon 落盘）：生成世界必须恰好一名
+   * `player`——玩家视角角色，模型不得替其生成台词/选择/确认对白。
+   */
+  control: CharacterControl;
+  /**
+   * M1 初始名牌（匿名起点可用，如「神秘女子」）；缺省回落 name。
+   * 运行时改名走 CharacterRuntimeState.labels，不覆写人设。
+   */
+  initialLabel?: string;
+  /** 复用 author 素材集（资源引用，不是身份合并）。 */
   spriteBinding?: string;
-  /** 编剧设计的音频画像；缺省 = 无设计，回落既有链路。 */
+  /** 编剧设计的音频画像；缺省 = 无设计，回落既有链路；玩家角色不允许。 */
   voice?: CharacterVoiceDesign;
 }
 

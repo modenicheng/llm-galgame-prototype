@@ -33,8 +33,9 @@ export interface RuntimeApplication {
   /** Loaded asset catalog (docs §57–§60); hosts expose it via manifest + /game-assets. */
   assetCatalog: AssetCatalog;
   /**
-   * C2 角色注册表端口。显式 legacy 模式为缺省：身份仍走资产目录兼容
-   * 边界；M1 提供 characters.yaml roster 后切换 roster 模式。
+   * M1 角色注册表端口。生成世界 = 当前游戏 canon 构建的 roster；无世界/
+   * 空 canon 启动 = main 静态 fallback 世界 roster（characters.yaml）；旧
+   * 世界（pre-M1 canon）= 显式 legacy 兼容模式（身份走资产目录注册表）。
    */
   characterRegistry: CharacterRegistryProvider;
   shutdown(): Promise<void>;
@@ -63,6 +64,12 @@ export interface RuntimeApplicationOptions {
   config?: AppConfig;
   /** voices.yaml path (default "voices.yaml" in the cwd). */
   voicesPath?: string;
+  /**
+   * M1：静态 fallback 世界角色名册内容包路径（默认 "characters.yaml"，即
+   * main 根目录内容包）。生成世界不受此参数影响（roster 来自当前游戏
+   * canon）。
+   */
+  charactersPath?: string;
   /** story-plan.yaml path (default config.narrative.story_plan_path). */
   storyPlanPath?: string;
   /** Session id for narrative-memory files and the game session. When

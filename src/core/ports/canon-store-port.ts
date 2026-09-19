@@ -7,11 +7,20 @@
  * 不回改既有快照，决议 D6，恢复靠 digest 嵌入而非 canon）。
  */
 
-/** 角色卡（与 OutlineWriterAdapter 的 DraftCharacter 同构；端口层不反向依赖 application）。 */
+/**
+ * 角色卡（与 OutlineWriterAdapter 的 DraftCharacter 同构；端口层不反向依赖
+ * application）。M1 起 `control/initialLabel` 是权威元信息：世界生成必写；
+ * 旧 canon（无 control）经显式判定走 legacy 兼容边界，不在此猜测。
+ */
 export interface CanonCharacter {
   id: string;
   name: string;
   description: string;
+  /** M1 控制类型：恰一名 player（玩家契约），其余 npc。 */
+  control?: "player" | "npc";
+  /** M1 初始名牌（匿名起点）；缺省回落 name。 */
+  initialLabel?: string;
+  /** 复用 author 素材集（资源引用，不是身份合并）。 */
   spriteBinding?: string;
 }
 

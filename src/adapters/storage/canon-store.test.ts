@@ -50,6 +50,67 @@ describe("CanonStore", () => {
     ).rejects.toThrow(/已存在/);
   });
 
+  it("M1：saveScaffold 保留 control/initialLabel 权威元信息并原样读回", async () => {
+    await store.saveScaffold({
+      worldSetting: "深夜旧书店。",
+      characters: [
+        {
+          id: "player_one",
+          name: "读者",
+          description: "玩家控制角色。",
+          control: "player",
+          initialLabel: "读者",
+        },
+        {
+          id: "guest_01",
+          name: "访客",
+          description: "匿名访客。",
+          control: "npc",
+          initialLabel: "神秘女子",
+          spriteBinding: "suyao",
+        },
+      ],
+    });
+    const snap = await store.load();
+    expect(snap.characters).toEqual([
+      {
+        id: "player_one",
+        name: "读者",
+        description: "玩家控制角色。",
+        control: "player",
+        initialLabel: "读者",
+      },
+      {
+        id: "guest_01",
+        name: "访客",
+        description: "匿名访客。",
+        control: "npc",
+        initialLabel: "神秘女子",
+        spriteBinding: "suyao",
+      },
+    ]);
+  });
+
+  it("M1：旧 canon 文件（无 control 元信息）宽容读取——兼容读取与新格式写入分开", async () => {
+    const dir = path.join(root, "game_canon_test", "world");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      canonPath(),
+      JSON.stringify({
+        revision: 0,
+        worldSetting: "旧世界。",
+        characters: [{ id: "a_1", name: "甲", description: "旧世界角色。" }],
+        promotedFacts: [],
+        exceptions: [],
+      }),
+      "utf8",
+    );
+    const snap = await new CanonStore(root, "game_canon_test").load();
+    expect(snap.characters[0]).toEqual({ id: "a_1", name: "甲", description: "旧世界角色。" });
+    expect(snap.characters[0]?.control).toBeUndefined();
+  });
+
   it("applyPromotion writes canon.json atomically and appends the log trail", async () => {
     const rev1 = await store.applyPromotion(
       [

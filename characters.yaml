@@ -1,0 +1,69 @@
+# main 静态 fallback 世界角色名册（M1 内容包；C2 schemaVersion 2）。
+#
+# 身份真源（计划 §3.2）：本文件。派生数据：registry、人物卡投影
+# （prompts/characters.txt）、音频绑定（voiceProfileId ↔ voices.yaml 按
+# ID join）。素材描述仍在 assets/resources.yaml（背景/音乐/立绘），config.yaml
+# 只保留 provider/profile 等音频配置——角色到 profile 的绑定由本名册给出。
+#
+# 内容契约（计划 §3.3，M1 内容评审确认）：林澈 = 玩家控制角色
+# （playerId=linche，主角视角），苏遥 = NPC。这是明确的内容契约变化：
+# 旧林澈模型对白只作回放兼容，新生成不得替玩家发声（模型不写玩家台词、
+# 不替玩家做选择或确认）。若产品意图是「林澈也是 NPC，另有无名玩家」，
+# 必须在内容评审中显式改此定义——不允许两种解释并存。
+#
+# revision 由加载器按 C2 规范化投影计算，不在文件内手写。
+schemaVersion: 2
+scopeId: main-fallback-world
+playerId: linche
+characters:
+  - id: linche
+    name: 林澈
+    control: player
+    initialLabel: 林澈
+    persona: |
+      玩家控制角色（主角视角）。高中生，理性克制，观察力强。说话简洁，
+      偶尔带冷幽默；面对异常现象先求证再行动，不轻易流露情绪。
+      银灰偏淡紫色齐肩长发、明亮浅蓝色眼睛，深海军蓝中式立领短袖上衣，
+      金色滚边和盘扣，白色短裤与过膝袜；双手常藏在身后、身体微微前倾，
+      气质精致、主动、俏皮，兼具社交伪装能力。
+      注意：该角色由玩家控制——模型不得替林澈生成台词、选择或确认对白，
+      也不得描述林澈未经过玩家选择的心理活动。
+    presentation:
+      defaultLook: calm
+      defaultPosition: right
+      looks:
+        mysterious_silhouette: { spriteSet: linche, variant: mysterious_silhouette }
+        gentle_smile: { spriteSet: linche, variant: gentle_smile }
+        speaking_smile: { spriteSet: linche, variant: speaking_smile }
+        sly_smile: { spriteSet: linche, variant: sly_smile }
+        annoyed: { spriteSet: linche, variant: annoyed }
+        serious: { spriteSet: linche, variant: serious }
+        delighted: { spriteSet: linche, variant: delighted }
+        surprised: { spriteSet: linche, variant: surprised }
+        calm: { spriteSet: linche, variant: calm }
+    voiceProfileId: linche_main
+
+  - id: suyao
+    name: 苏遥
+    control: npc
+    initialLabel: 苏遥
+    persona: |
+      NPC。转学生，外表温和，实际十分警觉；避免直接说明真实目的。
+      深蓝紫色齐肩短发、酒红/粉紫色瞳孔，白色荷叶边短袖上衣与长裙，
+      白色凉鞋；整体气质文静、端庄，带有明显的神秘感，表情克制，
+      是冷静观察型角色。随身带着一台来历不明的旧终端，
+      在被追问时会自然地转移话题。
+    presentation:
+      defaultLook: neutral
+      defaultPosition: left
+      looks:
+        mysterious_silhouette: { spriteSet: suyao, variant: mysterious_silhouette }
+        neutral: { spriteSet: suyao, variant: neutral }
+        speaking_smile: { spriteSet: suyao, variant: speaking_smile }
+        displeased: { spriteSet: suyao, variant: displeased }
+        surprised: { spriteSet: suyao, variant: surprised }
+        guarded: { spriteSet: suyao, variant: guarded }
+        uneasy: { spriteSet: suyao, variant: uneasy }
+        content: { spriteSet: suyao, variant: content }
+        joyful: { spriteSet: suyao, variant: joyful }
+    voiceProfileId: suyao_main
