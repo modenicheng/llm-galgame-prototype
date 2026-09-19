@@ -2,12 +2,22 @@
  * Tests for config loading and validation.
  */
 
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, expectTypeOf, afterAll } from "vitest";
 import { writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { parse } from "yaml";
-import { loadConfig, loadAuthorConfig } from "./config.js";
+import { loadConfig, loadAuthorConfig, type AppConfig } from "./config.js";
+
+// ---------------------------------------------------------------------------
+// C7 兼容形状移除：AppConfig.characters（角色→音色别名键）不复存在
+// ---------------------------------------------------------------------------
+
+describe("C7 compat-shape removal — AppConfig.characters", () => {
+  it("类型级：AppConfig 不携带 characters 字段", () => {
+    expectTypeOf<AppConfig>().not.toHaveProperty("characters");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -567,6 +577,23 @@ describe("loadAuthorConfig validation errors", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadConfig validation errors", () => {
+  it("C7：携带已移除的 characters 段（角色→音色别名键）显式报错，不静默丢弃", async () => {
+    const filePath = await writeTempYaml(
+      "removed-characters-section",
+      [
+        "api:",
+        "  model: test",
+        "",
+        "characters:",
+        "  suyao:",
+        "    name: 苏遥",
+        "    voice_profile: suyao_main",
+      ].join("\n"),
+    );
+
+    await expect(loadConfig(filePath)).rejects.toThrow(/characters 段已移除/);
+  });
+
   it("should reject missing model", async () => {
     const filePath = await writeTempYaml(
       "missing-model",

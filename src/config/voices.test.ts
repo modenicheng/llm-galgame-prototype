@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { z } from "zod";
 import {
   loadVoices,
   resolveVoiceBinding,
   resolveVoiceId,
   validateDashscopeEnv,
   validateLocalModelConfig,
+  VoicesConfigSchema,
   type VoicesConfig,
 } from "./voices.js";
 
@@ -63,12 +65,68 @@ describe("loadVoices v3 strict", () => {
     ["missing voice_id_env", `version: 3\nprofiles:\n  p:\n    semantic: { base_description: x }\n    providers:\n      dashscope: { model: m, voice_revision: 1, instruction_mode: free }\n`],
     ["bad env var name", `version: 3\nprofiles:\n  p:\n    semantic: { base_description: x }\n    providers:\n      dashscope: { model: m, voice_id_env: "1BAD-name", voice_revision: 1, instruction_mode: free }\n`],
     ["unknown instruction_mode", `version: 3\nprofiles:\n  p:\n    semantic: { base_description: x }\n    providers:\n      dashscope: { model: m, voice_id_env: V, voice_revision: 1, instruction_mode: arbitrary }\n`],
+    // C7（C2 safeRecord 模式）：自有 __proto__ / constructor / prototype
+    // 数据键不得被 z.record 静默丢弃——在原始输入上显式拒绝（YAML 路径）。
+    ["__proto__ profile key", `version: 3\nprofiles:\n  __proto__:\n    semantic: { base_description: x }\n    providers: {}\n`],
+    ["constructor profile key", `version: 3\nprofiles:\n  constructor:\n    semantic: { base_description: x }\n    providers: {}\n`],
+    ["prototype profile key", `version: 3\nprofiles:\n  prototype:\n    semantic: { base_description: x }\n    providers: {}\n`],
   ])("rejects %s", async (_label, yaml) => {
     const dir = fixtureDir(yaml);
     try {
       await expect(loadVoices(path.join(dir, "voices.yaml"))).rejects.toThrow();
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// profiles 键原型链安全（C2 safeRecord 模式，C7 接线）——schema 级
+// ---------------------------------------------------------------------------
+
+/**
+ * JSON.parse 造出的自有 `__proto__` 数据键是真实输入面（wire/存储回读），
+ * zod v4 的 z.record 不把它交给键 schema 校验而是静默丢弃——safeRecord
+ * 必须在原始输入上拒绝。
+ */
+function profilesInputWithOwnKey(key: string): unknown {
+  const raw = `{"version":3,"profiles":{"${key}":{"semantic":{"base_description":"x"},"providers":{}}}}`;
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  // 前置条件钉死：该键确为自有数据键（不是原型链成员）。
+  expect(Object.keys(parsed.profiles as object)).toContain(key);
+  return parsed;
+}
+
+describe("VoicesConfigSchema — safeRecord 原型链安全（C7）", () => {
+  it("自有 __proto__ 数据键（JSON.parse 构造）被显式拒绝，不被 z.record 静默丢弃", () => {
+    const input = profilesInputWithOwnKey("__proto__");
+    expect(VoicesConfigSchema.safeParse(input).success).toBe(false);
+    // 危险对照（钉住被防住的缺陷）：裸 z.record 会静默丢键后放行——
+    // 正是 safeRecord 存在的理由。
+    const plainRecord = z.record(z.string().min(1), z.any());
+    expect(plainRecord.safeParse((input as { profiles: object }).profiles).success).toBe(true);
+    expect(Object.keys(plainRecord.parse((input as { profiles: object }).profiles))).toEqual([]);
+  });
+
+  it("constructor / prototype 字面键同样在原始输入上拒绝", () => {
+    for (const key of ["constructor", "prototype"]) {
+      expect(VoicesConfigSchema.safeParse(profilesInputWithOwnKey(key)).success, key).toBe(false);
+    }
+  });
+
+  it("合法键原样通过（passthrough 不受安全层影响）", () => {
+    const parsed = VoicesConfigSchema.safeParse({
+      version: 3,
+      profiles: {
+        suyao_main: {
+          semantic: { base_description: "清亮少女声", allowed_delivery: ["gentle"], forbidden_delivery: [] },
+          providers: {},
+        },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(Object.keys(parsed.data.profiles)).toEqual(["suyao_main"]);
     }
   });
 });

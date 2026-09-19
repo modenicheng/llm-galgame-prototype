@@ -128,7 +128,12 @@ const VoiceProfileSchema = z
   })
   .strict();
 
-const VoicesConfigSchema = z
+/**
+ * 导出供测试直接钉 safeRecord 语义（C7：原型链安全键拒绝在原始输入上
+ * 生效，不被 z.record 静默丢键绕过——JSON.parse 造出的自有 __proto__
+ * 数据键是真实攻击面，不只是 YAML 路径）。
+ */
+export const VoicesConfigSchema = z
   .object({
     version: z.literal(3),
     profiles: safeRecord(z.string().min(1), VoiceProfileSchema),
