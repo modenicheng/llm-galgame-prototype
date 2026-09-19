@@ -25,7 +25,8 @@
  * UNKNOWN_COMMAND / UNKNOWN_LINE），绝不静默降级。
  *
  * v1 语法冻结在 legacy-line-parser.ts，只服务显式 legacy 请求；本文件的
- * parseDslLine 做按请求版本路由（缺省 1，服务端 dsl.protocol_version）。
+ * parseDslLine 做按请求版本路由（解析层缺省 1 = legacy reader 口径；
+ * 服务端新局默认已是 2，Ruling 15）。
  */
 import type { CharacterPosition } from "../../presentation/types.js";
 import { DslProtocolError, DSL_COMMAND_LIST_V2 } from "./types.js";
@@ -74,8 +75,9 @@ function resolveParseOptions(
 /**
  * 版本路由入口：v2 请求（`{ protocolVersion: 2 }`）解析为 DslLineV2，
  * 其余一切调用形状（缺省、knownSpeakers 集合、`{ protocolVersion: 1 }`）
- * 都进 v1 冻结解析器。缺省版本 = 1（服务端 dsl.protocol_version 默认值，
- * 本任务不翻默认）。
+ * 都进 v1 冻结解析器。解析层缺省 = 1（legacy reader 口径：不带版本的
+ * 调用只服务旧存档/冻结路径）；服务端新局默认已是 2（config.ts zod
+ * 缺省，Ruling 15），运行时 v2 路径显式携带 2，不依赖这里的缺省。
  */
 export function parseDslLine(
   line: string,

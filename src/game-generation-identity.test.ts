@@ -208,7 +208,7 @@ function expectIdentityShape(
   identity: GenerationIdentity,
   registry: CharacterRegistry,
 ): void {
-  expect(identity.protocolVersion).toBe(1); // 默认不翻（dsl.protocol_version 缺省 1）
+  expect(identity.protocolVersion).toBe(1); // 直连构造缺 dsl 块 → Game 兜底 v1（zod 缺省已是 2，Ruling 15）
   expect(identity.rosterRevision).toBe(registry.roster.revision);
   expect(identity.cast.allowedSpeakerIds).toEqual(["suyao", "linche"]); // 玩家不可由模型代言
   expect(identity.cast.sceneParticipantIds).toContain("player_one");

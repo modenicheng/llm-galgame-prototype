@@ -102,7 +102,7 @@ export type DslLine =
 /** 服务端 DSL 协议版本：1=legacy（冻结于 legacy-line-parser.ts），2=身份/文本/表演分离语法。 */
 export type DslProtocolVersion = 1 | 2;
 
-/** 版本路由选项；缺省 protocolVersion = 1（服务端 dsl.protocol_version 默认，不翻默认值）。 */
+/** 版本路由选项；解析层缺省 protocolVersion = 1（legacy reader；服务端新局默认已是 2，Ruling 15）。 */
 export interface DslParseOptions {
   protocolVersion?: DslProtocolVersion;
   /** 仅 v1 使用：注册说话人表（全角冒号归一化的门卫）。v2 忽略。 */

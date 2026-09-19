@@ -83,11 +83,16 @@ registry、后装配 generator/state/director/audio**；三处 roster cast 派�
 
 ### 3.1 版本旋钮
 
-- 配置：`config.yaml` `dsl.protocol_version: 1 | 2`，**默认 1**（zod
-  default，未翻默认值——V2 评估达标后才考虑改 2）。
+- 配置：`config.yaml` `dsl.protocol_version: 1 | 2`，**默认 2**（zod
+  default，Ruling 15 翻默认——全量测试 0 红后执行的控制器指令「迁移
+  所有路径到 v2」；v1 只经显式配置或旧存档 legacy reader 进入）。
 - 每局/世界创建时固定版本与 roster revision；已有流中途不切换。
 - 版本随请求显式携带（`DslParseOptions.protocolVersion` / 协议卡头
-  「DSL 协议版本」行），**不逐行猜 v1/v2**。
+  「DSL 协议版本」行），**不逐行猜 v1/v2**。解析层缺省仍为 1
+  （legacy reader 口径：不带版本的解析调用只服务冻结路径；运行时
+  v2 路径显式携带 2）。
+- 直连构造且缺 `dsl` 块的 config 对象（窄测试）由 Game 兜底为 v1；
+  生产 config 必经 `loadConfig`（zod），恒携带显式版本。
 
 ### 3.2 v2 语法（line-parser.ts `parseDslV2Line` + `parseDslSegmentTextV2`
 + compiler.ts `compileSegmentV2`/`compileSegmentV2WithRepair`）
@@ -131,13 +136,13 @@ registry、后装配 generator/state/director/audio**；三处 roster cast 派�
   双分支字节一致；character-contract.test.ts 以钉子数据为唯一事实源——
   V1/R09 接线）。它是待消除行为的钉子，不是未来兼容规范。
 
-### 3.4 v2 当前接线范围（已接通运行时解码；缺省仍 = 1，翻默认另行决策）
+### 3.4 v2 当前接线范围（已接通运行时解码；缺省 = 2，Ruling 15）
 
-`protocol_version: 2` 现已**端到端接通**运行时流式解码（port 自校园侧
-a1b7aac/c41582e/1ca3579/cb7804b，适配 main 的 M4.5 交互驱动与图运行时）；
-缺省仍是 1——无显式配置的新局行为与接线前逐字节一致
-（`game-dsl-v2.test.ts` 用接线前 HEAD 89ef14e 录制的 main 自有 fixture
-钉死），默认值翻 2 是独立决策（§8）：
+`protocol_version` 缺省即 2：无显式配置的新局直接是 v2 会话
+（`game-dsl-v2.test.ts` 默认行为测试钉住——真实 `loadConfig` 起 v2
+会话/v2 卡/v2 解码路径）；v1 会话仍经显式 `protocol_version: 1`
+进入，与接线前逐字节一致（`game-dsl-v2.test.ts` 用接线前 HEAD
+89ef14e 录制的 main 自有 fixture 钉死）：
 
 - 协议卡（模型拿到的语法说明与示例）、任务头与 `GenerationIdentity`
   携带版本（C5/C6）。
@@ -188,9 +193,9 @@ a1b7aac/c41582e/1ca3579/cb7804b，适配 main 的 M4.5 交互驱动与图运行�
 离线评估 harness（evaluate-character-dsl-harness）继续覆盖纯编译层
 回放；运行时路径由 `game-dsl-v2.test.ts`（knob=2 端到端：名牌快照进
 事件、@ch exit 退场、预取分支隔离与 promote、一次尾部修复、双败走段
-失败路径、缺省旋钮仍 = 1、main 自有 v1 fixture 逐字节钉死）与
-`llm.test.ts`（DSL v2 mode generation：边流边播、中段失败保留已播组、
-结构修复、外层取消拒绝修复等）钉住。
+失败路径、缺省旋钮 = 2 的新局默认行为测试、显式 1 的 main 自有 v1
+fixture 逐字节钉死）与 `llm.test.ts`（DSL v2 mode generation：边流边播、
+中段失败保留已播组、结构修复、外层取消拒绝修复等）钉住。
 
 ## 4. 玩家边界
 
@@ -296,18 +301,23 @@ main 的持久化是**剧情图快照**（校园是 state.v2.json 信封——�
 - **不可 upcast 的图**：恢复显式抛 `SnapshotUpcastError`（不是静默新局）；
   测试以字节指纹断言整目录只读未改写。
 
-## 8. 发布与回滚（计划 §8 原文语义）
+## 8. 发布与回滚（计划 §8 原文语义；Ruling 15 翻默认后现行状态）
 
-- 发布开关为服务端 `dsl.protocol_version: 1 | 2`；**新局默认值仅在 V2
-  达标后改为 2**（当前默认 1）。
+- 发布开关为服务端 `dsl.protocol_version: 1 | 2`；**新局默认值已翻为
+  2**（Ruling 15：全量测试 0 红后执行的控制器指令「迁移所有路径到
+  v2」）。v1 不再是任何新局的缺省——只经显式配置
+  （`protocol_version: 1`）或旧存档的 legacy reader 进入。
+- **回滚 = 在 config.yaml 显式写 `dsl.protocol_version: 1`**（每局
+  固定版本，不影响已开的 v2 会话；zod 校验仍接受 1）。
 - 每局/世界创建时固定版本与 roster revision；切换开关只影响新请求所属
-  的新版本会话，**不能在已有流中途切换**。
+  的新版本会话，**不能在已有流中途切换**。跨旋钮恢复（如 v1 时代的图
+  会话在缺省 2 的配置下继续）：路由按**当前配置**继续、不按存档版本
+  重路由，恢复路径响亮诊断漂移（见 §7）。
 - 旧 reader 与新 writer 分离：回滚旧 runtime 时，v4 快照（版本高于旧
   程序支持）显式拒绝读取（版本闸门报错），旧档原文件仍可恢复。
-- **F1/M1 入口未完成的分支不能打开 v2 严格生成**。main 的 M1 入口已完成
-  （registry 装配先于演员），§3.4 的流式 v2 解码也已接线（逐组门控转发
-  + 一次尾部修复）；翻默认前剩下的前置是**在线评估**（TBD-online 未
-  采样）——离线评估（§9）绿 ≠ 在线改善已证实。
+- F1/M1 入口已随任务收口完成；main 的流式 v2 解码已接线（§3.4，逐组
+  门控转发 + 一次尾部修复）。在线评估未启用前不得用离线结论冒充在线
+  改善（离线评估见 §9——离线绿 ≠ 在线改善已证实）。
 
 ## 9. 验证命令
 
