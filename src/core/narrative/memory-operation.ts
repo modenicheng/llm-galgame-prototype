@@ -194,9 +194,15 @@ export interface IdentityValidationIssue {
 }
 
 /**
- * 提案校验的显式结果：accepted（value + 空 issues）或 rejected（非空
- * issues）。合法空提案 = accepted no-op；身份/引用非法 = rejected——绝不
- * 用过滤后的空数组伪装成功。
+ * 提案校验的显式结果：accepted（value + 空 issues）或 rejected。合法空
+ * 提案 = accepted no-op；身份/引用非法 = rejected——绝不用过滤后的空
+ * 数组伪装成功。
+ *
+ * rejected 的 `issues` **不保证非空**（终审文档修正，port 自 campus
+ * 84a68ee）：身份/引用校验拒绝必然携带非空 issues；但纯规则/形状拒绝
+ * （如 memory-consolidator 的 episode 形状不合法）走 rejected 且
+ * `issues: []`——拒绝理由在调用方的 RejectedOp.reason 里。消费方一律判
+ * `status`，不得用 issues.length 区分成败。
  */
 export type ValidatedProposal<T> =
   | { status: "accepted"; value: T; issues: [] }
