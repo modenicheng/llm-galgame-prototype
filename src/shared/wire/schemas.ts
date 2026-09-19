@@ -4,8 +4,17 @@
  * Both ends validate inbound messages with the same zod schemas so a
  * malformed message never reaches the runtime or the UI. Pure data
  * validation: no Node or DOM imports.
+ *
+ * C2 过渡边界：新格式对白跨 wire 一律经 `NewFormatDialogueEventSchema`
+ * 校验（characterId/displayLabel 必填）；旧 `speaker` 载荷只允许在本
+ * 边界经 legacy 读取器（story/types 的 DialogueDraftEventSchema）读入。
  */
 import { z } from "zod";
+import { CharacterLabelSchema } from "../../core/characters/types.js";
+import { CharacterDialogueEventSchema } from "../../story/types.js";
+
+/** 新格式对白在 wire 上的唯一校验入口（strict：拒绝混写旧 speaker）。 */
+export const NewFormatDialogueEventSchema = CharacterDialogueEventSchema;
 
 export const AudioScopeSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("active") }),
@@ -25,7 +34,9 @@ export const AudioDescriptorSchema = z.object({
     "background",
   ]),
   speakerId: z.string().min(1),
-  displaySpeaker: z.string().min(1),
+  // C2：displaySpeaker 是名牌文本，按统一 Unicode 名牌规则校验
+  //（trim 后 1–64 码点、拒绝控制字符）。
+  displaySpeaker: CharacterLabelSchema,
   format: z.object({
     encoding: z.literal("pcm_s16le"),
     sampleRate: z.number().int().positive(),

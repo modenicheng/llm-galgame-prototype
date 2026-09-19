@@ -73,6 +73,10 @@ export const EMPTY_CHARACTER_REGISTRY: CharacterRegistry = {
  * Build the CharacterRegistry from catalog character bindings (docs §7,
  * §10). `resolveById` accepts the internal id first, then falls back to
  * the script name; `resolveByScriptName` matches dialogue headers.
+ *
+ * C2 legacy bridge：身份真源已移至 `src/core/characters/`（roster +
+ * CharacterRegistry）。本函数留在兼容边界——bootstrap legacy 模式与旧
+ * parser 仍由资产目录派生注册表；新内容格式不得新增依赖。
  */
 export function toCharacterRegistry(catalog: AssetCatalog): CharacterRegistry {
   const byId = new Map<string, CharacterRegistryEntry>();
@@ -126,4 +130,19 @@ export function createAssetResolver(catalog: AssetCatalog): AssetResolver {
       return asset !== undefined ? { src: asset.src } : undefined;
     },
   };
+}
+
+/**
+ * 原型链安全的立绘存在性检查（C2 角色 registry 资源绑定校验用）：
+ * `catalog.spriteSets["toString"]` 这类原型成员绝不能算“素材存在”。
+ */
+export function hasSpriteVariant(
+  catalog: AssetCatalog,
+  spriteSet: string,
+  variant: string,
+): boolean {
+  if (!Object.hasOwn(catalog.spriteSets, spriteSet)) return false;
+  const set = catalog.spriteSets[spriteSet];
+  if (set === undefined) return false;
+  return Object.hasOwn(set.variants, variant);
 }

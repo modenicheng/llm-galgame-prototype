@@ -196,6 +196,9 @@ describe("createRuntimeApplication", () => {
     expect(typeof app.game.dispatch).toBe("function");
     // The Game exposes the metrics collector the CLI prints from.
     expect(app.game.getMetrics()).toBeDefined();
+    // C2 registry 端口：显式 legacy 模式缺省（F1 落 characters.yaml 前不切换）。
+    expect(app.characterRegistry.mode).toBe("legacy");
+    expect(app.characterRegistry.registry).toBeUndefined();
   });
 
   it("accepts an explicit configPath and reloads the config from disk", async () => {
