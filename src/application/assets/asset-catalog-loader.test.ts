@@ -246,6 +246,13 @@ describe("loadAssetCatalog", () => {
     expect(catalog.spriteSets.linche!.variants.calm!.src).toBe(
       "characters/linche/calm.png",
     );
+    // M1 返工（用户裁定 2026-09-19）防漂移：模型可见素材指引与立绘描述
+    // 不得再把林澈写成主角/玩家（同一 prompt bundle 里是无名玩家卡）；
+    // 也不得保留「待在 left 侧」的主角站位指令——名册 defaultPosition=right。
+    expect(catalog.guidance).not.toContain("主角");
+    expect(catalog.guidance).not.toContain("待在 left");
+    expect(catalog.spriteSets.linche!.description).not.toContain("主角");
+    expect(catalog.spriteSets.linche!.description).toContain("林澈");
   });
 });
 
