@@ -23,6 +23,7 @@ export interface AppDomRefs {
   controlsRoot: HTMLElement;
   startRoot: HTMLElement;
   endRoot: HTMLElement;
+  recordsRoot: HTMLElement;
 }
 
 /** `button` variant: explicit `type="button"` so Enter/Space never submit a form. */
@@ -170,6 +171,7 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     el("p", "start-tagline", "雨夜、灯影与未说出口的话——每一次选择，都由你与 AI 共同落笔。"),
     button("btn btn--start", "开始游戏"),
     el("p", "start-hint", "点击后将启用声音，并建立本机会话连接"),
+    button("btn btn--ghost btn--records", "过往记录"),
     warningEl,
   );
   startRoot.append(startInner);
@@ -188,12 +190,18 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     el("p", "end-text", ""),
     el("p", "end-session", ""),
     button("btn btn--ghost end-restart", "重新开始"),
+    button("btn btn--ghost end-menu", "返回主界面"),
   );
   endRoot.append(endInner);
 
+  // 过往记录浮层（主界面入口）：列表内容与加载/空态由 RecordsOverlay 构建。
+  // DOM 序位于 start/end 遮罩之后（z-index 相同时后者居上），打开时盖住主界面。
+  const recordsRoot = el("section", "overlay overlay--records") as HTMLElement;
+  recordsRoot.hidden = true;
+
   // 生成过程的错误/状态一律不上玩家端（操作员看 /monitor）；fatal 时舞台
   // 停在最后一帧，控制条里的重开按钮承担恢复入口。
-  root.append(backdrop, stage, controlsRoot, startRoot, endRoot);
+  root.append(backdrop, stage, controlsRoot, startRoot, endRoot, recordsRoot);
 
   return {
     stage,
@@ -209,5 +217,6 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     controlsRoot,
     startRoot,
     endRoot,
+    recordsRoot,
   };
 }

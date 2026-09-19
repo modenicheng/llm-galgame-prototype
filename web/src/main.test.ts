@@ -625,6 +625,89 @@ describe("session restart (campus booth)", () => {
     await vi.waitFor(() => expect(restartBtn.disabled).toBe(false));
   });
 
+  it("end screen 返回主界面 swaps to the start screen; starting again reuses the live context and follows the new session", async () => {
+    await bootStarted();
+    feed({ type: "session_started", sessionId: "sess-menu0001", location: "/sessions/sess-menu0001" });
+    feed({ type: "session_ended", ending: { type: "end", ending_id: "end-1", text: "结局。" } });
+
+    const endOverlay = document.querySelector(".overlay--end") as HTMLElement;
+    await vi.waitFor(() => expect(endOverlay.hasAttribute("hidden")).toBe(false));
+
+    const menuBtn = document.querySelector(".end-menu") as HTMLButtonElement;
+    menuBtn.click();
+    const startOverlay = document.querySelector(".overlay--start") as HTMLElement;
+    await vi.waitFor(() => {
+      expect(startOverlay.hasAttribute("hidden")).toBe(false);
+      expect(endOverlay.hasAttribute("hidden")).toBe(true);
+    });
+
+    // 主界面再次开始：复用已解锁的 AudioContext（不新建），走 restart_session。
+    const contextBefore = FakeAudioContext.last;
+    (document.querySelector(".btn--start") as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(sentCommands().filter((c) => c.type === "restart_session")).toHaveLength(1);
+    });
+    expect(FakeAudioContext.last).toBe(contextBefore);
+    // 新会话落地前开始页保持待机（不闪回结局页）。
+    expect(startOverlay.hasAttribute("hidden")).toBe(false);
+
+    // 新会话投影落地：开始页收起，等待指示接管新故事。
+    feedProjection({ sessionId: "sess-menu0002", phase: "running", recentLines: [] });
+    await vi.waitFor(() => {
+      expect(startOverlay.hasAttribute("hidden")).toBe(true);
+      expect(endOverlay.hasAttribute("hidden")).toBe(true);
+      const waiting = document.querySelector(".waiting") as HTMLElement;
+      expect(waiting.hasAttribute("hidden")).toBe(false);
+    });
+  });
+
+  it("start screen 过往记录 opens the archive overlay and Esc closes it", async () => {
+    // 浮层在 boot 时绑定当时的 fetch——存根必须先于 boot 就位。
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url === "/api/config") {
+          return Promise.resolve(
+            new Response(JSON.stringify(DEFAULT_PUBLIC_WEB_CONFIG), { status: 200 }),
+          );
+        }
+        if (url === "/api/saves") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                saves: [
+                  {
+                    sessionId: "sess-done",
+                    phase: "ended",
+                    lastPlayedAt: "2026-09-19T19:52:00.000Z",
+                    turnCount: 7,
+                    endingGrade: "HE",
+                    endingTitle: "三十一秒的招新稿",
+                    endingText: "故事到此结束。",
+                  },
+                ],
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+        return Promise.resolve(new Response("not found", { status: 404 }));
+      }),
+    );
+    await bootStarted();
+
+    (document.querySelector(".btn--records") as HTMLButtonElement).click();
+    const records = document.querySelector(".overlay--records") as HTMLElement;
+    await vi.waitFor(() => expect(records.hasAttribute("hidden")).toBe(false));
+    await vi.waitFor(() => {
+      expect(records.querySelectorAll(".records__item")).toHaveLength(1);
+    });
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(records.hasAttribute("hidden")).toBe(true);
+  });
+
   it("keeps generation phase details off the player screen while waiting", async () => {
     await bootStarted();
     feed({ type: "session_started", sessionId: "sess-wait", location: "/sessions/sess-wait" });

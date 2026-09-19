@@ -16,6 +16,8 @@ const GRADE_LABELS: Record<string, string> = {
 
 export interface EndScreenHooks {
   onRestart(): void;
+  /** 返回主界面：回开始页（本局已完结，无进度可丢，无需确认）。 */
+  onBackToMenu(): void;
 }
 
 export interface EndingLike {
@@ -49,6 +51,7 @@ export class EndScreen {
   private readonly textEl: HTMLElement;
   private readonly sessionEl: HTMLElement;
   private readonly restartBtn: HTMLButtonElement;
+  private readonly menuBtn: HTMLButtonElement;
 
   constructor(root: HTMLElement, hooks: EndScreenHooks) {
     this.root = root;
@@ -57,7 +60,9 @@ export class EndScreen {
     this.textEl = root.querySelector(".end-text") as HTMLElement;
     this.sessionEl = root.querySelector(".end-session") as HTMLElement;
     this.restartBtn = root.querySelector(".end-restart") as HTMLButtonElement;
+    this.menuBtn = root.querySelector(".end-menu") as HTMLButtonElement;
     this.restartBtn.addEventListener("click", () => hooks.onRestart());
+    this.menuBtn.addEventListener("click", () => hooks.onBackToMenu());
   }
 
   /** Present the ending. Returns true when the payload was usable. */

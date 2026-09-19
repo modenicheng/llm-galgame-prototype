@@ -153,6 +153,38 @@ describe("session archive", () => {
     expect(stats.legacyFiles).toBe(1);
   });
 
+  it("extracts ending grade/title/text for the player records view", async () => {
+    await writeSave(base, "ended-full", {
+      "state.json": JSON.stringify({
+        phase: "ended",
+        ending: {
+          type: "end",
+          ending_id: "end_13",
+          grade: "HE",
+          title: "三十一秒的招新稿",
+          text: "故事到此结束。",
+        },
+      }),
+    });
+    // 旧存档只有 ending_id：新字段缺省而不是猜值。
+    await writeSave(base, "ended-legacy", {
+      "state.json": JSON.stringify({ phase: "ended", ending: { ending_id: "end_old" } }),
+    });
+
+    const saves = await listSessionSaves(base);
+    const full = saves.find((save) => save.sessionId === "ended-full");
+    expect(full?.endingId).toBe("end_13");
+    expect(full?.endingGrade).toBe("HE");
+    expect(full?.endingTitle).toBe("三十一秒的招新稿");
+    expect(full?.endingText).toBe("故事到此结束。");
+
+    const legacy = saves.find((save) => save.sessionId === "ended-legacy");
+    expect(legacy?.endingId).toBe("end_old");
+    expect(legacy?.endingGrade).toBeUndefined();
+    expect(legacy?.endingTitle).toBeUndefined();
+    expect(legacy?.endingText).toBeUndefined();
+  });
+
   describe("isValidSessionId", () => {
     it("accepts timestamp ids and safe names", () => {
       expect(isValidSessionId("2026-09-16T09-00-00-000Z")).toBe(true);

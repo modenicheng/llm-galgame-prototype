@@ -47,6 +47,12 @@ export interface SessionSaveSummary {
   phase?: RuntimeSnapshot["phase"];
   /** Terminal ending recorded in the snapshot, when the save has ended. */
   endingId?: string;
+  /** @ending 档位（TE|HE|NE|BE）；旧存档缺省时为 undefined。 */
+  endingGrade?: string;
+  /** @ending 结尾词（结局标题）；缺省为 undefined。 */
+  endingTitle?: string;
+  /** @ending 结局全文；缺省为 undefined。 */
+  endingText?: string;
   hasNarrativeMemory: boolean;
   /** Total bytes of events.jsonl + state.json + narrative files. */
   sizeBytes: number;
@@ -132,19 +138,38 @@ function countEventLine(
 }
 
 /** Light state.json read: existence + phase/ending only, tolerant of damage. */
-async function readSnapshotInfo(
-  saveDir: string,
-): Promise<{ hasSnapshot: boolean; phase?: RuntimeSnapshot["phase"]; endingId?: string }> {
+async function readSnapshotInfo(saveDir: string): Promise<{
+  hasSnapshot: boolean;
+  phase?: RuntimeSnapshot["phase"];
+  endingId?: string;
+  endingGrade?: string;
+  endingTitle?: string;
+  endingText?: string;
+}> {
   try {
     const raw = await readFile(path.join(saveDir, "state.json"), "utf8");
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed)) return { hasSnapshot: true };
     const phase =
       parsed.phase === "active" || parsed.phase === "ended" ? parsed.phase : undefined;
-    const ending = isRecord(parsed.ending) && typeof parsed.ending.ending_id === "string"
-      ? { endingId: parsed.ending.ending_id }
-      : {};
-    return { hasSnapshot: true, phase, ...ending };
+    // 结局块（玩家端「过往记录」用它展示档位/结尾词/全文）：逐字段宽容
+    // 提取，旧存档或被截断的快照缺哪个就少报哪个。
+    const ending = isRecord(parsed.ending) ? parsed.ending : null;
+    const endingId =
+      ending !== null && typeof ending.ending_id === "string"
+        ? { endingId: ending.ending_id }
+        : {};
+    const endingGrade =
+      ending !== null && typeof ending.grade === "string"
+        ? { endingGrade: ending.grade }
+        : {};
+    const endingTitle =
+      ending !== null && typeof ending.title === "string"
+        ? { endingTitle: ending.title }
+        : {};
+    const endingText =
+      ending !== null && typeof ending.text === "string" ? { endingText: ending.text } : {};
+    return { hasSnapshot: true, phase, ...endingId, ...endingGrade, ...endingTitle, ...endingText };
   } catch {
     return { hasSnapshot: false };
   }

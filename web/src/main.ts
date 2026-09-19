@@ -33,6 +33,7 @@ import {
 } from "./storage/player-settings.js";
 import { SettingsMenu } from "./ui/settings-menu.js";
 import { BacklogOverlay } from "./ui/backlog-overlay.js";
+import { RecordsOverlay } from "./ui/records-overlay.js";
 import { setText, show } from "./ui/dom.js";
 import "./ui/styles.css";
 
@@ -88,6 +89,15 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
   const startScreen = new StartScreen(refs.startRoot, {
     onStart: async () => {
+      if (atMenu) {
+        // 主界面二局起手：音频与连接都还活着，让宿主重建一个新会话即可；
+        // 新会话的投影落地（session id 变化）时 atMenu 翻回、开始页收起。
+        beginRestart();
+        await new Promise<void>((resolve) => {
+          menuStartSettle = resolve;
+        });
+        return;
+      }
       const context = createAudioContext();
       if (context.state !== "running") {
         await context.resume(); // unlock within the gesture
@@ -106,6 +116,13 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
       started = true; // keep the gate closed once the session is underway
       startScreen.hide();
     },
+    onOpenRecords: () => {
+      recordsOverlay.open();
+    },
+  });
+  // 过往记录（主界面入口）：已完结局子的结局列表；数据现拉 /api/saves。
+  const recordsOverlay = new RecordsOverlay(refs.recordsRoot, {
+    onClose: () => recordsOverlay.close(),
   });
   if (token.length === 0) {
     startScreen.setWarning("未检测到会话令牌（?token=），本地服务可能拒绝连接");
@@ -218,6 +235,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   };
   const endScreen = new EndScreen(refs.endRoot, {
     onRestart: () => beginRestart(),
+    onBackToMenu: () => returnToMenu(),
   });
 
   // ---------------------------------------------------------------------------
@@ -225,7 +243,19 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   // a fresh session id (rotating the narrative seed). The rebased websocket
   // pushes a new projection snapshot; the render router picks the new session
   // up from there. Buttons stay pending until it lands (8s failsafe).
+  //
+  // 返回主界面（结尾页）：本局已完结、无进度可丢——切回开始页待机；下一局
+  // 由开始按钮触发同一条 restart 链路（atMenu 挂起开始页直到新会话落地）。
   // ---------------------------------------------------------------------------
+  let atMenu = false;
+  let menuStartSettle: (() => void) | null = null;
+  const returnToMenu = (): void => {
+    atMenu = true;
+    endScreen.hide();
+    recordsOverlay.close();
+    bgmController.apply(undefined); // 主界面不续播剧情 BGM
+    startScreen.show();
+  };
   let restartPending = false;
   let restartFailsafe: number | null = null;
   const endRestartPending = (): void => {
@@ -236,6 +266,8 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     }
     endScreen.setRestartPending(false);
     controls.setRestartPending(false);
+    menuStartSettle?.(); // 主界面起手的等待随 pending 一并了结（成功或 8s 兜底）
+    menuStartSettle = null;
   };
   const beginRestart = (): void => {
     if (restartPending) return;
@@ -248,6 +280,14 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
   window.addEventListener("keydown", (event) => {
     if (event.isComposing || event.keyCode === 229) return; // IME composition
+    // 过往记录浮层独占键盘：Esc 关闭，其余按键不进入剧情/主界面路由。
+    if (recordsOverlay.isOpen) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        recordsOverlay.close();
+      }
+      return;
+    }
     // 设置菜单打开时独占键盘：Esc 关闭它，其余按键不进入剧情路由
     // （面板里的滑杆/复选框需要方向键与空格，且菜单后的舞台不应推进）。
     if (settingsMenu.isOpen()) {
@@ -338,13 +378,15 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
       draftByInteractionId.clear();
       stageRenderer.clear();
       closeBacklog(); // 回看是旧会话的历史，随新会话一起收起
+      recordsOverlay.close(); // 主界面起手后记录浮层不再有意义
+      atMenu = false; // 新会话落地：主界面待机态翻回剧情路由
       if (restartPending) endRestartPending();
     } else if (view.sessionId !== undefined) {
       lastSessionId = view.sessionId;
     }
 
-    show(refs.startRoot, !started && mode === "BOOTSTRAP");
-    show(refs.endRoot, mode === "ENDING");
+    show(refs.startRoot, atMenu || (!started && mode === "BOOTSTRAP"));
+    show(refs.endRoot, mode === "ENDING" && !atMenu);
     show(refs.controlsRoot, mode !== "BOOTSTRAP" && mode !== "ENDING");
     // 结局/报错时回看面板自动收起（重开入口在结束页上）。
     if ((mode === "ENDING" || mode === "ERROR") && backlogOverlay.isOpen) {

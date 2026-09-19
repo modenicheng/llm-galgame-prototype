@@ -1542,25 +1542,29 @@ button {
   animation: seal-in 600ms var(--ease-out) 320ms both;
 }
 
-.end-grade--te {
+.end-grade--te,
+.records__grade--te {
   color: #c9a2f5;
   border-color: rgba(201, 162, 245, 0.5);
   background: rgba(201, 162, 245, 0.08);
 }
 
-.end-grade--he {
+.end-grade--he,
+.records__grade--he {
   color: #e8c064;
   border-color: rgba(232, 192, 100, 0.5);
   background: rgba(232, 192, 100, 0.08);
 }
 
-.end-grade--ne {
+.end-grade--ne,
+.records__grade--ne {
   color: #8fb3c7;
   border-color: rgba(143, 179, 199, 0.45);
   background: rgba(143, 179, 199, 0.08);
 }
 
-.end-grade--be {
+.end-grade--be,
+.records__grade--be {
   color: #e07a6a;
   border-color: rgba(224, 122, 106, 0.5);
   background: rgba(224, 122, 106, 0.08);
@@ -1593,6 +1597,171 @@ button {
 
 .end-session[hidden] {
   display: none;
+}
+
+/* 结尾页次级入口：返回主界面（重开按钮下方的暗色小钮）。 */
+.end-menu {
+  margin-top: 0.9em;
+  font-size: 0.82em;
+  letter-spacing: 0.4em;
+  text-indent: 0.4em;
+  opacity: 0.85;
+}
+
+/* --------------------------------------------------------------------------
+   Records overlay — 主界面「过往记录」
+   -------------------------------------------------------------------------- */
+
+/* 主界面次级入口：开始按钮下方的暗色小钮（过往记录）。 */
+.btn--records {
+  margin-top: 1.5em;
+  min-width: 10em;
+  font-size: 0.82em;
+  letter-spacing: 0.4em;
+  text-indent: 0.4em;
+  opacity: 0.85;
+  animation: rise-in 900ms var(--ease-out) 900ms both;
+}
+
+.overlay--records {
+  z-index: 24; /* 盖住同级的开始/结局遮罩（z20） */
+}
+
+.records__panel {
+  display: flex;
+  flex-direction: column;
+  width: min(46em, 92vw);
+  max-height: 78vh;
+  padding: 1.4em 1.6em;
+  background: linear-gradient(180deg, rgba(16, 20, 27, 0.94), rgba(10, 13, 18, 0.96));
+  border: 1px solid rgba(232, 167, 92, 0.16);
+  border-radius: 6px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  animation: rise-in 420ms var(--ease-out) both;
+}
+
+.records__header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.9em;
+  padding-bottom: 0.7em;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.records__title {
+  font-family: var(--font-title);
+  font-weight: 400;
+  font-size: 1.3em;
+  letter-spacing: 0.4em;
+  color: var(--lantern-soft);
+  text-shadow: 0 0 18px rgba(232, 167, 92, 0.4);
+}
+
+.records__count {
+  font-size: 0.72em;
+  letter-spacing: 0.1em;
+  color: var(--paper-faint);
+}
+
+.records__close {
+  margin-left: auto;
+  padding: 0.3em 0.9em;
+  font-size: 0.78em;
+  letter-spacing: 0.22em;
+  color: var(--paper-dim);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  transition:
+    color 180ms var(--ease-out),
+    border-color 180ms var(--ease-out);
+}
+
+.records__close:hover {
+  color: var(--lantern-soft);
+  border-color: rgba(232, 167, 92, 0.5);
+}
+
+.records__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55em;
+  padding: 0.9em 0.3em 0.4em 0.1em;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(232, 167, 92, 0.35) transparent;
+}
+
+.records__item {
+  padding: 0.75em 1.05em;
+  background: linear-gradient(90deg, rgba(20, 25, 34, 0.8), rgba(13, 16, 22, 0.8));
+  border: 1px solid rgba(232, 167, 92, 0.12);
+  border-left: 3px solid var(--lantern-deep);
+  border-radius: 4px;
+}
+
+.records__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75em;
+}
+
+/* 档位徽章（复用结局页配色，见 .records__grade--*）：窄条胶囊。 */
+.records__grade {
+  flex: none;
+  padding: 0.18em 0.75em;
+  font-size: 0.68em;
+  letter-spacing: 0.16em;
+  text-indent: 0.16em;
+  color: #9aa7b5;
+  border: 1px solid rgba(154, 167, 181, 0.45);
+  border-radius: 999px;
+  background: rgba(154, 167, 181, 0.08);
+}
+
+.records__ending {
+  font-family: var(--font-serif);
+  font-weight: 700;
+  font-size: 0.95em;
+  letter-spacing: 0.08em;
+  color: var(--paper);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.records__spacer {
+  flex: 1;
+}
+
+.records__turns,
+.records__date {
+  flex: none;
+  font-size: 0.7em;
+  letter-spacing: 0.08em;
+  color: var(--paper-faint);
+}
+
+.records__text {
+  margin-top: 0.5em;
+  font-size: 0.82em;
+  line-height: 1.8;
+  letter-spacing: 0.04em;
+  color: var(--paper-dim);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+
+.records__status {
+  padding: 1.6em 0.2em 0.6em;
+  text-align: center;
+  font-size: 0.82em;
+  letter-spacing: 0.14em;
+  color: var(--paper-faint);
 }
 
 /* --------------------------------------------------------------------------

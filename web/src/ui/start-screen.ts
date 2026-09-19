@@ -7,11 +7,14 @@ import { setText, show } from "./dom.js";
 
 export interface StartScreenHooks {
   onStart(): void | Promise<void>;
+  /** 打开「过往记录」浮层（已完结局子的结局列表）。 */
+  onOpenRecords(): void;
 }
 
 export class StartScreen {
   private readonly root: HTMLElement;
   private readonly btn: HTMLButtonElement;
+  private readonly recordsBtn: HTMLButtonElement;
   private readonly hint: HTMLElement;
   private readonly warning: HTMLElement;
   private readonly hooks: StartScreenHooks;
@@ -20,11 +23,13 @@ export class StartScreen {
     this.root = root;
     this.hooks = hooks;
     this.btn = root.querySelector(".btn--start") as HTMLButtonElement;
+    this.recordsBtn = root.querySelector(".btn--records") as HTMLButtonElement;
     this.hint = root.querySelector(".start-hint") as HTMLElement;
     this.warning = root.querySelector(".start-warning") as HTMLElement;
     this.btn.addEventListener("click", () => {
       void this.handleStart();
     });
+    this.recordsBtn.addEventListener("click", () => hooks.onOpenRecords());
   }
 
   show(): void {
