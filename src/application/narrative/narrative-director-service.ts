@@ -29,6 +29,7 @@ import type {
   EpisodeMemory,
   Lesson,
   FactRecord,
+  ConsolidationFailedInterval,
 } from "../../core/narrative/memory-types.js";
 import {
   VALID_THREAD_TRANSITIONS,
@@ -38,6 +39,7 @@ import type {
   SetupOp,
   RejectedOp,
   AuditFinding,
+  IdentityValidationIssue,
 } from "../../core/narrative/memory-operation.js";
 import type {
   MemoryProjection,
@@ -95,6 +97,15 @@ const ANCHOR_STATUS_ORDER: Record<StoryAnchorState["status"], number> = {
   reached: 1,
   passed: 2,
 };
+
+/** §6.2 issues 的简短渲染（诊断日志用：path=value（code）分号连接）。 */
+function formatIdentityIssuesBrief(
+  issues: readonly IdentityValidationIssue[],
+): string {
+  return issues
+    .map((issue) => `${issue.path}=${issue.value}（${issue.code}）`)
+    .join("；");
+}
 
 // ---------------------------------------------------------------------------
 // Config normalization
@@ -241,6 +252,9 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       recentEpisodeIds: [...loadedState.recentEpisodeIds],
       facts: [...loadedState.facts],
       beliefs: [...loadedState.beliefs],
+      // §6.2 M2：失败整理区间随会话恢复——已降级区间不再重试，成功水位
+      // 仍停在缺口前。
+      consolidationFailedIntervals: [...loadedState.consolidationFailedIntervals],
     };
 
     this.episodes = [...loadedEpisodes];
@@ -381,8 +395,11 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
   // -----------------------------------------------------------------------
 
   observeCommitted(events: readonly StoredEvent[]): void {
-    const watermark = this.memory.consolidatedThroughEventSeq;
-    const freshEvents = events.filter((event) => event.seq > watermark);
+    // §6.2 M2：读取/尝试游标与成功水位分离——降级区间的事件已消耗（不再
+    // 重试），恢复重放把它们再喂一遍时必须被过滤；成功整理的水位之下
+    // 同样过滤（既有语义）。空过滤结果无需补发终局报告（首次提交时已触发）。
+    const attemptCursor = this.attemptThroughEventSeq();
+    const freshEvents = events.filter((event) => event.seq > attemptCursor);
     if (freshEvents.length === 0) {
       // 恢复重放会把水位之下的事件再喂一遍——即便全部过期，终局事件也
       // 已在首次提交时触发过报告；此处无需补发。
@@ -399,6 +416,19 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     }
     this.pendingEvents.push(...freshEvents);
     this.maybeSchedule();
+  }
+
+  /**
+   * §6.2 M2 读取/尝试游标：max(成功水位, 降级区间末尾)。成功水位
+   * （consolidatedThroughEventSeq）只覆盖连续成功前沿；降级区间虽未成功，
+   * 其事件也已消耗（有限重试耗尽）——两者都不得再次入队。
+   */
+  private attemptThroughEventSeq(): number {
+    let cursor = this.memory.consolidatedThroughEventSeq;
+    for (const interval of this.memory.consolidationFailedIntervals) {
+      cursor = Math.max(cursor, interval.toSeq);
+    }
+    return cursor;
   }
 
   /**
@@ -500,7 +530,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
     // Delegate the pipeline (port call, validator filtering, episode id
     // generation) to the MemoryConsolidator. The batch is already capped.
-    const outcome = await this.consolidator.consolidate(
+    let outcome = await this.consolidator.consolidate(
       batch,
       this.memory,
       this.lastBriefRequest?.location ?? "",
@@ -515,6 +545,56 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       this.pendingEvents = [...pending, ...this.pendingEvents];
       this.lastConsolidateAt = Date.now();
       return { applied: 0, rejected: [] };
+    }
+
+    // --- §6.2 M2：身份/引用非法的提案不等于 no-op——整批不提交 ---
+    // 最多 1 次定向修复（同一批次携带上一次 issues 重试）；仍失败则记录
+    // 失败区间并降级：本批事件不再重试，播放继续，成功水位停在缺口前。
+    // 修复 ROOT CAUSE #1：此前身份被拒批次带着非空 result 一路流到水位
+    // 推进，把非法区间标记成了「已成功提取」。
+    if (outcome.identityIssues.length > 0) {
+      const firstAttemptRejected = [...outcome.rejected];
+      this.diagnostics.warn(
+        "NarrativeDirector",
+        `记忆提案身份/引用非法（§6.2 整批不提交）：${formatIdentityIssuesBrief(outcome.identityIssues)}；尝试定向修复`,
+      );
+      const repaired = await this.consolidator.consolidate(
+        batch,
+        this.memory,
+        this.lastBriefRequest?.location ?? "",
+        this.lastBriefRequest?.characters ?? [],
+        { priorIssues: outcome.identityIssues },
+      );
+      if (repaired.result !== null && repaired.identityIssues.length === 0) {
+        // 定向修复成功：以修复结果继续（首试拒绝留审计痕）。episode id
+        // 由 revision 派生——revision 未动，两次尝试生成同一 id，幂等。
+        if (firstAttemptRejected.length > 0) {
+          await this.recordRejectedOps(firstAttemptRejected);
+        }
+        outcome = repaired;
+      } else {
+        // 修复仍失败（身份仍非法或提取失败）：降级。失败区间入 state 并
+        // 持久化；本批事件不回队（有限重试已耗尽）；更新溢出事件照常
+        // 留待后续批次（后续批次可处理，但水位不得越过缺口）。
+        this.lastConsolidateAt = Date.now();
+        if (overflow.length > 0) {
+          this.pendingEvents = [...overflow, ...this.pendingEvents];
+        }
+        await this.recordDegradedInterval(
+          batch,
+          repaired.identityIssues.length > 0
+            ? repaired.identityIssues
+            : outcome.identityIssues,
+          [...firstAttemptRejected, ...repaired.rejected],
+        );
+        return {
+          applied: 0,
+          rejected:
+            repaired.rejected.length > 0
+              ? repaired.rejected
+              : firstAttemptRejected,
+        };
+      }
     }
 
     // --- Success: defer the newer overflow events to a later call ---
@@ -541,11 +621,16 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     const rejected = [...outcome.rejected];
 
     const batchLastSeq = batch[batch.length - 1]!.seq;
-    // FIFO guarantees the batch's last seq is exactly the new continuous
-    // front: every event up to batchLastSeq has now been consolidated
-    // (older events were consolidated in previous calls). No Math.max
-    // needed — the front only ever moves forward.
-    const newWatermark = batchLastSeq;
+    // §6.2 M2：连续成功水位不越过未解决缺口——本批区间内存在降级区间时
+    // 水位停在缺口前（缺口不能被标记为已成功提取；后续批次照常应用）。
+    // 降级区间的事件已从队列消耗，批区间可以跳过缺口开始，所以这里的
+    // FIFO 连续性保证不再无条件成立。
+    const currentWatermark = this.memory.consolidatedThroughEventSeq;
+    const blockingGap = this.memory.consolidationFailedIntervals.some(
+      (interval) =>
+        interval.fromSeq > currentWatermark && interval.fromSeq <= batchLastSeq,
+    );
+    const newWatermark = blockingGap ? currentWatermark : batchLastSeq;
 
     const applied = await this.mutateMemory(async (current) => {
       const shadow = structuredClone(current);
@@ -701,6 +786,48 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
       () => undefined,
     );
     return run;
+  }
+
+  /**
+   * §6.2 M2：记录降级的失败整理区间（定向修复耗尽）。区间入 state（经
+   * memory-write 链，与其它内存写串行）并持久化；两次尝试的被拒提案走
+   * 既有 appendOps/lessons 审计通道。降级区间是诊断级状态：持久化失败
+   * 只告警不回滚——会话内语义（不再重试、水位不越过缺口）保持一致。
+   */
+  private async recordDegradedInterval(
+    batch: readonly StoredEvent[],
+    issues: readonly IdentityValidationIssue[],
+    auditRejected: RejectedOp[],
+  ): Promise<void> {
+    const fromSeq = batch[0]!.seq;
+    const toSeq = batch[batch.length - 1]!.seq;
+    const interval: ConsolidationFailedInterval = {
+      fromSeq,
+      toSeq,
+      attempts: 2,
+      status: "degraded",
+    };
+    await this.mutateMemory(async (current) => {
+      const shadow = structuredClone(current);
+      shadow.consolidationFailedIntervals.push(interval);
+      try {
+        await this.store.saveState(shadow);
+      } catch (err) {
+        this.diagnostics.warn(
+          "NarrativeDirector",
+          `degraded interval persist failed (kept in memory): ${String(err)}`,
+        );
+      }
+      this.memory = shadow;
+    });
+    this.diagnostics.warn(
+      "NarrativeDirector",
+      `记忆区间 [${fromSeq},${toSeq}] 定向修复后仍被拒，降级（不再重试；成功水位停在缺口前）：` +
+        `${formatIdentityIssuesBrief(issues)}`,
+    );
+    if (auditRejected.length > 0) {
+      await this.recordRejectedOps(auditRejected);
+    }
   }
 
   /**

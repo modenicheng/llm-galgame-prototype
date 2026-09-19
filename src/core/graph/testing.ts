@@ -27,6 +27,7 @@ export function makeSnapshot(overrides?: Partial<StateSnapshot>): StateSnapshot 
       anchors: [],
       facts: [],
       beliefs: [],
+      consolidationFailedIntervals: [],
     },
     outlineRevision: 0,
     ...overrides,

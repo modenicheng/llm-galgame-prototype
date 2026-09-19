@@ -49,6 +49,7 @@ const EMPTY_STATE: NarrativeMemoryState = {
   recentEpisodeIds: [],
   beliefs: [],
   facts: [],
+  consolidationFailedIntervals: [],
 };
 
 export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {

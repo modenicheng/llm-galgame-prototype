@@ -23,6 +23,11 @@ import {
   acceptedProposal,
   rejectedProposal,
   describeCharacterTag,
+  validateBeliefOp,
+  validateFactIdentity,
+  validateBeliefIdentity,
+  selectCitableReferences,
+  buildMemoryIdentityView,
 } from "./memory-validator.js";
 import type { MemoryIdentityView } from "./memory-validator.js";
 
@@ -31,6 +36,8 @@ import type {
   PlotThread,
   SetupPayoff,
   NarrativeMemoryState,
+  FactRecord,
+  BeliefState,
 } from "../../core/narrative/memory-types.js";
 import type {
   ThreadOp,
@@ -86,6 +93,7 @@ function makeMemory(
     recentEpisodeIds: [],
     beliefs: [],
     facts: [],
+    consolidationFailedIntervals: [],
     ...overrides,
   };
 }
@@ -1025,6 +1033,10 @@ describe("§6.2 identity validators (C8)", () => {
       evidenceCharacterIds: new Set(["suyao"]),
       evidenceSeqRange: { min: 1, max: 12 },
       canonicalLocations: new Set(["clubroom"]),
+      // M2 扩展字段：本组 C8 用例不触及（undefined = 无权威）。
+      citableFactIds: undefined,
+      citableBeliefIds: undefined,
+      evidenceBatchSeqRange: undefined,
       ...overrides,
     };
   }
@@ -1249,3 +1261,362 @@ describe("§6.2 identity validators (C8)", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// §6.2 M2 — fact/belief 引用集、批内证据与 belief 知情链（在同一 C8 身份
+// 视图上扩展，不另立第二套校验器）。
+// ---------------------------------------------------------------------------
+
+describe("§6.2 M2 fact/belief identity extension", () => {
+  function makeM2View(
+    overrides: Partial<MemoryIdentityView> = {},
+  ): MemoryIdentityView {
+    return {
+      rosterRevision: "v2-testrev",
+      knownCharacterIds: new Set(["player", "suyao", "linche", "guest_01"]),
+      charactersByDisplayName: new Map([["苏遥", ["suyao"]], ["林澈", ["linche"]]]),
+      allowedCharacterIds: new Set(["player", "suyao"]),
+      evidenceCharacterIds: new Set(["suyao"]),
+      evidenceSeqRange: { min: 1, max: 12 },
+      canonicalLocations: new Set(["clubroom"]),
+      citableFactIds: new Set(["fact_1_1", "fact_1_2"]),
+      citableBeliefIds: new Set(["belief_1_1"]),
+      evidenceBatchSeqRange: { min: 5, max: 12 },
+      ...overrides,
+    };
+  }
+
+  function makeFact(overrides: Partial<FactRecord> & { id: string }): FactRecord {
+    return {
+      content: `内容 ${overrides.id}`,
+      evidenceEventSeqs: [1],
+      checkpoint: 1,
+      superseded: false,
+      ...overrides,
+    };
+  }
+
+  function makeBelief(
+    overrides: Partial<BeliefState> & { id: string; characterId: string },
+  ): BeliefState {
+    return {
+      content: `认知 ${overrides.id}`,
+      status: "active",
+      createdAtCheckpoint: 1,
+      origin: "believe",
+      ...overrides,
+    };
+  }
+
+  // -- validateBeliefOp：correct 必须指向同一角色（规则层，双模式生效） ----
+
+  describe("validateBeliefOp — correct targets the SAME character", () => {
+    const beliefs: BeliefState[] = [
+      makeBelief({ id: "belief_1_1", characterId: "suyao" }),
+      makeBelief({ id: "belief_1_2", characterId: "linche" }),
+    ];
+
+    it("accepts correct referencing the same character's active belief", () => {
+      const reason = validateBeliefOp(
+        {
+          type: "correct",
+          characterId: "suyao",
+          content: "纠正后的认知",
+          evidenceEventSeqs: [1],
+          replacesBeliefId: "belief_1_1",
+        },
+        beliefs,
+        ["suyao"],
+        10,
+      );
+      expectAccepted(reason);
+    });
+
+    it("rejects correct targeting ANOTHER character's belief (structured rule code)", () => {
+      const reason = validateBeliefOp(
+        {
+          type: "correct",
+          characterId: "suyao",
+          content: "越权纠正",
+          evidenceEventSeqs: [1],
+          replacesBeliefId: "belief_1_2",
+        },
+        beliefs,
+        ["suyao"],
+        10,
+      );
+      expectRejected(reason);
+      expect(reason).toContain("linche");
+      expect(rejectionRule(reason!)).toBe("BELIEF_CORRECT_FOREIGN_TARGET");
+    });
+  });
+
+  // -- selectCitableReferences：请求候选与引用权威同源、超预算同步收缩 ----
+
+  describe("selectCitableReferences", () => {
+    it("selects visible (non-superseded) facts by cast/location/major and caps the citable scope", () => {
+      const facts: FactRecord[] = [
+        makeFact({ id: "f_a", checkpoint: 3, importance: "major" }),
+        makeFact({ id: "f_b", checkpoint: 9, scope: { characters: ["suyao"] } }),
+        makeFact({ id: "f_c", checkpoint: 8, superseded: true }),
+        makeFact({ id: "f_d", checkpoint: 2, scope: { location: "clubroom" } }),
+        makeFact({ id: "f_e", checkpoint: 7 }),
+      ];
+      const beliefs: BeliefState[] = [
+        makeBelief({ id: "b_s1", characterId: "suyao", createdAtCheckpoint: 5 }),
+        makeBelief({ id: "b_l1", characterId: "linche", createdAtCheckpoint: 6 }),
+        makeBelief({ id: "b_s0", characterId: "suyao", status: "resolved", createdAtCheckpoint: 9 }),
+      ];
+      const selected = selectCitableReferences({
+        facts,
+        beliefs,
+        characters: ["suyao"],
+        location: "clubroom",
+        factMax: 8,
+        beliefMax: 12,
+      });
+      // superseded 不给引用；无 scope 关联的 f_e 不给引用。
+      expect(selected.relevantFacts.map((f) => f.id).sort()).toEqual(["f_a", "f_b", "f_d"]);
+      // 只有在场角色（cast）的 active belief 可被 correct。
+      expect(selected.relevantBeliefs.map((b) => b.id)).toEqual(["b_s1"]);
+    });
+
+    it("over budget: candidates shrink AND the citable scope shrinks with them (same list)", () => {
+      const facts: FactRecord[] = Array.from({ length: 5 }, (_, i) =>
+        makeFact({ id: `f_${i}`, checkpoint: i + 1, importance: "major" }),
+      );
+      const selected = selectCitableReferences({
+        facts,
+        beliefs: [],
+        characters: [],
+        location: "",
+        factMax: 3,
+        beliefMax: 12,
+      });
+      expect(selected.relevantFacts).toHaveLength(3);
+      // checkpoint 倒序：保最新 3 条（f_4/f_3/f_2），f_0/f_1 移出可引用范围。
+      expect(selected.relevantFacts.map((f) => f.id).sort()).toEqual(["f_2", "f_3", "f_4"]);
+      expect(selected.citableFactIds.has("f_0")).toBe(false);
+      expect(selected.citableFactIds.has("f_4")).toBe(true);
+    });
+  });
+
+  // -- buildMemoryIdentityView M2 扩展 ---------------------------------------
+
+  describe("buildMemoryIdentityView — M2 fields", () => {
+    it("carries citable reference ids and the batch seq range [fromSeq, toSeq]", () => {
+      const registry = makeRegistry([
+        { id: "player", name: "玩家" },
+        { id: "suyao", name: "苏遥" },
+      ]);
+      const view = buildMemoryIdentityView({
+        events: [
+          makeStoredDialogue(5, "suyao", "第五句。"),
+          makeStoredDialogue(9, "player", "第九句。"),
+        ],
+        registry,
+        stateCharacters: ["suyao"],
+        stateLocation: "clubroom",
+        citableFactIds: new Set(["fact_1_1"]),
+        citableBeliefIds: new Set(["belief_1_1"]),
+      });
+      expect(view.citableFactIds).toEqual(new Set(["fact_1_1"]));
+      expect(view.citableBeliefIds).toEqual(new Set(["belief_1_1"]));
+      // 批区间 = 本批 [fromSeq, toSeq]：批前（已整理过的）seq 会被拒。
+      expect(view.evidenceBatchSeqRange).toEqual({ min: 5, max: 9 });
+      // 已提交区间语义（setup 证据用）保持 C8 形状。
+      expect(view.evidenceSeqRange).toEqual({ min: 1, max: 9 });
+    });
+  });
+
+  // -- validateFactIdentity ----------------------------------------------------
+
+  describe("validateFactIdentity", () => {
+    it("accepts amend referencing a citable (visible, provided) fact with in-batch evidence", () => {
+      const issues = validateFactIdentity(
+        { type: "amend", id: "fact_1_1", content: "修订", evidenceEventSeqs: [6] },
+        makeM2View(),
+        "factOps[0]",
+      );
+      expect(issues).toEqual([]);
+    });
+
+    it("rejects amend referencing an unknown / out-of-scope fact id with INVALID_REFERENCE", () => {
+      const issues = validateFactIdentity(
+        { type: "amend", id: "fact_9_9", content: "幽灵事实", evidenceEventSeqs: [6] },
+        makeM2View(),
+        "factOps[0]",
+      );
+      expect(issues).toEqual([
+        { code: "INVALID_REFERENCE", path: "factOps[0].id", value: "fact_9_9" },
+      ]);
+    });
+
+    it("rejects predecessor (pre-batch) and over-batch evidence seqs with EVIDENCE_OUT_OF_RANGE", () => {
+      const issues = validateFactIdentity(
+        { type: "establish", content: "跨批证据", evidenceEventSeqs: [4, 13] },
+        makeM2View(),
+        "factOps[0]",
+      );
+      expect(issues.map((i) => [i.code, i.path, i.value])).toEqual([
+        ["EVIDENCE_OUT_OF_RANGE", "factOps[0].evidenceEventSeqs[0]", "4"],
+        ["EVIDENCE_OUT_OF_RANGE", "factOps[0].evidenceEventSeqs[1]", "13"],
+      ]);
+    });
+
+    it("skips identity checks when the view carries no authority (legacy)", () => {
+      const issues = validateFactIdentity(
+        { type: "amend", id: "whatever", content: "x", evidenceEventSeqs: [999] },
+        makeM2View({
+          citableFactIds: undefined,
+          evidenceBatchSeqRange: undefined,
+        }),
+        "factOps[0]",
+      );
+      expect(issues).toEqual([]);
+    });
+  });
+
+  // -- validateBeliefIdentity：知情链（R16/R27）--------------------------------
+
+  describe("validateBeliefIdentity — knowledge chain", () => {
+    it("accepts learn for a character present via evidence (画外/电话角色也有台词证据)", () => {
+      const issues = validateBeliefIdentity(
+        { type: "learn", characterId: "guest_01", content: "电话那头知道了", evidenceEventSeqs: [5] },
+        makeM2View({
+          allowedCharacterIds: new Set(["player", "suyao"]),
+          evidenceCharacterIds: new Set(["suyao", "guest_01"]),
+        }),
+        "beliefOps[0]",
+      );
+      expect(issues).toEqual([]);
+    });
+
+    it("accepts learn for a cast-present character without evidence lines (在场名单就是告知来源)", () => {
+      const issues = validateBeliefIdentity(
+        { type: "learn", characterId: "linche", content: "在场听见了", evidenceEventSeqs: [5] },
+        makeM2View({ allowedCharacterIds: new Set(["player", "suyao", "linche"]) }),
+        "beliefOps[0]",
+      );
+      expect(issues).toEqual([]);
+    });
+
+    it("rejects learn for a character that is neither in cast nor evidence (KNOWLEDGE_NOT_SUPPORTED)", () => {
+      const issues = validateBeliefIdentity(
+        { type: "learn", characterId: "linche", content: "没在场却学会了", evidenceEventSeqs: [5] },
+        makeM2View(),
+        "beliefOps[0]",
+      );
+      expect(issues).toEqual([
+        { code: "KNOWLEDGE_NOT_SUPPORTED", path: "beliefOps[0].characterId", value: "linche" },
+      ]);
+    });
+
+    it("rejects a display-name characterId with UNKNOWN_CHARACTER_ID (never resolves the name)", () => {
+      const issues = validateBeliefIdentity(
+        { type: "learn", characterId: "苏遥", content: "显示名误填", evidenceEventSeqs: [5] },
+        makeM2View(),
+        "beliefOps[0]",
+      );
+      expect(issues).toEqual([
+        { code: "UNKNOWN_CHARACTER_ID", path: "beliefOps[0].characterId", value: "苏遥" },
+      ]);
+    });
+
+    it("R27：roster 全局存在不构成获知依据——空支持集合严格为空", () => {
+      const issues = validateBeliefIdentity(
+        { type: "learn", characterId: "suyao", content: "仅因存在而获知", evidenceEventSeqs: [5] },
+        makeM2View({
+          allowedCharacterIds: new Set(),
+          evidenceCharacterIds: new Set(),
+        }),
+        "beliefOps[0]",
+      );
+      expect(issues).toEqual([
+        { code: "KNOWLEDGE_NOT_SUPPORTED", path: "beliefOps[0].characterId", value: "suyao" },
+      ]);
+    });
+
+    it("rejects correct whose replacesBeliefId is outside the citable belief set", () => {
+      const issues = validateBeliefIdentity(
+        {
+          type: "correct",
+          characterId: "suyao",
+          content: "纠正",
+          evidenceEventSeqs: [6],
+          replacesBeliefId: "belief_9_9",
+        },
+        makeM2View(),
+        "beliefOps[0]",
+      );
+      expect(issues).toEqual([
+        { code: "INVALID_REFERENCE", path: "beliefOps[0].replacesBeliefId", value: "belief_9_9" },
+      ]);
+    });
+
+    it("collects every issue together (character + reference + evidence)", () => {
+      const issues = validateBeliefIdentity(
+        {
+          type: "correct",
+          characterId: "ghost_x",
+          content: "多项违规",
+          evidenceEventSeqs: [2],
+          replacesBeliefId: "belief_9_9",
+        },
+        makeM2View(),
+        "beliefOps[0]",
+      );
+      expect(issues.map((i) => i.code)).toEqual([
+        "UNKNOWN_CHARACTER_ID",
+        "INVALID_REFERENCE",
+        "EVIDENCE_OUT_OF_RANGE",
+      ]);
+    });
+  });
+});
+
+/** 手搭最小 CharacterRegistry（仅覆盖身份视图读取面）。 */
+function makeRegistry(
+  characters: Array<{ id: string; name: string }>,
+): import("../../core/characters/types.js").CharacterRegistry {
+  const definitions = characters.map((c) => ({
+    id: c.id,
+    name: c.name,
+    control: "npc" as const,
+    initialLabel: c.name,
+    persona: `persona of ${c.id}`,
+  }));
+  const byId = new Map(definitions.map((d) => [d.id, d] as const));
+  return {
+    roster: {
+      schemaVersion: 2,
+      scopeId: "test-scope",
+      revision: "v2-testrev",
+      playerId: "player",
+      characters: definitions,
+    },
+    get: (id: string) => byId.get(id),
+    require: (id: string) => {
+      const found = byId.get(id);
+      if (found === undefined) throw new Error(`角色 ${id} 未注册`);
+      return found;
+    },
+  };
+}
+
+function makeStoredDialogue(
+  seq: number,
+  characterId: string,
+  text: string,
+): import("../../schema.js").StoredEvent {
+  return {
+    seq,
+    turn: 1,
+    timestamp: "2026-09-19T00:00:00.000Z",
+    source: "model",
+    type: "dialogue",
+    speaker: characterId,
+    characterId,
+    text,
+  } as unknown as import("../../schema.js").StoredEvent;
+}

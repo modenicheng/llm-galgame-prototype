@@ -53,11 +53,16 @@ const SYSTEM_PROMPT =
   "summary 不超过 200 字。" +
   "factOps：type=establish 登记剧情已确立、未来会被引用的事实（≤120 字，" +
   "每批最多 3 条；content 用「<主语/范围> + <事实>」句式），type=amend 修订" +
-  "既有事实（id 必填，指向给定事实列表中的 id）；evidenceEventSeqs 填 1..3 条" +
-  "证据事件 seq（必须在本批内）；importance=major 表示常驻导演便签的事实。" +
-  "beliefOps：登记角色认知边界——learn=在场获知、believe=可能错误的信念、" +
-  "correct=信念被纠正（replacesBeliefId 必填）；content 为命题式 ≤80 字" +
-  "（如「苏遥知道终端会响应玩家指纹」）。" +
+  "既有事实——id 必填且只能引用「相关既定事实」清单中给出的 id（清单为空" +
+  "就不输出 amend）；evidenceEventSeqs 填 1..3 条证据事件 seq（必须在本批" +
+  "事件的 seq 范围内——批前已整理过的 seq 同样非法）；importance=major " +
+  "表示常驻导演便签的事实。" +
+  "beliefOps：登记角色认知边界——learn=获知、believe=可能错误的信念、" +
+  "correct=信念被纠正（replacesBeliefId 必填，且只能引用「相关角色认知」" +
+  "清单中同一角色 characterId 的 belief id；角色只能纠正自己的认知）。" +
+  "characterId 只能取「权威角色 ID」清单中的稳定 ID，且该角色必须在本批" +
+  "证据中登场或明确在场被告知——仅因角色存在于世界不算获知依据。" +
+  "content 为命题式 ≤80 字（如「苏遥知道终端会响应玩家指纹」）。" +
   "findings：只报本批内可判定的矛盾（dimension ∈ {belief-violation," +
   "fact-conflict,character-consistency}；severity ∈ {critical,major,normal,minor}），" +
   "每批最多 5 条，只描述事实与判级，不给改写建议。没有则输出空数组。";
@@ -241,6 +246,46 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
       if (request.stateLocation !== "") {
         parts.push("===== 当前地点 ID =====");
         parts.push(`episode.locations 只能引用：${request.stateLocation}`);
+      }
+    }
+
+    // --- M2 §6.2：可引用的 facts/beliefs 候选（与校验权威同源一份清单）---
+    if (request.relevantFacts !== undefined) {
+      parts.push("===== 相关既定事实（amend 可引用） =====");
+      if (request.relevantFacts.length === 0) {
+        parts.push("没有可修订的事实：factOps 不得输出 type=amend（establish 照常）。");
+      } else {
+        for (const fact of request.relevantFacts) {
+          parts.push(`- ${fact.id}：${fact.content}`);
+        }
+        parts.push("factOps 的 type=amend 只能引用上述 id；其他 fact id 会被整案拒绝。");
+      }
+    }
+    if (request.relevantBeliefs !== undefined) {
+      parts.push("===== 相关角色认知（correct 可引用） =====");
+      if (request.relevantBeliefs.length === 0) {
+        parts.push("没有可纠正的认知：beliefOps 不得输出 type=correct（learn/believe 照常）。");
+      } else {
+        for (const belief of request.relevantBeliefs) {
+          parts.push(`- ${belief.id}（${belief.characterId}）：${belief.content}`);
+        }
+        parts.push(
+          "beliefOps 的 replacesBeliefId 只能引用上述 id，且必须属于同一角色 characterId；" +
+            "其他 belief id 会被整案拒绝。",
+        );
+      }
+    }
+
+    // --- M2 §6.2 定向修复：上一次尝试的 issues（整批被拒后重试一次）---
+    if (request.priorIssues !== undefined && request.priorIssues.length > 0) {
+      parts.push("===== 上次提案被拒（定向修复） =====");
+      parts.push(
+        "上一次整理提案因以下身份/引用问题被整案拒绝。请修正后重新输出完整 JSON：" +
+          "使用权威清单中的稳定 ID、只引用给定清单中的 fact/belief id、" +
+          "证据 seq 落在本批事件范围内。",
+      );
+      for (const issue of request.priorIssues) {
+        parts.push(`- ${issue.path}=${issue.value}（${issue.code}）`);
       }
     }
 

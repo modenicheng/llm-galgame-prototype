@@ -424,6 +424,10 @@ describe("NarrativeConsolidatorAdapter", () => {
         evidenceCharacterIds: new Set(["suyao"]),
         evidenceSeqRange: { min: 1, max: 2 },
         canonicalLocations: new Set(["clubroom"]),
+        // M2 扩展字段：C8 用例不触及（undefined = 无权威）。
+        citableFactIds: undefined,
+        citableBeliefIds: undefined,
+        evidenceBatchSeqRange: undefined,
         ...overrides,
       };
     }
@@ -636,6 +640,144 @@ describe("NarrativeConsolidatorAdapter", () => {
       expect(userContent).toContain(`"characterId":"suyao"`);
       expect(userContent).not.toContain("（roster");
       expect(userContent).not.toContain("绝不合并");
+    });
+
+
+    // -------------------------------------------------------------------
+    // M2 §6.2 — 请求携带的 facts/beliefs 引用候选实际渲染进 prompt
+    //（模型不需要猜库里的 ID）；定向修复段渲染上一次 issues。
+    // -------------------------------------------------------------------
+    it("renders relevantFacts/relevantBeliefs reference candidates into the user message", async () => {
+      const fakeClient = makeFakeClient();
+      const adapter = new NarrativeConsolidatorAdapter({
+        apiKey: "key",
+        api: makeApiConfig(),
+        config: DEFAULT_NARRATIVE_CONFIG,
+        client: fakeClient,
+      });
+
+      await adapter.consolidate({
+        events: [makeDialogueEvent(1, "suyao", "这条线索不对劲。")],
+        threads: [],
+        setups: [],
+        stateLocation: "clubroom",
+        stateCharacters: ["suyao"],
+        identity: makeIdentityView({
+          citableFactIds: new Set(["fact_1_1"]),
+          citableBeliefIds: new Set(["belief_1_1"]),
+        }),
+        evidenceEvents: [],
+        relevantFacts: [
+          {
+            id: "fact_1_1",
+            content: "终端只对苏遥的指纹反应",
+            evidenceEventSeqs: [1],
+            checkpoint: 2,
+            superseded: false,
+            importance: "major",
+          },
+        ],
+        relevantBeliefs: [
+          {
+            id: "belief_1_1",
+            characterId: "suyao",
+            content: "苏遥相信终端是坏的",
+            status: "active",
+            createdAtCheckpoint: 1,
+            origin: "believe",
+          },
+        ],
+      });
+
+      const userContent = lastUserContent(fakeClient);
+      expect(userContent).toContain("相关既定事实");
+      expect(userContent).toContain("fact_1_1");
+      expect(userContent).toContain("终端只对苏遥的指纹反应");
+      expect(userContent).toContain("相关角色认知");
+      expect(userContent).toContain("belief_1_1");
+      expect(userContent).toContain("苏遥相信终端是坏的");
+      // amend/correct 只能引用清单内 ID——指令随清单给出。
+      expect(userContent).toContain("amend");
+      expect(userContent).toContain("replacesBeliefId");
+    });
+
+    it("renders an explicit empty-citable instruction when both candidate lists are empty (strict empty)", async () => {
+      const fakeClient = makeFakeClient();
+      const adapter = new NarrativeConsolidatorAdapter({
+        apiKey: "key",
+        api: makeApiConfig(),
+        config: DEFAULT_NARRATIVE_CONFIG,
+        client: fakeClient,
+      });
+
+      await adapter.consolidate({
+        events: makeFakeEvents(),
+        threads: [],
+        setups: [],
+        stateLocation: "",
+        stateCharacters: [],
+        identity: makeIdentityView({
+          allowedCharacterIds: new Set(),
+          evidenceCharacterIds: new Set(),
+          canonicalLocations: undefined,
+          citableFactIds: new Set(),
+          citableBeliefIds: new Set(),
+        }),
+        evidenceEvents: [],
+        relevantFacts: [],
+        relevantBeliefs: [],
+      });
+
+      const userContent = lastUserContent(fakeClient);
+      // 空可引用集是严格空：明确告知输出空数组，不退化为不限。
+      expect(userContent).toContain("没有可修订的事实");
+      expect(userContent).toContain("没有可纠正的认知");
+    });
+
+    it("renders the targeted-repair section when priorIssues ride the request", async () => {
+      const fakeClient = makeFakeClient();
+      const adapter = new NarrativeConsolidatorAdapter({
+        apiKey: "key",
+        api: makeApiConfig(),
+        config: DEFAULT_NARRATIVE_CONFIG,
+        client: fakeClient,
+      });
+
+      await adapter.consolidate({
+        events: [makeDialogueEvent(1, "suyao", "重试。")],
+        threads: [],
+        setups: [],
+        stateLocation: "",
+        stateCharacters: ["suyao"],
+        identity: makeIdentityView(),
+        evidenceEvents: [],
+        priorIssues: [
+          { code: "UNKNOWN_CHARACTER_ID", path: "episode.characters[0]", value: "苏遥" },
+          { code: "INVALID_REFERENCE", path: "factOps[0].id", value: "fact_9_9" },
+        ],
+      });
+
+      const userContent = lastUserContent(fakeClient);
+      expect(userContent).toContain("定向修复");
+      expect(userContent).toContain("episode.characters[0]=苏遥（UNKNOWN_CHARACTER_ID）");
+      expect(userContent).toContain("factOps[0].id=fact_9_9（INVALID_REFERENCE）");
+    });
+
+    it("omits the facts/beliefs and repair sections when the request carries none (legacy)", async () => {
+      const fakeClient = makeFakeClient();
+      const adapter = new NarrativeConsolidatorAdapter({
+        apiKey: "key",
+        api: makeApiConfig(),
+        config: DEFAULT_NARRATIVE_CONFIG,
+        client: fakeClient,
+      });
+
+      await adapter.consolidate(makeFakeRequest());
+
+      const userContent = lastUserContent(fakeClient);
+      expect(userContent).not.toContain("相关既定事实");
+      expect(userContent).not.toContain("相关角色认知");
+      expect(userContent).not.toContain("定向修复");
     });
 
     it("legacy request (no view, no registry): frozen legacy rendering, no identity section markers", async () => {

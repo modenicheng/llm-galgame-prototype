@@ -22,6 +22,8 @@ import type {
   PlotThread,
   SetupPayoff,
   EpisodeMemory,
+  FactRecord,
+  BeliefState,
 } from "../../core/narrative/memory-types.js";
 import type {
   ThreadOp,
@@ -44,6 +46,9 @@ import {
   validateCharacterTags,
   validateEvidenceRefs,
   validateReferenceTags,
+  validateFactIdentity,
+  validateBeliefIdentity,
+  selectCitableReferences,
   acceptedProposal,
   rejectedProposal,
   formatIdentityIssues,
@@ -76,7 +81,9 @@ export interface ConsolidationRequest {
    * registry 在场时构造；adapter 用同一视图渲染权威 ID 段，校验与模型
    * 被告知的权威同源。缺席 = legacy（无 registry）。
    *
-   * M2 扩展点：同一视图上扩展 fact/belief 引用集与 belief 获知来源。
+   * M2 扩展：同一视图携带 fact/belief 引用权威（citableFactIds/
+   * citableBeliefIds，与 relevantFacts/relevantBeliefs 候选同源）与批内
+   * 证据区间（evidenceBatchSeqRange）。
    */
   identity?: MemoryIdentityView;
   /**
@@ -85,6 +92,22 @@ export interface ConsolidationRequest {
    * 生共死——两者都由本批 events + 同一 registry 派生）。缺席 = legacy。
    */
   evidenceEvents?: readonly ProjectedEvent[];
+  /**
+   * M2 §6.2：相关既定事实引用（引用 ID + 内容）——prompt 实际提供可引用
+   * 的 ID，模型不需要猜库里的 ID。与 identity.citableFactIds 同源（同一
+   * 份选择）：超预算收缩时候选与可引用范围一起缩。
+   */
+  relevantFacts?: readonly FactRecord[];
+  /**
+   * M2 §6.2：相关角色认知引用（correct 的目标 belief：ID + 角色 + 内容）。
+   * 与 identity.citableBeliefIds 同源。
+   */
+  relevantBeliefs?: readonly BeliefState[];
+  /**
+   * M2 §6.2 定向修复：上一次尝试的 §6.2 身份/引用问题（director 在整批
+   * 拒绝后携带重试一次）。adapter 渲染修复段；校验语义不变。
+   */
+  priorIssues?: readonly IdentityValidationIssue[];
 }
 
 export interface ConsolidationResult {
@@ -184,12 +207,15 @@ export class MemoryConsolidator {
    * - Events are capped to `max_events_per_call`, keeping the LAST N.
    * - A port failure (or an absent port) yields an empty outcome with
    *   `result: null` — never throws.
+   * - opts.priorIssues（M2 §6.2 定向修复）：随请求透传给 port——整批被拒
+   *   后 director 携带上一次 issues 重试一次；本函数校验语义不变。
    */
   async consolidate(
     events: StoredEvent[],
     memory: NarrativeMemoryState,
     stateLocation: string,
     stateCharacters: string[],
+    opts?: { priorIssues?: readonly IdentityValidationIssue[] },
   ): Promise<ConsolidationOutcome> {
     // No port → empty outcome, nothing called
     if (this.port === undefined) {
@@ -230,10 +256,36 @@ export class MemoryConsolidator {
     // 是 adapter 构造后随 ConsolidationResult 回传——校验函数零差异）。
     // adapter 用同一视图渲染权威 ID 段：校验与模型被告知的权威同源。
     // registry 缺席 = legacy：请求不携带，标签不校验身份维度。
+    //
+    // M2 §6.2：一次选择两处消费——relevantFacts/relevantBeliefs 渲染进
+    // 请求（模型看得见的引用 ID），citable*Ids 进身份视图（amend/correct
+    // 引用权威）。超预算收缩两者一起缩（绝不要求模型猜库里的 ID）。
     const evidence =
       this.registry !== undefined
         ? projectMemoryEvidence(batch, this.registry)
         : undefined;
+    const provisionalView =
+      this.registry !== undefined && evidence !== undefined
+        ? buildMemoryIdentityView({
+            events: batch,
+            registry: this.registry,
+            stateCharacters,
+            stateLocation,
+            evidence,
+          })
+        : undefined;
+    const citable = selectCitableReferences({
+      facts: memory.facts,
+      beliefs: memory.beliefs,
+      characters: stateCharacters,
+      location: stateLocation,
+      factMax: this.config.facts.brief_max,
+      // identity 模式的 belief 归属权威 = 证据登场 ∪ 场景在场（R27：roster
+      // 全集绝不作为归属权威）；legacy 只按场景名单过滤。
+      ...(provisionalView !== undefined
+        ? { allowedCharacterIds: provisionalView.allowedCharacterIds }
+        : {}),
+    });
     const identity =
       this.registry !== undefined && evidence !== undefined
         ? buildMemoryIdentityView({
@@ -242,6 +294,8 @@ export class MemoryConsolidator {
             stateCharacters,
             stateLocation,
             evidence,
+            citableFactIds: citable.citableFactIds,
+            citableBeliefIds: citable.citableBeliefIds,
           })
         : undefined;
 
@@ -256,6 +310,11 @@ export class MemoryConsolidator {
         stateCharacters,
         ...(identity !== undefined ? { identity } : {}),
         ...(evidence !== undefined ? { evidenceEvents: evidence } : {}),
+        relevantFacts: citable.relevantFacts,
+        relevantBeliefs: citable.relevantBeliefs,
+        ...(opts?.priorIssues !== undefined && opts.priorIssues.length > 0
+          ? { priorIssues: opts.priorIssues }
+          : {}),
       });
     } catch (err) {
       this.diagnostics.warn(
@@ -402,14 +461,21 @@ export class MemoryConsolidator {
     // fact → belief → finding (Task 6 + MA-B).
     rejected.push(...threadRejected, ...setupRejected);
 
-    // 4) MA-B fact/belief/finding filters（M2 将在同一身份视图上扩展
-    //    fact/belief 引用集与 belief 获知来源——本层只做共享身份校验）。
+    // 4) MA-B fact/belief/finding filters. M2 §6.2：fact/belief 的身份/
+    //    引用校验跑在同一 C8 身份视图上（引用权威 + 批内证据区间 + 知情
+    //    链）；身份违规的 op 整条拒绝并计入 identityIssues——director 层
+    //    据此整批不提交（§6.2「非法提案整批不提交」）。规则类拒绝（预算/
+    //    状态机/形状）仍按 op 记 RejectedOp。
+    const factIdentityIssues: IdentityValidationIssue[] = [];
+    const beliefIdentityIssues: IdentityValidationIssue[] = [];
     const factOps = this.filterFactOps(
       result,
       shadow,
       memory.revision + 1,
       batchLastSeq,
       rejected,
+      view,
+      factIdentityIssues,
     );
     const beliefOps = this.filterBeliefOps(
       result,
@@ -418,14 +484,17 @@ export class MemoryConsolidator {
       memory.revision + 1,
       batchLastSeq,
       rejected,
+      view,
+      beliefIdentityIssues,
     );
     const findings = this.collectFindings(result, batchLastSeq, rejected);
 
-    // §6.2 身份/引用问题聚合（episode + setupOps 证据；fact/belief 的
-    // 引用/获知校验属 M2，届时并入本列表）。
+    // §6.2 身份/引用问题聚合（episode + setup 证据 + M2 fact/belief）。
     const identityIssues: readonly IdentityValidationIssue[] = [
       ...episodeIssues,
       ...setupEvidenceIssues,
+      ...factIdentityIssues,
+      ...beliefIdentityIssues,
     ];
 
     return {
@@ -453,15 +522,33 @@ export class MemoryConsolidator {
     idRevision: number,
     batchLastSeq: number,
     rejected: RejectedOp[],
+    view: MemoryIdentityView | undefined,
+    identityIssues: IdentityValidationIssue[],
   ): FactOp[] {
     const accepted: FactOp[] = [];
     let establishCount = 0;
     let factSeq = 0;
-    for (const op of result.factOps) {
+    result.factOps.forEach((op, index) => {
+      // M2 §6.2：amend 引用权威 + 批内证据区间（视图缺席 = legacy 不校验）。
+      // 身份与规则两层都跑：拒绝时 rule（规则码）与 issues（§6.2 结构化）
+      // 同时保留——身份拒绝不掩盖规则层的精确诊断。
+      const issues =
+        view !== undefined
+          ? validateFactIdentity(op, view, `factOps[${index}]`)
+          : [];
       const reason = validateFactOp(op, shadow.facts, batchLastSeq);
-      if (reason !== null) {
-        rejected.push({ kind: "fact", op, reason, rule: rejectionRule(reason) });
-        continue;
+      if (issues.length > 0 || reason !== null) {
+        identityIssues.push(...issues);
+        rejected.push({
+          kind: "fact",
+          op,
+          reason:
+            reason ??
+            `fact 提案身份/引用非法（§6.2）：${formatIdentityIssues(issues, view)}`,
+          ...(reason !== null ? { rule: rejectionRule(reason) } : {}),
+          ...(issues.length > 0 ? { issues } : {}),
+        });
+        return;
       }
       if (op.type === "establish") {
         if (establishCount >= MAX_ESTABLISH_PER_BATCH) {
@@ -471,14 +558,14 @@ export class MemoryConsolidator {
             reason: "[FACT_BUDGET_EXCEEDED] 每批 establish 上限 3",
             rule: "FACT_BUDGET_EXCEEDED",
           });
-          continue;
+          return;
         }
         establishCount += 1;
       }
       // 影子应用：amend 在影子中标 superseded，供后续 op 校验看到（事务性）。
       applyFactOpToState(shadow, op, factId(idRevision, ++factSeq), 0);
       accepted.push(op);
-    }
+    });
     return accepted;
   }
 
@@ -489,15 +576,40 @@ export class MemoryConsolidator {
     idRevision: number,
     batchLastSeq: number,
     rejected: RejectedOp[],
+    view: MemoryIdentityView | undefined,
+    identityIssues: IdentityValidationIssue[],
   ): BeliefOp[] {
     const accepted: BeliefOp[] = [];
     let beliefSeq = 0;
     const perCharacterOps = new Map<string, number>();
-    for (const op of result.beliefOps) {
-      const reason = validateBeliefOp(op, shadow.beliefs, stateCharacters, batchLastSeq);
-      if (reason !== null) {
-        rejected.push({ kind: "belief", op, reason, rule: rejectionRule(reason) });
-        continue;
+    result.beliefOps.forEach((op, index) => {
+      // M2 §6.2：知情链（证据参与 ∪ 场景在场；R27：roster 存在不算）+
+      // correct 引用权威 + 批内证据区间。视图缺席 = legacy，知识代理仍是
+      // 场景名单（冻结语义）。身份与规则两层都跑：拒绝时 rule（如
+      // BELIEF_CORRECT_FOREIGN_TARGET——同角色约束）与 issues 同时保留。
+      const issues =
+        view !== undefined
+          ? validateBeliefIdentity(op, view, `beliefOps[${index}]`)
+          : [];
+      // identity 模式下知识维度已由视图判定（含严格空集合）；legacy 模式
+      // 沿用场景名单代理。规则层（correct 同角色/状态机）双模式一致。
+      const knowledgeProxy =
+        view !== undefined
+          ? []
+          : stateCharacters;
+      const reason = validateBeliefOp(op, shadow.beliefs, knowledgeProxy, batchLastSeq);
+      if (issues.length > 0 || reason !== null) {
+        identityIssues.push(...issues);
+        rejected.push({
+          kind: "belief",
+          op,
+          reason:
+            reason ??
+            `belief 提案身份/知情/引用非法（§6.2）：${formatIdentityIssues(issues, view)}`,
+          ...(reason !== null ? { rule: rejectionRule(reason) } : {}),
+          ...(issues.length > 0 ? { issues } : {}),
+        });
+        return;
       }
       const count = perCharacterOps.get(op.characterId) ?? 0;
       if (count >= MAX_BELIEF_OPS_PER_CHARACTER_PER_BATCH) {
@@ -507,7 +619,7 @@ export class MemoryConsolidator {
           reason: "[BELIEF_BUDGET_EXCEEDED] 每角色每批 belief op 上限 2",
           rule: "BELIEF_BUDGET_EXCEEDED",
         });
-        continue;
+        return;
       }
       if (op.type !== "correct") {
         // 每角色 active 上限（§6.1：超限拒新保旧）。
@@ -521,13 +633,13 @@ export class MemoryConsolidator {
             reason: "[BELIEF_BUDGET_EXCEEDED] 角色 active beliefs 已达上限",
             rule: "BELIEF_BUDGET_EXCEEDED",
           });
-          continue;
+          return;
         }
       }
       perCharacterOps.set(op.characterId, count + 1);
       applyBeliefOpToState(shadow, op, beliefId(idRevision, ++beliefSeq), 0);
       accepted.push(op);
-    }
+    });
     return accepted;
   }
 

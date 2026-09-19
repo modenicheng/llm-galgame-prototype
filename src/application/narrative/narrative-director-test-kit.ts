@@ -137,6 +137,7 @@ export function emptyState(): NarrativeMemoryState {
     recentEpisodeIds: [],
     beliefs: [],
     facts: [],
+    consolidationFailedIntervals: [],
   };
 }
 
