@@ -31,6 +31,8 @@ export class ClipPlayer {
   private volume = 1;
   private muted = false;
   private playingState = false;
+  /** 路由目标：null = 自有 gain 直连 destination；非 null = 共享语音链。 */
+  private output: AudioNode | null = null;
 
   constructor(context: AudioContext) {
     this.context = context;
@@ -50,6 +52,18 @@ export class ClipPlayer {
 
   setMuted(muted: boolean): void {
     this.muted = muted;
+    this.applyGain();
+  }
+
+  /**
+   * 把回放路由进共享语音链（动态处理节点；音量/静音由语音链的 GainNode
+   * 统一承担，自身增益钳在 1，setVolume/setMuted 暂不生效但值仍被记录，
+   * setOutput(null) 恢复直连时按记录值还原）。可在回放中途切换，不炸音。
+   */
+  setOutput(destination: AudioNode | null): void {
+    this.output = destination;
+    this.gain.disconnect();
+    this.gain.connect(destination ?? this.context.destination);
     this.applyGain();
   }
 
@@ -105,7 +119,9 @@ export class ClipPlayer {
   }
 
   private applyGain(): void {
-    this.gain.gain.value = this.muted ? 0 : this.volume;
+    // 路由进共享语音链时自身增益固定 1（音量/静音由语音链承担）。
+    this.gain.gain.value =
+      this.output !== null ? 1 : this.muted ? 0 : this.volume;
   }
 }
 

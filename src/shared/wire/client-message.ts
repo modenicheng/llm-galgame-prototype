@@ -29,6 +29,15 @@ export type ClientMessage =
       underrunCount: number;
     }
   | {
+      /** 玩家端音频链遥测（≤10Hz 聚合），供 /monitor 音频面板仪表。 */
+      type: "audio.telemetry";
+      outDb: number;
+      gateOpen: boolean;
+      compGrDb: number;
+      limGrDb: number;
+      duckDb: number;
+    }
+  | {
       type: "client.ready";
       capabilities: {
         audioWorklet: boolean;

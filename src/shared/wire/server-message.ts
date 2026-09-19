@@ -5,6 +5,7 @@
  */
 import type { RuntimeOutput } from "../../core/runtime/runtime-output.js";
 import type { AudioDescriptor } from "./audio-descriptor.js";
+import type { AudioDspParams } from "./audio-dsp.js";
 import type { UiProjection } from "./ui-projection.js";
 
 export type ServerMessage =
@@ -38,4 +39,9 @@ export type ServerMessage =
       status: "started" | "finished" | "failed" | "canceled";
       error?: string;
       totalBytes?: number;
+    }
+  | {
+      /** /monitor 保存后的音频 DSP 参数推送（host 广播；玩家端热生效）。 */
+      type: "audio.dsp";
+      params: AudioDspParams;
     };

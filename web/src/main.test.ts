@@ -18,7 +18,7 @@ class FakeAudioContext {
     port: { postMessage: vi.fn(), onmessage: null },
     connect: vi.fn(),
   }));
-  createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() }));
+  createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() }));
 
   constructor() {
     FakeAudioContext.last = this;

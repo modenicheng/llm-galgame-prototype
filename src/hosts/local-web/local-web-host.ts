@@ -14,6 +14,8 @@ import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { AppConfig } from "../../config.js";
+import type { AudioDspStore } from "../../config/audio-dsp.js";
+import type { AudioDspParams } from "../../shared/wire/audio-dsp.js";
 import { toPublicWebConfig } from "../../config/public-web-config.js";
 import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
 import type { RuntimeApplication } from "../../application/runtime-application.js";
@@ -29,6 +31,7 @@ import {
 import { isAllowedOrigin } from "./origin-guard.js";
 import { handleMonitorRecordsRequest } from "./monitor-records.js";
 import { AudioStreamRoute } from "./audio-stream-route.js";
+import { AudioDspRoute } from "./audio-dsp-route.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";
 import { MonitorWebSocket } from "./monitor-websocket.js";
 import { createViteDevMiddleware, type ViteDevMiddleware } from "./vite-middleware.js";
@@ -72,6 +75,11 @@ export interface LocalWebHostOptions {
   assetCatalog?: AssetCatalog;
   /** 立绘派生输出目录；默认 <repo>/output/derived-game-assets（测试覆写用）。 */
   derivedAssetRoot?: string;
+  /**
+   * audio-dsp.yaml 存储（/monitor 音频面板读写）。缺省时 GET /api/config
+   * 携带内置默认 DSP 参数，且不启用保存路由。
+   */
+  audioDsp?: AudioDspStore;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -100,10 +108,13 @@ export class LocalWebHost {
   private readonly dev: boolean;
   private readonly logger: (line: string) => void;
   private readonly token: string;
-  private readonly publicConfig: PublicWebConfig;
+  /** GET /api/config 快照；DSP 保存后就地刷新（保持既有引用有效）。 */
+  private publicConfig: PublicWebConfig;
   private readonly runtimeWs: RuntimeWebSocket;
   private readonly monitorWs: MonitorWebSocket;
   private readonly audioRoute: AudioStreamRoute;
+  private readonly audioDsp: AudioDspStore | null;
+  private readonly audioDspRoute: AudioDspRoute | null;
   private readonly distRoot: string;
   private readonly assetRoot: string | null;
   private readonly assetCatalog: AssetCatalog | null;
@@ -120,7 +131,8 @@ export class LocalWebHost {
     this.dev = options.dev;
     this.logger = options.logger ?? (() => {});
     this.token = randomBytes(16).toString("hex");
-    this.publicConfig = toPublicWebConfig(this.config);
+    this.audioDsp = options.audioDsp ?? null;
+    this.publicConfig = toPublicWebConfig(this.config, this.audioDsp?.get());
     this.distRoot = process.env[WEB_DIST_DIR_ENV]
       ? path.resolve(process.env[WEB_DIST_DIR_ENV])
       : DEFAULT_WEB_DIST_DIR;
@@ -153,6 +165,7 @@ export class LocalWebHost {
       controllerLimit: this.config.local_web.controller_limit,
       originGuard: (origin) => isAllowedOrigin(origin, host, port),
       publicConfig: this.publicConfig,
+      onAudioTelemetry: (state) => this.app.monitor.updateAudioState(state),
       startGame: () => this.startGame(),
       onRestartSession: () => this.handleRestart(),
     });
@@ -161,6 +174,14 @@ export class LocalWebHost {
       catalog: this.app.audioCatalog,
       token: this.token,
     });
+    this.audioDspRoute =
+      this.audioDsp !== null
+        ? new AudioDspRoute({
+            store: this.audioDsp,
+            token: this.token,
+            onSaved: (params) => this.handleDspSaved(params),
+          })
+        : null;
     this.monitorWs = new MonitorWebSocket({
       hub: this.app.monitor,
       token: this.token,
@@ -394,10 +415,28 @@ export class LocalWebHost {
     }
   }
 
+  /**
+   * /monitor 保存音频 DSP 参数成功：就地刷新 GET /api/config 快照（保持
+   * 引用有效），并向玩家端广播 audio.dsp（浏览器窗口即时热生效）。
+   */
+  private handleDspSaved(params: AudioDspParams): void {
+    // 就地改写 dsp 块（不换对象）：RuntimeWebSocket 等处持有的引用同样变新。
+    this.publicConfig.audio.dsp = params;
+    this.runtimeWs.notifyAudioDsp(params);
+  }
+
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const pathname = (req.url ?? "/").split("?")[0] ?? "/";
     if (req.method === "POST" && pathname === "/api/audio/synthesize") {
       void this.audioRoute.handle(req, res);
+      return;
+    }
+    if (req.method === "POST" && pathname === "/api/config/audio-dsp") {
+      if (this.audioDspRoute === null) {
+        this.sendJson(res, 404, { error: "audio dsp store unavailable" });
+        return;
+      }
+      void this.audioDspRoute.handle(req, res);
       return;
     }
     if (req.method === "GET" && pathname === "/api/config") {

@@ -72,7 +72,7 @@ interface FakeAudioContextResult {
 function makeFakeAudioContext(noWorklet = false): FakeAudioContextResult {
   const port = { postMessage: vi.fn(), onmessage: null as ((e: MessageEvent) => void) | null };
   const node = { port, connect: vi.fn() };
-  const gain = { gain: { value: 1 }, connect: vi.fn() };
+  const gain = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
   const addModule = vi.fn().mockResolvedValue(undefined);
   const sources: FakeAudioContextResult["sources"] = [];
   const context = {
@@ -333,7 +333,8 @@ function sentCommands(ws: FakeWebSocket): Array<{ type: string; commandId?: stri
 describe("GameApp", () => {
   it("start unlocks audio (worklet registered) and opens the socket with client.ready", async () => {
     const { app, ws, addModule } = await setupApp();
-    expect(addModule).toHaveBeenCalledTimes(1);
+    // 两次：pcm-playback + dynamics（语音链动态处理，同为 blob 模块）。
+    expect(addModule).toHaveBeenCalledTimes(2);
     expect(ws.url).toContain(`token=${TOKEN}`);
     const ready = ws.sent.find((raw) => JSON.parse(raw).type === "client.ready");
     expect(ready).toBeDefined();
@@ -852,7 +853,7 @@ describe("GameApp", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(sentCommands(ws)).toHaveLength(1);
   });
-  it("reconcileAudio does not start fills once bufferedAheadMs reaches target_buffer_ms", async () => {
+  it("synthesizes future lines on descriptor arrival regardless of bufferedAheadMs", async () => {
     const synthCalls: unknown[] = [];
     const fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -860,7 +861,7 @@ describe("GameApp", () => {
         return Promise.resolve(new Response(JSON.stringify(CONFIG), { status: 200 }));
       }
       synthCalls.push(JSON.parse(String(init?.body)));
-      return Promise.resolve(streamResponse([pcmChunk(22050 * 7)])); // 7s ≥ target 6500ms
+      return Promise.resolve(streamResponse([pcmChunk(22050 * 7)])); // 7s per line
     }) as unknown as typeof fetch;
     const { app, ws } = await setupApp({ fetchImpl });
     ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
@@ -869,12 +870,51 @@ describe("GameApp", () => {
       expect(app.state().bufferedAheadMs).toBeGreaterThanOrEqual(6500);
     });
 
-    // Idle descriptors arriving while the buffer is at target must not
-    // trigger a prefetch burst.
+    // Arrival-driven scheduling: future lines synthesize the moment their
+    // descriptors arrive — a full buffer must not defer them. (The old
+    // watermark gate made synthesis trail the reader by the low-watermark.)
     ws.receive(descriptorMsg("line-2", "cache-2"));
     ws.receive(descriptorMsg("line-3", "cache-3"));
+    await vi.waitFor(() => {
+      expect(synthCalls.map((c) => (c as { lineId: string }).lineId)).toEqual([
+        "line-1",
+        "line-2",
+        "line-3",
+      ]);
+    });
+  });
+
+  it("synthesizes the next wave immediately after playback stops (stale buffer must not gate)", async () => {
+    const synthCalls: unknown[] = [];
+    const fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/config") {
+        return Promise.resolve(new Response(JSON.stringify(CONFIG), { status: 200 }));
+      }
+      synthCalls.push(JSON.parse(String(init?.body)));
+      return Promise.resolve(streamResponse([pcmChunk(22050 * 7)])); // 7s per line
+    }) as unknown as typeof fetch;
+    const { app, ws } = await setupApp({ fetchImpl });
+    // Wave 1 plays and fills the buffer far past any watermark.
+    ws.receive(playbackReady(1, "line-1", "夜色正浓。"));
+    ws.receive(descriptorMsg("line-1", "cache-1"));
+    await vi.waitFor(() => {
+      expect(app.state().bufferedAheadMs).toBeGreaterThanOrEqual(6500);
+    });
+
+    // An interaction opens: playback halts, but coordinator.stop() keeps the
+    // timeline, so bufferedAheadMs still reports the dead wave's buffer.
+    ws.receive(choiceOpened(2, "inter-1"));
     await flush();
-    expect(synthCalls).toHaveLength(1); // only line-1 was fetched
+    expect(app.state().bufferedAheadMs).toBeGreaterThanOrEqual(6500);
+
+    // Wave 2's first descriptor arrives during generation — synthesis must
+    // start right now, not wait for the line to be presented. This is the
+    // regression test for the wave-opening voice stall.
+    ws.receive(descriptorMsg("line-2", "cache-2"));
+    await vi.waitFor(() => {
+      expect(synthCalls.map((c) => (c as { lineId: string }).lineId)).toContain("line-2");
+    });
   });
 
   it("pre-synthesizes a candidate branch's first line (candidate_first_line)", async () => {
@@ -924,6 +964,50 @@ describe("GameApp", () => {
     await vi.waitFor(() => {
       expect(synthesizeCalls).toEqual([
         expect.objectContaining({ lineId: "candidate-2", cacheKey: "cache-candidate-2" }),
+      ]);
+    });
+  });
+
+  it("branch promotion synthesizes every promoted line at once, not as each line reaches the playhead", async () => {
+    const { ws, synthesizeCalls } = await setupApp();
+    // Candidates stream in during the choice screen: first line prefetched,
+    // deep lines speculative (no synthesis).
+    ws.receive(
+      descriptorMsg("b1-1", "cache-b1-1", {
+        scope: { type: "candidate", branchId: "branch-a" },
+        priority: "candidate_first_line",
+      }),
+    );
+    ws.receive(
+      descriptorMsg("b1-2", "cache-b1-2", {
+        scope: { type: "candidate", branchId: "branch-a" },
+        priority: "background",
+      }),
+    );
+    ws.receive(
+      descriptorMsg("b1-3", "cache-b1-3", {
+        scope: { type: "candidate", branchId: "branch-a" },
+        priority: "background",
+      }),
+    );
+    await flush();
+    expect(synthesizeCalls).toEqual([expect.objectContaining({ lineId: "b1-1" })]);
+
+    // Selection promotes the whole branch: the server upserts every line as
+    // active in one burst — all of them must start synthesizing now.
+    const promoted: Array<["b1-1" | "b1-2" | "b1-3", string, AudioDescriptor["priority"]]> = [
+      ["b1-1", "cache-b1-1", "current"],
+      ["b1-2", "cache-b1-2", "next"],
+      ["b1-3", "cache-b1-3", "active_future"],
+    ];
+    for (const [lineId, cacheKey, priority] of promoted) {
+      ws.receive(descriptorMsg(lineId, cacheKey, { scope: { type: "active" }, priority }));
+    }
+    await vi.waitFor(() => {
+      expect(synthesizeCalls.map((c) => (c as { lineId: string }).lineId).sort()).toEqual([
+        "b1-1",
+        "b1-2",
+        "b1-3",
       ]);
     });
   });

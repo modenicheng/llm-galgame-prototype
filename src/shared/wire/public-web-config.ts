@@ -7,6 +7,8 @@
  * browser only needs playback + cache tuning and the audio format, all of
  * which are already public knowledge in the AudioDescriptor.
  */
+import type { AudioDspParams } from "./audio-dsp.js";
+
 export interface PublicWebConfig {
   audio: {
     playback: {
@@ -27,6 +29,8 @@ export interface PublicWebConfig {
       channels: 1;
       bitDepth: 16;
     };
+    /** 音频动态处理参数（语音链 gate/压缩/限幅、BGM 链、闪避）。 */
+    dsp: AudioDspParams;
   };
   game: {
     show_line_ids: boolean;

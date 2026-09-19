@@ -15,21 +15,35 @@
  *   onLinePlaybackFinished after pause_after_ms and lets the UI advance.
  */
 import type { PublicWebConfig } from "@shared/wire/public-web-config.js";
+import type { DynamicsChainParams } from "@shared/wire/audio-dsp.js";
 import { AudioTimeline } from "./audio-timeline.js";
 import workletSource from "./pcm-worklet.js?raw";
+import dynamicsWorkletSource from "./dynamics-worklet.js?raw";
 
 export interface AudioCoordinatorOptions {
   context: AudioContext;
   playbackConfig: PublicWebConfig["audio"]["playback"];
   format: PublicWebConfig["audio"]["format"];
+  /** 语音链动态处理参数（gate→压缩→限幅）；缺省走 worklet 内置默认。 */
+  dspParams?: DynamicsChainParams;
 }
 
 export type PlaybackMode = "manual" | "auto";
+
+/** dynamics worklet 的遥测快照（≈21ms 一次）。 */
+export interface VoiceAudioState {
+  outDb: number;
+  gateOpen: boolean;
+  compGrDb: number;
+  limGrDb: number;
+}
 
 export interface AudioCoordinatorEvents {
   onLinePlaybackStarted(lineId: string): void;
   onLinePlaybackFinished(lineId: string): void;
   onUnderrun(): void;
+  /** 语音链电平遥测；BgmDucker（闪避）与监控仪表的消费入口。 */
+  onAudioState?(state: VoiceAudioState): void;
 }
 
 export class AudioCoordinator {
@@ -43,6 +57,9 @@ export class AudioCoordinator {
 
   private workletNode: AudioWorkletNode | null = null;
   private gainNode: GainNode | null = null;
+  /** 语音链动态处理节点（可选增强；加载失败保持 null，链路直连旁路）。 */
+  private dynamicsNode: AudioWorkletNode | null = null;
+  private dspParams: DynamicsChainParams | null;
 
   private mode: PlaybackMode = "manual";
   private volume = 1;
@@ -72,6 +89,7 @@ export class AudioCoordinator {
     this.context = options.context;
     this.playbackConfig = options.playbackConfig;
     this.sampleRate = options.format.sampleRate;
+    this.dspParams = options.dspParams ?? null;
     this.events = events;
     this.timeline = new AudioTimeline(this.sampleRate);
   }
@@ -130,7 +148,22 @@ export class AudioCoordinator {
           : new AudioWorkletNode(this.context, "pcm-playback", options);
       const gain = this.context.createGain();
       gain.gain.value = this.muted ? 0 : this.volume;
-      node.connect(gain);
+      // 动态处理链（gate→压缩→限幅）是可选增强：加载失败只旁路，绝不
+      // 升级为致命错误（与上面 pcm-playback 的 fail-fast 不同级）。
+      const dynamics = await this.initDynamicsNode(contextNodeFactory);
+      if (dynamics !== null) {
+        node.connect(dynamics);
+        dynamics.connect(gain);
+        dynamics.port.onmessage = (event: MessageEvent) => {
+          this.handleDynamicsMessage(event);
+        };
+        if (this.dspParams !== null) {
+          dynamics.port.postMessage({ type: "params", params: this.dspParams });
+        }
+        this.dynamicsNode = dynamics;
+      } else {
+        node.connect(gain);
+      }
       gain.connect(this.context.destination);
       node.port.onmessage = (event: MessageEvent) => {
         this.handleWorkletMessage(event);
@@ -305,6 +338,23 @@ export class AudioCoordinator {
     this.applyGain();
   }
 
+  /**
+   * 语音链动态处理参数热更（/monitor 保存 → runtime WS 推送）。节点未就绪
+   * （降级环境）时只记录参数，init 时或不可用——不报错。
+   */
+  setDynamicsParams(params: DynamicsChainParams): void {
+    this.dspParams = params;
+    this.dynamicsNode?.port.postMessage({ type: "params", params });
+  }
+
+  /**
+   * 语音链的 DSP 输入端（dynamics 节点）。回看回放并入此节点以共享同一路
+   * 动态处理与音量；null = 降级环境（无 dynamics），回放保持自有路径。
+   */
+  get voiceChainInput(): AudioNode | null {
+    return this.dynamicsNode;
+  }
+
   bufferedAheadMs(): number {
     return this.timeline.contiguousBufferedMs();
   }
@@ -470,5 +520,60 @@ export class AudioCoordinator {
     if (this.gainNode) {
       this.gainNode.gain.value = this.muted ? 0 : this.volume;
     }
+  }
+
+  /**
+   * Load the (optional) voice dynamics worklet. Returns null when the module
+   * or node cannot be created — the caller then wires the plain topology.
+   */
+  private async initDynamicsNode(
+    contextNodeFactory:
+      | ((name: string, options?: AudioWorkletNodeOptions) => AudioWorkletNode)
+      | undefined,
+  ): Promise<AudioWorkletNode | null> {
+    try {
+      // 与 pcm-playback 相同的 blob URL 模式（Vite ?raw，见 init 内注释）。
+      const blob = new Blob([dynamicsWorkletSource], { type: "application/javascript" });
+      const workletUrl = URL.createObjectURL(blob);
+      try {
+        await this.context.audioWorklet.addModule(workletUrl);
+      } finally {
+        URL.revokeObjectURL(workletUrl);
+      }
+      const options: AudioWorkletNodeOptions = {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      };
+      const node =
+        typeof contextNodeFactory === "function"
+          ? contextNodeFactory.call(this.context, "dynamics", options)
+          : new AudioWorkletNode(this.context, "dynamics", options);
+      return node;
+    } catch (error) {
+      console.warn("[audio] dynamics worklet unavailable — voice DSP bypassed", error);
+      return null;
+    }
+  }
+
+  private handleDynamicsMessage(event: MessageEvent): void {
+    const data = event.data as { type?: unknown; outDb?: unknown; gateOpen?: unknown; compGrDb?: unknown; limGrDb?: unknown } | null;
+    if (data === null || typeof data !== "object" || data.type !== "state") {
+      return;
+    }
+    if (
+      typeof data.outDb !== "number" ||
+      typeof data.gateOpen !== "boolean" ||
+      typeof data.compGrDb !== "number" ||
+      typeof data.limGrDb !== "number"
+    ) {
+      return;
+    }
+    this.events.onAudioState?.({
+      outDb: data.outDb,
+      gateOpen: data.gateOpen,
+      compGrDb: data.compGrDb,
+      limGrDb: data.limGrDb,
+    });
   }
 }

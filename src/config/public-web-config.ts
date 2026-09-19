@@ -3,11 +3,20 @@
  *
  * The builder imports the wire type; the wire type never imports Node
  * config. This file stays Node-only (it imports ../config.js).
+ *
+ * `dsp` comes from the AudioDspStore (audio-dsp.yaml) rather than AppConfig:
+ * it is the one block the web UI can rewrite at runtime, so the builder
+ * takes it as an argument and the host re-runs the builder after a save.
  */
 import type { PublicWebConfig } from "../shared/wire/public-web-config.js";
+import type { AudioDspParams } from "../shared/wire/audio-dsp.js";
+import { defaultAudioDspParams } from "../shared/wire/audio-dsp.js";
 import type { AppConfig } from "../config.js";
 
-export function toPublicWebConfig(config: AppConfig): PublicWebConfig {
+export function toPublicWebConfig(
+  config: AppConfig,
+  dsp: AudioDspParams = defaultAudioDspParams(),
+): PublicWebConfig {
   const playback = config.media.audio.playback;
   const cache = config.media.audio.cache;
   return {
@@ -29,6 +38,7 @@ export function toPublicWebConfig(config: AppConfig): PublicWebConfig {
         channels: 1,
         bitDepth: 16,
       },
+      dsp,
     },
     game: {
       show_line_ids: config.game.show_line_ids,

@@ -20,6 +20,7 @@ import type { TaskStatusEvent } from "../../application/audio/tts-task-service.j
 import { ClientMessageSchema } from "../../shared/wire/schemas.js";
 import type { ServerMessage } from "../../shared/wire/server-message.js";
 import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
+import type { AudioDspParams } from "../../shared/wire/audio-dsp.js";
 import type { RuntimeCommand } from "../../core/runtime/runtime-command.js";
 import type { RuntimeOutput } from "../../core/runtime/runtime-output.js";
 
@@ -41,6 +42,14 @@ export interface RuntimeWebSocketDeps {
   controllerLimit: number;
   originGuard: (origin: string | undefined) => boolean;
   publicConfig: PublicWebConfig;
+  /** 玩家端音频遥测入站回调（宿主接 MonitorHub.updateAudioState）。 */
+  onAudioTelemetry?: (state: {
+    outDb: number;
+    gateOpen: boolean;
+    compGrDb: number;
+    limGrDb: number;
+    duckDb: number;
+  }) => void;
 }
 
 const COMMAND_ID_DEDUP_CAP = 1000;
@@ -104,6 +113,17 @@ export class RuntimeWebSocket {
       const state = this.connectionState.get(ws);
       if (state === undefined) continue;
       this.send(ws, { type: "runtime.output", sequence: ++state.sequence, output });
+    }
+  }
+
+  /**
+   * 广播音频 DSP 参数更新（/monitor 保存触发；玩家端窗口热生效）。这是
+   * host 通知不是 runtime 输出：不计入每连接的 runtime.output 序列。
+   */
+  notifyAudioDsp(params: AudioDspParams): void {
+    for (const ws of this.controllers) {
+      if (!this.connectionState.has(ws)) continue;
+      this.send(ws, { type: "audio.dsp", params });
     }
   }
 
@@ -230,6 +250,16 @@ export class RuntimeWebSocket {
         this.game.dispatch(message.command);
         break;
       }
+      case "audio.telemetry":
+        // 玩家端音频链遥测 → MonitorHub（/monitor 音频面板仪表）。
+        this.deps.onAudioTelemetry?.({
+          outDb: message.outDb,
+          gateOpen: message.gateOpen,
+          compGrDb: message.compGrDb,
+          limGrDb: message.limGrDb,
+          duckDb: message.duckDb,
+        });
+        break;
       case "audio.cache_report":
       case "audio.buffer_report":
       case "client.ready":

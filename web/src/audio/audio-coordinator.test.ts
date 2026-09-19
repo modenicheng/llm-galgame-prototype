@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AudioCoordinator, type AudioCoordinatorEvents } from "./audio-coordinator.js";
+import { defaultAudioDspParams } from "@shared/wire/audio-dsp.js";
 import type { PublicWebConfig } from "@shared/wire/public-web-config.js";
 
 const playbackConfig: PublicWebConfig["audio"]["playback"] = {
@@ -21,6 +22,7 @@ function makeEvents(): AudioCoordinatorEvents {
     onLinePlaybackStarted: vi.fn(),
     onLinePlaybackFinished: vi.fn(),
     onUnderrun: vi.fn(),
+    onAudioState: vi.fn(),
   };
 }
 
@@ -76,7 +78,8 @@ describe("AudioCoordinator", () => {
     const { context, node, gain } = makeFakeContext();
     const coordinator = new AudioCoordinator({ context, playbackConfig, format }, makeEvents());
     await coordinator.init();
-    expect(context.audioWorklet.addModule).toHaveBeenCalledTimes(1);
+    // 两次：pcm-playback + dynamics（假桩里 URL.createObjectURL 可用）。
+    expect(context.audioWorklet.addModule).toHaveBeenCalledTimes(2);
     expect(AudioWorkletNode).toBeDefined();
     expect(node.connect).toHaveBeenCalledWith(gain);
     expect(gain.connect).toHaveBeenCalledWith(context.destination);
@@ -529,5 +532,59 @@ describe("AudioCoordinator", () => {
     // A late EOF + drain for the dropped line emits no finished event.
     coordinator.notifyLineEof("line-1");
     expect(events.onLinePlaybackFinished).not.toHaveBeenCalled();
+  });
+
+  it("init wires the dynamics node between the worklet and the gain (DSP topology)", async () => {
+    const { context, gain } = makeFakeContext();
+    // Node 缺少 URL.revokeObjectURL（浏览器有）——桩掉，否则 dynamics 初始化
+    // 在 finally 里抛错走进旁路。
+    const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const pcmPort = { postMessage: vi.fn(), onmessage: null as ((e: MessageEvent) => void) | null };
+    const dynPort = { postMessage: vi.fn(), onmessage: null as ((e: MessageEvent) => void) | null };
+    const pcmNode = { port: pcmPort, connect: vi.fn() };
+    const dynNode = { port: dynPort, connect: vi.fn() };
+    const factory = vi.fn((name: string, _options?: AudioWorkletNodeOptions) =>
+      name === "pcm-playback" ? pcmNode : dynNode,
+    );
+    Object.assign(context, { createAudioWorkletNode: factory });
+    vi.stubGlobal("AudioWorkletNode", undefined); // 走 context 工厂路径
+    const events = makeEvents();
+    const params = defaultAudioDspParams().voice;
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format, dspParams: params }, events);
+    try {
+      await coordinator.init();
+    } finally {
+      revoke.mockRestore();
+    }
+    expect(pcmNode.connect).toHaveBeenCalledWith(dynNode);
+    expect(dynNode.connect).toHaveBeenCalledWith(gain);
+    expect(gain.connect).toHaveBeenCalledWith(context.destination);
+    expect(dynPort.postMessage).toHaveBeenCalledWith({ type: "params", params });
+    expect(coordinator.voiceChainInput).toBe(dynNode as unknown as AudioNode);
+    // 遥测：dynamics state 消息 → onAudioState
+    (dynPort.onmessage as (e: MessageEvent) => void)({
+      data: { type: "state", outDb: -20, gateOpen: true, compGrDb: 3, limGrDb: 0 },
+    } as MessageEvent);
+    expect(events.onAudioState).toHaveBeenCalledWith({ outDb: -20, gateOpen: true, compGrDb: 3, limGrDb: 0 });
+    // 热更参数直达节点端口
+    const updated = { ...params, gate: { ...params.gate, enabled: false } };
+    coordinator.setDynamicsParams(updated);
+    expect(dynPort.postMessage).toHaveBeenCalledWith({ type: "params", params: updated });
+  });
+
+  it("dynamics module failure bypasses the DSP but keeps playback alive", async () => {
+    const { context, node, gain } = makeFakeContext();
+    context.audioWorklet.addModule = vi
+      .fn()
+      .mockResolvedValueOnce(undefined) // pcm-playback 成功
+      .mockRejectedValueOnce(new Error("dynamics module unavailable")); // dynamics 失败
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const coordinator = new AudioCoordinator({ context, playbackConfig, format }, makeEvents());
+    await expect(coordinator.init()).resolves.toBeUndefined();
+    expect(node.connect).toHaveBeenCalledWith(gain); // 直连旁路
+    expect(gain.connect).toHaveBeenCalledWith(context.destination);
+    expect(coordinator.voiceChainInput).toBeNull();
+    expect(coordinator.available).toBe(true);
+    warn.mockRestore();
   });
 });

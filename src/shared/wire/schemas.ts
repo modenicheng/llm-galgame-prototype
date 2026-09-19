@@ -83,6 +83,14 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     underrunCount: z.number().int().nonnegative(),
   }),
   z.object({
+    type: z.literal("audio.telemetry"),
+    outDb: z.number(),
+    gateOpen: z.boolean(),
+    compGrDb: z.number().nonnegative(),
+    limGrDb: z.number().nonnegative(),
+    duckDb: z.number().nonnegative(),
+  }),
+  z.object({
     type: z.literal("client.ready"),
     capabilities: z.object({
       audioWorklet: z.boolean(),
@@ -128,5 +136,9 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     status: z.enum(["started", "finished", "failed", "canceled"]),
     error: z.string().optional(),
     totalBytes: z.number().int().nonnegative().optional(),
+  }),
+  z.object({
+    type: z.literal("audio.dsp"),
+    params: z.unknown(),
   }),
 ]);

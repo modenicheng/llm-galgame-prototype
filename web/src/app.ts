@@ -15,11 +15,14 @@
  */
 import type { AudioDescriptor, AudioPriority } from "@shared/wire/audio-descriptor.js";
 import type { PublicWebConfig } from "@shared/wire/public-web-config.js";
+import { defaultAudioDspParams, parseAudioDspParams, type AudioDspParams } from "@shared/wire/audio-dsp.js";
 import type { ServerMessage } from "@shared/wire/server-message.js";
-import { AudioCoordinator, type AudioCoordinatorEvents, type PlaybackMode } from "./audio/audio-coordinator.js";
+import { AudioCoordinator, type AudioCoordinatorEvents, type PlaybackMode, type VoiceAudioState } from "./audio/audio-coordinator.js";
 import { AudioDownloader } from "./audio/audio-downloader.js";
 import { ClipPlayer } from "./audio/clip-player.js";
 import { PcmDecoder } from "./audio/pcm-decoder.js";
+import { createBgmBus } from "./audio/bgm-bus.js";
+import { BgmDucker } from "./audio/bgm-duck.js";
 import { RuntimeClient, type ConnectionState, type RuntimeCommandWire, type WebSocketCtor } from "./runtime/runtime-client.js";
 import { GameViewModel, type RuntimePlayableEventWire, type ViewModelState } from "./runtime/game-view-model.js";
 import { BacklogStore, type BacklogEntry } from "./runtime/backlog-store.js";
@@ -52,6 +55,7 @@ export const DEFAULT_PUBLIC_WEB_CONFIG: PublicWebConfig = {
       channels: 1,
       bitDepth: 16,
     },
+    dsp: defaultAudioDspParams(),
   },
   game: {
     show_line_ids: false,
@@ -68,6 +72,10 @@ const CLEANER_DEFAULTS: CleanerOptions = {
 
 const BUFFER_REPORT_INTERVAL_MS = 2000;
 const CLEANER_INTERVAL_MS = 10 * 60 * 1000;
+/** 音频链遥测上报节流（/monitor 仪表 10Hz 足够；服务端无订阅者即丢弃）。 */
+const TELEMETRY_INTERVAL_MS = 100;
+/** 静默期的遥测基线电平（dBFS）。 */
+const SILENT_DB = -100;
 /** Reading-rate fallback for auto mode when a line has no audio (§9.3). */
 const READING_CHARS_PER_SEC = 5;
 
@@ -152,6 +160,8 @@ export class GameApp {
   private coordinator: AudioCoordinator | null = null;
   /** 回看面板的缓存音频回放器（start 时随 AudioContext 创建）。 */
   private clipPlayer: ClipPlayer | null = null;
+  /** BGM 闪避驱动器（BGM 接图成功时创建；吃语音链电平）。 */
+  private ducker: BgmDucker | null = null;
   private writer: AudioCacheWriter | null = null;
   private reader: AudioCacheReader | null = null;
   private cleaner: AudioCacheCleaner | null = null;
@@ -183,6 +193,9 @@ export class GameApp {
   /** Start failure surfaced to the UI banner (P2 start-failure wedge). */
   private startError: string | null = null;
   private bufferTimer: ReturnType<typeof setInterval> | null = null;
+  private telemetryTimer: ReturnType<typeof setInterval> | null = null;
+  /** 最近一次语音链遥测（dynamics worklet ≈21ms 上抛，10Hz 聚合上报）。 */
+  private lastVoiceState: VoiceAudioState = { outDb: SILENT_DB, gateOpen: false, compGrDb: 0, limGrDb: 0 };
   private cleanerTimer: ReturnType<typeof setTimeout> | null = null;
   private readingTimer: ReturnType<typeof setTimeout> | null = null;
   /** Auto-mode pause before the post-playback advance (§9.3). */
@@ -238,6 +251,7 @@ export class GameApp {
           context,
           playbackConfig: this.config.audio.playback,
           format: this.config.audio.format,
+          dspParams: this.config.audio.dsp.voice,
         },
         this.coordinatorEvents,
       );
@@ -281,6 +295,36 @@ export class GameApp {
       this.clipPlayer = new ClipPlayer(context);
       this.clipPlayer.setVolume(this.voiceVolume);
       this.clipPlayer.setMuted(this.muted);
+      // 语音链有动态处理节点时，回放并入同一条链（同一 DSP + 同一音量）；
+      // 降级环境保持回放自有路径（直连 destination）。
+      const voiceChainInput = this.coordinator?.voiceChainInput ?? null;
+      if (voiceChainInput !== null) {
+        this.clipPlayer.setOutput(voiceChainInput);
+      }
+
+      // BGM 接图（可选增强）：媒体元素 → BGM 动态处理 → 淡入淡出 → 闪避 →
+      // 出口。必须在语音侧 addModule("dynamics") 之后建节点（处理器名在同
+      // 一 AudioContext 上唯一）；任一步失败返回 null，BGM 保持旧的
+      // audio.volume 直连路径，闪避随之静默关闭。
+      if (this.bgmController !== null) {
+        const bus = createBgmBus(
+          context,
+          this.bgmController.mediaElement,
+          this.config.audio.dsp.bgm,
+        );
+        if (bus !== null) {
+          this.bgmController.attachGraph(bus);
+          this.ducker = new BgmDucker(
+            {
+              setTarget: (value, at, tc) => {
+                bus.duckGain.gain.setTargetAtTime(value, at, tc);
+              },
+            },
+            { now: () => context.currentTime },
+            this.config.audio.dsp.ducking,
+          );
+        }
+      }
       this.downloader = new AudioDownloader({
         token: this.options.token,
         writer: this.writer,
@@ -298,7 +342,10 @@ export class GameApp {
         onServerMessage: (msg) => this.onServerMessage(msg),
         onConnectionChange: (state) => {
           this.connection = state;
-          if (state === "open") this.startBufferReports();
+          if (state === "open") {
+            this.startBufferReports();
+            this.startTelemetryReports();
+          }
           this.emitState();
         },
         ...(this.options.webSocketImpl !== undefined
@@ -330,6 +377,7 @@ export class GameApp {
     this.client?.close();
     this.client = null;
     this.stopBufferReports();
+    this.stopTelemetryReports();
     this.cancelReadingTimer();
     this.cancelPauseTimer();
     this.stopReplay();
@@ -461,6 +509,18 @@ export class GameApp {
   setTextSpeed(charsPerSec: number): void {
     this.textSpeed = clampSpeed(charsPerSec);
     this.emitState();
+  }
+
+  /**
+   * 热更音频动态处理参数（/monitor 保存 → 服务端经 runtime WS 推送；启动
+   * 时也从 GET /api/config 的初始值走同一路径）。三处生效点：语音链、
+   * BGM 链、闪避驱动器；存回 config 供后续读取。
+   */
+  setDspParams(params: AudioDspParams): void {
+    this.config = { ...this.config, audio: { ...this.config.audio, dsp: params } };
+    this.coordinator?.setDynamicsParams(params.voice);
+    this.bgmController?.setDynamicsParams(params.bgm);
+    this.ducker?.setParams(params.ducking);
   }
 
   // -------------------------------------------------------------------------
@@ -608,6 +668,13 @@ export class GameApp {
           // Status bookkeeping is best-effort; never throw into the socket path.
         });
         break;
+      case "audio.dsp": {
+        // /monitor 保存后的热更推送：schema 层只验形状，这里再过一遍参数
+        // 语义（坏字段回落默认），绝不把可疑数据喂进音频链。
+        const params = parseAudioDspParams(msg.params);
+        if (params !== null) this.setDspParams(params);
+        break;
+      }
       default:
         this.viewModel.applyServerMessage(msg); // projection.snapshot + runtime.output
         break;
@@ -784,8 +851,8 @@ export class GameApp {
       entry.abort.abort(); // the downloader catch marks the cache partial
     }
     // §12.5: dead audio must not keep the timeline segment, queued samples
-    // or bufferedAheadMs alive — otherwise the low-watermark fill is
-    // suppressed and playback underruns.
+    // or pendingByLine alive — stale entries would linger in the playhead's
+    // switchToLine accounting and in the bufferedAheadMs state report.
     this.coordinator?.dropLine(lineId);
     this.descriptors.delete(lineId);
     this.enqueued.delete(lineId);
@@ -896,7 +963,15 @@ export class GameApp {
     this.enqueued.add(lineId);
   }
 
-  /** Cache lookup → feed-from-cache or download (§2 loop, §12.2). */
+  /**
+   * Cache lookup → feed-from-cache or download (§2 loop, §12.2).
+   *
+   * Arrival-driven scheduling: an active descriptor starts synthesizing the
+   * moment it arrives, with no buffer-headroom gate. A watermark check here
+   * would stall each new wave behind the previous wave's stale buffer
+   * (stop() does not reset the timeline) and defer the wave's first voice
+   * until its text is already on screen.
+   */
   private ensureAudio(lineId: string): void {
     const entry = this.descriptors.get(lineId);
     if (entry === undefined || entry.state !== "idle") return;
@@ -914,16 +989,6 @@ export class GameApp {
     if (
       entry.descriptor.scope.type === "candidate" &&
       entry.descriptor.priority !== "candidate_first_line"
-    ) {
-      return;
-    }
-
-    // §10.3 prefetch headroom: the current line is always on the critical
-    // path, but future lines are only fetched while the contiguous buffer
-    // has room below the target — bounds every fill burst (P3).
-    if (
-      lineId !== this.currentLineId &&
-      this.coordinator.bufferedAheadMs() >= this.config.audio.playback.target_buffer_ms
     ) {
       return;
     }
@@ -1034,20 +1099,17 @@ export class GameApp {
 
   private reconcileAudio(): void {
     if (this.coordinator === null) return;
-    // The current line's audio is always ensured (the critical path);
-    // future lines are filled below the low watermark, with ensureAudio
-    // itself gating prefetch against the §10.3 target (P3).
+    // Arrival-driven: ensureAudio already starts every known line when its
+    // descriptor lands, so this sweep is only a recovery path — it re-runs
+    // entries that fell back to idle (failed downloads awaiting retry) and
+    // keeps the current line on the critical path.
     if (this.currentLineId !== null) this.ensureAudio(this.currentLineId);
-    const below =
-      this.coordinator.bufferedAheadMs() <= this.config.audio.playback.low_watermark_ms;
-    if (below) {
-      for (const lineId of this.fetchPriorityOrder()) {
-        if (lineId === this.currentLineId) continue;
-        const entry = this.descriptors.get(lineId);
-        if (entry === undefined) continue;
-        if (entry.state === "idle" || entry.state === "checking") {
-          this.ensureAudio(lineId);
-        }
+    for (const lineId of this.fetchPriorityOrder()) {
+      if (lineId === this.currentLineId) continue;
+      const entry = this.descriptors.get(lineId);
+      if (entry === undefined) continue;
+      if (entry.state === "idle" || entry.state === "checking") {
+        this.ensureAudio(lineId);
       }
     }
   }
@@ -1138,6 +1200,11 @@ export class GameApp {
       this.underrunCount += 1;
       this.emitState();
     },
+    onAudioState: (state) => {
+      // 语音电平 → BGM 闪避跟随（句内停顿经 ducker 的 hold 平滑）。
+      this.lastVoiceState = state;
+      this.ducker?.onVoiceLevel(state.outDb);
+    },
   };
 
   private cancelPauseTimer(): void {
@@ -1177,6 +1244,30 @@ export class GameApp {
     }
   }
 
+  /** 音频链遥测上报（10Hz；断连期间静默跳过，服务端无订阅者即丢弃）。 */
+  private startTelemetryReports(): void {
+    if (this.telemetryTimer !== null) return;
+    this.telemetryTimer = setInterval(() => {
+      if (this.connection !== "open") return;
+      const duckDb = this.ducker !== null ? Math.max(0, -this.ducker.depthDb) : 0;
+      this.client?.send({
+        type: "audio.telemetry",
+        outDb: this.lastVoiceState.outDb,
+        gateOpen: this.lastVoiceState.gateOpen,
+        compGrDb: this.lastVoiceState.compGrDb,
+        limGrDb: this.lastVoiceState.limGrDb,
+        duckDb,
+      });
+    }, TELEMETRY_INTERVAL_MS);
+  }
+
+  private stopTelemetryReports(): void {
+    if (this.telemetryTimer !== null) {
+      clearInterval(this.telemetryTimer);
+      this.telemetryTimer = null;
+    }
+  }
+
   private async runCleaner(): Promise<void> {
     if (this.cleaner === null) return;
     await this.cleaner.run(this.activeCacheKeys()).catch(() => {});
@@ -1208,6 +1299,9 @@ export class GameApp {
     if (config?.audio?.playback?.low_watermark_ms === undefined) {
       throw new Error("config payload is missing audio.playback");
     }
+    // 旧服务端可能没有 dsp 块：归一化失败回落默认参数（逐字段兜底在
+    // schema 内完成，这里只兜整块缺失）。
+    config.audio.dsp = parseAudioDspParams(config.audio.dsp) ?? defaultAudioDspParams();
     this.configSource = "server";
     return config;
   }

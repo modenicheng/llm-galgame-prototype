@@ -11,6 +11,8 @@
  */
 import type { BrowserAssetResolver } from "./browser-asset-resolver.js";
 import type { BgmPlayback } from "./stage-types.js";
+import type { BgmBus } from "../audio/bgm-bus.js";
+import type { DynamicsChainParams } from "@shared/wire/audio-dsp.js";
 
 /** 窗口被时长钳制后小于该值视为退化配置，退回整曲循环。 */
 const MIN_WINDOW_SEC = 0.05;
@@ -59,6 +61,12 @@ export class BgmController {
   private trim: TrimWindow | null = null;
   private frameQueued = false;
   private lastTick = 0;
+  /**
+   * Web Audio 图总线（可选，start 时由 GameApp 注入）。注入后淡入淡出写
+   * bus.fadeGain（采样级精确），audio.volume 只承担用户音量/静音；null =
+   * legacy 路径，淡入淡出继续并入 audio.volume（引入图之前的行为）。
+   */
+  private bus: BgmBus | null = null;
 
   constructor(
     private readonly resolver: BrowserAssetResolver,
@@ -117,6 +125,26 @@ export class BgmController {
     this.applyVolume();
   }
 
+  /** 供 GameApp 建立 BGM 图用（createMediaElementSource 需要元素本身）。 */
+  get mediaElement(): HTMLAudioElement {
+    return this.audio;
+  }
+
+  /**
+   * 接入 Web Audio 图总线（start 手势后的启动期调用一次）。当前淡入淡出
+   * 乘数原样迁入 fadeGain，切换瞬时无缝；之后淡入淡出走采样级 GainNode。
+   */
+  attachGraph(bus: BgmBus): void {
+    this.bus = bus;
+    bus.fadeGain.gain.value = this.gain;
+    this.applyVolume();
+  }
+
+  /** BGM 链动态处理参数热更（无总线时静默忽略）。 */
+  setDynamicsParams(params: DynamicsChainParams): void {
+    this.bus?.setDynamicsParams(params);
+  }
+
   // ---------------------------------------------------------------------------
   // 内部：曲目装载与渐变引擎
   // ---------------------------------------------------------------------------
@@ -153,7 +181,7 @@ export class BgmController {
       this.ramp = null;
       this.gain = 1;
     }
-    this.applyVolume();
+    this.applyFadeGain();
     this.lastTick = this.clock.now();
     this.ensureLoop();
     void this.audio.play().catch(() => {});
@@ -198,12 +226,26 @@ export class BgmController {
     this.gain = 1;
     this.audio.pause();
     this.audio.removeAttribute("src");
-    this.applyVolume();
+    this.applyFadeGain();
   }
 
   private applyVolume(): void {
     const target = this.muted ? 0 : this.volume;
+    if (this.bus !== null) {
+      // 图模式：淡入淡出乘数在 fadeGain 上，元素只承担用户音量/静音。
+      this.audio.volume = Math.min(1, Math.max(0, target));
+      return;
+    }
     this.audio.volume = Math.min(1, Math.max(0, target * this.gain));
+  }
+
+  /** 淡入淡出乘数落到生效点：图模式写 fadeGain，legacy 模式并入 audio.volume。 */
+  private applyFadeGain(): void {
+    if (this.bus !== null) {
+      this.bus.fadeGain.gain.value = this.gain;
+    } else {
+      this.applyVolume();
+    }
   }
 
   private onMetadata(): void {
@@ -260,7 +302,7 @@ export class BgmController {
           this.runAfterFadeOut();
         }
       }
-      this.applyVolume();
+      this.applyFadeGain();
     }
     this.enforceTrim();
   }
