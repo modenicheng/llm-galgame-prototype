@@ -121,16 +121,20 @@ describe("summarizeState", () => {
       },
     });
     const summary = summarizeState(state);
-    expect(summary).toContain("[Characters]");
+    // C5 §3.4：累计人物状态摘要不再称作当前在场（在场/cast 由请求的
+    // cast 字段单独给出）。
+    expect(summary).toContain("[已记录人物状态]");
+    expect(summary).not.toContain("Characters present");
     expect(summary).toContain("hero");
     expect(summary).toContain("loc:cave");
     expect(summary).toContain("merchant");
   });
 
-  it('should show "(none present)" when there are no characters', () => {
+  it("should show the accumulated-state marker when there are no recorded characters", () => {
     const state = createInitialState();
     const summary = summarizeState(state);
-    expect(summary).toContain("(none present)");
+    expect(summary).toContain("[已记录人物状态]（暂无记录）");
+    expect(summary).not.toContain("(none present)");
   });
 
   it("should include the recent summary", () => {

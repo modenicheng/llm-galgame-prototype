@@ -86,6 +86,8 @@ export interface InteractionHost {
   inputEngine: InputEngine;
   bridgeControllers: Map<string, AbortController>;
   branchTailStates: Map<string, VisualState>;
+  /** C5 §5.1：每预取分支的名牌状态副本（绑定 registry revision）。 */
+  branchCharacterStates: Map<string, import("../core/characters/types.js").CharacterRuntimeState>;
   bridgeLineIds: Set<string>;
   responseLineIds: Set<string>;
   buffered: Map<string, RuntimePlayableEvent>;
@@ -94,6 +96,10 @@ export interface InteractionHost {
 
   emit(output: RuntimeOutput): void;
   makeBriefing(turn: number): string | undefined;
+  /** C5 §5.1：生成请求身份四件套（分支请求传 optionId 取预测副本）。 */
+  generationIdentity(branchOptionId?: string): import("../core/ports/story-generator-port.js").GenerationIdentity;
+  /** 选中分支的预测名牌副本转正（未选/取消分支的副本丢弃）。 */
+  promoteBranchCharacterState(optionId: string): void;
   openInteractionStage(interactionId: string): StagePresentationDelta | undefined;
   waitForCommand(predicate: (command: RuntimeCommand) => boolean): Promise<RuntimeCommand>;
   waitForInteractionCommand(
@@ -343,6 +349,7 @@ export class InteractionDriver {
         };
         const onDemandBrief = this.host.makeBriefing(turn + 1);
         const handle = this.host.generator.generateBranchPrefetch({
+          identity: this.host.generationIdentity(selected.id),
           turn: turn + 1,
           state: this.host.storyState,
           history: prefetchContext,

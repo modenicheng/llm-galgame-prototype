@@ -12,11 +12,18 @@ import type { AppConfig } from "./config.js";
 import type { PromptBundle } from "./prompts.js";
 import type { StoryContextEvent, InteractionEvent } from "./schema.js";
 import { makeTestConfig } from "./test-helpers.js";
+import {
+  buildCharacterRoster,
+  createCharacterRegistry,
+} from "./core/characters/registry.js";
+import type { CharacterRegistry as RosterRegistry } from "./core/characters/types.js";
+import type { AssetCatalog } from "./core/assets/types.js";
 import type { StoryState, GenerationEnvelope } from "./story/types.js";
 import { createInitialState } from "./story/state.js";
 import {
   buildDslUserPrompt,
   serializeStoryContext,
+  serializeStoryContextLegacy,
   serializeVisualContext,
   type DslContextInput,
 } from "./story/context-builder.js";
@@ -200,7 +207,31 @@ describe("DSL serializers and prompt builder", () => {
     };
   }
 
-  it("serializeStoryContext emits plain text without runtime metadata", () => {
+  /** C2 roster registry（C5 身份稳定投影用）。 */
+  function rosterRegistry(): RosterRegistry {
+    const assets: AssetCatalog = {
+      guidance: "",
+      backgrounds: {},
+      bgm: {},
+      soundEffects: {},
+      spriteSets: {},
+      characters: {},
+    };
+    return createCharacterRegistry(
+      buildCharacterRoster({
+        schemaVersion: 2,
+        scopeId: "llm-test",
+        playerId: "player_one",
+        characters: [
+          { id: "player_one", name: "玩家", control: "player", initialLabel: "你", persona: "玩家。" },
+          { id: "suyao", name: "苏遥", control: "npc", initialLabel: "苏遥", persona: "同班同学。" },
+        ],
+      }),
+      assets,
+    );
+  }
+
+  it("serializeStoryContext emits identity-stable JSONL (characterId + label snapshot)", () => {
     const events: StoryContextEvent[] = [
       {
         type: "narration",
@@ -263,19 +294,34 @@ describe("DSL serializers and prompt builder", () => {
       },
     ];
 
-    const out = serializeStoryContext(events);
-    expect(out).toBe(
-      [
-        "终端重新亮起。",
-        "苏遥: 你最好别再问。",
-        "[玩家] 选择：继续追问",
-        "[玩家] 输入：你明明知道它还在运行。",
-        "[玩家] 说吧。",
-      ].join("\n"),
-    );
+    const out = serializeStoryContext(events, rosterRegistry());
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(5); // player 双视图合并为一条；interaction 保留（未提交 attempt 引用）
+    for (const line of lines) {
+      expect(() => JSON.parse(line)).not.toThrow();
+    }
+    // 稳定 characterId 随行携带；名牌是发射时刻快照。
+    const dialogue = JSON.parse(lines[1]!) as Record<string, unknown>;
+    expect(dialogue["characterId"]).toBe("suyao");
+    expect(dialogue["displayLabel"]).toBe("苏遥");
+    expect(dialogue["eventRef"]).toBe("event:2");
+    // 玩家双视图合并：一条 player_dialogue，链接输入视图，控制角色 ID。
+    const player = JSON.parse(lines[3]!) as Record<string, unknown>;
+    expect(player["type"]).toBe("player_dialogue");
+    expect(player["characterId"]).toBe("player_one");
+    expect(player["interactionId"]).toBe("i1");
+    expect(player["linkedEventRef"]).toBe("event:4");
+    // 未提交 interaction：attempt 引用（无 seq），已提交/未提交分开标记。
+    const interaction = JSON.parse(lines[4]!) as Record<string, unknown>;
+    expect(interaction["type"]).toBe("interaction");
+    expect(interaction["eventRef"]).toBe("attempt:i2:0");
+    expect(interaction["seq"]).toBeUndefined();
+    // 运行时元数据不外泄（docs §69）。
     expect(out).not.toContain("line_id");
-    expect(out).not.toContain("seq");
-    expect(out).not.toContain("interaction");
+    expect(out).not.toContain("turn");
+    expect(out).not.toContain("timestamp");
+    // 可误解析的冒号行头格式不出现（R01）。
+    expect(out).not.toMatch(/苏遥[:：]/);
   });
 
   it("serializeVisualContext states every dimension explicitly, including empty ones", () => {

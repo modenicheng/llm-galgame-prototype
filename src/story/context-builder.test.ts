@@ -11,6 +11,12 @@ import {
   type DslContextInput,
 } from "./context-builder.js";
 import { RENAME_IDENTITY_CASE } from "../test-support/character-contract-cases.js";
+import {
+  buildCharacterRoster,
+  createCharacterRegistry,
+} from "../core/characters/registry.js";
+import type { CharacterRegistry as RosterRegistry } from "../core/characters/types.js";
+import type { AssetCatalog } from "../core/assets/types.js";
 import { createInitialState } from "./state.js";
 import type { MemoryProjection } from "../core/narrative/memory-projection.js";
 import type { PromptBundle } from "../prompts.js";
@@ -253,12 +259,47 @@ describe("buildDslUserPrompt", () => {
 });
 
 // ---------------------------------------------------------------------------
-// C1 契约向量（计划 R01）——期望行为规格，当前红灯：改名（台词头
-// (显示名) 槽）后 serializeStoryContext 只回放 event.speaker（显示名
-// 「神秘女子」），稳定 characterId female_A 从发给模型的历史里消失，
-// 模型在下一请求无从得知 神秘女子 = female_A，只能凭显示名写行头，
-// 身份链断裂（幻影说话人/立绘 cue 被丢/音色丢失皆由此起）。C2+ 转绿。
+// C1 契约向量（计划 R01）——C5 转绿：serializeStoryContext 显式携带
+// registry，输出身份稳定的事件 JSON（§5.1）——对白行携带稳定
+// characterId 与发射时刻名牌，不再只回放显示名，也没有 `神秘女子: 台词`
+// 这类可被误解析为新角色的行头格式。
 // ---------------------------------------------------------------------------
+
+/** R01 向量的 C2 roster registry（唯一 NPC = female_A）。 */
+function r01RosterRegistry(): RosterRegistry {
+  const assets: AssetCatalog = {
+    guidance: "",
+    backgrounds: {},
+    bgm: {},
+    soundEffects: {},
+    spriteSets: {},
+    characters: {},
+  };
+  return createCharacterRegistry(
+    buildCharacterRoster({
+      schemaVersion: 2,
+      scopeId: "r01-context-builder",
+      playerId: "player_one",
+      characters: [
+        {
+          id: "player_one",
+          name: "玩家",
+          control: "player",
+          initialLabel: "你",
+          persona: "玩家本人（契约向量）。",
+        },
+        {
+          id: RENAME_IDENTITY_CASE.characterId,
+          name: RENAME_IDENTITY_CASE.scriptName,
+          control: "npc",
+          initialLabel: RENAME_IDENTITY_CASE.scriptName,
+          persona: "契约向量角色。",
+        },
+      ],
+    }),
+    assets,
+  );
+}
 
 describe("C1 contract vector — identity after rename (R01)", () => {
   it("serialized history still carries the stable characterId after a display-name rename", () => {
@@ -278,6 +319,9 @@ describe("C1 contract vector — identity after rename (R01)", () => {
       },
     ];
 
-    expect(serializeStoryContext(events)).toContain(RENAME_IDENTITY_CASE.characterId);
+    const serialized = serializeStoryContext(events, r01RosterRegistry());
+    expect(serialized).toContain(RENAME_IDENTITY_CASE.characterId);
+    // 冒号行头格式（半角/全角）不得出现。
+    expect(serialized).not.toMatch(/神秘女子[:：]/);
   });
 });

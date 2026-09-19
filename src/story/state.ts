@@ -56,13 +56,15 @@ export function summarizeState(state: StoryState): string {
   );
   lines.push(`  Purpose: ${state.scene.purpose}`);
 
-  // Characters present
+  // 已记录人物状态（C5 §3.4）：StoryState.characters 是累计人物状态，不是
+  // 「当前在场」——在场/叙事 cast 由生成请求的 cast 字段单独给出，视觉
+  // 可见性只来自 VisualState。隐藏、离场（@ch exit）都不清空这里的记录。
   const charIds = Object.keys(state.characters).filter(
     // 幻影角色（如历史坏行入库的 "@6ch raspberry"）不再回流进 prompt。
     (id) => !/[\s@]/.test(id),
   );
   if (charIds.length > 0) {
-    lines.push("[Characters]");
+    lines.push("[已记录人物状态]");
     for (const id of charIds) {
       const char = state.characters[id]!;
       const parts: string[] = [id];
@@ -70,7 +72,7 @@ export function summarizeState(state: StoryState): string {
       lines.push(`  ${parts.join(" | ")}`);
     }
   } else {
-    lines.push("[Characters] (none present)");
+    lines.push("[已记录人物状态]（暂无记录）");
   }
 
   // Recent summary

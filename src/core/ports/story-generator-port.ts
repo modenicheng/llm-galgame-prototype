@@ -16,9 +16,40 @@ import type {
 import type { EventGroupDraft } from "../protocol/gal-dsl/types.js";
 import type { GenerationEnvelope, StoryState } from "../../story/types.js";
 import type { VisualState } from "../presentation/types.js";
+import type { CastContext, CharacterRuntimeState } from "../characters/types.js";
 import { AsyncEventQueue } from "../runtime/async-event-queue.js";
 
+/**
+ * C5 §5.1：每个生成请求显式携带的身份上下文。四项都必填——不携带
+ * protocolVersion 的「隐式 v1」与不携带 rosterRevision 的「身份版本未知」
+ * 都不允许再出现。
+ */
+export interface GenerationIdentity {
+  /** 会话 DSL 协议版本（config dsl.protocol_version；默认 1，未翻）。 */
+  protocolVersion: 1 | 2;
+  /** 本局 registry 的 roster revision（身份版本，绑定快照与预取副本）。 */
+  rosterRevision: string;
+  /** 允许发声 cast 与场景参与者（§3.4；空 allowedSpeakerIds = 无 NPC 台词）。 */
+  cast: CastContext;
+  /** 名牌运行时状态快照（预取分支持副本，未选/取消/修复失败即丢弃）。 */
+  characterState: CharacterRuntimeState;
+}
+
+/** 请求身份的兼容视图（roster 缺席的 legacy 会话/窄测试夹具）。 */
+export function legacyGenerationIdentity(
+  cast: CastContext,
+): GenerationIdentity {
+  return {
+    protocolVersion: 1,
+    rosterRevision: "legacy",
+    cast,
+    characterState: { labels: Object.create(null) },
+  };
+}
+
 export interface OpeningRequest {
+  /** C5：身份上下文（协议版本 / roster revision / cast / 名牌状态）。 */
+  identity: GenerationIdentity;
   turn: number;
   state: StoryState;
   signal?: AbortSignal;
@@ -29,6 +60,8 @@ export interface OpeningRequest {
 }
 
 export interface ContinuationRequest {
+  /** C5：身份上下文（协议版本 / roster revision / cast / 名牌状态）。 */
+  identity: GenerationIdentity;
   turn: number;
   state: StoryState;
   history: StoryContextEvent[];
@@ -43,6 +76,8 @@ export interface ContinuationRequest {
 }
 
 export interface BranchPrefetchRequest {
+  /** C5：身份上下文（协议版本 / roster revision / cast / 名牌状态）。 */
+  identity: GenerationIdentity;
   turn: number;
   state: StoryState;
   history: StoryContextEvent[];
@@ -56,6 +91,8 @@ export interface BranchPrefetchRequest {
 }
 
 export interface InputResponseRequest {
+  /** C5：身份上下文（协议版本 / roster revision / cast / 名牌状态）。 */
+  identity: GenerationIdentity;
   turn: number;
   state: StoryState;
   history: StoryContextEvent[];
@@ -69,6 +106,8 @@ export interface InputResponseRequest {
 }
 
 export interface InputBridgeRequest {
+  /** C5：身份上下文（协议版本 / roster revision / cast / 名牌状态）。 */
+  identity: GenerationIdentity;
   turn: number;
   state: StoryState;
   interaction: InteractionEvent;

@@ -19,7 +19,12 @@ import {
   BeliefOpSchema,
   AuditFindingSchema,
 } from "../../core/narrative/memory-operation.js";
-import { serializeStoryContext } from "../../story/context-builder.js";
+import { serializeStoryContextLegacy } from "../../story/context-builder.js";
+import {
+  projectMemoryEvidence,
+  renderProjectedEvents,
+} from "../../story/event-projection.js";
+import type { CharacterRegistry } from "../../core/characters/types.js";
 import type {
   MemoryConsolidatorPort,
   ConsolidationRequest,
@@ -89,6 +94,8 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
     apiKey: string;
     api: AppConfig["api"];
     config: NarrativeConfig;
+    /** C2 角色注册表（bootstrap 注入）；缺席 = legacy 兼容渲染。 */
+    registry?: CharacterRegistry;
     diagnostics?: DiagnosticSink;
     client?: OpenAI;
   }) {
@@ -158,7 +165,13 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
 
     // Events section
     parts.push("===== 剧情事件 =====");
-    parts.push(serializeStoryContext(request.events));
+    // C5 §5.1：身份稳定的事件 JSON（registry 缺席 = 兼容路径，冻结 legacy
+    // 渲染）。
+    parts.push(
+      this.opts.registry !== undefined
+        ? renderProjectedEvents(projectMemoryEvidence(request.events, this.opts.registry))
+        : serializeStoryContextLegacy(request.events),
+    );
 
     // Threads section
     parts.push("===== 当前剧情线 =====");
