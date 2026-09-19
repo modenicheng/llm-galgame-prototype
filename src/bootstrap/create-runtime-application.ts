@@ -405,7 +405,8 @@ export async function createRuntimeApplication(
   // - 旧世界（pre-M1 canon，无 control）→ 显式 legacy 兼容模式（身份仍走
   //   资产目录注册表），不猜测玩家、不掺入 fallback cast。
   // - 无世界/空 canon 启动 → main 静态 fallback 世界 roster（characters.yaml
-  //   内容包；玩家契约 playerId=linche，苏遥为 NPC）。
+  //   内容包；玩家契约按用户裁定 2026-09-19：playerId=player 无名玩家，
+  //   林澈/苏遥均为 NPC）。
   let characterRegistry: CharacterRegistryProvider;
   if (options.gameId !== undefined && isRosterCapableCanon(canonSnapshot)) {
     const roster = rosterFromCanonCharacters({

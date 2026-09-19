@@ -281,7 +281,8 @@ describe("isRosterCapableCanon / rosterCharacterIds", () => {
       assets: makeAssets(),
     });
     const ids = rosterCharacterIds(generated);
-    // main 静态 fallback cast 不得混入生成世界。
+    // main 静态 fallback cast 不得混入生成世界（player/linche/suyao 三条）。
+    expect(ids.has("player")).toBe(false);
     expect(ids.has("linche")).toBe(false);
     expect(ids.has("suyao")).toBe(false);
     expect(generated.scopeId).not.toContain("fallback");
