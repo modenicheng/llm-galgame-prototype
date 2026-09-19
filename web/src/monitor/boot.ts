@@ -8,6 +8,7 @@ import { MonitorModel } from "./monitor-model.js";
 import { WriterPanel } from "./writer-panel.js";
 import { ContextPanel } from "./context-panel.js";
 import { PromptPanel } from "./prompt-panel.js";
+import { AudioPanel } from "./audio-panel.js";
 import { StatusBar } from "./status-bar.js";
 import { deriveStoryGraph, renderStoryGraph } from "./tabs/story-graph.js";
 import { renderStoryState } from "./tabs/story-state-tab.js";
@@ -15,7 +16,7 @@ import { renderMetrics } from "./tabs/metrics-tab.js";
 import { renderDiagnostics, renderEvents } from "./tabs/logs-tab.js";
 import { el } from "../ui/dom.js";
 
-type TabId = "graph" | "state" | "metrics" | "events" | "logs";
+type TabId = "graph" | "state" | "metrics" | "events" | "logs" | "audio";
 type RightTabId = "prompt" | "context";
 
 const TABS: { id: TabId; label: string }[] = [
@@ -24,6 +25,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "metrics", label: "指标" },
   { id: "events", label: "事件" },
   { id: "logs", label: "日志" },
+  { id: "audio", label: "音频" },
 ];
 
 function panel(title: string, accent: string): { panel: HTMLElement; head: HTMLElement; body: HTMLElement } {
@@ -295,6 +297,8 @@ export function bootMonitor(root: HTMLElement): void {
       if (state !== null) renderEvents(tabBodies.get("events")!, state.session.timeline, force);
     } else if (activeTab === "logs") {
       renderDiagnostics(tabBodies.get("logs")!, model.diagnostics, force);
+    } else if (activeTab === "audio") {
+      audioPanel.updateMeters(state?.audio);
     }
   }
 
@@ -305,6 +309,8 @@ export function bootMonitor(root: HTMLElement): void {
 
   // Token comes from the page URL exactly like the game page (§8.3).
   const token = new URLSearchParams(window.location.search).get("token") ?? "";
+  // 音频 tab：DSP 参数编辑 + 保存 + 实时仪表（REST 直连，不占 WS 只读通道）。
+  const audioPanel = new AudioPanel(tabBodies.get("audio")!, token);
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
   const client = new MonitorClient({
     wsUrl: `${proto}://${window.location.host}/ws/monitor`,

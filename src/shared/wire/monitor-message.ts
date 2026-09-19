@@ -148,6 +148,22 @@ export interface MonitorDiagnosticEntry {
 // State frame + snapshot
 // ---------------------------------------------------------------------------
 
+/**
+ * 玩家端音频链遥测（/monitor 音频面板仪表）。玩家端 ≤10Hz 聚合上报，
+ * hub 无订阅者时丢弃；缺省 = 无数据（音频页显示「等待玩家端遥测」）。
+ */
+export interface MonitorAudioState {
+  at: number;
+  /** 语音链输出电平（dBFS）。 */
+  outDb: number;
+  gateOpen: boolean;
+  /** 压缩/限幅增益削减（dB，≥0）。 */
+  compGrDb: number;
+  limGrDb: number;
+  /** BGM 闪避深度（dB，≥0；0 = 未闪避）。 */
+  duckDb: number;
+}
+
 export interface MonitorStateFrame {
   at: number;
   session: GameMonitorState;
@@ -158,6 +174,8 @@ export interface MonitorStateFrame {
    * 落盘。文件经 `/monitor/records/…` 只读路由访问（需会话 token）。
    */
   recordDir?: string | null;
+  /** 玩家端音频链遥测；缺省 = 尚未收到任何上报。 */
+  audio?: MonitorAudioState;
 }
 
 /** Static facts the dashboard labels panels with. */

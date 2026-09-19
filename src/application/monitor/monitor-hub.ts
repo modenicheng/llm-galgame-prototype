@@ -30,6 +30,7 @@ import type { GameMonitorState } from "../../core/runtime/monitor-state.js";
 import type { Metrics, MetricsSnapshot } from "../../runtime/metrics.js";
 import type { RuntimeStatus, RuntimeStatusSnapshot } from "../../status.js";
 import type {
+  MonitorAudioState,
   MonitorContextTask,
   MonitorContextTaskKind,
   MonitorContextTaskState,
@@ -210,6 +211,8 @@ export class MonitorHub {
   private readonly contextTasks: MonitorContextTask[] = [];
   private contextSeq = 0;
   private readonly diagnostics: MonitorDiagnosticEntry[] = [];
+  /** 玩家端音频链遥测（null = 尚未收到上报；不出现在快照差分之外）。 */
+  private audioState: MonitorAudioState | null = null;
   private readonly listeners = new Set<(message: MonitorServerMessage) => void>();
   private pendingEvents: MonitorServerEvent[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -449,6 +452,20 @@ export class MonitorHub {
   }
 
   // -------------------------------------------------------------------------
+  // Player audio telemetry (/monitor 音频面板仪表)
+  // -------------------------------------------------------------------------
+
+  /**
+   * 玩家端经 runtime WS 上报的音频链遥测（≤10Hz）。无订阅者时直接丢弃
+   * （玩家页空转时零成本）；有订阅者也只更新内存，随 400ms 状态轮询的
+   * JSON 差分自然节流。
+   */
+  updateAudioState(state: Omit<MonitorAudioState, "at">): void {
+    if (this.listeners.size === 0) return;
+    this.audioState = { at: this.now(), ...state };
+  }
+
+  // -------------------------------------------------------------------------
   // Diagnostics fan-out (BroadcastDiagnosticSink calls this)
   // -------------------------------------------------------------------------
 
@@ -590,6 +607,7 @@ export class MonitorHub {
       status: this.options.status.snapshot(),
       metrics: this.options.metrics.snapshot(),
       ...(this.recordDir !== null ? { recordDir: this.recordDir } : {}),
+      ...(this.audioState !== null ? { audio: this.audioState } : {}),
     };
   }
 

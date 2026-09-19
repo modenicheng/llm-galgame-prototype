@@ -1517,3 +1517,163 @@ pre.mon-pre {
   padding: 18px;
   text-align: center;
 }
+
+/* ---------------------------------------------------------------- audio
+ * 音频 tab：DSP 参数编辑 + 保存 + 实时仪表。参数属于操作员工位——
+ * 滑条行紧凑排布，组开关禁用整组（半透明）。 */
+
+.mon-audio-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mon-audio-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 16px;
+}
+
+.mon-audio-meter__label {
+  flex: 0 0 76px;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.mon-audio-meter__track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.mon-audio-meter__bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  background: var(--mon-live);
+  transition: width 120ms linear;
+}
+
+.mon-audio-meter__value {
+  flex: 0 0 86px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #c9d1d9;
+  text-align: right;
+}
+
+.mon-audio-meter__value.is-open {
+  color: var(--mon-ok);
+}
+
+.mon-audio-waiting {
+  font-size: 11px;
+  color: #6e6e78;
+}
+
+.mon-audio-form {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mon-audio-group {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.mon-audio-group__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.mon-audio-group__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.mon-audio-group__note {
+  font-size: 11px;
+  color: #6e6e78;
+}
+
+.mon-audio-sub__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.mon-audio-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.mon-audio-rows.is-disabled {
+  opacity: 0.38;
+  pointer-events: none;
+}
+
+.mon-audio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mon-audio-row__label {
+  flex: 0 0 64px;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.mon-audio-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--mon-accent);
+  height: 14px;
+}
+
+.mon-audio-row__value {
+  flex: 0 0 88px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #c9d1d9;
+  text-align: right;
+}
+
+.mon-audio-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mon-audio-status {
+  flex: 1;
+  font-size: 11px;
+  color: #8b949e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mon-audio-save.is-dirty {
+  color: var(--mon-warn);
+  border-color: var(--mon-warn);
+}
