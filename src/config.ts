@@ -85,8 +85,10 @@ export interface NarrativeConfig {
   lessons: { auto_from_rejections: number; brief_max: number };
   /** 既定事实（§5）：brief 相关事实集上限（MA-B）。 */
   facts: { brief_max: number };
-  /** 角色认知（§6）：每角色 active beliefs 上限，超限拒新保旧（MA-B）。 */
-  beliefs: { max_active_per_character: number };
+  /** 角色认知（§6）：每角色 active beliefs 上限，超限拒新保旧（MA-B）；
+   * request_max = 整理请求可携带的相关 belief 候选上限（§6.2 M2，与
+   * facts.brief_max 同一模式——超预算时候选与可引用范围同步收缩）。 */
+  beliefs: { max_active_per_character: number; request_max: number };
   consolidation: {
     batch_min_events: number;
     max_events_per_call: number;
@@ -103,7 +105,7 @@ export const DEFAULT_NARRATIVE_CONFIG: NarrativeConfig = {
   setups: { max_active: 6, max_untouched_checkpoints: 6 },
   lessons: { auto_from_rejections: 2, brief_max: 8 },
   facts: { brief_max: 8 },
-  beliefs: { max_active_per_character: 8 },
+  beliefs: { max_active_per_character: 8, request_max: 12 },
   consolidation: {
     batch_min_events: 4,
     max_events_per_call: 80,
@@ -378,8 +380,11 @@ const NarrativeConfigSchema = z
       .object({
         // 每角色 active beliefs 上限，超限拒新保旧（§6.1，MA-B）。
         max_active_per_character: z.number().int().min(1).max(50).default(8),
+        // 整理请求相关 belief 候选上限（§6.2 M2；缺省对齐
+        // memory-validator 的 MAX_CITABLE_BELIEFS_PER_REQUEST）。
+        request_max: z.number().int().min(1).max(50).default(12),
       })
-      .default({ max_active_per_character: 8 }),
+      .default({ max_active_per_character: 8, request_max: 12 }),
     consolidation: z
       .object({
         batch_min_events: z.number().int().min(1).max(100).default(4),

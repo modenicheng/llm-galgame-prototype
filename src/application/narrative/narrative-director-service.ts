@@ -107,6 +107,14 @@ function formatIdentityIssuesBrief(
     .join("；");
 }
 
+/** 批次区间键（Ruling 14 瞬时修复失败计数的 per-interval 键）。 */
+function intervalKeyOf(batch: readonly StoredEvent[]): string {
+  return `${batch[0]?.seq ?? 0}:${batch[batch.length - 1]?.seq ?? 0}`;
+}
+
+/** Ruling 14：每区间定向修复提取失败（瞬时故障）的次数上限。 */
+const REPAIR_EXTRACTION_MAX_TRANSIENT_ATTEMPTS = 2;
+
 // ---------------------------------------------------------------------------
 // Config normalization
 // ---------------------------------------------------------------------------
@@ -158,6 +166,13 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
   // Pending events not yet consolidated
   private pendingEvents: StoredEvent[] = [];
+
+  /**
+   * Ruling 14：每区间（fromSeq:toSeq）的定向修复提取失败计数（瞬时故障，
+   * 会话工作态）。达到 REPAIR_EXTRACTION_MAX_TRANSIENT_ATTEMPTS 次即以
+   * repair_extraction_failed 降级；区间成功提交或终态降级时清除。
+   */
+  private readonly repairExtractionFailures = new Map<string, number>();
 
   // Director plan lifecycle (Task 8)
   private lastBriefRequest: MemoryProjectionRequest | undefined;
@@ -548,10 +563,17 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     }
 
     // --- §6.2 M2：身份/引用非法的提案不等于 no-op——整批不提交 ---
-    // 最多 1 次定向修复（同一批次携带上一次 issues 重试）；仍失败则记录
-    // 失败区间并降级：本批事件不再重试，播放继续，成功水位停在缺口前。
-    // 修复 ROOT CAUSE #1：此前身份被拒批次带着非空 result 一路流到水位
-    // 推进，把非法区间标记成了「已成功提取」。
+    // 最多 1 次定向修复（同一批次携带上一次 issues 重试）；修复产出的
+    // 提案仍身份非法 → 记录失败区间并降级（degraded）：本批事件不再重试，
+    // 播放继续，成功水位停在缺口前。修复 ROOT CAUSE #1：此前身份被拒
+    // 批次带着非空 result 一路流到水位推进，把非法区间标记成「已成功提取」。
+    //
+    // Ruling 14：修复阶段的提取失败（result === null，LLM 超时/崩溃）是
+    // 瞬时故障，不是身份失败——修复从未产出提案，绝不按「定向修复后仍被
+    // 拒」降级（那是误导性诊断）。批次回队走既有节流重试路径；每区间
+    // 瞬时修复失败上限 REPAIR_EXTRACTION_MAX_TRANSIENT_ATTEMPTS 次，
+    // 耗尽后以 repair_extraction_failed 独立状态降级（诚实消息：修复
+    // 提取失败——瞬时故障重试耗尽，不引用身份 issues）。
     if (outcome.identityIssues.length > 0) {
       const firstAttemptRejected = [...outcome.rejected];
       this.diagnostics.warn(
@@ -565,7 +587,17 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         this.lastBriefRequest?.characters ?? [],
         { priorIssues: outcome.identityIssues },
       );
-      if (repaired.result !== null && repaired.identityIssues.length === 0) {
+      if (repaired.result === null) {
+        // 修复提取失败 = 瞬时故障（Ruling 14）：回队节流重试；耗尽则
+        // repair_extraction_failed 降级。绝不引用身份 issues 措辞。
+        return this.handleRepairExtractionFailure(
+          pending,
+          batch,
+          overflow,
+          firstAttemptRejected,
+        );
+      }
+      if (repaired.identityIssues.length === 0) {
         // 定向修复成功：以修复结果继续（首试拒绝留审计痕）。episode id
         // 由 revision 派生——revision 未动，两次尝试生成同一 id，幂等。
         if (firstAttemptRejected.length > 0) {
@@ -573,18 +605,17 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
         }
         outcome = repaired;
       } else {
-        // 修复仍失败（身份仍非法或提取失败）：降级。失败区间入 state 并
-        // 持久化；本批事件不回队（有限重试已耗尽）；更新溢出事件照常
-        // 留待后续批次（后续批次可处理，但水位不得越过缺口）。
+        // 修复产出了新提案但身份仍非法：identity 降级（本批事件不回队
+        // ——有限重试已耗尽；更新溢出事件照常留待后续批次，后续批次可
+        // 处理，但水位不得越过缺口）。
         this.lastConsolidateAt = Date.now();
         if (overflow.length > 0) {
           this.pendingEvents = [...overflow, ...this.pendingEvents];
         }
+        this.repairExtractionFailures.delete(intervalKeyOf(batch));
         await this.recordDegradedInterval(
           batch,
-          repaired.identityIssues.length > 0
-            ? repaired.identityIssues
-            : outcome.identityIssues,
+          { kind: "identity", issues: repaired.identityIssues },
           [...firstAttemptRejected, ...repaired.rejected],
         );
         return {
@@ -689,8 +720,55 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     if (outcome.findings.length > 0) {
       await this.recordFindings(outcome.findings);
     }
+    // 区间成功提交：清掉它的瞬时修复失败计数（Ruling 14——计数只对
+    // 未决区间有意义，成功即终态）。
+    this.repairExtractionFailures.delete(intervalKeyOf(batch));
     this.lastConsolidateAt = Date.now();
     return { applied: applied.applied, rejected };
+  }
+
+  /**
+   * Ruling 14：定向修复阶段的提取失败（result === null）= 瞬时故障。
+   * - 未达上限（REPAIR_EXTRACTION_MAX_TRANSIENT_ATTEMPTS）：批次整体
+   *   回队（与 port 失败同一路径——节流重试，不丢事件、不降级、不写
+   *   失败区间）；
+   * - 达到上限：以 repair_extraction_failed 独立状态降级（诚实消息：
+   *   修复提取失败——瞬时故障重试耗尽；绝不引用修复从未产出的身份
+   *   issues）。首试的身份拒绝照常留审计痕（那是真实发生过的提案）。
+   */
+  private async handleRepairExtractionFailure(
+    pending: readonly StoredEvent[],
+    batch: readonly StoredEvent[],
+    overflow: readonly StoredEvent[],
+    firstAttemptRejected: RejectedOp[],
+  ): Promise<{ applied: number; rejected: RejectedOp[] }> {
+    const key = intervalKeyOf(batch);
+    const transientFailures = (this.repairExtractionFailures.get(key) ?? 0) + 1;
+    this.lastConsolidateAt = Date.now();
+
+    if (transientFailures < REPAIR_EXTRACTION_MAX_TRANSIENT_ATTEMPTS) {
+      this.repairExtractionFailures.set(key, transientFailures);
+      // 与 port 失败路径一致：整批 drained pending（批 + 溢出）回队首部。
+      this.pendingEvents = [...pending, ...this.pendingEvents];
+      this.diagnostics.warn(
+        "NarrativeDirector",
+        `定向修复提取失败（瞬时故障，第 ${transientFailures}/${REPAIR_EXTRACTION_MAX_TRANSIENT_ATTEMPTS} 次）——批次重回队列按节流重试`,
+      );
+      return { applied: 0, rejected: [] };
+    }
+
+    // 瞬时重试耗尽：独立状态降级。attempts = 消耗的整理调用数——每轮
+    // 瞬时故障 = 身份尝试 + 修复提取，共 2 次/轮。
+    this.repairExtractionFailures.delete(key);
+    if (overflow.length > 0) {
+      this.pendingEvents = [...overflow, ...this.pendingEvents];
+    }
+    await this.recordDegradedInterval(
+      batch,
+      { kind: "repair_extraction", attempts: transientFailures * 2 },
+      firstAttemptRejected,
+    );
+    return { applied: 0, rejected: firstAttemptRejected };
   }
 
   /**
@@ -790,13 +868,21 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
   /**
    * §6.2 M2：记录降级的失败整理区间（定向修复耗尽）。区间入 state（经
-   * memory-write 链，与其它内存写串行）并持久化；两次尝试的被拒提案走
-   * 既有 appendOps/lessons 审计通道。降级区间是诊断级状态：持久化失败
-   * 只告警不回滚——会话内语义（不再重试、水位不越过缺口）保持一致。
+   * memory-write 链，与其它内存写串行）并持久化；被拒提案走既有
+   * appendOps/lessons 审计通道。降级区间是诊断级状态：持久化失败只告警
+   * 不回滚——会话内语义（不再重试、水位不越过缺口）保持一致。
+   *
+   * Ruling 14 两种降级原因分开诊断：
+   * - identity：修复产出了新提案但身份/引用仍非法（status="degraded"，
+   *   attempts=2，消息引用修复轮的 issues）；
+   * - repair_extraction：修复阶段提取失败（瞬时重试耗尽，
+   *   status="repair_extraction_failed"，诚实消息——绝不引用身份 issues）。
    */
   private async recordDegradedInterval(
     batch: readonly StoredEvent[],
-    issues: readonly IdentityValidationIssue[],
+    detail:
+      | { kind: "identity"; issues: readonly IdentityValidationIssue[] }
+      | { kind: "repair_extraction"; attempts: number },
     auditRejected: RejectedOp[],
   ): Promise<void> {
     const fromSeq = batch[0]!.seq;
@@ -804,8 +890,8 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     const interval: ConsolidationFailedInterval = {
       fromSeq,
       toSeq,
-      attempts: 2,
-      status: "degraded",
+      attempts: detail.kind === "identity" ? 2 : detail.attempts,
+      status: detail.kind === "identity" ? "degraded" : "repair_extraction_failed",
     };
     await this.mutateMemory(async (current) => {
       const shadow = structuredClone(current);
@@ -822,8 +908,11 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     });
     this.diagnostics.warn(
       "NarrativeDirector",
-      `记忆区间 [${fromSeq},${toSeq}] 定向修复后仍被拒，降级（不再重试；成功水位停在缺口前）：` +
-        `${formatIdentityIssuesBrief(issues)}`,
+      detail.kind === "identity"
+        ? `记忆区间 [${fromSeq},${toSeq}] 定向修复后仍被拒，降级（不再重试；成功水位停在缺口前）：` +
+            `${formatIdentityIssuesBrief(detail.issues)}`
+        : `记忆区间 [${fromSeq},${toSeq}] 修复提取失败——瞬时故障重试耗尽` +
+            `（${REPAIR_EXTRACTION_MAX_TRANSIENT_ATTEMPTS} 次），降级（不再重试；成功水位停在缺口前）`,
     );
     if (auditRejected.length > 0) {
       await this.recordRejectedOps(auditRejected);

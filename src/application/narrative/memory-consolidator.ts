@@ -280,6 +280,9 @@ export class MemoryConsolidator {
       characters: stateCharacters,
       location: stateLocation,
       factMax: this.config.facts.brief_max,
+      // belief 候选上限走 config（facts.brief_max 同一模式）；缺省值与
+      // memory-validator 的 MAX_CITABLE_BELIEFS_PER_REQUEST 对齐。
+      beliefMax: this.config.beliefs.request_max,
       // identity 模式的 belief 归属权威 = 证据登场 ∪ 场景在场（R27：roster
       // 全集绝不作为归属权威）；legacy 只按场景名单过滤。
       ...(provisionalView !== undefined

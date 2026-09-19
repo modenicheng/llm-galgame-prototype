@@ -128,15 +128,20 @@ export interface NarrativeMemoryState {
 }
 
 /**
- * §6.2 M2 失败整理区间。attempts = 已消耗的尝试次数（初始 + 1 次定向
- * 修复 = 2）；status 当前只有 "degraded"（记录时即降级——区间内的事件
- * 不再重试，成功水位停在缺口前）。
+ * §6.2 M2 失败整理区间。attempts = 该区间已消耗的整理调用次数
+ * （identity 降级 = 初始 + 1 次定向修复 = 2；repair_extraction_failed =
+ * 2 × 瞬时故障轮数——每轮 = 身份尝试 + 修复提取）。
+ * status 区分降级原因：
+ * - "degraded"：定向修复产出了新提案但身份/引用仍非法（identity 降级）；
+ * - "repair_extraction_failed"（Ruling 14）：修复阶段提取失败（瞬时
+ *   故障重试耗尽）——修复从未产出提案，诊断不得引用身份 issues。
+ * 两种状态语义等价：区间内事件不再重试，成功水位停在缺口前。
  */
 export interface ConsolidationFailedInterval {
   fromSeq: number;
   toSeq: number;
   attempts: number;
-  status: "degraded";
+  status: "degraded" | "repair_extraction_failed";
 }
 
 // ---------------------------------------------------------------------------
@@ -330,7 +335,7 @@ export const ConsolidationFailedIntervalSchema: z.ZodType<ConsolidationFailedInt
     fromSeq: z.number().int().positive(),
     toSeq: z.number().int().positive(),
     attempts: z.number().int().positive(),
-    status: z.literal("degraded"),
+    status: z.enum(["degraded", "repair_extraction_failed"]),
   });
 
 export const NarrativeMemoryStateSchema: z.ZodType<NarrativeMemoryState> =

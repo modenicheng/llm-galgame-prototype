@@ -1601,6 +1601,42 @@ describe("MemoryConsolidator", () => {
       expect(request.identity!.citableFactIds!.has("fact_1_1")).toBe(false);
     });
 
+    it("beliefs.request_max caps the belief candidates (config knob, facts.brief_max pattern)", async () => {
+      const memory = memoryWithSeed();
+      // suyao 名下再堆 2 条 active belief（连同种子共 3 条）。
+      for (let i = 0; i < 2; i += 1) {
+        memory.beliefs.push({
+          id: `belief_2_${i}`,
+          characterId: "suyao",
+          content: `补充认知 ${i}`,
+          status: "active",
+          createdAtCheckpoint: 5 + i,
+          origin: "learn",
+        });
+      }
+      const port = { consolidate: vi.fn().mockResolvedValue(makeResult()) };
+      const consolidator = new MemoryConsolidator({
+        port,
+        config: makeConfig({
+          beliefs: { max_active_per_character: 8, request_max: 1 },
+        }),
+        registry: M2_REGISTRY,
+        diagnostics: diag,
+      });
+
+      await consolidator.consolidate(
+        [makeDialogueEvent(5, "suyao", "第五句。")],
+        memory,
+        "",
+        ["suyao"],
+      );
+
+      const request = port.consolidate.mock.calls[0]![0] as ConsolidationRequest;
+      // 候选与可引用范围同步收到 1 条（checkpoint 倒序保最新）。
+      expect(request.relevantBeliefs).toHaveLength(1);
+      expect(request.identity!.citableBeliefIds!.size).toBe(1);
+    });
+
     it("forwards priorIssues to the port request (§6.2 定向修复通道)", async () => {
       const port = { consolidate: vi.fn().mockResolvedValue(makeResult()) };
       const consolidator = new MemoryConsolidator({

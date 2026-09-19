@@ -754,6 +754,92 @@ describe("NarrativeDirectorService consolidation", () => {
       expect(consolidateFn).toHaveBeenCalledTimes(2);
     });
 
+
+    it("Ruling 14：修复提取失败 ×1 = 瞬时故障——批次回队节流重试，之后成功不降级", async () => {
+      const store = new FakeStore(emptyState());
+      const consolidateFn = vi
+        .fn()
+        .mockResolvedValueOnce(identityRejectedResult()) // 第 1 轮：身份被拒
+        .mockRejectedValueOnce(new Error("LLM timeout")) // 第 1 轮修复：提取失败（瞬时）
+        .mockResolvedValueOnce(validResult()); // 第 2 轮：直接成功
+      const diag = new RecordingDiagnostics();
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: { consolidate: consolidateFn },
+        plan: makePlan(),
+        registry: makeRegistry(),
+        diagnostics: diag,
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeIdentityEvent(1)]);
+      const result1 = await svc.consolidatePending();
+
+      // 瞬时修复失败：不降级、不丢批——回队等待节流重试。
+      expect(result1.applied).toBe(0);
+      expect(store.saveStateCalls).toHaveLength(0); // 未写任何降级区间
+      expect(diag.warns.some((w) => w.message.includes("瞬时"))).toBe(true);
+      // 诚实诊断：不宣称「定向修复后仍被拒」。
+      expect(diag.warns.some((w) => w.message.includes("仍被拒"))).toBe(false);
+
+      // 之后重试成功：正常提交，水位推进，无失败区间。
+      const result2 = await svc.consolidatePending();
+      expect(result2.applied).toBeGreaterThanOrEqual(1);
+      expect(consolidateFn).toHaveBeenCalledTimes(3);
+      const saved = store.saveStateCalls[store.saveStateCalls.length - 1]!;
+      expect(saved.consolidatedThroughEventSeq).toBe(1);
+      expect(saved.consolidationFailedIntervals).toEqual([]);
+      expect(store.appendEpisodesCalls).toHaveLength(1);
+    });
+
+    it("Ruling 14：修复提取失败 ×2 → 瞬时重试耗尽降级（repair_extraction_failed），诊断不引用身份 issues", async () => {
+      const store = new FakeStore(emptyState());
+      const consolidateFn = vi
+        .fn()
+        .mockResolvedValueOnce(identityRejectedResult()) // 第 1 轮：身份被拒
+        .mockRejectedValueOnce(new Error("LLM timeout")) // 第 1 轮修复：提取失败
+        .mockResolvedValueOnce(identityRejectedResult()) // 第 2 轮：身份再拒
+        .mockRejectedValueOnce(new Error("LLM crash")); // 第 2 轮修复：提取失败 → 耗尽
+      const diag = new RecordingDiagnostics();
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: { consolidate: consolidateFn },
+        plan: makePlan(),
+        registry: makeRegistry(),
+        diagnostics: diag,
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeIdentityEvent(1)]);
+      await svc.consolidatePending(); // 第 1 轮：瞬时 → 回队
+      const result2 = await svc.consolidatePending(); // 第 2 轮：耗尽 → 降级
+
+      expect(result2.applied).toBe(0);
+      expect(consolidateFn).toHaveBeenCalledTimes(4);
+      expect(store.appendEpisodesCalls).toHaveLength(0);
+
+      // 区间以独立状态降级：repair_extraction_failed ≠ 身份降级 degraded。
+      const saved = store.saveStateCalls[store.saveStateCalls.length - 1]!;
+      expect(saved.consolidationFailedIntervals).toEqual([
+        { fromSeq: 1, toSeq: 1, attempts: 4, status: "repair_extraction_failed" },
+      ]);
+      // 水位停在缺口前；批次已消耗（再次 consolidatePending 无事可做）。
+      expect(saved.consolidatedThroughEventSeq).toBe(0);
+      await svc.consolidatePending();
+      expect(consolidateFn).toHaveBeenCalledTimes(4);
+
+      // 诚实诊断：修复提取失败（瞬时重试耗尽）——不引用修复从未产出的
+      // 身份 issues，也不用「定向修复后仍被拒」的措辞。
+      const degradeWarn = diag.warns.find((w) => w.message.includes("降级"));
+      expect(degradeWarn).toBeDefined();
+      expect(degradeWarn!.message).toContain("修复提取失败");
+      expect(degradeWarn!.message).toContain("瞬时");
+      expect(degradeWarn!.message).not.toContain("仍被拒");
+      expect(degradeWarn!.message).not.toContain("UNKNOWN_CHARACTER_ID");
+    });
+
     it("targeted repair succeeds: outcome applied, watermark advances, no interval recorded", async () => {
       const store = new FakeStore(emptyState());
       const consolidateFn = vi
