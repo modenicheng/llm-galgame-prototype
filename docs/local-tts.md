@@ -191,6 +191,7 @@ cd tts-server && python tools/probe_punct.py --out /tmp/punct-probe
 | 症状 | 原因与处理 |
 |---|---|
 | 合成 502 / connection refused | 引擎没起或端口不符；先 `curl /health` |
+| `/health` 秒回但 `POST /v1/audio/speech` 长时间零字节挂死 | 控制面活、推理面死。典型成因：**两个引擎实例重复绑定同一端口**（Windows 允许，`netstat -ano \| grep 9766` 出现两条 LISTEN 即实锤）——后起的实例抢走端口但模型没载入（RSS 仅几 MB）。处理：实例全杀，只起一个，等模型载入完再用 speech 探针验证回字节 |
 | 重启引擎后报 unknown voice | 注册表在内存，重跑注册脚本 |
 | first_chunk_timeout | 引擎预热中（引擎 B 首启）或长句排队；看引擎日志 |
 | 请求打到错误路径（/tts vs /v1/audio/speech） | 方言与引擎不匹配，检查 `LOCAL_TTS_DIALECT` |

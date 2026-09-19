@@ -34,7 +34,7 @@ export interface GateParams {
   /** 电平跌回阈值后保持开门的时长，防句内停顿抖动。 */
   hold_ms: number;
   release_ms: number;
-  /** 闭门时的衰减下限（dB，≤0）；0 = 完全静音。 */
+  /** 闭门时的衰减下限（dB，≤0）；0 = 不衰减，-80 ≈ 完全静音。 */
   range_db: number;
   enabled: boolean;
 }

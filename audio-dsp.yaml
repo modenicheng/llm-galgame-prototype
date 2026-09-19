@@ -15,7 +15,7 @@ voice:
     attack_ms: 5
     hold_ms: 150
     release_ms: 250
-    range_db: -70       # 闭门衰减下限（0 = 完全静音）
+    range_db: -70       # 闭门衰减下限（dB，≤0）：0 = 不衰减，-80 ≈ 完全静音
   compressor:
     enabled: true
     threshold_db: -26
