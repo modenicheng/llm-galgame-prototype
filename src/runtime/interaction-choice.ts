@@ -6,7 +6,7 @@
  * 语义与二分前的 driver 方法逐行一致。
  */
 import { RuntimeShutdownError } from "../core/runtime/errors.js";
-import type { EventGroupDraft } from "../core/protocol/gal-dsl/types.js";
+import type { AnyStreamedGroup } from "../core/protocol/gal-dsl/types.js";
 import type {
   ChoiceEvent,
   ChoiceOption,
@@ -159,10 +159,19 @@ export async function adoptSelectedBranch(
       tailVisualState: host.tailVisualState,
     });
     await handle.done;
-    const groups: EventGroupDraft[] = [];
+    const groups: AnyStreamedGroup[] = [];
     for await (const group of handle.events) groups.push(group);
-    const result = host.materializeDslGroups(groups, host.tailVisualState, turn);
+    const result = host.materializeDslGroups(
+      groups,
+      host.tailVisualState,
+      turn,
+      // 重试路径（port 自 campus a1b7aac）：预取失败时分支副本尚未落表
+      //（泵在失败前不写表），从主状态重新播种；折叠结果回表，随统一的
+      // promote/clear 生命周期。
+      host.branchCharacterStates.get(selected.id) ?? host.characterState,
+    );
     host.branchTailStates.set(selected.id, result.tailState);
+    host.branchCharacterStates.set(selected.id, result.tailLabels);
     preview = result.events;
     host.media.registerCandidate(selected.id, preview);
     host.status.removeJob("selected-branch-retry");
@@ -231,10 +240,11 @@ export function createBranchManager(
       let branchState = host.tailVisualState;
       // C5 §5.1 + C6（C5 评审 minor，port 自 campus 0b8de2e）：名牌状态
       // 按分支持副本（绑定本局 roster revision），身份只克隆一次——预取
-      // 请求与分支名牌副本共用同一份 characterState（两者都只读；下次
-      // 派生再另行克隆）。未选/取消/修复失败随分支丢弃。
+      // 请求与分支名牌副本共用同一份 characterState（请求侧只读；v2 的
+      // labelOps 折叠在泵内逐组重绑，不污染发出去的那份快照）。未选/
+      // 取消/修复失败随分支丢弃。
       const branchIdentity = host.generationIdentity(option.id);
-      const branchLabels = branchIdentity.characterState;
+      let branchLabels = branchIdentity.characterState;
       const prefetchBrief = host.makeBriefing(turn + 1);
       const handle = host.generator.generateBranchPrefetch({
         identity: branchIdentity,
@@ -248,11 +258,27 @@ export function createBranchManager(
         tailVisualState: host.tailVisualState,
       });
       // 泵：与旧 onGroup 直连语义等价——组到达即编译并喂给 onEvent
-      // （branch-local visual state 逐组折叠）。
+      // （branch-local visual state 逐组折叠；v2 的 labelOps 同步折进
+      // 分支名牌副本，port 自 campus a1b7aac + cb7804b）。
       const pump = (async () => {
         for await (const group of handle.events) {
-          const { playable, tailState } = host.compileGroup(group, branchState, turn);
+          // handoff/取消后的迟到组不再折叠：预测状态必须与玩家可见的
+          // 已提交前缀一致（迟到事件被消费侧丢弃，不播放）。
+          if (signal.aborted) break;
+          const { playable, tailState, nextLabels } = host.compileRoutedGroup(
+            group,
+            branchState,
+            branchLabels,
+            turn,
+          );
           branchState = tailState;
+          // v2：预测名牌操作（@name）折叠进分支副本——未选/取消即丢弃，
+          // 选中才随 promote 转正（与 branchTailStates 同一生命周期）。
+          branchLabels = nextLabels;
+          // 逐组即时落表（v1 仅在收尾落表，最终值相同）：live 选择/handoff
+          // 可能在泵收尾前读取预测状态，表内容必须与已到达的组同步。
+          host.branchTailStates.set(option.id, branchState);
+          host.branchCharacterStates.set(option.id, branchLabels);
           if (playable !== null) {
             materialized.push(playable);
             onEvent(playable);
@@ -269,8 +295,6 @@ export function createBranchManager(
         throw error;
       }
       await pump;
-      host.branchTailStates.set(option.id, branchState);
-      host.branchCharacterStates.set(option.id, branchLabels);
       return materialized;
     },
     onReady: (option, branchEvents) => {

@@ -7,7 +7,7 @@
  */
 import { RuntimeShutdownError } from "../core/runtime/errors.js";
 import { InputResponseSession } from "../core/interaction/input-session.js";
-import type { EventGroupDraft } from "../core/protocol/gal-dsl/types.js";
+import type { AnyStreamedGroup } from "../core/protocol/gal-dsl/types.js";
 import type { RuntimeCommand } from "../core/runtime/runtime-command.js";
 import type {
   HybridInteraction,
@@ -45,7 +45,7 @@ export function startBridgePrefetch(
 
   const promise = (async () => {
     try {
-      const groups: EventGroupDraft[] = [];
+      const groups: AnyStreamedGroup[] = [];
       for await (const group of handle.events) groups.push(group);
       await handle.done;
       if (controller.signal.aborted) return;
@@ -332,6 +332,9 @@ function startInputResponseGeneration(
   // DSL mode: response groups compile against a response-local visual
   // state seeded from the current tail (docs §79).
   let responseState = host.tailVisualState;
+  // v2（port 自 campus a1b7aac）：回应的 labelOps 先折进本地预测副本，
+  // 确认播出才转正（与 responseState 同一确认/丢弃边界）。
+  let responseLabels = host.characterState;
 
   const brief = host.makeBriefing(turn + 1);
   const handle = host.generator.generateInputResponse({
@@ -354,8 +357,14 @@ function startInputResponseGeneration(
         host.metrics.recordStaleInputEventDropped();
         continue;
       }
-      const { playable, tailState } = host.compileGroup(group, responseState, turn);
+      const { playable, tailState, nextLabels } = host.compileRoutedGroup(
+        group,
+        responseState,
+        responseLabels,
+        turn,
+      );
       responseState = tailState;
+      responseLabels = nextLabels;
       if (playable !== null) {
         stageResponseEvent(host, responseSession, playable);
       }
@@ -397,6 +406,9 @@ function startInputResponseGeneration(
         // tail (docs §79): the next generation continues from where the
         // response leaves the stage.
         host.tailVisualState = responseState;
+        // v2：确认播出的回应，其预测名牌操作（@name）一并转正；被取消/
+        // 失败的回应从未到达这里——预测副本随之丢弃。
+        host.characterState = responseLabels;
         responseSession.markReady();
         host.status.setJob(
           "input-response",

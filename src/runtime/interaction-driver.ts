@@ -53,7 +53,13 @@ import type {
   StoryContextEvent,
   RuntimePlayableEvent,
 } from "../schema.js";
-import type { DslInteractionDraft, EventGroupDraft } from "../core/protocol/gal-dsl/types.js";
+import type {
+  AnyStreamedGroup,
+  DslInteractionDraft,
+} from "../core/protocol/gal-dsl/types.js";
+import type {
+  CharacterRuntimeState,
+} from "../core/characters/types.js";
 import type {
   StageCue,
   VisualState,
@@ -88,6 +94,11 @@ export interface InteractionHost {
   branchTailStates: Map<string, VisualState>;
   /** C5 §5.1：每预取分支的名牌状态副本（绑定 registry revision）。 */
   branchCharacterStates: Map<string, import("../core/characters/types.js").CharacterRuntimeState>;
+  /**
+   * C5 §5.1：本局名牌运行时状态。v2 会话由 labelOps 预测折叠推进（直播
+   * 段/确认播出的输入回应当场转正；预取分支经 promote 转正）。
+   */
+  characterState: CharacterRuntimeState;
   bridgeLineIds: Set<string>;
   responseLineIds: Set<string>;
   buffered: Map<string, RuntimePlayableEvent>;
@@ -111,19 +122,27 @@ export interface InteractionHost {
   takePendingFastForward(): import("../core/ports/run-graph-port.js").RestorePoint | undefined;
   nextLineId(): string;
   materializeDslGroups(
-    groups: EventGroupDraft[],
+    groups: AnyStreamedGroup[],
     baseState: VisualState,
     turn: number,
-  ): { events: RuntimePlayableEvent[]; tailState: VisualState };
-  compileGroup(
-    draft: EventGroupDraft,
+    labels: CharacterRuntimeState,
+  ): {
+    events: RuntimePlayableEvent[];
+    tailState: VisualState;
+    tailLabels: CharacterRuntimeState;
+  };
+  /** 版本路由提交：v1 草组走冻结的 compileGroup；v2 编译组只应用。 */
+  compileRoutedGroup(
+    draft: AnyStreamedGroup,
     baseState: VisualState,
+    labels: CharacterRuntimeState,
     turn: number,
   ): {
     playable: RuntimeDialogueEvent | RuntimeNarrationEvent | null;
     interaction: InteractionEvent | null;
     cues: StageCue[];
     tailState: VisualState;
+    nextLabels: CharacterRuntimeState;
   };
   registerBuffered(events: RuntimePlayableEvent[]): void;
   advanceBufferedEvent(event: import("../schema.js").RuntimeBufferEvent): void;
@@ -359,9 +378,18 @@ export class InteractionDriver {
           tailVisualState: this.host.tailVisualState,
         });
         await handle.done;
-        const groups: EventGroupDraft[] = [];
+        const groups: AnyStreamedGroup[] = [];
         for await (const group of handle.events) groups.push(group);
-        const result = this.host.materializeDslGroups(groups, this.host.tailVisualState, turn);
+        const result = this.host.materializeDslGroups(
+          groups,
+          this.host.tailVisualState,
+          turn,
+          this.host.characterState,
+        );
+        // 按需物化的分支一定被选中播出（port 自 campus a1b7aac）：预测
+        // 尾部与预测名牌操作一并转正。
+        this.host.tailVisualState = result.tailState;
+        this.host.characterState = result.tailLabels;
         preview = result.events;
         this.host.registerBuffered(preview);
         this.host.status.removeJob("on-demand-branch");
