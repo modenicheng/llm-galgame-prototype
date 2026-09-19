@@ -115,10 +115,12 @@ export function summarizeState(state: StoryState): string {
     lines.push("[Open Threads] (none)");
   }
 
-  // Canon (compact)
+  // Canon (compact) — 展示形态必须与系统提示词要求的 `{"键":"值"}` 同形：
+  // 曾用 `键=值`，记忆代理会照抄该形态写出 `{"键=值"}`（成员缺值）的
+  // 非法 JSON，整批状态更新被解析层丢弃（2026-09-19 实测 8/32 批次）。
   const canonKeys = Object.keys(state.canon);
   if (canonKeys.length > 0) {
-    const canonEntries = canonKeys.map((k) => `${k}=${String(state.canon[k])}`);
+    const canonEntries = canonKeys.map((k) => `${k}: "${String(state.canon[k])}"`);
     lines.push(`[Canon] ${canonEntries.join("; ")}`);
   }
 

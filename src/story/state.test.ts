@@ -233,10 +233,12 @@ describe("summarizeState", () => {
       canon: { weather: "rainy", gold: 50, has_key: true },
     });
     const summary = summarizeState(state);
+    // 键值展示须与记忆代理要输出的 {"键":"值"} 同形——旧 `键=值` 形态会被
+    // 模型照抄成成员缺值的非法 JSON（见 state.ts canon 段注释）。
     expect(summary).toContain("[Canon]");
-    expect(summary).toContain("weather=rainy");
-    expect(summary).toContain("gold=50");
-    expect(summary).toContain("has_key=true");
+    expect(summary).toContain('weather: "rainy"');
+    expect(summary).toContain('gold: "50"');
+    expect(summary).toContain('has_key: "true"');
   });
 
   it("should include the rolling recap", () => {
