@@ -50,22 +50,34 @@ describe("dslTaskCapability — §5.2 任务协议卡", () => {
     expect(cap.ending).toBe(false);
   });
 
-  it("input_response：台词、旁白、角色/音效操作；buffer", () => {
+  it("input_response：台词、旁白、角色/音效操作；buffer（C6 校准 = as-built 集合）", () => {
     const cap = dslTaskCapability("input_response");
-    expect(capabilityAllowsCommand(cap, "@say")).toBe(true);
-    expect(capabilityAllowsCommand(cap, "@n")).toBe(true);
-    expect(capabilityAllowsCommand(cap, "@name")).toBe(true);
-    expect(capabilityAllowsCommand(cap, "@ch")).toBe(true);
-    expect(capabilityAllowsCommand(cap, "@se")).toBe(true);
+    // 精确集合（as-built：dialogue/narration/@ch/@se；dialogue 的
+    // (显示名) 改名槽 → @name 并入；@beat 不在允许清单，不得保留）。
+    expect(cap.commands).toEqual(["@say", "@n", "@name", "@ch", "@se", "@end"]);
     expect(capabilityAllowsCommand(cap, "@?")).toBe(false);
+    expect(capabilityAllowsCommand(cap, "@+")).toBe(false);
+    expect(capabilityAllowsCommand(cap, "@/?")).toBe(false);
+    expect(capabilityAllowsCommand(cap, "@bg")).toBe(false);
+    expect(capabilityAllowsCommand(cap, "@bgm")).toBe(false);
+    expect(capabilityAllowsCommand(cap, "@beat")).toBe(false);
     expect(cap.endReasons).toEqual(["buffer"]);
+    expect(cap.ending).toBe(false);
   });
 
-  it("input_bridge：仅旁白与过渡能力；不代玩家发声；buffer 收束", () => {
+  it("input_bridge：仅旁白；不代玩家发声；buffer 收束（C6 校准 = as-built 集合）", () => {
     const cap = dslTaskCapability("input_bridge");
-    expect(capabilityAllowsCommand(cap, "@n")).toBe(true);
+    // 精确集合：@n + @end。bridge 模板 as-built 明确禁止背景/立绘/BGM/
+    // 音效变更与表单——v1 允许的只有 narration 行与哨兵，C4 的过渡场景
+    // 资源（@beat/@bg/@bgm/@se）是过度授予，C6 校准收紧（不扩权）。
+    expect(cap.commands).toEqual(["@n", "@end"]);
     expect(capabilityAllowsCommand(cap, "@say")).toBe(false);
     expect(capabilityAllowsCommand(cap, "@name")).toBe(false);
+    expect(capabilityAllowsCommand(cap, "@ch")).toBe(false);
+    expect(capabilityAllowsCommand(cap, "@se")).toBe(false);
+    expect(capabilityAllowsCommand(cap, "@beat")).toBe(false);
+    expect(capabilityAllowsCommand(cap, "@bg")).toBe(false);
+    expect(capabilityAllowsCommand(cap, "@bgm")).toBe(false);
     expect(capabilityAllowsCommand(cap, "@?")).toBe(false);
     expect(cap.endReasons).toEqual(["buffer"]);
     expect(cap.ending).toBe(false);
@@ -83,6 +95,23 @@ describe("dslTaskCapability — §5.2 任务协议卡", () => {
     const prefetchRepair = protocolRepairCapability("branch_prefetch");
     expect(capabilityAllowsCommand(prefetchRepair, "@?")).toBe(false);
     expect(capabilityAllowsCommand(prefetchRepair, "@ending")).toBe(false);
+  });
+
+  it("protocol_repair 没有独立能力卡：派生是唯一入口（类型收窄 + 运行时守卫）", () => {
+    // C4 评审 minor d：占位卡曾可经 dslTaskCapability("protocol_repair")
+    // 绕过 protocolRepairCapability 派生（拿到 opening 全量能力）——现在
+    // 占位不存在：编译期类型只接受 BaseDslTaskType；双重断言模拟无类型
+    // 调用方，验证运行时守卫仍然拒绝。
+    const repairTask = "protocol_repair" as unknown as Parameters<
+      typeof dslTaskCapability
+    >[0];
+    expect(() => dslTaskCapability(repairTask)).toThrowError(
+      "PROTOCOL_REPAIR_REQUIRES_DERIVATION",
+    );
+    // 修复卡必经派生：继承指定 base 任务的命令集与结束方式。
+    const derived = protocolRepairCapability("input_bridge");
+    expect(derived.commands).toEqual(dslTaskCapability("input_bridge").commands);
+    expect(derived.task).toBe("protocol_repair");
   });
 
   it("每张卡的命令集都是全集的子集且必含 @end", () => {

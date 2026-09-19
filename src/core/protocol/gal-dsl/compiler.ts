@@ -374,7 +374,7 @@ import {
   capabilityAllowsCommand,
   formatV2RepairInstruction,
   type DslTaskCapability,
-  type DslTaskType,
+  type BaseDslTaskType,
 } from "./capabilities.js";
 import { presentationDefaultsFor } from "../../presentation/defaults.js";
 import { DslProtocolError } from "./types.js";
@@ -824,8 +824,8 @@ export interface CompileSegmentV2Options {
   /** 本段（或未提交尾部）全文。 */
   text: string;
   expectedNonce: string;
-  /** 任务类型（能力卡派生 + 诊断出处）。 */
-  task: DslTaskType;
+  /** 任务类型（能力卡派生 + 诊断出处；修复卡经 protocolRepairCapability 派生后按 base 任务传入）。 */
+  task: BaseDslTaskType;
   registry: RosterCharacterRegistry;
   cast: CastContext;
   reduce: VisualStateReducer;

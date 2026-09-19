@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { loadPrompts } from "./prompts.js";
+import { dslTaskCapability } from "./core/protocol/gal-dsl/capabilities.js";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -180,5 +181,63 @@ describe("loadPrompts", () => {
     expect(instructions.input_bridge).toContain("@end {nonce} buffer");
     expect(instructions.recovery).toContain("{repair_reason}");
     expect(instructions.ending).toContain("{nonce}");
+  });
+
+  // ---------------------------------------------------------------------
+  // C6 校准（计划 §5.2，port 自 campus fbb84b0）：先把 main bridge /
+  // input_response 的实际允许集合按 as-built 钉死在测试里，再要求 v2
+  // 能力卡表达同一集合。
+  // v1 的任务能力约束活在任务模板文本（runtime 无逐命令门禁），所以
+  // “实际允许集合”以模板原文为准；能力卡收紧到同一集合，绝不借重构
+  // 扩权。v1 表面形态 → v2 命令名映射：dialogue（含台词头 (显示名) 改名
+  // 槽）→ @say+@name；narration → @n；@ch/@se 原名。
+  // ---------------------------------------------------------------------
+  describe("bridge / input_response as-built 允许集合（C6 校准固定）", () => {
+    const repoPrompts = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "prompts",
+    );
+
+    it("input_bridge v1 模板 as-built：仅旁白，禁止背景/立绘/BGM/音效/表单", async () => {
+      const { instructions } = await loadPrompts(repoPrompts);
+      const bridge = instructions.input_bridge;
+      // 只生成 narration（不代玩家发声、无台词）。
+      expect(bridge).toContain("生成 1–2 条 narration");
+      // 场景资源全部禁止——bridge 没有 @bg/@bgm/@se/@ch 能力。
+      expect(bridge).toContain("不得改变背景/立绘/BGM");
+      expect(bridge).toContain("不得产生音效");
+      expect(bridge).toContain("不得创建新的交互点");
+      // 唯一收束：@end {nonce} buffer。
+      expect(bridge).toContain("@end {nonce} buffer");
+    });
+
+    it("input_bridge v2 能力卡 = 同一集合（@n + @end，无场景资源/表单/台词）", () => {
+      expect(dslTaskCapability("input_bridge").commands).toEqual(["@n", "@end"]);
+      expect(dslTaskCapability("input_bridge").endReasons).toEqual(["buffer"]);
+    });
+
+    it("input_response v1 模板 as-built：dialogue / narration / @ch / @se", async () => {
+      const { instructions } = await loadPrompts(repoPrompts);
+      const response = instructions.input_response;
+      expect(response).toContain("允许 dialogue / narration / @ch / @se");
+      // 不开新表单、不切场景资源（@bg/@bgm 不在集合内）。
+      expect(response).toContain("不得生成交互表单");
+      expect(response).toContain("@end {nonce} buffer");
+    });
+
+    it("input_response v2 能力卡 = 同一集合（dialogue 台词头改名槽 → @name 并入）", () => {
+      // v1 台词行天然携带 (显示名) 改名槽（R01 改名机制的载体），所以 v2
+      // 的等价集合包含 @name；@beat 不在 v1 允许清单里，不得保留。
+      expect(dslTaskCapability("input_response").commands).toEqual([
+        "@say",
+        "@n",
+        "@name",
+        "@ch",
+        "@se",
+        "@end",
+      ]);
+      expect(dslTaskCapability("input_response").endReasons).toEqual(["buffer"]);
+    });
   });
 });

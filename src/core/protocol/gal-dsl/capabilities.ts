@@ -48,6 +48,13 @@ export type DslTaskType =
   | "input_bridge"
   | "protocol_repair";
 
+/**
+ * 可直接发整卡的任务（不含 protocol_repair）。修复任务**必须**经
+ * `protocolRepairCapability(base)` 派生（继承原任务能力），不存在独立
+ * 的修复占位卡——C4 评审 minor d 的强制收口。
+ */
+export type BaseDslTaskType = Exclude<DslTaskType, "protocol_repair">;
+
 /** 一张任务协议卡：该任务允许的 v2 命令与结束方式。 */
 export interface DslTaskCapability {
   task: DslTaskType;
@@ -102,43 +109,48 @@ const BRANCH_PREFETCH: DslTaskCapability = {
 
 /**
  * input_response：台词、旁白、既有输入回应允许的角色/音效操作；buffer。
- * （场景资源 @bg/@bgm 不在表内——玩家刚做出输入，镜头不应被回应段改写。）
+ * （场景资源 @bg/@bgm 不在表内——玩家刚做出输入，镜头不应被回应段改写；
+ * @beat 不在 v1 as-built 允许清单，C6 校准移除。）
  */
 const INPUT_RESPONSE: DslTaskCapability = {
   task: "input_response",
-  commands: ["@say", "@n", "@name", "@ch", "@se", "@beat", "@end"],
+  commands: ["@say", "@n", "@name", "@ch", "@se", "@end"],
   endReasons: ["buffer"],
   ending: false,
   scope: "台词、旁白与既有输入回应允许的角色/音效操作",
 };
 
 /**
- * input_bridge：仅旁白及原有 bridge 明确允许的过渡能力；不代玩家发声。
- * bridge 收束保留当前协议方式（@end nonce buffer，唯一固定尾）；过渡能力
- * 按两侧现状保守固定为旁白 + 节拍 + 场景资源，C6 落地 bridge 实际允许集
- * 合的测试固定时再按需收紧/放宽（不借此次重构扩大 bridge 权限）。
+ * input_bridge：仅旁白；不代玩家发声。bridge 收束保留当前协议方式
+ * （@end nonce buffer，唯一固定尾）。C6 校准（port 自 campus fbb84b0，
+ * main as-built 模板同样如此）：bridge 模板明确禁止背景/立绘/BGM/音效
+ * 变更与表单（“仅旁白”），C4 曾保守授予的 @beat/@bg/@bgm/@se 是过度
+ * 授予，按实际允许集合收紧——不借此次重构扩大 bridge 权限。
  */
 const INPUT_BRIDGE: DslTaskCapability = {
   task: "input_bridge",
-  commands: ["@n", "@beat", "@bg", "@bgm", "@se", "@end"],
+  commands: ["@n", "@end"],
   endReasons: ["buffer"],
   ending: false,
-  scope: "仅旁白与过渡场景资源；不代玩家发声",
+  scope: "仅旁白；不代玩家发声，不改背景/立绘/BGM/音效",
 };
 
-const CAPABILITIES: Readonly<Record<DslTaskType, DslTaskCapability>> = {
+const CAPABILITIES: Readonly<Record<BaseDslTaskType, DslTaskCapability>> = {
   opening: OPENING,
   continuation: CONTINUATION,
   branch_prefetch: BRANCH_PREFETCH,
   input_response: INPUT_RESPONSE,
   input_bridge: INPUT_BRIDGE,
-  // protocol_repair 经 protocolRepairCapability(base) 派生，不单发整卡；
-  // 占位指向 opening 仅为类型完整，直接调用应走派生函数。
-  protocol_repair: { ...OPENING, task: "protocol_repair", scope: "继承原任务能力（经派发函数）" },
 };
 
 /** 任务能力卡（单源数据；validator 与修复模板同源引用）。 */
-export function dslTaskCapability(task: DslTaskType): DslTaskCapability {
+export function dslTaskCapability(task: BaseDslTaskType): DslTaskCapability {
+  // 运行时守卫（与类型收窄双保险）：修复任务没有独立卡，派生是唯一入口。
+  if ((task as DslTaskType) === "protocol_repair") {
+    throw new Error(
+      "PROTOCOL_REPAIR_REQUIRES_DERIVATION:修复任务能力必须经 protocolRepairCapability(baseTask) 派生，不得单发整卡。",
+    );
+  }
   return CAPABILITIES[task];
 }
 
@@ -147,7 +159,7 @@ export function dslTaskCapability(task: DslTaskType): DslTaskCapability {
  * 不改变 nonce、玩家选择或已提交前缀。endReasons 与命令集原样继承；
  * @ending 仅当原任务允许 ending 收束时保留。
  */
-export function protocolRepairCapability(baseTask: DslTaskType): DslTaskCapability {
+export function protocolRepairCapability(baseTask: BaseDslTaskType): DslTaskCapability {
   const base = dslTaskCapability(baseTask);
   return {
     ...base,
