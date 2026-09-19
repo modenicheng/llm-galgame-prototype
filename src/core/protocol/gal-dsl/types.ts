@@ -96,6 +96,61 @@ export type DslLine =
   | { kind: "segment_end"; nonce: string; reason: SegmentEndReason };
 
 // ---------------------------------------------------------------------------
+// 协议版本与 v2 行类型（C4，计划 §4.1）
+// ---------------------------------------------------------------------------
+
+/** 服务端 DSL 协议版本：1=legacy（冻结于 legacy-line-parser.ts），2=身份/文本/表演分离语法。 */
+export type DslProtocolVersion = 1 | 2;
+
+/** 版本路由选项；缺省 protocolVersion = 1（服务端 dsl.protocol_version 默认，不翻默认值）。 */
+export interface DslParseOptions {
+  protocolVersion?: DslProtocolVersion;
+  /** 仅 v1 使用：注册说话人表（全角冒号归一化的门卫）。v2 忽略。 */
+  knownSpeakers?: ReadonlySet<string>;
+}
+
+/**
+ * Gal DSL v2 单行解析结果（计划 §4.1 逐条语法）。
+ *
+ * 与 v1 的本质差异：台词/旁白的正文起点 = 固定数量 token 之后的剩余原文，
+ * 不再用 `:`、`[]`、`()` 识别角色或外观——正文里的冒号、括号、`$&`、
+ * 类似命令的片段都是普通文本。机器身份只经 ASCII 角色 ID 表达。
+ */
+export type DslLineV2 =
+  /** `@say <characterId> <单行台词正文>` */
+  | { kind: "say"; characterId: string; text: string; lineIndex?: number }
+  /** `@n <单行旁白正文>` */
+  | { kind: "narration"; text: string; lineIndex?: number }
+  /** `@name <characterId> set <单行名牌文本>` */
+  | { kind: "name_set"; characterId: string; label: string; lineIndex?: number }
+  /** `@name <characterId> reset` */
+  | { kind: "name_reset"; characterId: string; lineIndex?: number }
+  /** `@ch <characterId> show [look=<lookId>] [position=<slot>]` */
+  | { kind: "ch_show"; characterId: string; look?: string; position?: CharacterPosition; lineIndex?: number }
+  /** `@ch <characterId> set look=<lookId> [position=<slot>]` / `@ch <characterId> set position=<slot>` */
+  | { kind: "ch_set"; characterId: string; look?: string; position?: CharacterPosition; lineIndex?: number }
+  /** `@ch <characterId> hide` */
+  | { kind: "ch_hide"; characterId: string; lineIndex?: number }
+  /** `@ch <characterId> exit` */
+  | { kind: "ch_exit"; characterId: string; lineIndex?: number }
+  /** `@ch <characterId> reset` */
+  | { kind: "ch_reset"; characterId: string; lineIndex?: number }
+  | { kind: "background"; assetId: string; lineIndex?: number }
+  | { kind: "bgm"; assetId: string; lineIndex?: number }
+  | { kind: "sound_effect"; assetId: string; lineIndex?: number }
+  | { kind: "beat"; lineIndex?: number }
+  | { kind: "form_start"; prompt: string; lineIndex?: number }
+  | { kind: "form_option"; text: string; lineIndex?: number }
+  | { kind: "form_input"; placeholder: string; lineIndex?: number }
+  | { kind: "form_end"; lineIndex?: number }
+  /** `@ending <TE|HE|NE|BE> <结尾标题>`：行形状与哨兵窗口语义同 v1（task 能力门控见 capabilities.ts）。 */
+  | { kind: "ending_epilogue"; raw: string; lineIndex?: number }
+  | { kind: "segment_end"; nonce: string; reason: SegmentEndReason; lineIndex?: number };
+
+/** 任一协议版本的行（DslSegmentParser 两个变体的公共输入类型）。 */
+export type AnyDslLine = DslLine | DslLineV2;
+
+// ---------------------------------------------------------------------------
 // Interaction draft (docs §24–§31)
 // ---------------------------------------------------------------------------
 
@@ -137,10 +192,57 @@ export type MainEventDraft =
  * (docs §36). `prelude` includes the character patches derived from the
  * dialogue header itself (`苏遥[anxious]` → character_patch cue).
  */
+/** Ephemeral monitor provenance; absent for tests and non-stream producers. */
+export interface DslSourceLocation {
+  attemptId: string;
+  lineIndex: number;
+}
+
 export interface EventGroupDraft {
   prelude: StageCue[];
   main: MainEventDraft;
 }
+
+// ---------------------------------------------------------------------------
+// v2 事件组（C4，计划 §4.3）
+// ---------------------------------------------------------------------------
+
+/**
+ * v2 组前奏操作：按源顺序保留的 @ch/@name/@bg/@bgm/@se 意图（未解析到
+ * 具体 StageCue——外观默认值、无立绘判定、look 合法性都要 registry +
+ * 状态，是 compiler 的职责，§4.2 状态表在那里精确落地）。
+ *
+ * `lineIndex`：可选的源行号（0 基，相对本段），由流式/文本管线在入列时
+ * 盖章，供语义诊断定位行号；直接构造（测试）可省略。
+ */
+export type V2StageOp =
+  | { kind: "ch_show"; characterId: string; look?: string; position?: CharacterPosition; lineIndex?: number }
+  | { kind: "ch_set"; characterId: string; look?: string; position?: CharacterPosition; lineIndex?: number }
+  | { kind: "ch_hide"; characterId: string; lineIndex?: number }
+  | { kind: "ch_exit"; characterId: string; lineIndex?: number }
+  | { kind: "ch_reset"; characterId: string; lineIndex?: number }
+  | { kind: "label_set"; characterId: string; label: string; lineIndex?: number }
+  | { kind: "label_reset"; characterId: string; lineIndex?: number }
+  | { kind: "background"; assetId: string; lineIndex?: number }
+  | { kind: "bgm"; assetId: string; lineIndex?: number }
+  | { kind: "sound_effect"; assetId: string; lineIndex?: number };
+
+/** v2 组主事件草稿：@say 的身份是机器 ID，名牌快照由 compiler 生成。 */
+export type MainEventDraftV2 =
+  | { type: "dialogue"; characterId: string; text: string; lineIndex?: number }
+  | { type: "narration"; text: string; lineIndex?: number }
+  | { type: "interaction"; interaction: DslInteractionDraft; lineIndex?: number }
+  | { type: "beat"; lineIndex?: number };
+
+/** v2 原子播放单元：有序前奏操作 + 一个主事件（同 §36 分组规则）。 */
+export interface EventGroupDraftV2 {
+  prelude: V2StageOp[];
+  main: MainEventDraftV2;
+  /** Ephemeral monitor provenance; absent for tests and non-stream producers. */
+  source?: DslSourceLocation;
+}
+
+export type AnyEventGroupDraft = EventGroupDraft | EventGroupDraftV2;
 
 // ---------------------------------------------------------------------------
 // Segment end sentinel (docs §44–§51)
@@ -204,7 +306,20 @@ export type DslErrorCode =
   | "SENTINEL_MISSING_REASON"
   | "UNKNOWN_LINE"
   | "UNKNOWN_COMMAND"
-  | "RETIRED_ALIAS";
+  | "RETIRED_ALIAS"
+  // ---- v2（C4，计划 §4.1/§4.3）。语义诊断码一字不改：UNKNOWN_CHARACTER_ID、
+  // PLAYER_SPEECH_FORBIDDEN、CHARACTER_NOT_ALLOWED、UNKNOWN_LOOK、
+  // INVALID_CH_PARAMETER、INVALID_DISPLAY_LABEL、CHARACTER_HAS_NO_PRESENTATION。
+  | "MISSING_BODY"
+  | "INVALID_CH_PARAMETER"
+  | "INVALID_DISPLAY_LABEL"
+  | "UNKNOWN_CHARACTER_ID"
+  | "PLAYER_SPEECH_FORBIDDEN"
+  | "CHARACTER_NOT_ALLOWED"
+  | "UNKNOWN_LOOK"
+  | "CHARACTER_HAS_NO_PRESENTATION"
+  | "COMMAND_NOT_ALLOWED_FOR_TASK"
+  | "SENTINEL_MISSING";
 
 /**
  * 结构化错误细节（FastAPI 式 detail）：随 DslProtocolError 一并抛出，
@@ -218,11 +333,20 @@ export interface DslErrorDetail {
   cause?: string;
   /** 修复建议，含正确示例。 */
   fix?: string;
+  /**
+   * 相关合法值的有界列表（角色 ID、look 键、位置词……，§4.3）：只列
+   * 有界集合，绝不携带整套敏感人物卡。v2 诊断与修复模板的数据源。
+   */
+  legalValues?: readonly string[];
 }
 
 /** 所有指令的 @ 前缀清单——未知 @ 行的报错与提示词都引用它。 */
 export const DSL_COMMAND_LIST =
   "@bg <背景id>、@bgm <音乐id|stop>、@se <音效id>、@ch <角色内部id>:<立绘变体> [位置]、@ch <id> hide|show|exit、@beat、@? <提示>、@+ <选项>、@= <占位文本>、@/?、@end <nonce> <reason>";
+
+/** v2 语法指令清单（计划 §4.1 逐字）——v2 未知行报错引用。 */
+export const DSL_COMMAND_LIST_V2 =
+  "@say <角色id> <台词正文>、@n <旁白正文>、@name <角色id> set <名牌文本>、@name <角色id> reset、@ch <角色id> show [look=<外观id>] [position=<位置>]、@ch <角色id> set look=<外观id> [position=<位置>]、@ch <角色id> set position=<位置>、@ch <角色id> hide、@ch <角色id> exit、@ch <角色id> reset、@bg <背景id>、@bgm <音乐id|stop>、@se <音效id>、@beat、@? <交互问句>、@+ <选项正文>、@= <输入提示>、@/?、@end <nonce> <buffer|interaction|ending>、@ending <TE|HE|NE|BE> <结尾标题>";
 
 /**
  * A structural violation of the DSL. The message doubles as the repair
@@ -328,4 +452,70 @@ export interface CompileEventGroupsResult {
   groups: CompiledEventGroup[];
   /** Visual state after all groups applied — the new tail state. */
   tailState: VisualState;
+}
+
+// ---------------------------------------------------------------------------
+// v2 compiler（C4，计划 §4.2/§4.3）
+// ---------------------------------------------------------------------------
+
+/**
+ * v2 语义诊断码（一字不改，计划 §4.3）：未知角色、玩家代言、未知 look、
+ * 非法参数、越权 cast、无立绘误用 @ch、名牌文本非法。
+ */
+export type DslSemanticDiagnosticCode =
+  | "UNKNOWN_CHARACTER_ID"
+  | "PLAYER_SPEECH_FORBIDDEN"
+  | "CHARACTER_NOT_ALLOWED"
+  | "UNKNOWN_LOOK"
+  | "INVALID_CH_PARAMETER"
+  | "INVALID_DISPLAY_LABEL"
+  | "CHARACTER_HAS_NO_PRESENTATION";
+
+/**
+ * 一条结构化诊断（§4.3）：任务、attempt、行号、错误码、有界合法值列表。
+ * 不含整套敏感人物卡；不降级成旁白、不剥字符猜 ID。
+ */
+export interface DslDiagnosticV2 {
+  code: DslErrorCode;
+  /** 人类可读主讯（同时是修复指令的正文）。 */
+  message: string;
+  /** 出错行在整段中的 1 基行号（含 lineOffset）。 */
+  line: number;
+  /** 任务类型（诊断出处，§4.3 要求携带任务）。 */
+  task?: string;
+  /** attempt 标识（如 "attempt:0"；修复轮为 "attempt:1"）。 */
+  attempt?: string;
+  /** 违规值（未知 ID、非法 look 等）。 */
+  value?: string;
+  /** 相关合法值的有界列表。 */
+  legalValues?: readonly string[];
+}
+
+/** v2 编译后的名牌操作：与 cue、主事件同组原子提交（§4.3）。 */
+export type CompiledLabelOpV2 =
+  | { characterId: string; label: string }
+  | { characterId: string; resetToInitial: true };
+
+/**
+ * v2 编译后主事件：对白带机器 characterId + 发射时刻名牌快照
+ * displayLabel（C2 严格事件形状：不含旧 speaker 字段）。
+ */
+export type CompiledMainEventV2 =
+  | { type: "dialogue"; characterId: string; displayLabel: string; text: string }
+  | { type: "narration"; text: string }
+  | { type: "interaction"; interaction: DslInteractionDraft }
+  | { type: "beat" };
+
+/** v2 编译后的组：前奏只含 presentation cue（名牌操作在 labelOps）。 */
+export interface CompiledEventGroupV2 {
+  prelude: StageCue[];
+  labelOps: CompiledLabelOpV2[];
+  main: CompiledMainEventV2;
+  source?: DslSourceLocation;
+}
+
+/** 段级哨兵/结局状态（v2 与 v1 同一收尾协议）。 */
+export interface DslSegmentResultV2 {
+  groups: CompiledEventGroupV2[];
+  status: SegmentEndStatus;
 }
