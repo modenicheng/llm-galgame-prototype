@@ -117,9 +117,9 @@ describe("loadCharacterPackRoster — 仓库静态名册（玩家契约）", () 
     // 旧契约（f758fe2 主解读）的痕迹必须清除：林澈不再是玩家控制角色。
     expect(card).not.toContain("playerId=linche");
     expect(card).not.toContain("不得替林澈");
-    // 「模型不得替玩家生成台词/选择/确认对白」防线指向无名玩家实体。
-    expect(card).toContain("玩家");
-    expect(card).toContain("模型");
+    // 「模型不得替玩家生成台词/选择/确认对白」防线指向无名玩家实体：
+    // 钉整句契约文本（改写漂移即红），不只钉「玩家」「模型」两个词。
+    expect(card).toContain("模型不替玩家做选择，也不生成玩家的台词、选择或确认对白");
     // 林澈以普通 NPC 身份保留人物卡。
     expect(card).toContain("林澈");
     expect(card).toContain("苏遥");
