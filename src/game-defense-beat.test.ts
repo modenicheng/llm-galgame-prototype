@@ -25,6 +25,8 @@ import {
   endEvent,
 } from "./game-test-kit.js";
 import type { SceneDirective, SceneDirectorPort } from "./application/director/director-service.js";
+import { buildCharacterRoster, createCharacterRegistry } from "./core/characters/registry.js";
+import type { AssetCatalog } from "./core/assets/types.js";
 import { MemoryController, makeTestPorts } from "./test-helpers.js";
 
 let root: string;
@@ -149,4 +151,64 @@ describe("M4.3 防守节拍"
 
     expect(director.evaluateFreeInput).not.toHaveBeenCalled();
   });
+
+  it("M2 §6.2：导演场景名单 = 显式会话 roster NPC（稳定 ID），不是累计 state.keys 重建", async () => {
+    const { config, status, media, generator } = makeGameInputs();
+    const director = makeDirectorStub();
+    const triggerSpy = vi.fn(director.triggerDirective);
+    director.triggerDirective = triggerSpy as DirectorStub["triggerDirective"];
+    // roster：玩家 + 两个有立绘 NPC + 一个无立绘电话角色（guest_01 全程
+    // 不说话——state.characters 里不会有它，roster 里有它）。
+    const registry = createCharacterRegistry(
+      buildCharacterRoster({
+        schemaVersion: 2,
+        scopeId: "m2-director-cast",
+        playerId: "player_one",
+        characters: [
+          { id: "player_one", name: "玩家", control: "player", initialLabel: "你", persona: "玩家。" },
+          { id: "suyao", name: "苏遥", control: "npc", initialLabel: "苏遥", persona: "同班同学。" },
+          { id: "linche", name: "林澈", control: "npc", initialLabel: "林澈", persona: "同屋。" },
+          { id: "guest_01", name: "来电者", control: "npc", initialLabel: "？？？", persona: "电话那头。" },
+        ],
+      }),
+      {
+        guidance: "",
+        backgrounds: {},
+        bgm: {},
+        soundEffects: {},
+        spriteSets: {},
+      } as AssetCatalog,
+    );
+    const ports = makeTestPorts({
+      director: director as unknown as SceneDirectorPort,
+      ...(registry !== undefined ? { characterRegistry: registry } : {}),
+    });
+
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), endEvent("end_1", "Fin.")]),
+    );
+
+    const game = new Game(config, generator, status, media, undefined, ports);
+    const controller = new MemoryController();
+    controller.attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+
+    expect(triggerSpy).toHaveBeenCalled();
+    const cast = (triggerDirectiveCastOf(triggerSpy));
+    // 全体 roster NPC 的稳定 ID（含从未说话的无立绘电话角色）。
+    expect(cast).toEqual(["suyao", "linche", "guest_01"]);
+    // 玩家由运行时代言，不进模型 voice 指导名单；显示名绝不出现。
+    expect(cast).not.toContain("player_one");
+    expect(cast.some((id) => id === "苏遥" || id === "林澈")).toBe(false);
+  });
 });
+
+/** 从 triggerDirective 间谍调用里取 cast 数组（缺省 = 空名单）。 */
+function triggerDirectiveCastOf(
+  spy: ReturnType<typeof vi.fn>,
+): string[] {
+  const first = spy.mock.calls[0] as
+    | [{ cast?: string[] }]
+    | undefined;
+  return first?.[0]?.cast ?? [];
+}

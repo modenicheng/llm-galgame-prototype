@@ -182,8 +182,12 @@ describe("M1 端到端：无立绘/无声音动态角色 guest_01 保持同一 I
       });
       expect(Object.keys(state.characters)).toContain(CHARACTER_ID);
 
-      // --- 导演 cast（Game 侧 triggerDirective 的 cast 参数来源）---
-      const cast = Object.keys(state.characters);
+      // --- 导演 cast（M2 §6.2：Game 侧 triggerDirective 的 cast 参数来源——
+      // 显式会话 roster NPC，含电话/画外/无立绘角色；不从累计 state.keys
+      // 重建，不从立绘推导）---
+      const cast = roster.characters
+        .filter((definition) => definition.control === "npc")
+        .map((definition) => definition.id);
       expect(cast).toContain(CHARACTER_ID);
 
       // 全链路同一 ID：保存、registry、台词、reconcile、cast。

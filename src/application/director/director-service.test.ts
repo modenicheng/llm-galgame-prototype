@@ -297,35 +297,185 @@ describe("DirectorService — voice 指导与调色板", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("parses the voice section into the directive, dropping invalid entries", async () => {
+  /** 诊断间谍：捕获 warn 调用供结构化问题断言。 */
+  function makeDiagnostics() {
+    const warns: Array<{ scope: string; message: string }> = [];
+    return {
+      warns,
+      sink: {
+        info: () => {},
+        warn: (scope: string, message: string) => {
+          warns.push({ scope, message });
+        },
+      },
+    };
+  }
+
+  it("keeps cast-member keys (vocab-checked), rejecting display names and unknown keys with structured issues", async () => {
+    const diagnostics = makeDiagnostics();
     const runner = makeVoiceRunner({
       sceneGoal: "夜谈",
       defenseBeats: [],
       endingPressure: false,
       voice: {
-        苏遥: { delivery: "breathless", volume: "whisper", note: "  夜谈压低声音  ", pace: "mega" },
-        旁白: { delivery: "screaming", note: 42 },
-        林澈: "不是对象",
+        // 词表校验照旧：越界字段丢弃（pace=mega），note 去空白截 40 字。
+        suyao: { delivery: "breathless", volume: "whisper", note: "  夜谈压低声音  ", pace: "mega" },
+        // 显示名键：拒绝（绝不映射回稳定 ID）。
+        苏遥: { delivery: "gentle" },
+        // 未知键：拒绝。
+        ghost_x: { volume: "loud" },
       },
     });
     const service = new DirectorService({
       runner: runner as unknown as AgentRunnerPort,
       store,
+      diagnostics: diagnostics.sink,
     });
     const directive = await service.refreshDirective({
       sceneId: "天台",
       scenePurpose: "夜谈",
       recentSummary: "",
+      cast: ["suyao"],
     });
     expect(directive.voice).toEqual({
-      苏遥: { delivery: "breathless", volume: "whisper", note: "夜谈压低声音" },
+      suyao: { delivery: "breathless", volume: "whisper", note: "夜谈压低声音" },
     });
     expect(service.getDirective("天台")?.voice).toEqual(directive.voice);
+    // 结构化诊断：UNKNOWN_CHARACTER_ID + 字段路径 + 违规原值（显示名与
+    // 未知键各自独立成条，不静默截断、不静默接受）。
+    const issueLine = diagnostics.warns
+      .map((w) => w.message)
+      .find((m) => m.includes("UNKNOWN_CHARACTER_ID"));
+    expect(issueLine).toBeDefined();
+    expect(issueLine).toContain("voice.苏遥");
+    expect(issueLine).toContain("苏遥");
+    expect(issueLine).toContain("voice.ghost_x");
+    expect(issueLine).toContain("ghost_x");
   });
 
-  it("omits voice when the model gives none or only invalid targets", async () => {
+  it("M2 边界钉替换（R18）：显示名键不再是死数据而是被拒；稳定 ID 键照常生效（工厂探测语义不变）", async () => {
+    // C7 收紧了工厂侧（AudioDescriptorFactory 按稳定 characterId 查询
+    // voiceDirectionFor）；M2 收紧导演侧——voice 键必须是场景名单中的
+    // 稳定 ID。显示名「苏遥」被结构化拒绝（不再是宽松入库的死数据），
+    // 稳定 ID「suyao」照常生效：bootstrap 探针 directive.voice[characterId]
+    // 的语义保持不变。
+    const diagnostics = makeDiagnostics();
+    const runner = makeVoiceRunner({
+      sceneGoal: "夜谈",
+      defenseBeats: [],
+      endingPressure: false,
+      voice: {
+        苏遥: { volume: "whisper", note: "显示名键（M2 起拒绝）" },
+        suyao: { volume: "loud" },
+      },
+    });
+    const service = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+      diagnostics: diagnostics.sink,
+    });
+    const directive = await service.refreshDirective({
+      sceneId: "天台",
+      scenePurpose: "夜谈",
+      recentSummary: "",
+      cast: ["suyao"],
+    });
+    const voice = directive.voice!;
+    // 显示名键被拒（不是保留、不是映射）：voice 里只有稳定 ID 键。
+    expect(Object.keys(voice)).toEqual(["suyao"]);
+    expect(voice["苏遥"]).toBeUndefined();
+    expect(voice.suyao).toEqual({ volume: "loud" });
+    // 工厂探针语义（bootstrap：voiceDirectionHub.for = directive.voice[id]）。
+    const probe = (characterId: string) => voice[characterId];
+    expect(probe("suyao")).toEqual({ volume: "loud" });
+    expect(diagnostics.warns.some((w) => w.message.includes("voice.苏遥"))).toBe(true);
+  });
+
+  it("rejects a non-truncated long unknown key (no silent truncation)", async () => {
+    const longKey = "x".repeat(80);
+    const diagnostics = makeDiagnostics();
+    const runner = makeVoiceRunner({
+      sceneGoal: "x",
+      defenseBeats: [],
+      endingPressure: false,
+      voice: { [longKey]: { volume: "loud" } },
+    });
+    const service = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+      diagnostics: diagnostics.sink,
+    });
+    const directive = await service.refreshDirective({
+      sceneId: "教室",
+      scenePurpose: "日常",
+      recentSummary: "",
+      cast: ["suyao"],
+    });
+    // 未截断入库，整个键被拒；诊断携带完整原值。
+    expect(directive.voice).toBeUndefined();
+    const issueLine = diagnostics.warns
+      .map((w) => w.message)
+      .find((m) => m.includes("UNKNOWN_CHARACTER_ID"));
+    expect(issueLine).toContain(longKey);
+  });
+
+  it("strict empty: without a cast authority every voice key is rejected (never unrestricted)", async () => {
+    const diagnostics = makeDiagnostics();
+    const runner = makeVoiceRunner({
+      sceneGoal: "x",
+      defenseBeats: [],
+      endingPressure: false,
+      voice: { suyao: { volume: "whisper" } },
+    });
+    const service = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+      diagnostics: diagnostics.sink,
+    });
+    const directive = await service.refreshDirective({
+      sceneId: "教室",
+      scenePurpose: "日常",
+      recentSummary: "",
+      // 无场景名单 = 空允许集合（严格为空）：任何键都拒，不退化为不限。
+    });
+    expect(directive.voice).toBeUndefined();
+    expect(diagnostics.warns.some((w) => w.message.includes("UNKNOWN_CHARACTER_ID"))).toBe(true);
+  });
+
+  it("动态无立绘角色（guest_01 型）voice 指导按稳定 ID 生效；显示名键被拒", async () => {
+    // M2 验收：无立绘/无音色的动态角色在 director cast、belief 归因与
+    // voice direction 三处使用同一稳定 ID——这里钉 voice 侧。
+    const diagnostics = makeDiagnostics();
+    const runner = makeVoiceRunner({
+      sceneGoal: "深夜来电",
+      defenseBeats: [],
+      endingPressure: false,
+      voice: {
+        guest_01: { delivery: "cold", note: "电流杂音下的远端嗓音" },
+        来电者: { volume: "whisper" },
+      },
+    });
+    const service = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+      diagnostics: diagnostics.sink,
+    });
+    const directive = await service.refreshDirective({
+      sceneId: "旧校舍",
+      scenePurpose: "接起电话",
+      recentSummary: "",
+      cast: ["suyao", "guest_01"],
+    });
+    expect(directive.voice).toEqual({
+      guest_01: { delivery: "cold", note: "电流杂音下的远端嗓音" },
+    });
+    // 显示名「来电者」是名牌不是 ID：结构化拒绝。
+    expect(diagnostics.warns.some((w) => w.message.includes("voice.来电者"))).toBe(true);
+  });
+
+  it("omits voice when the model gives none or only vocab-invalid targets", async () => {
     for (const payload of [
-      { sceneGoal: "x", defenseBeats: [], endingPressure: false, voice: { 苏遥: { pace: 7 } } },
+      { sceneGoal: "x", defenseBeats: [], endingPressure: false, voice: { suyao: { pace: 7 } } },
       { sceneGoal: "x", defenseBeats: [], endingPressure: false, voice: [1, 2] },
     ]) {
       const runner = makeVoiceRunner(payload);
@@ -337,55 +487,19 @@ describe("DirectorService — voice 指导与调色板", () => {
         sceneId: "教室",
         scenePurpose: "日常",
         recentSummary: "",
+        cast: ["suyao"],
       });
       expect(directive.voice).toBeUndefined();
     }
   });
 
-  it("M2 边界钉（R18）：voice 键目前宽松——显示名键可通过 parse，但工厂按稳定 ID 探测永不命中", async () => {
-    // C7 只收紧了工厂侧（AudioDescriptorFactory 按稳定 characterId 查询
-    // voiceDirectionFor）；parseVoiceDirections 仍接受任意键——显示名
-    // 「苏遥」照常入库。该键对工厂是死数据：bootstrap 的探针是
-    // directive.voice[characterId]，characterId=suyao 永远取不到「苏遥」
-    // 键（不猜、不映射）。M2 将在导演侧收紧键校验（拒绝非 roster ID）；
-    // 在此之前本测试钉住现状——不得静默加宽（让工厂开始按显示名寻址）
-    // 或提前「修好」（丢弃非 ID 键）此边界，那都是 M2 的决定。
-    const runner = makeVoiceRunner({
-      sceneGoal: "夜谈",
-      defenseBeats: [],
-      endingPressure: false,
-      voice: {
-        苏遥: { volume: "whisper", note: "显示名键（M2 前宽松放行）" },
-        suyao: { volume: "loud" },
-      },
-    });
-    const service = new DirectorService({
-      runner: runner as unknown as AgentRunnerPort,
-      store,
-    });
-    const directive = await service.refreshDirective({
-      sceneId: "天台",
-      scenePurpose: "夜谈",
-      recentSummary: "",
-    });
-    const voice = directive.voice!;
-    // 宽松 parse 现状：两个键都原样保留（M2 收紧前）。
-    expect(voice["苏遥"]).toEqual({ volume: "whisper", note: "显示名键（M2 前宽松放行）" });
-    expect(voice.suyao).toEqual({ volume: "loud" });
-    // 工厂探针语义（bootstrap：voiceDirectionHub.for = directive.voice[id]）：
-    // 按稳定 characterId 查询——只命中 ID 键，显示名键不可达。
-    const probe = (characterId: string) => voice[characterId];
-    expect(probe("suyao")).toEqual({ volume: "loud" });
-    expect(probe("suyao")).not.toBe(voice["苏遥"]);
-  });
-
-  it("renders the palette section for cast members with palette data", async () => {
+  it("renders the cast section and palette for cast members with palette data (stable IDs)", async () => {
     const runner = makeVoiceRunner({ sceneGoal: "x", defenseBeats: [], endingPressure: false });
     const service = new DirectorService({
       runner: runner as unknown as AgentRunnerPort,
       store,
       speakerPalette: (id) =>
-        id === "苏遥"
+        id === "suyao"
           ? { allowedDelivery: ["gentle", "firm"], forbiddenDelivery: ["cold"] }
           : undefined,
     });
@@ -393,12 +507,15 @@ describe("DirectorService — voice 指导与调色板", () => {
       sceneId: "教室",
       scenePurpose: "日常",
       recentSummary: "",
-      cast: ["苏遥", "林澈"],
+      cast: ["suyao", "linche"],
     });
     const user = (runner.runLoop.mock.calls[0]?.[0] as { user: string }).user;
+    // 场景名单段：voice 键的权威清单（稳定 ID）。
+    expect(user).toContain("在场角色");
+    expect(user).toContain("suyao");
     expect(user).toContain("===== 在场角色音频调色板 =====");
-    expect(user).toContain("- 苏遥：语气可用 [gentle, firm]：忌用 [cold]");
-    expect(user).not.toContain("林澈");
+    expect(user).toContain("- suyao：语气可用 [gentle, firm]：忌用 [cold]");
+    expect(user).not.toContain("linche：");
   });
 
   it("omits the palette section without a palette provider or cast", async () => {
@@ -411,7 +528,7 @@ describe("DirectorService — voice 指导与调色板", () => {
       sceneId: "教室",
       scenePurpose: "日常",
       recentSummary: "",
-      cast: ["苏遥"],
+      cast: ["suyao"],
     });
     let user = (runner.runLoop.mock.calls[0]?.[0] as { user: string }).user;
     expect(user).not.toContain("音频调色板");

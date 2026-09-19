@@ -1607,11 +1607,28 @@ export class Game implements InteractionHost {
           sceneId,
           scenePurpose: this.storyState.scene.purpose,
           recentSummary: this.storyState.recent_summary,
-          // 在场角色（音频调色板段数据源，角色音频特征设计 V1）。
-          cast: Object.keys(this.storyState.characters),
+          // M2 §6.2：显式会话场景名单（roster NPC——含电话/画外角色，不从
+          // 立绘推导，也不从累计 state.keys 重建）；voice 键按它严格校验，
+          // 音频调色板段同源（角色音频特征设计 V1）。
+          cast: this.directorSceneCast(),
         });
       }
     });
+  }
+
+  /**
+   * M2 §6.2：导演场景名单——显式会话 cast 上下文（与 generationIdentity
+   * 的允许说话人同一权威：roster NPC，含电话/画外/无立绘角色；玩家由
+   * 运行时代言，不进模型 voice 指导名单）。registry 缺席的 legacy 会话
+   * 退 v1 资产注册表 ID（仍不是累计 state.keys 重建）。
+   */
+  private directorSceneCast(): string[] {
+    if (this.characterRegistry !== undefined) {
+      return this.characterRegistry.roster.characters
+        .filter((definition) => definition.control === "npc")
+        .map((definition) => definition.id);
+    }
+    return this.registry.entries().map((entry) => entry.characterId);
   }
 
   private makeBrief(turn: number): MemoryProjection | undefined {
