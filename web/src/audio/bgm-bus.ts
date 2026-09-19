@@ -6,8 +6,8 @@
  * - dynamics 复用语音链已注册的 "dynamics" 处理器：同一 AudioContext 上
  *   处理器名只能注册一次，因此本总线必须在 AudioCoordinator.init 之后
  *   用 `new AudioWorkletNode` 创建（不能再 addModule）；
- * - fadeGain 由 BgmController 的 VolumeRamp 驱动——淡入淡出从 rAF 插值
- *   audio.volume 迁移为采样级精确的 GainNode；
+ * - fadeGain 由 BgmController 的 VolumeRamp 驱动——淡入淡出的乘法落点从
+ *   audio.volume 迁移为独立 GainNode（时间分辨率仍为帧级）；
  * - duckGain 由 BgmDucker 驱动（语音闪避），与淡入淡出分节点互不打架。
  *
  * `audio.volume`（元素属性）保留用户音量/静音语义：它作用在源节点之前的
@@ -43,6 +43,9 @@ export function createBgmBus(
     const fadeGain = context.createGain();
     const duckGain = context.createGain();
     if (dynamics !== null) {
+      // BGM 链不消费遥测，但 MessagePort 队列在未启用派发时会无限堆积
+      // 处理器每 ~21ms 的 postMessage——挂一个丢弃型接收方显式排空。
+      dynamics.port.onmessage = () => {};
       source.connect(dynamics);
       dynamics.connect(fadeGain);
       if (params !== null) {

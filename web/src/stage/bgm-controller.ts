@@ -63,7 +63,7 @@ export class BgmController {
   private lastTick = 0;
   /**
    * Web Audio 图总线（可选，start 时由 GameApp 注入）。注入后淡入淡出写
-   * bus.fadeGain（采样级精确），audio.volume 只承担用户音量/静音；null =
+   * bus.fadeGain（audio.volume 不再承担渐变），audio.volume 只承担用户音量/静音；null =
    * legacy 路径，淡入淡出继续并入 audio.volume（引入图之前的行为）。
    */
   private bus: BgmBus | null = null;
@@ -132,7 +132,7 @@ export class BgmController {
 
   /**
    * 接入 Web Audio 图总线（start 手势后的启动期调用一次）。当前淡入淡出
-   * 乘数原样迁入 fadeGain，切换瞬时无缝；之后淡入淡出走采样级 GainNode。
+   * 乘数原样迁入 fadeGain，切换瞬时无缝；之后淡入淡出写 fadeGain（渐变落点）。
    */
   attachGraph(bus: BgmBus): void {
     this.bus = bus;

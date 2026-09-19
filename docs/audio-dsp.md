@@ -25,8 +25,9 @@ TTS PCM 流 ──► pcm-playback worklet ──► dynamics worklet(voice, mon
   后的真实可听电平），句内停顿经 `hold` 防抖，`release` 回弹；增益写入用
   `setTargetAtTime`（时间常数 τ = ms/3000，即 ms 内走完约 95%），主线程只在
   目标变化的边沿调用。
-- 淡入淡出从旧的 rAF 插值 `audio.volume` 迁移到采样级精确的 `fadeGain`
-  GainNode；`audio.volume` 只承担用户音量/静音。
+- 淡入淡出从插值 `audio.volume` 迁移到独立的 `fadeGain` GainNode（乘法落点
+  变化；时间分辨率仍为帧级 rAF，与旧路径一致）；`audio.volume` 只承担用户
+  音量/静音。
 
 ## 降级路径（逐级旁路，绝不因 DSP 挂掉游戏）
 

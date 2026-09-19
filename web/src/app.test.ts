@@ -12,6 +12,7 @@ import { AudioCacheWriter } from "./storage/audio-cache-writer.js";
 import { resetDb } from "./storage/test-utils.js";
 import type { AudioDescriptor } from "@shared/wire/audio-descriptor.js";
 import type { PublicWebConfig } from "@shared/wire/public-web-config.js";
+import { defaultAudioDspParams } from "@shared/wire/audio-dsp.js";
 import type { BgmController } from "./stage/bgm-controller.js";
 import type { WebSocketLike, WebSocketCtor } from "./runtime/runtime-client.js";
 
@@ -343,6 +344,23 @@ describe("GameApp", () => {
     });
     expect(app.state().connection).toBe("open");
   });
+
+  it("audio.dsp push hot-applies params to the voice chain", async () => {
+    const { ws, port } = await setupApp();
+    const params = defaultAudioDspParams();
+    params.voice.gate.enabled = false;
+    params.ducking.depth_db = -20;
+    ws.receive(JSON.stringify({ type: "audio.dsp", params }));
+    const paramsPosts = port.postMessage.mock.calls
+      .map((call) => call[0])
+      .filter(
+        (m) => m !== null && typeof m === "object" && (m as { type?: string }).type === "params",
+      );
+    expect(paramsPosts.length).toBeGreaterThanOrEqual(1);
+    // 最后一条 params 消息即热更推送值（协调器只把 voice 链发给节点）
+    expect(paramsPosts.at(-1)).toEqual({ type: "params", params: params.voice });
+  });
+
 
   it("advance sends a runtime.command with a commandId", async () => {
     const { app, ws } = await setupApp();

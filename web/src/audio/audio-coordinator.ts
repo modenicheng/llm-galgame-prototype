@@ -565,7 +565,10 @@ export class AudioCoordinator {
       typeof data.outDb !== "number" ||
       typeof data.gateOpen !== "boolean" ||
       typeof data.compGrDb !== "number" ||
-      typeof data.limGrDb !== "number"
+      typeof data.limGrDb !== "number" ||
+      !Number.isFinite(data.outDb) ||
+      !Number.isFinite(data.compGrDb) ||
+      !Number.isFinite(data.limGrDb)
     ) {
       return;
     }

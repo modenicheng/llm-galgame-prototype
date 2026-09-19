@@ -31,6 +31,18 @@ function clamp(v, lo, hi) {
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : lo;
 }
 
+/**
+ * 解析有效采样率：真实 AudioWorkletGlobalScope 里 sampleRate 是全局只读量
+ * （typeof 守卫读取，不在 processor 实例上）；Node 回退基类的实例字段作
+ * 兜底；两者皆无 → 48000。
+ */
+function resolveSampleRate(instanceRate) {
+  if (typeof sampleRate !== "undefined" && sampleRate > 0) {
+    return sampleRate;
+  }
+  return typeof instanceRate === "number" && instanceRate > 0 ? instanceRate : 48000;
+}
+
 export function dbToLinear(db) {
   return 10 ** (db / 20);
 }
@@ -39,9 +51,9 @@ export function linearToDb(x) {
   return 20 * Math.log10(Math.max(Math.abs(x), LINEAR_FLOOR));
 }
 
-/** 一阶平滑系数：ms 内衰减到 1/e；ms<=0 → 立即跟随。 */
+/** 一阶平滑系数：ms 内衰减到 1/e；ms<=0 或采样率非有限 → 立即跟随（绝不产 NaN）。 */
 export function smoothingCoef(ms, sampleRate) {
-  if (ms <= 0) return 0;
+  if (!(ms > 0) || !(sampleRate > 0)) return 0;
   return Math.exp(-1 / ((ms / 1000) * sampleRate));
 }
 
@@ -178,7 +190,11 @@ export class LimiterStage {
   }
 }
 
-/** 参数兜底：与 src/shared/wire/audio-dsp.ts 的 voice 链默认值一致。 */
+/**
+ * 参数兜底：与 src/shared/wire/audio-dsp.ts 的 voice 链默认值一致。仅防御
+ * 直喂——生产链路上主线程只传 zod 规范化后的完整参数，勿将其当第一道
+ * 防线绕过 zod（非有限值的回落语义与 zod 不同：这里回落 lo，zod 回落默认）。
+ */
 export function normalizeChain(raw) {
   const r = typeof raw === "object" && raw !== null ? raw : {};
   const g = typeof r.gate === "object" && r.gate !== null ? r.gate : {};
@@ -271,6 +287,9 @@ export class DynamicsChain {
           this.gate.process(envDb) *
           this.compressor.process(envDb) *
           this.limiter.process(envDb);
+        // 深防：任何上游缺陷产生的非有限增益一律退化为旁路（NaN 会经
+        // destination 的非有限值防护把整条总线静音——真机 P0 事故的教训）。
+        if (!Number.isFinite(g)) g = 1;
       } else {
         this.preEnvelope.process(peak);
       }
@@ -283,13 +302,13 @@ export class DynamicsChain {
     return active;
   }
 
-  /** 遥测快照（块末调用）。 */
+  /** 遥测快照（块末调用）；级级禁用时该级 GR 归零（残留值不上仪表）。 */
   snapshot() {
     return {
       outDb: this.outEnvelope.db,
       gateOpen: this.enabled && this.gate.enabled && this.gate.open,
-      compGrDb: this.enabled ? this.compressor.grDb : 0,
-      limGrDb: this.enabled ? this.limiter.grDb : 0,
+      compGrDb: this.enabled && this.compressor.enabled ? this.compressor.grDb : 0,
+      limGrDb: this.enabled && this.limiter.enabled ? this.limiter.grDb : 0,
     };
   }
 }
@@ -306,6 +325,11 @@ const AudioWorkletProcessorBase =
 export class DynamicsProcessor extends AudioWorkletProcessorBase {
   constructor(options = {}) {
     super(options);
+    // 采样率在真实 AudioWorkletGlobalScope 是全局只读量，不在 processor
+    // 实例（或其原型链）上——用 this.sampleRate 读它只会得到 undefined，
+    // 进而在平滑系数里扩散成 NaN（真机全静音 P0 的根因）。规范全局用
+    // typeof 守卫读取；Node 回退基类的实例字段作兜底。
+    this.sampleRate = resolveSampleRate(this.sampleRate);
     this.chain = new DynamicsChain(this.sampleRate);
     this.blockCounter = 0;
     this.port.onmessage = (event) => {

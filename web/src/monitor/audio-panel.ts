@@ -159,6 +159,8 @@ export class AudioPanel {
   private readonly groups: GroupRows[] = [];
   private readonly statusEl: HTMLElement;
   private readonly saveBtn: HTMLButtonElement;
+  private readonly formEl: HTMLElement;
+  private readonly metersEl: HTMLElement;
   private readonly meterOutBar: HTMLElement;
   private readonly meterOutText: HTMLElement;
   private readonly meterGateText: HTMLElement;
@@ -174,6 +176,7 @@ export class AudioPanel {
   ) {
     // ---- 仪表区 ----
     const meters = el("div", "mon-audio-meters");
+    this.metersEl = meters;
     const outRow = el("div", "mon-audio-meter");
     outRow.appendChild(el("span", "mon-audio-meter__label", "语音电平"));
     const outTrack = el("div", "mon-audio-meter__track");
@@ -210,6 +213,7 @@ export class AudioPanel {
 
     // ---- 参数表单 ----
     const form = el("div", "mon-audio-form");
+    this.formEl = form;
     for (const group of GROUPS) {
       const box = el("div", "mon-audio-group");
       const head = el("div", "mon-audio-group__head");
@@ -265,8 +269,16 @@ export class AudioPanel {
 
   /** 状态帧遥测（状态轮询 400ms 节流；仅活动 tab 时由 boot 调用）。 */
   updateMeters(state: MonitorAudioState | undefined): void {
-    if (state === undefined) {
+    // 帧内自带 at 时间戳：玩家页断连/关闭后最后一条数据会常驻 hub，超过
+    // 2s 视为过期——仪表灰显，避免把「数据已死」误读成「静音」。
+    const stale = state !== undefined && Date.now() - state.at > 2000;
+    this.metersEl.classList.toggle("is-stale", stale);
+    if (state === undefined || stale) {
       this.waitingHint.style.display = "";
+      this.waitingHint.textContent =
+        state === undefined
+          ? "等待玩家端遥测（需已开局且玩家页存活）…"
+          : "遥测中断（玩家页已关闭或断连）…";
       return;
     }
     this.waitingHint.style.display = "none";
@@ -341,6 +353,8 @@ export class AudioPanel {
   private async save(): Promise<void> {
     if (!this.loaded) return;
     this.saveBtn.disabled = true;
+    // 保存期间锁表单：否则在途编辑会被服务端回填覆盖（静默丢失）。
+    this.formEl.classList.add("is-saving");
     this.setStatus("保存中…");
     try {
       const res = await fetch("/api/config/audio-dsp", {
@@ -359,6 +373,7 @@ export class AudioPanel {
       this.setStatus(`保存失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.saveBtn.disabled = false;
+      this.formEl.classList.remove("is-saving");
     }
   }
 

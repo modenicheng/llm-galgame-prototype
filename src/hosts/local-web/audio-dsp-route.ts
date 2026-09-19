@@ -25,6 +25,8 @@ export class AudioDspRoute {
   private readonly token: string;
   private readonly onSaved: (params: AudioDspParams) => void;
   private readonly maxBodyBytes: number;
+  /** 保存串行化：并发 POST 时共享 .tmp 文件会交错写/伪 500，排队逐个落盘。 */
+  private saveChain: Promise<unknown> = Promise.resolve();
 
   constructor(deps: AudioDspRouteDeps) {
     this.store = deps.store;
@@ -66,7 +68,9 @@ export class AudioDspRoute {
       return;
     }
     try {
-      await this.store.save(params);
+      const run = this.saveChain.then(() => this.store.save(params));
+      this.saveChain = run.catch(() => {});
+      await run;
     } catch (error) {
       this.sendError(res, 500, error instanceof Error ? error.message : "save failed");
       return;

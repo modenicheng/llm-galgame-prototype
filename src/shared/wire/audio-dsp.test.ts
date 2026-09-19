@@ -58,6 +58,26 @@ describe("AudioDspParamsSchema", () => {
     expect(p.bgm.limiter.enabled).toBe(false);
   });
 
+  it("corrupted bgm sub-objects fall back to BGM defaults (three stages stay off)", () => {
+    // 内层 catch 必须用 BGM 自己的默认值——曾错误回落语音默认，把手改
+    // 坏掉的 bgm 链"修复"成 gate/压缩/限幅三级全开并被保存粘性固化
+    const p = AudioDspParamsSchema.parse({
+      version: 1,
+      bgm: { gate: { enabled: "x" }, compressor: "junk" },
+    });
+    expect(p.bgm.gate.enabled).toBe(false);
+    expect(p.bgm.compressor.enabled).toBe(false);
+    expect(p.bgm.compressor.threshold_db).toBe(-20);
+    expect(p.bgm.limiter.enabled).toBe(false);
+    // 同一子对象内坏字段回落本链默认、好字段保留（不整链吞掉）
+    const mixed = AudioDspParamsSchema.parse({
+      version: 1,
+      bgm: { gate: { enabled: "x", threshold_db: -40 } },
+    });
+    expect(mixed.bgm.gate.enabled).toBe(false);
+    expect(mixed.bgm.gate.threshold_db).toBe(-40);
+  });
+
   it("rejects only non-object top levels", () => {
     expect(parseAudioDspParams("nope")).toBeNull();
     expect(parseAudioDspParams(42)).toBeNull();
