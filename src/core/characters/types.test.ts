@@ -190,6 +190,14 @@ describe("CharacterDefinitionSchema", () => {
     expect(CharacterDefinitionSchema.safeParse(bad).success).toBe(false);
   });
 
+  it("拒绝 looks 中自有 __proto__ 键（z.record 会静默丢弃的形态）", () => {
+    const raw = JSON.parse(
+      '{"id":"female_A","name":"许晚晴","control":"npc","initialLabel":"许晚晴","persona":"温柔娴静的学姐。","presentation":{"defaultLook":"__proto__","defaultPosition":"right","looks":{"__proto__":{"spriteSet":"female_A","variant":"base"}}}}',
+    );
+    expect(Object.hasOwn(raw.presentation.looks, "__proto__")).toBe(true);
+    expect(CharacterDefinitionSchema.safeParse(raw).success).toBe(false);
+  });
+
   it("拒绝未知控制类型", () => {
     expect(CharacterDefinitionSchema.safeParse({ ...full, control: "sidekick" }).success).toBe(false);
   });
@@ -278,5 +286,23 @@ describe("CharacterRuntimeStateSchema", () => {
     expect(
       CharacterRuntimeStateSchema.safeParse({ labels: { female_A: "许\n晚" } }).success,
     ).toBe(false);
+  });
+
+  it("labels 记录键拒绝危险键（constructor/prototype/__proto__）", () => {
+    expect(
+      CharacterRuntimeStateSchema.safeParse({ labels: { constructor: "许晚晴" } }).success,
+    ).toBe(false);
+    expect(
+      CharacterRuntimeStateSchema.safeParse({ labels: { prototype: "许晚晴" } }).success,
+    ).toBe(false);
+    // 对象字面量里的 `__proto__:` 是原型赋值而非自有键——用 JSON.parse
+    // 构造出自有 __proto__ 键（持久化/解析边界真实会出现的形态）。
+    const withProto = JSON.parse('{"labels":{"__proto__":"许晚晴"}}');
+    expect(Object.hasOwn(withProto.labels, "__proto__")).toBe(true);
+    expect(CharacterRuntimeStateSchema.safeParse(withProto).success).toBe(false);
+    // 正常键不受影响。
+    expect(
+      CharacterRuntimeStateSchema.safeParse({ labels: { female_A: "神秘女子" } }).success,
+    ).toBe(true);
   });
 });

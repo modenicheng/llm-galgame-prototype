@@ -216,6 +216,32 @@ const safeRecordKey = z.string().refine((key) => isValidCharacterKey(key), {
   message: "外观键/字典键不允许使用对象原型危险键或非法字符",
 });
 
+/**
+ * 原型链安全记录 schema。zod v4 的 `z.record` 不会把自有 `__proto__`
+ * 数据键（如 `JSON.parse('{"__proto__":…}')` 的产物）交给键 schema
+ * 校验，而是静默丢弃——键校验形同虚设。先用 preprocess 在原始输入上
+ * 拒绝危险键（`__proto__`/`prototype`/`constructor`），再交给
+ * `z.record` 做键/值校验；两道检查叠加，不留静默丢键路径。
+ */
+function safeRecord<K extends z.ZodType<string>, V extends z.ZodType>(
+  keySchema: K,
+  valueSchema: V,
+) {
+  return z.preprocess((input, ctx) => {
+    if (typeof input === "object" && input !== null) {
+      for (const key of Object.keys(input)) {
+        if (isDangerousKey(key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `字典键不允许使用对象原型危险键：${JSON.stringify(key)}`,
+          });
+        }
+      }
+    }
+    return input;
+  }, z.record(keySchema, valueSchema));
+}
+
 export const CharacterDefinitionSchema = z
   .object({
     id: CharacterIdSchema,
@@ -229,7 +255,7 @@ export const CharacterDefinitionSchema = z
       z.object({
         defaultLook: z.string().min(1),
         defaultPosition: z.enum(["far_left", "left", "center", "right", "far_right"]),
-        looks: z.record(safeRecordKey, CharacterLookSchema),
+        looks: safeRecord(safeRecordKey, CharacterLookSchema),
       }),
     ),
     voiceProfileId: z.exactOptional(z.string().min(1)),
@@ -248,7 +274,11 @@ export const CharacterDefinitionSchema = z
   });
 
 export const CharacterRuntimeStateSchema = z.object({
-  labels: z.record(z.string(), CharacterLabelSchema),
+  // 记录键 = 角色 ID：safeRecord（危险键预处理）+ safeRecordKey（格式 +
+  // 危险键），与 withCharacterLabel 的守卫及 DANGEROUS_ID_KEYS 不变量
+  // 一致——本 schema 是 F3/M3 信任的解析/持久化面，不得放行
+  // constructor/__proto__ 等键，也不得静默丢弃后放行。
+  labels: safeRecord(safeRecordKey, CharacterLabelSchema),
 });
 
 // ---------------------------------------------------------------------------
