@@ -41,6 +41,12 @@ export interface SpriteSet {
   variants: Record<string, SpriteVariant>;
 }
 
+/**
+ * Legacy 身份绑定（C2 起 frozen）：身份真源移至 `src/core/characters/`
+ * （CharacterRoster/CharacterRegistry）。`characters` 段继续作为兼容
+ * 边界存在（bootstrap legacy 模式、旧 parser），直到 F1/M1 的
+ * characters.yaml 迁移完成；新内容不得在此新增身份字段。
+ */
 export interface CharacterAssetBinding {
   characterId: string;
   scriptName: string;

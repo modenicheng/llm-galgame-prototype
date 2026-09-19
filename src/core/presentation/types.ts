@@ -127,6 +127,12 @@ export const VisualStateSchema: z.ZodType<VisualState> = z.object({
 // ---------------------------------------------------------------------------
 // Character registry — script name → internal identity + presentation defaults
 // ---------------------------------------------------------------------------
+//
+// C2 legacy 边界：身份概念的真源已移至 `src/core/characters/`（roster +
+// CharacterRegistry，按稳定 CharacterId 寻址）。下面的 scriptName 注册表
+// 是兼容/过渡边界（bootstrap legacy 模式与旧 parser 仍在用），自 C2 起
+// 冻结——不再为它新增身份语义；`scriptName` 不进入新内容格式与核心 API。
+// ---------------------------------------------------------------------------
 
 /**
  * One character's binding (docs §7, §10, §58). The registry is the single

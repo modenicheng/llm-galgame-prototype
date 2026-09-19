@@ -27,6 +27,10 @@ import type {
   NarrationDraftEvent,
   EndEvent,
 } from "../schema.js";
+import {
+  CharacterIdSchema,
+  CharacterLabelSchema,
+} from "../core/characters/types.js";
 import type {
   EventGroupDraft,
   SegmentEndStatus,
@@ -285,6 +289,26 @@ export const DialogueDraftEventSchema = z.object({
 export const NarrationDraftEventSchema = z.object({
   type: z.literal("narration"),
   text: z.string().min(1),
+  performance: LinePerformanceSchema.catch(undefined as never).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// C2 强事件身份：严格新事件 schema vs 宽松 legacy 读取器
+// ---------------------------------------------------------------------------
+
+/**
+ * 严格新格式对白事件（C2）：`characterId` 必填（稳定 roster ID，不是显示
+ * 名），`displayLabel` 必填（发射时刻的名牌）。旧 `speaker` 字段不在此
+ * schema 中——strict 对象会拒绝混写；它只经上方 `DialogueDraftEventSchema`
+ * （宽松 legacy 读取器）在兼容/wire 过渡边界读取。不做“新字段 optional
+ * 式兼容”：缺 characterId 的新格式对白一律非法。
+ */
+export const CharacterDialogueEventSchema = z.strictObject({
+  type: z.literal("dialogue"),
+  characterId: CharacterIdSchema,
+  displayLabel: CharacterLabelSchema,
+  text: z.string().min(1),
+  // §14.5：非法 performance 丢弃（catch → undefined），台词正文保留。
   performance: LinePerformanceSchema.catch(undefined as never).optional(),
 });
 

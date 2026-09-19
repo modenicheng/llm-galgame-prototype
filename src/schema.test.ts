@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   PortraitSchema,
   DialogueDraftEventSchema,
+  CharacterDialogueEventSchema,
   NarrationDraftEventSchema,
   InteractionEventSchema,
   isPlayableEvent,
@@ -449,5 +450,80 @@ describe("InteractionEventSchema union", () => {
       },
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CharacterDialogueEventSchema — C2 强事件身份（新格式对白）
+// ---------------------------------------------------------------------------
+describe("CharacterDialogueEventSchema（C2 严格新事件 schema）", () => {
+  it("接受带必填 characterId 与 displayLabel 的对白", () => {
+    const result = CharacterDialogueEventSchema.safeParse({
+      type: "dialogue",
+      characterId: "female_A",
+      displayLabel: "神秘女子",
+      text: "借过的那支笔，我还留着。",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("拒绝缺 characterId 的对白（不允许 speaker 冒充身份）", () => {
+    const result = CharacterDialogueEventSchema.safeParse({
+      type: "dialogue",
+      speaker: "许晚晴",
+      text: "借过的那支笔，我还留着。",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("拒绝携带旧 speaker 字段的载荷（strict：过渡边界之外不得混写）", () => {
+    const result = CharacterDialogueEventSchema.safeParse({
+      type: "dialogue",
+      characterId: "female_A",
+      displayLabel: "许晚晴",
+      speaker: "许晚晴",
+      text: "借过的那支笔，我还留着。",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("拒绝缺 displayLabel 的对白", () => {
+    const result = CharacterDialogueEventSchema.safeParse({
+      type: "dialogue",
+      characterId: "female_A",
+      text: "借过的那支笔，我还留着。",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("拒绝把显示名当机器键（characterId 必须是合法 ID）", () => {
+    const result = CharacterDialogueEventSchema.safeParse({
+      type: "dialogue",
+      characterId: "神秘女子",
+      displayLabel: "神秘女子",
+      text: "你不该来这里。",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("拒绝非法 displayLabel 文本（控制字符）", () => {
+    const result = CharacterDialogueEventSchema.safeParse({
+      type: "dialogue",
+      characterId: "female_A",
+      displayLabel: "苏遥\n苏遥",
+      text: "你不该来这里。",
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("DialogueDraftEventSchema（legacy 宽松读取器——仅兼容边界）", () => {
+  it("仍按原样接受旧 speaker 载荷：兼容读取不因新 schema 收紧", () => {
+    const result = DialogueDraftEventSchema.safeParse({
+      type: "dialogue",
+      speaker: "许晚晴",
+      text: "借过的那支笔，我还留着。",
+    });
+    expect(result.success).toBe(true);
   });
 });

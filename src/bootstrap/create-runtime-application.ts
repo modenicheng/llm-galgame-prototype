@@ -65,6 +65,7 @@ import type {
   RuntimeApplicationOptions,
 } from "../application/runtime-application.js";
 import { loadAssetCatalog } from "../application/assets/asset-catalog-loader.js";
+import type { CharacterRegistryProvider } from "../core/characters/registry.js";
 import { NarrativeDirectorService } from "../application/narrative/narrative-director-service.js";
 import { JsonNarrativeMemoryStore } from "../adapters/storage/json-narrative-memory-store.js";
 import { NarrativeConsolidatorAdapter } from "../adapters/llm/narrative-consolidator-adapter.js";
@@ -359,6 +360,15 @@ export async function createRuntimeApplication(
   // (model catalog) and the runtime (character registry + resolver).
   const assetCatalog = await loadAssetCatalog(config.assets.catalog);
 
+  // C2 registry 端口：legacy 模式为显式缺省——身份今天仍由资产目录注册表
+  // （兼容边界）提供，运行时行为不变；roster 模式等 M1 的
+  // characters.yaml 加载器（application/characters/character-roster-loader）
+  // 落地后再切换。
+  const characterRegistry: CharacterRegistryProvider = {
+    mode: "legacy",
+    registry: undefined,
+  };
+
   const status = new RuntimeStatus();
   const metrics = new Metrics();
   const generator = new StoryGenerator(
@@ -534,6 +544,7 @@ export async function createRuntimeApplication(
     config,
     metrics,
     assetCatalog,
+    characterRegistry,
     taskStatusSubscribe: (listener) => {
       taskStatusListeners.add(listener);
       return () => taskStatusListeners.delete(listener);

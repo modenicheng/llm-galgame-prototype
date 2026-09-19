@@ -14,6 +14,7 @@ import type { TaskStatusEvent } from "./audio/tts-task-service.js";
 import type { AppConfig } from "../config.js";
 import type { Metrics } from "../runtime/metrics.js";
 import type { AssetCatalog } from "../core/assets/types.js";
+import type { CharacterRegistryProvider } from "../core/characters/registry.js";
 
 export interface RuntimeApplication {
   game: Game;
@@ -31,6 +32,11 @@ export interface RuntimeApplication {
   metrics: Metrics;
   /** Loaded asset catalog (docs §57–§60); hosts expose it via manifest + /game-assets. */
   assetCatalog: AssetCatalog;
+  /**
+   * C2 角色注册表端口。显式 legacy 模式为缺省：身份仍走资产目录兼容
+   * 边界；M1 提供 characters.yaml roster 后切换 roster 模式。
+   */
+  characterRegistry: CharacterRegistryProvider;
   shutdown(): Promise<void>;
   /**
    * 结束当前会话并重建整个运行时（新 session id、新开场）。

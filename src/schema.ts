@@ -19,6 +19,7 @@ export type {
 export {
   PortraitSchema,
   DialogueDraftEventSchema,
+  CharacterDialogueEventSchema,
   NarrationDraftEventSchema,
   LinePerformanceSchema,
 } from "./story/types.js";
@@ -31,6 +32,11 @@ export interface Portrait {
   position: "left" | "center" | "right";
 }
 
+/**
+ * Legacy 宽松对白读取器（C2 起 frozen）：`speaker` 是显示名，只在兼容
+ * adapter/wire 过渡边界解析；新生成路径使用 `CharacterDialogueEvent`
+ * （characterId + displayLabel 必填）。
+ */
 export interface DialogueDraftEvent {
   type: "dialogue";
   speaker: string;
@@ -44,6 +50,28 @@ export interface NarrationDraftEvent {
   text: string;
   performance?: LinePerformance;
 }
+
+/**
+ * 严格新格式对白事件（C2 强事件身份）。`characterId` 与 `displayLabel`
+ * 都是必填——不允许通过把新字段设 optional 来“兼容”旧载荷；旧 `speaker`
+ * 只在兼容 adapter/wire 过渡边界经 `DialogueDraftEventSchema`（宽松
+ * legacy 读取器）读取。类型在 schema.ts、zod schema 在 story/types.ts。
+ */
+export interface CharacterDialogueEvent {
+  type: "dialogue";
+  /** 稳定 roster 角色 ID（机器键，不是显示名/名牌）。 */
+  characterId: string;
+  /** 发射时刻的名牌（initialLabel 或其后改名），用于 UI/回放显示。 */
+  displayLabel: string;
+  text: string;
+  performance?: LinePerformance;
+}
+
+/** 新格式对白的运行时形态：附带 line_id 与同拍舞台 cue（§63）。 */
+export type RuntimeCharacterDialogueEvent = CharacterDialogueEvent & {
+  line_id: string;
+  stage?: StageCue[];
+};
 
 export interface ChoiceOption {
   id: string;
