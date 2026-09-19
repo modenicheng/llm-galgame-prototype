@@ -17,6 +17,12 @@ export interface UiProjection {
   sessionId?: string;
   phase: "idle" | "running" | "ended" | "error";
 
+  /**
+   * 对白事件的 `characterId` 是稳定身份键；`speaker` 只是发射时刻的名牌
+   * 快照（C7 §6.1：展示语义）。回看/字幕渲染用 speaker，任何身份判断
+   * （音频寻址、缓存）用 characterId——UI 显示不因本约束改变。
+   */
+
   currentLine?: RuntimePlayableEvent;
   currentInteraction?: RuntimeInteractionEvent;
   currentPreview?: {

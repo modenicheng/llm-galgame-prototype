@@ -8,13 +8,36 @@
  * C2 过渡边界：新格式对白跨 wire 一律经 `NewFormatDialogueEventSchema`
  * 校验（characterId/displayLabel 必填）；旧 `speaker` 载荷只允许在本
  * 边界经 legacy 读取器（story/types 的 DialogueDraftEventSchema）读入。
+ *
+ * C7 wire 语义（§6.1）：`speakerId` 恒为稳定 CharacterId（格式校验拒绝
+ * 显示名冒充）；`displaySpeaker` 是该条事件的名牌快照。wire 协议版本
+ * `WIRE_PROTOCOL_VERSION` 随 client.ready 上报——版本过旧的客户端由
+ * 服务端按既有 close-code 模式明确拒绝（升级/重连信号），不做静默兼容。
  */
 import { z } from "zod";
-import { CharacterLabelSchema } from "../../core/characters/types.js";
+import { CharacterLabelSchema, CHARACTER_ID_PATTERN } from "../../core/characters/types.js";
 import { CharacterDialogueEventSchema } from "../../story/types.js";
 
 /** 新格式对白在 wire 上的唯一校验入口（strict：拒绝混写旧 speaker）。 */
 export const NewFormatDialogueEventSchema = CharacterDialogueEventSchema;
+
+/**
+ * Runtime WebSocket 协议版本。C7 = 2：audio descriptor 的 speakerId 语义
+ * 收紧为稳定 CharacterId（v1 期间可能是 TTS 配置键/显示名）。两端共享
+ * 本常量；不匹配的旧客户端收到 4002 close（附升级说明），不静默降级。
+ */
+export const WIRE_PROTOCOL_VERSION = 2;
+
+/** 旧 wire 版本客户端的 close code（沿用 4001 controller-limit 的拒绝模式）。 */
+export const STALE_WIRE_CLOSE_CODE = 4002;
+
+/** speakerId 的稳定 ID 语义：字母开头、[A-Za-z0-9_-]，拒绝显示名冒充。 */
+const SpeakerIdSchema = z
+  .string()
+  .min(1)
+  .refine((id) => CHARACTER_ID_PATTERN.test(id), {
+    message: "speakerId 必须是稳定角色 ID（^[A-Za-z][A-Za-z0-9_-]{0,63}$），不是显示名/名牌",
+  });
 
 export const AudioScopeSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("active") }),
@@ -33,9 +56,10 @@ export const AudioDescriptorSchema = z.object({
     "candidate_first_line",
     "background",
   ]),
-  speakerId: z.string().min(1),
+  // C7：恒为 roster 稳定 CharacterId（身份寻址）；显示名走 displaySpeaker。
+  speakerId: SpeakerIdSchema,
   // C2：displaySpeaker 是名牌文本，按统一 Unicode 名牌规则校验
-  //（trim 后 1–64 码点、拒绝控制字符）。
+  //（trim 后 1–64 码点、拒绝控制字符）。C7 起为该条事件的 label 快照。
   displaySpeaker: CharacterLabelSchema,
   format: z.object({
     encoding: z.literal("pcm_s16le"),
@@ -103,6 +127,12 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
       audioWorklet: z.boolean(),
       indexedDb: z.boolean(),
     }),
+    /**
+     * C7：客户端 wire 协议版本（与服务端 WIRE_PROTOCOL_VERSION 对照）。
+     * 旧客户端缺省不报——服务端按 STALE_WIRE_CLOSE_CODE 明确拒绝并给
+     * 升级/重连说明，本 schema 只做形状校验。
+     */
+    wireVersion: z.number().int().nonnegative().optional(),
   }),
 ]);
 

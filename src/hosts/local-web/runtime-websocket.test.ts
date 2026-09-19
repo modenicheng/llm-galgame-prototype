@@ -347,6 +347,33 @@ describe("RuntimeWebSocket", () => {
     expect(code).toBe(1006);
   });
 
+  it("C7：不携带 wire 版本的旧客户端被 close(4002)（明确升级信号，不静默降级）", async () => {
+    const client = await connect();
+    client.ws.send(
+      JSON.stringify({
+        type: "client.ready",
+        capabilities: { audioWorklet: true, indexedDb: true },
+      }),
+    );
+    const { code, reason } = await client.closeInfo;
+    expect(code).toBe(4002);
+    expect(reason).toContain("wire-version-stale");
+    expect(reason).toContain("refresh");
+  });
+
+  it("C7：携带当前 wire 版本的 client.ready 不被拒绝", async () => {
+    const client = await connect();
+    client.ws.send(
+      JSON.stringify({
+        type: "client.ready",
+        capabilities: { audioWorklet: true, indexedDb: true },
+        wireVersion: 2,
+      }),
+    );
+    await sleep(50);
+    expect(client.ws.readyState).toBe(WebSocket.OPEN);
+  });
+
   it("rejects a missing session token", async () => {
     const clientPromise = connectClient(`ws://127.0.0.1:${port}/ws/runtime`, `http://127.0.0.1:${port}`);
     void clientPromise.then((c) => clients.push(c.ws));
