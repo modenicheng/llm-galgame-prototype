@@ -1013,7 +1013,12 @@ export function buildMemoryIdentityView(input: {
 // explicit scene-cast inform sources, never by global roster existence (R27).
 // ---------------------------------------------------------------------------
 
-/** Consolidator request may carry at most this many citable beliefs (§6.2). */
+/**
+ * Consolidator 请求可携带的相关 belief 候选上限（§6.2）。生产接线走
+ * `config.narrative.beliefs.request_max`（facts.brief_max 同一模式，缺省
+ * 12）；本常量是 selectCitableReferences 的 beliefMax 缺省值，两处缺省
+ * 必须保持一致。
+ */
 export const MAX_CITABLE_BELIEFS_PER_REQUEST = 12;
 
 /** selectCitableReferences output: candidates ride the request; ids are the

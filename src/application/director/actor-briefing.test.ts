@@ -14,6 +14,7 @@ import { buildActorBriefing } from "./actor-briefing.js";
 import { DirectorService } from "./director-service.js";
 import type { AgentRunnerPort } from "../../core/ports/agent-runner-port.js";
 import { GameGraphStore } from "../../adapters/storage/game-graph-store.js";
+import type { GraphStorePort } from "../../core/ports/graph-store-port.js";
 import type { MemoryProjection } from "../../core/narrative/memory-projection.js";
 import { buildDslUserPrompt } from "../../story/context-builder.js";
 import { createInitialState } from "../../story/state.js";
@@ -207,16 +208,61 @@ describe("actor briefing firewall — negative snapshots against a real Director
   }
 
   it("ending candidates, canon secrets, and prior-run history never leak into the actor briefing", async () => {
-    // 导演侧可见的全量数据：结局候选（大纲）、canon 晋升事实（跨周目）。
+    // 种子：一段已弃周目的「旧校舍」已实现剧情（决策节点 + 边负载）。
+    // readSceneHistory 的回放投影会渲染出 PRIOR_RUN_SECRET，使「跨周目
+    // 秘密不进演员剪报」的负向断言真实可失败（非空洞）。用最小
+    // GraphStorePort 假件直供 readSceneHistory 消费的三项数据面——不落
+    // 真实快照文件（快照契约版本归图泳道，这里不与其 schema 演进耦合）。
+    const priorRunEvent = {
+      seq: 1,
+      turn: 1,
+      timestamp: "2026-09-01T00:00:00.000Z",
+      source: "model",
+      type: "narration",
+      text: PRIOR_RUN_SECRET,
+      line_id: "prior-line-1",
+    } as unknown as import("../../schema.js").StoredEvent;
+    const priorRunStore = {
+      location: "fake-prior-run-store",
+      listDecisions: async () => [
+        {
+          id: "dc_prior_1",
+          sceneId: "sc_prior",
+          form: { mode: "choice", prompt: "上一周目的选择" },
+          entryState: {
+            storyState: createInitialState({
+              scene: { id: "旧校舍", location: "旧校舍", purpose: "上一周目的旧校舍" },
+            }),
+          },
+        },
+      ],
+      listEdges: async () => [
+        {
+          id: "eg_prior_1",
+          from: "dc_prior_1",
+          to: { kind: "ending", id: "end_prior" },
+          choice: { kind: "option", text: "追问终端的来历" },
+          payload: { eventCount: 1, firstSeq: 1, lastSeq: 1 },
+        },
+      ],
+      readPayload: async () => [priorRunEvent],
+    } as unknown as GraphStorePort;
+
+    // 导演侧可见的全量数据：结局候选（大纲）、canon 晋升事实（跨周目）、
+    // 已弃周目场景史（readSceneHistory 工具回放）。
+    let sceneHistory = "";
     const runner = {
       runLoop: vi.fn(async (request: {
         user: string;
         tools: Array<{ name: string }>;
         executeTool: (name: string, args: string) => Promise<string>;
       }) => {
-        // 导演的工具循环确实可以回放场景史（D7：含已弃周目——导演取材
-        // 来源；秘密文本从这里只进导演侧）。
-        await request.executeTool("readSceneHistory", JSON.stringify({ sceneId: "旧校舍" }));
+        // 导演的工具循环确实读到了已弃周目剧情（D7：含已弃周目——导演
+        // 取材来源；秘密文本从这里只进导演侧）。
+        sceneHistory = await request.executeTool(
+          "readSceneHistory",
+          JSON.stringify({ sceneId: "旧校舍" }),
+        );
         return {
           text: JSON.stringify({
             sceneGoal: "查清终端来历",
@@ -228,7 +274,7 @@ describe("actor briefing firewall — negative snapshots against a real Director
     };
     const director = new DirectorService({
       runner: runner as unknown as AgentRunnerPort,
-      store,
+      store: priorRunStore,
       outline: makeOutlineWithSecrets(),
       canon: makeCanonWithSecrets(),
     });
@@ -238,6 +284,10 @@ describe("actor briefing firewall — negative snapshots against a real Director
       recentSummary: "玩家进入旧校舍。",
       cast: ["suyao"],
     });
+
+    // 对照组（导演可见）：工具回放确实包含跨周目秘密——否则下面的
+    // 「不进剪报」断言是空洞的。
+    expect(sceneHistory).toContain(PRIOR_RUN_SECRET);
 
     // SceneDirective 只有方向性指令：endingPressure 是布尔，不是候选文本。
     const briefing = buildActorBriefing({
@@ -278,5 +328,48 @@ describe("actor briefing firewall — negative snapshots against a real Director
     const directorUser = (runner.runLoop.mock.calls[0]?.[0] as { user: string }).user;
     // 对照组：导演输入含 canon 秘密（导演可见），剪报边界才是防火墙位置。
     expect(directorUser).toContain(CANON_SECRET);
+  });
+
+  it("ending-candidate control: the director consumes the outline only as a boolean endingPressure signal", async () => {
+    // 对照组（结局候选的导演可见通道）：大纲 activate 结局候选 → 导演
+    // directive 的 endingPressure=true（布尔信号）。演员剪报里它是方向性
+    // 指令「收束」一行——结局候选文本/其余候选永不到场。
+    const activeNodes: Array<{
+      id: string;
+      kind: "act" | "ending";
+      status: "planned" | "active" | "realized" | "pruned";
+      purpose: string;
+    }> = [
+      { id: "act_1", kind: "act", status: "realized", purpose: "第一章" },
+      { id: "ending_a", kind: "ending", status: "active", purpose: ENDING_SECRET },
+    ];
+    const outline = {
+      getOutline: () => ({ revision: 1, nodes: activeNodes }),
+      load: vi.fn(async () => ({ revision: 1, nodes: [] })),
+      applyRevision: vi.fn(async () => 2),
+    };
+    const runner = {
+      runLoop: vi.fn(async (_request: { user: string }) => ({
+        text: JSON.stringify({ sceneGoal: "x", defenseBeats: [], endingPressure: false }),
+      })),
+    };
+    const director = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+      outline,
+    });
+    const directive = await director.refreshDirective({
+      sceneId: "旧校舍",
+      scenePurpose: "调查",
+      recentSummary: "",
+      cast: ["suyao"],
+    });
+    // 导演确实消费了大纲（模型说 false，大纲信号覆盖为 true）。
+    expect(directive.endingPressure).toBe(true);
+    // 演员只见方向性指令：一行「收束」，没有候选文本。
+    const briefing = buildActorBriefing({ directive });
+    expect(briefing).toContain("收束：剧情接近终章");
+    expect(briefing).not.toContain(ENDING_SECRET);
+    expect(briefing).not.toContain("结局候选");
   });
 });

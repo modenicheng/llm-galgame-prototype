@@ -471,11 +471,13 @@ export class DirectorService {
       (d) => d.entryState.storyState.scene.id === modelSceneId,
     );
     if (sceneDecisions.length === 0) return "（该场景暂无已实现剧情）";
-    const sceneIds = new Set(sceneDecisions.map((d) => d.sceneId));
+    // 修：边端点是 DecisionId——匹配集合必须用决策节点 id（此前误用
+    // d.sceneId/SceneId，类型前缀不同永不相等，D7 回放从未命中过边）。
+    const decisionIds = new Set(sceneDecisions.map((d) => d.id));
     const edges = (await this.store.listEdges()).filter(
       (edge) =>
-        sceneIds.has(edge.from) ||
-        (edge.to.kind === "decision" && sceneIds.has(edge.to.id)),
+        decisionIds.has(edge.from) ||
+        (edge.to.kind === "decision" && decisionIds.has(edge.to.id)),
     );
     const chunks: string[] = [];
     for (const edge of edges) {
