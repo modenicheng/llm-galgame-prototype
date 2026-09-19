@@ -411,7 +411,6 @@ const CATALOG: AssetCatalog = {
       },
     },
   },
-  characters: {},
 };
 
 function withBackground(background: string): VisualState {

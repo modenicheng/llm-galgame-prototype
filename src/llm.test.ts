@@ -215,7 +215,6 @@ describe("DSL serializers and prompt builder", () => {
       bgm: {},
       soundEffects: {},
       spriteSets: {},
-      characters: {},
     };
     return createCharacterRegistry(
       buildCharacterRoster({
@@ -368,32 +367,51 @@ describe("DSL serializers and prompt builder", () => {
   });
 
   it("serializeVisualContext lists registered characters that are off stage", () => {
-    const roster = {
-      suyao: {
-        scriptName: "苏遥",
-        displayName: "苏遥",
-        spriteSet: "suyao",
-        defaultVariant: "normal",
-        defaultPosition: "left" as const,
-        allowedSpriteSets: ["suyao"],
-      },
-      yuki: {
-        scriptName: "由纪",
-        displayName: "由纪",
-        spriteSet: "yuki",
-        defaultVariant: "normal",
-        defaultPosition: "right" as const,
-        allowedSpriteSets: ["yuki"],
-      },
-      kaito: {
-        scriptName: "海斗",
-        displayName: "海斗",
-        spriteSet: "male_A",
-        defaultVariant: "base",
-        defaultPosition: "far_left" as const,
-        allowedSpriteSets: ["male_A"],
-      },
-    };
+    // C7：不在场名单从 roster 派生（initialLabel），不再走模型目录 characters。
+    const roster = buildCharacterRoster({
+      schemaVersion: 2,
+      scopeId: "visual-context-test",
+      playerId: "player_one",
+      characters: [
+        { id: "player_one", name: "玩家", control: "player", initialLabel: "你", persona: "玩家。" },
+        {
+          id: "suyao",
+          name: "苏遥",
+          control: "npc",
+          initialLabel: "苏遥",
+          persona: "同班同学。",
+          presentation: {
+            defaultLook: "normal",
+            defaultPosition: "left",
+            looks: { normal: { spriteSet: "suyao", variant: "normal" } },
+          },
+        },
+        {
+          id: "yuki",
+          name: "由纪",
+          control: "npc",
+          initialLabel: "由纪",
+          persona: "同级生。",
+          presentation: {
+            defaultLook: "normal",
+            defaultPosition: "right",
+            looks: { normal: { spriteSet: "yuki", variant: "normal" } },
+          },
+        },
+        {
+          id: "kaito",
+          name: "海斗",
+          control: "npc",
+          initialLabel: "海斗",
+          persona: "同级生。",
+          presentation: {
+            defaultLook: "base",
+            defaultPosition: "far_left",
+            looks: { base: { spriteSet: "male_A", variant: "base" } },
+          },
+        },
+      ],
+    });
     const state: VisualState = {
       background: "basement",
       characters: {
@@ -449,16 +467,7 @@ describe("DSL serializers and prompt builder", () => {
           },
         },
       },
-      characters: {
-        suyao: {
-          scriptName: "苏遥",
-          displayName: "苏遥",
-          spriteSet: "suyao",
-          defaultVariant: "normal",
-          defaultPosition: "left",
-          allowedSpriteSets: ["suyao"],
-        },
-      },
+
     };
     const ctx: DslContextInput = {
       prompts: makeTestPrompts(),
@@ -481,7 +490,8 @@ describe("DSL serializers and prompt builder", () => {
     expect(prompt).toContain("- suyao（显示名：神秘女子）");
     expect(prompt).toContain("===== 可用素材 =====");
     expect(prompt).toContain("立绘组 suyao：苏遥正式立绘。");
-    expect(prompt).toContain("- suyao（脚本名：苏遥，默认显示名：苏遥");
+    // C7：模型目录不再携带 characters 段（身份随 roster 渲染）。
+    expect(prompt).not.toContain("脚本名：苏遥");
     expect(prompt).toContain("请继续推进剧情。");
   });
 });

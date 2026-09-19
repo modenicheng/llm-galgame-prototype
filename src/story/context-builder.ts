@@ -177,7 +177,7 @@ export function serializeStoryContext(
  */
 export function serializeVisualContext(
   state: VisualState,
-  roster?: ModelAssetCatalog["characters"],
+  roster?: CharacterRoster,
 ): string {
   const lines: string[] = [
     "以下舞台画面已生效，本段从这一画面继续。只输出发生变化的指令，状态不变时不要重复输出 @bg / @bgm / @ch 或台词头括号。",
@@ -210,9 +210,15 @@ export function serializeVisualContext(
   }
 
   if (roster !== undefined) {
-    const offStage = Object.entries(roster)
-      .filter(([id]) => !Object.hasOwn(state.characters, id))
-      .map(([, binding]) => binding.displayName);
+    // 不在场 = 有舞台绑定（presentation）但未登台的 roster 角色——与 F1
+    // 派生的目录 characters 形状等值（玩家无舞台绑定，不进名单）。
+    const offStage = roster.characters
+      .filter(
+        (definition) =>
+          definition.presentation !== undefined &&
+          !Object.hasOwn(state.characters, definition.id),
+      )
+      .map((definition) => definition.initialLabel);
     if (offStage.length > 0) {
       lines.push(`不在场：${offStage.join("、")}`);
     }
@@ -254,17 +260,8 @@ export function serializeModelAssetCatalog(
         lines.push(`  ${variantId} — ${variant.description ?? ""}`);
       }
     }
-
-    const characterIds = Object.keys(catalog.characters);
-    if (characterIds.length > 0) {
-      lines.push("角色：");
-      for (const id of characterIds) {
-        const binding = catalog.characters[id]!;
-        lines.push(
-          `- ${id}（脚本名：${binding.scriptName}，默认显示名：${binding.displayName}，立绘组：${binding.spriteSet}，默认立绘：${binding.defaultVariant}，默认位置：${binding.defaultPosition}，可用立绘组：${binding.allowedSpriteSets.join("/")}）`,
-        );
-      }
-    }
+    // C7：模型目录不再携带 characters 段（身份/外观随 roster 渲染）；
+    // 无 roster 的兼容路径（窄测试夹具）只列素材清单。
     return lines.join("\n");
   }
 
@@ -382,12 +379,12 @@ export function buildDslUserPrompt(
   if (input.tailVisualState) {
     sections.push("===== 当前舞台状态 =====");
     // §3.4：视觉段按 visible 真值列舞台状态——在场名单（不在场清单）由
-    // cast 段单独给出，不从素材目录推导。无 identity 的兼容路径保持旧
-    // 素材目录推导（字节不变）。
+    // cast 段单独给出，不从素材目录推导。无 identity 的兼容路径从
+    // registry roster 派生不在场名单（C7：不再走模型目录 characters）。
     sections.push(
       serializeVisualContext(
         input.tailVisualState,
-        input.identity === undefined ? input.modelAssetCatalog?.characters : undefined,
+        input.identity === undefined ? input.registry?.roster : undefined,
       ),
     );
   }

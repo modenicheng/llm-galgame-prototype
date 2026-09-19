@@ -74,27 +74,32 @@ describe("loadCharacterPackRoster — 仓库静态名册（玩家契约）", () 
     }
   });
 
-  it("与 assets/resources.yaml 兼容边界无漂移（presentation ↔ characters 绑定一致；玩家无 presentation）", async () => {
+  it("C7：资源目录不再携带 characters 身份段——名册 look 绑定与 sprite_sets 一致（玩家无 presentation）", async () => {
     const [roster, catalog] = await Promise.all([
       loadCharacterPackRoster(REPO_PACK),
       loadAssetCatalog(REPO_CATALOG),
     ]);
-    expect(Object.keys(catalog.characters).length).toBeGreaterThan(0);
+    // AssetCatalog.characters 兼容形状已移除：身份真源是 characters.yaml。
+    expect("characters" in catalog).toBe(false);
     for (const character of roster.characters) {
-      // 玩家实体无立绘（campus player 模式）；素材绑定只校验 NPC。
+      // 玩家实体无立绘（无名第一视角）；素材绑定只校验 NPC。
       if (character.control === "player") {
         expect(character.presentation).toBeUndefined();
         continue;
       }
-      const binding = catalog.characters[character.id];
-      expect(binding, `resources.yaml 应保留 ${character.id} 兼容绑定`).toBeDefined();
       const presentation = character.presentation;
-      expect(presentation).toBeDefined();
+      expect(presentation, `${character.id} 应有 presentation`).toBeDefined();
       const looks = Object.values(presentation!.looks);
       expect(new Set(looks.map((look) => look.spriteSet)).size).toBe(1);
-      expect(looks[0]!.spriteSet).toBe(binding!.spriteSet);
-      expect(presentation!.looks[presentation!.defaultLook]!.variant).toBe(binding!.defaultVariant);
-      expect(presentation!.defaultPosition).toBe(binding!.defaultPosition);
+      // look 引用的素材组/变体在资源目录中真实存在（registry 构造同款校验）。
+      const spriteSet = looks[0]!.spriteSet;
+      expect(
+        catalog.spriteSets[spriteSet]?.variants,
+        `resources.yaml 应有 ${spriteSet} 立绘组`,
+      ).toBeDefined();
+      expect(
+        Object.hasOwn(catalog.spriteSets[spriteSet]!.variants, presentation!.looks[presentation!.defaultLook]!.variant),
+      ).toBe(true);
     }
   });
 

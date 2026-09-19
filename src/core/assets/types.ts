@@ -9,6 +9,10 @@ import type {
  *
  * The full catalog carries real file paths (`src`); the model-facing
  * projection strips them and keeps only logical ids + descriptions (§59).
+ *
+ * C7：角色身份不再随资源目录携带——`characters` 兼容形状已移除，身份
+ * 真源是 C2 CharacterRoster（characters.yaml / canon），消费方一律注入
+ * registry。
  */
 
 export interface BackgroundAsset {
@@ -41,39 +45,19 @@ export interface SpriteSet {
   variants: Record<string, SpriteVariant>;
 }
 
-/**
- * Legacy 身份绑定（C2 起 frozen）：身份真源移至 `src/core/characters/`
- * （CharacterRoster/CharacterRegistry）。`characters` 段继续作为兼容
- * 边界存在（bootstrap legacy 模式、旧 parser），直到 F1/M1 的
- * characters.yaml 迁移完成；新内容不得在此新增身份字段。
- */
-export interface CharacterAssetBinding {
-  characterId: string;
-  scriptName: string;
-  displayName: string;
-  spriteSet: string;
-  defaultVariant: string;
-  defaultPosition: CharacterPosition;
-  /**
-   * Sprite sets the character may use, incl. cross-set outfit swaps
-   * (`[spriteSet:variant]` in dialogue). Defaults to [spriteSet] — a
-   * character normally only renders with its own art (docs §15).
-   */
-  allowedSpriteSets: string[];
-}
-
 export interface AssetCatalog {
   guidance: string;
   backgrounds: Record<string, BackgroundAsset>;
   bgm: Record<string, BgmAsset>;
   soundEffects: Record<string, SoundEffectAsset>;
   spriteSets: Record<string, SpriteSet>;
-  characters: Record<string, CharacterAssetBinding>;
 }
 
 /**
  * Model-facing projection: logical ids + descriptions, NO file paths
- * (docs §59). This is what gets serialized into the prompt.
+ * (docs §59). This is what gets serialized into the prompt. 人物身份/外观
+ * 按角色列 look 的渲染由 roster 承担（C6 §5.4）；本投影不再携带
+ * characters 段（C7）。
  */
 export interface ModelAssetCatalog {
   guidance: string;
@@ -83,17 +67,6 @@ export interface ModelAssetCatalog {
   spriteSets: Record<
     string,
     { description?: string; variants: Record<string, { description?: string }> }
-  >;
-  characters: Record<
-    string,
-    {
-      scriptName: string;
-      displayName: string;
-      spriteSet: string;
-      defaultVariant: string;
-      defaultPosition: CharacterPosition;
-      allowedSpriteSets: string[];
-    }
   >;
 }
 

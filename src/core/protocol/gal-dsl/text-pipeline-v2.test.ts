@@ -40,7 +40,6 @@ const ASSETS: AssetCatalog = {
       },
     },
   },
-  characters: {},
 };
 
 function makeDef(): CharacterDefinition[] {

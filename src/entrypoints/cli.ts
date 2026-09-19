@@ -13,6 +13,7 @@ import { WorldGenerator } from "../application/world/world-generator.js";
 import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
 import { loadApiKey } from "../config.js";
 import { loadAssetCatalog } from "../application/assets/asset-catalog-loader.js";
+import { loadCharacterPackRoster } from "../adapters/static/character-pack-loader.js";
 
 function parseArgs(argv: string[]): {
   configPath: string;
@@ -59,10 +60,13 @@ async function main(): Promise<void> {
   // M1：创建前校验需要素材目录（spriteBinding 引用）与 author 角色表。
   if (gameId === undefined && newWorld !== undefined) {
     const worldAssets = await loadAssetCatalog(config.assets.catalog);
+    // C7：author 角色表 = 静态名册 characters.yaml（M1 真源；资产目录
+    // characters 兼容形状已移除）。
+    const authorRoster = await loadCharacterPackRoster("characters.yaml");
     const worldService = new WorldGenerator({
       writer: new OutlineWriterAdapter({ apiKey: loadApiKey(config), api: config.api }),
       assets: worldAssets,
-      authorCharacterIds: Object.keys(worldAssets.characters),
+      authorCharacterIds: authorRoster.characters.map((definition) => definition.id),
     });
     const generated = await worldService.generate({ userText: newWorld });
     console.log(`已生成新世界：${generated.gameId}`);

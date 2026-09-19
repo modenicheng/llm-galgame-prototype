@@ -92,7 +92,6 @@ const FULL_ASSETS: AssetCatalog = {
       },
     },
   },
-  characters: {},
 };
 
 const BARE_ASSETS: AssetCatalog = {
@@ -101,7 +100,6 @@ const BARE_ASSETS: AssetCatalog = {
   bgm: {},
   soundEffects: {},
   spriteSets: {},
-  characters: {},
 };
 
 function registryOf(definitions: CharacterDefinition[], assets: AssetCatalog): CharacterRegistry {
@@ -148,7 +146,6 @@ async function packRegistry(): Promise<CharacterRegistry> {
     bgm: {},
     soundEffects: {},
     spriteSets,
-    characters: {},
   };
   return createCharacterRegistry(roster, assets);
 }
@@ -169,31 +166,8 @@ const TEST_NONCE = "81ab";
 /** v1 全链路：每行 parseDslLine → DslSegmentParser（哨兵/表单校验）→ compileEventGroups。 */
 function compileV1Example(exampleText: string, registry: CharacterRegistry, assets: AssetCatalog): void {
   const bound = bindProtocolCardNonce(exampleText, TEST_NONCE);
-  const presentationRegistry = toCharacterRegistry({
-    ...assets,
-    characters: Object.fromEntries(
-      registry.roster.characters
-        .filter((definition) => definition.presentation !== undefined)
-        .map((definition) => {
-          const presentation = definition.presentation!;
-          const look = presentation.looks[presentation.defaultLook]!;
-          return [
-            definition.id,
-            {
-              characterId: definition.id,
-              scriptName: definition.name,
-              displayName: definition.initialLabel,
-              spriteSet: look.spriteSet,
-              defaultVariant: look.variant,
-              defaultPosition: presentation.defaultPosition,
-              allowedSpriteSets: [
-                ...new Set(Object.values(presentation.looks).map((entry) => entry.spriteSet)),
-              ],
-            },
-          ];
-        }),
-    ),
-  });
+  // C7：toCharacterRegistry 直接从 roster 派生 v1 展示注册表。
+  const presentationRegistry = toCharacterRegistry(registry.roster);
   const known = new Set<string>();
   for (const entry of presentationRegistry.entries()) {
     known.add(entry.scriptName);
@@ -466,7 +440,6 @@ describe("buildProtocolCard — 每个任务的示例都能被真实 parser/comp
             bgm: {},
             soundEffects: {},
             spriteSets: FULL_ASSETS.spriteSets,
-            characters: {},
           },
           protocolVersion,
         });

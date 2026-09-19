@@ -1,4 +1,5 @@
 import type { CharacterRegistry, CharacterRegistryEntry } from "../presentation/types.js";
+import type { CharacterRoster } from "../characters/types.js";
 import type { AssetCatalog, AssetResolver, ModelAssetCatalog } from "./types.js";
 
 /**
@@ -34,25 +35,12 @@ export function toModelCatalog(catalog: AssetCatalog): ModelAssetCatalog {
       set.description !== undefined ? { description: set.description, variants } : { variants };
   }
 
-  const characters: ModelAssetCatalog["characters"] = {};
-  for (const [id, binding] of Object.entries(catalog.characters)) {
-    characters[id] = {
-      scriptName: binding.scriptName,
-      displayName: binding.displayName,
-      spriteSet: binding.spriteSet,
-      defaultVariant: binding.defaultVariant,
-      defaultPosition: binding.defaultPosition,
-      allowedSpriteSets: binding.allowedSpriteSets,
-    };
-  }
-
   return {
     guidance: catalog.guidance,
     backgrounds,
     bgm,
     soundEffects,
     spriteSets,
-    characters,
   };
 }
 
@@ -70,30 +58,40 @@ export const EMPTY_CHARACTER_REGISTRY: CharacterRegistry = {
 };
 
 /**
- * Build the CharacterRegistry from catalog character bindings (docs §7,
+ * Build the v1 presentation CharacterRegistry from a C2 roster (docs §7,
  * §10). `resolveById` accepts the internal id first, then falls back to
  * the script name; `resolveByScriptName` matches dialogue headers.
  *
- * C2 legacy bridge：身份真源已移至 `src/core/characters/`（roster +
- * CharacterRegistry）。本函数留在兼容边界——bootstrap legacy 模式与旧
- * parser 仍由资产目录派生注册表；新内容格式不得新增依赖。
+ * C7：身份真源是 `src/core/characters/`（roster + CharacterRegistry），
+ * 资产目录 characters 兼容形状已移除——v1 编译边界的展示注册表由本
+ * 函数从 roster 派生（与 F1 的派生规则一致：无 presentation 的角色
+ * （玩家）不产生舞台绑定；displayName = initialLabel；allowedSpriteSets
+ * = looks 中出现过的素材组，默认组在前）。
  */
-export function toCharacterRegistry(catalog: AssetCatalog): CharacterRegistry {
+export function toCharacterRegistry(roster: CharacterRoster): CharacterRegistry {
   const byId = new Map<string, CharacterRegistryEntry>();
   const byScriptName = new Map<string, CharacterRegistryEntry>();
 
-  for (const [characterId, binding] of Object.entries(catalog.characters)) {
+  for (const definition of roster.characters) {
+    const presentation = definition.presentation;
+    if (presentation === undefined) continue; // 玩家/无立绘：无舞台绑定
+    const defLook = presentation.looks[presentation.defaultLook];
+    if (defLook === undefined) continue; // registry 构造已给出结构化诊断
+    const allowed = [defLook.spriteSet];
+    for (const look of Object.values(presentation.looks)) {
+      if (!allowed.includes(look.spriteSet)) allowed.push(look.spriteSet);
+    }
     const entry: CharacterRegistryEntry = {
-      characterId,
-      scriptName: binding.scriptName,
-      displayName: binding.displayName,
-      spriteSet: binding.spriteSet,
-      defaultVariant: binding.defaultVariant,
-      defaultPosition: binding.defaultPosition,
-      allowedSpriteSets: binding.allowedSpriteSets,
+      characterId: definition.id,
+      scriptName: definition.name,
+      displayName: definition.initialLabel,
+      spriteSet: defLook.spriteSet,
+      defaultVariant: defLook.variant,
+      defaultPosition: presentation.defaultPosition,
+      allowedSpriteSets: allowed,
     };
-    byId.set(characterId, entry);
-    byScriptName.set(binding.scriptName, entry);
+    byId.set(definition.id, entry);
+    byScriptName.set(definition.name, entry);
   }
 
   return {

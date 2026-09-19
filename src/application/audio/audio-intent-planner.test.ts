@@ -7,7 +7,6 @@ import { describe, it, expect } from "vitest";
 import { AudioIntentPlanner } from "./audio-intent-planner.js";
 import { AudioCatalogServiceImpl } from "./audio-catalog-service.js";
 import type { AudioCatalogEvent } from "./audio-catalog-service.js";
-import type { AudioDescriptorFactoryOptions } from "./audio-descriptor-factory.js";
 import { AudioDescriptorFactory } from "./audio-descriptor-factory.js";
 import {
   PerformanceCompilerImpl,
@@ -16,6 +15,9 @@ import {
 } from "./performance-compiler.js";
 import type { VoicesConfig } from "../../config/voices.js";
 import type { RuntimePlayableEvent } from "../../schema.js";
+import type { AssetCatalog } from "../../core/assets/types.js";
+import { buildCharacterRoster, createCharacterRegistry } from "../../core/characters/registry.js";
+import type { CharacterRegistry } from "../../core/characters/types.js";
 
 const stubCompiler: PerformanceCompiler = {
   compile: () => ({ rate: 1, pitch: 1, volume: 1, pauseBeforeMs: 0, pauseAfterMs: 0 }),
@@ -33,9 +35,40 @@ const voices: VoicesConfig = {
   },
 };
 
-const characters: AudioDescriptorFactoryOptions["characters"] = {
-  suyao: { name: "苏遥", voice_profile: "suyao_main" },
-};
+// C7：身份真源 = roster registry（factory 不再有 speaker/name 键控表）。
+function plannerRegistry(): CharacterRegistry {
+  return createCharacterRegistry(
+    buildCharacterRoster({
+      schemaVersion: 2,
+      scopeId: "planner-test",
+      playerId: "player_one",
+      characters: [
+        {
+          id: "player_one",
+          name: "玩家",
+          control: "player",
+          initialLabel: "你",
+          persona: "玩家本人（planner 测试）。",
+        },
+        {
+          id: "suyao",
+          name: "苏遥",
+          control: "npc",
+          initialLabel: "苏遥",
+          persona: "planner 测试角色。",
+          voiceProfileId: "suyao_main",
+        },
+      ],
+    }),
+    {
+      guidance: "",
+      backgrounds: {},
+      bgm: {},
+      soundEffects: {},
+      spriteSets: {},
+    } satisfies AssetCatalog,
+  );
+}
 
 function makePlanner(
   overrides: Partial<{ candidatePrefetchLines: number; maxActiveFutureLines: number }> = {},
@@ -43,7 +76,7 @@ function makePlanner(
 ) {
   const catalog = new AudioCatalogServiceImpl();
   const factory = new AudioDescriptorFactory({
-    characters,
+    registry: plannerRegistry(),
     voices,
     provider: "mock",
     modelProfile: "cosyvoice_v3_flash",
@@ -63,11 +96,11 @@ function makePlanner(
 }
 
 function dialogue(lineId: string): RuntimePlayableEvent {
-  return { type: "dialogue", speaker: "suyao", text: `台词 ${lineId}`, line_id: lineId };
+  return { type: "dialogue", characterId: "suyao", speaker: "苏遥", text: `台词 ${lineId}`, line_id: lineId };
 }
 
 function dialogueWithPerformance(lineId: string, performance: LinePerformance): RuntimePlayableEvent {
-  return { type: "dialogue", speaker: "suyao", text: `台词 ${lineId}`, line_id: lineId, performance };
+  return { type: "dialogue", characterId: "suyao", speaker: "苏遥", text: `台词 ${lineId}`, line_id: lineId, performance };
 }
 
 describe("AudioIntentPlanner", () => {

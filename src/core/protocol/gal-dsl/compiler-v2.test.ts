@@ -52,7 +52,6 @@ const ASSETS: AssetCatalog = {
       },
     },
   },
-  characters: {},
 };
 
 function rosterDef(): CharacterDefinition[] {

@@ -47,7 +47,6 @@ const ASSETS: AssetCatalog = {
       variants: { base: { id: "base", src: "b.png", description: "" } },
     },
   },
-  characters: {},
 };
 
 function rosterDef(): CharacterDefinition[] {

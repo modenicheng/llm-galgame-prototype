@@ -38,6 +38,8 @@ import type { GenerationEnvelope } from "./story/types.js";
 import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
 import type { AssetCatalog } from "./core/assets/types.js";
 import type { RuntimePlayableEvent } from "./schema.js";
+import { buildCharacterRoster, createCharacterRegistry } from "./core/characters/registry.js";
+import type { CharacterRegistry as RosterRegistry } from "./core/characters/types.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -61,18 +63,45 @@ const CATALOG: AssetCatalog = {
       },
     },
   },
-  characters: {
-    suyao: {
-      characterId: "suyao",
-      scriptName: "苏遥",
-      displayName: "苏遥",
-      spriteSet: "suyao",
-      defaultVariant: "normal",
-      defaultPosition: "left",
-      allowedSpriteSets: ["suyao"],
-    },
-  },
 };
+/**
+ * C7：AssetCatalog.characters 兼容形状已移除——v1 编译边界的展示注册表由
+ * C2 roster 派生（suyao NPC 与旧目录条目等价：脚本名 苏遥、normal 立绘、
+ * 默认 left）。
+ */
+const DSL_REGISTRY: RosterRegistry = createCharacterRegistry(
+  buildCharacterRoster({
+    schemaVersion: 2,
+    scopeId: "dsl-test",
+    playerId: "player_one",
+    characters: [
+      {
+        id: "player_one",
+        name: "玩家",
+        control: "player",
+        initialLabel: "你",
+        persona: "玩家本人（DSL 测试）。",
+      },
+      {
+        id: "suyao",
+        name: "苏遥",
+        control: "npc",
+        initialLabel: "苏遥",
+        persona: "同班同学（DSL 测试）。",
+        presentation: {
+          defaultLook: "normal",
+          defaultPosition: "left",
+          looks: {
+            normal: { spriteSet: "suyao", variant: "normal" },
+            anxious: { spriteSet: "suyao", variant: "anxious" },
+          },
+        },
+      },
+    ],
+  }),
+  CATALOG,
+);
+
 
 function makeDslConfig(overrides: Parameters<typeof makeTestConfig>[0] = {}): AppConfig {
   return makeTestConfig({
@@ -216,7 +245,7 @@ describe("DSL mode — opening groups", () => {
         }),
     );
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     const controller = new MemoryController();
     controller.attach(game);
     await game.run();
@@ -261,7 +290,7 @@ describe("DSL mode — opening groups", () => {
         }),
     );
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     const controller = new MemoryController();
     controller.attach(game);
     await game.run();
@@ -319,7 +348,7 @@ describe("DSL mode — interaction compile", () => {
     const controller = new MemoryController({
       onInteractionOpened: (output) => controller.select(output.interactionId, `${output.interactionId}_opt_1`),
     });
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     controller.attach(game);
     await game.run();
 
@@ -390,7 +419,7 @@ describe("DSL mode — interaction compile", () => {
     const controller = new MemoryController({
       onInteractionOpened: (output) => controller.submitInput(output.interactionId, "你明明知道它还在运行。"),
     });
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     controller.attach(game);
     await game.run();
 
@@ -461,7 +490,7 @@ describe("DSL mode — interaction compile", () => {
       },
       onInputPreviewOpened: (output) => controller.cancel(output.previewId),
     });
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     controller.attach(game);
     await game.run();
 
@@ -513,7 +542,7 @@ describe("DSL mode — truncation recovery", () => {
         }),
     );
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     const controller = new MemoryController();
     controller.attach(game);
     await game.run();
@@ -547,7 +576,7 @@ describe("DSL mode — visual state", () => {
         }),
     );
 
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     const controller = new MemoryController();
     controller.attach(game);
     await game.run();
@@ -568,7 +597,7 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     const media = makeMockMedia();
     const generator = makeDslMockGenerator();
     const outputs: RuntimeOutput[] = [];
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     game.subscribe((o) => outputs.push(o));
 
     // 开场段：2 句旁白后 @end buffer。
@@ -624,7 +653,7 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     const media = makeMockMedia();
     const generator = makeDslMockGenerator();
     const outputs: RuntimeOutput[] = [];
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     game.subscribe((o) => outputs.push(o));
 
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
@@ -692,7 +721,7 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     const media = makeMockMedia();
     const generator = makeDslMockGenerator();
     const outputs: RuntimeOutput[] = [];
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     game.subscribe((o) => outputs.push(o));
 
     let resolveFirstLine!: () => void;
@@ -747,7 +776,7 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     const media = makeMockMedia();
     const generator = makeDslMockGenerator();
     const outputs: RuntimeOutput[] = [];
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     game.subscribe((o) => outputs.push(o));
 
     (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(
@@ -811,7 +840,7 @@ describe("DSL mode — low-water refill (§73–§76)", () => {
     const media = makeMockMedia();
     const generator = makeDslMockGenerator();
     const outputs: RuntimeOutput[] = [];
-    const game = new Game(config, generator, status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, generator, status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     game.subscribe((o) => outputs.push(o));
 
     let repairStarted = false;

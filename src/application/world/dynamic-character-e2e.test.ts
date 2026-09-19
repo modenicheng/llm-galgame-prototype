@@ -43,7 +43,6 @@ const ASSETS: AssetCatalog = {
   spriteSets: {
     suyao: { id: "suyao", variants: { neutral: { id: "neutral", src: "characters/suyao/neutral.png" } } },
   },
-  characters: {},
 };
 
 const CHARACTER_ID = "guest_01";

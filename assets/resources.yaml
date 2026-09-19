@@ -198,17 +198,3 @@ sprite_sets:
         src: characters/linche/calm.png
         description: 睁眼闭口，神情平稳，略带审视。
 
-characters:
-  suyao:
-    script_name: 苏遥
-    display_name: 苏遥
-    sprite_set: suyao
-    default_variant: neutral
-    default_position: left
-
-  linche:
-    script_name: 林澈
-    display_name: 林澈
-    sprite_set: linche
-    default_variant: calm
-    default_position: right

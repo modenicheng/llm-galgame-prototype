@@ -64,7 +64,11 @@ export class AudioIntentPlanner implements MediaPlannerPort {
         priority,
         this.performanceOf(entry.event),
       );
-      if (result) this.options.catalog.upsertDescriptor(result.descriptor, result.recipe);
+      // unavailable 是可观测降级（factory 已给诊断）：该行文字照常播放，
+      // catalog 不注册描述符。
+      if (result?.voiceAvailability === "available") {
+        this.options.catalog.upsertDescriptor(result.descriptor, result.recipe);
+      }
     }
   }
 
@@ -82,7 +86,11 @@ export class AudioIntentPlanner implements MediaPlannerPort {
         priority,
         this.performanceOf(event),
       );
-      if (result) this.options.catalog.upsertDescriptor(result.descriptor, result.recipe);
+      // unavailable 是可观测降级（factory 已给诊断）：该行文字照常播放，
+      // catalog 不注册描述符。
+      if (result?.voiceAvailability === "available") {
+        this.options.catalog.upsertDescriptor(result.descriptor, result.recipe);
+      }
     }
   }
 
@@ -118,7 +126,11 @@ export class AudioIntentPlanner implements MediaPlannerPort {
         priority,
         this.performanceOf(entry.event),
       );
-      if (result) this.options.catalog.upsertDescriptor(result.descriptor, result.recipe);
+      // unavailable 是可观测降级（factory 已给诊断）：该行文字照常播放，
+      // catalog 不注册描述符。
+      if (result?.voiceAvailability === "available") {
+        this.options.catalog.upsertDescriptor(result.descriptor, result.recipe);
+      }
     }
   }
 

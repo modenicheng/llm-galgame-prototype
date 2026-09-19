@@ -29,7 +29,6 @@ function makeAssets(spriteSets: string[] = ["suyao"]): AssetCatalog {
     spriteSets: Object.fromEntries(
       spriteSets.map((id) => [id, { id, variants: { neutral: { id: "neutral", src: "x.png" } } }]),
     ),
-    characters: {},
   };
 }
 

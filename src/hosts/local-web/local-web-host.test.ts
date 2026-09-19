@@ -36,7 +36,6 @@ function makeConfig(overrides?: Parameters<typeof makeTestConfig>[0]) {
   return makeTestConfig({
     app: { default_host: "web" },
     local_web: { host: "127.0.0.1", port: 0, open_browser: false, controller_limit: 1 },
-    characters: {},
     media: {
       audio: {
         planner: { candidate_prefetch_lines: 1, max_active_future_lines: 4 },
