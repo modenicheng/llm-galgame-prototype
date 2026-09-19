@@ -62,5 +62,26 @@
 - 来源：`raw/*.mp3`（文件名含源站 ID：572285 / 404429 / 440706）。
 - 授权：按各源站条款；如需署名请补充作者信息。
 
+### BGM——Pixabay（2026-09-20 新增七曲）
+- 均下载自 https://pixabay.com/music/ ，授权：Pixabay Content License
+  （免费商用/免署名；各曲页面标注 Content ID Registered）。
+  原始下载件留 `raw/pixabay-bgm-2026-09-20/` 作 provenance（该目录不入库）。
+- `audio/bgm/beach.mp3` =「Beach - Beach Music」PaulYudin（ID 595941，1:23）
+  https://pixabay.com/music/beach-beach-music-595941/
+- `audio/bgm/serene.mp3` =「Calm Music」AtlasAudio（ID 594874，3:04）
+  https://pixabay.com/music/calm-music-594874/
+- `audio/bgm/gentle.mp3` =「Calm - Calm Music」andriig（ID 604047，2:17）
+  https://pixabay.com/music/calm-calm-music-604047/
+- `audio/bgm/sad_piano.mp3` =「Sad Piano」leberch（ID 445172，1:39）
+  https://pixabay.com/music/sad-piano-445172/
+- `audio/bgm/inspiring_piano.mp3` =「Inspiring Piano」PaulYudin（ID 152960，1:38）
+  https://pixabay.com/music/inspiring-piano-152960/
+- `audio/bgm/prayer_piano.mp3` =「Worship Piano Instrumental Peaceful Prayer Music」
+  Denis-Pavlov-Music（ID 223373，9:45）
+  https://pixabay.com/music/worship-piano-instrumental-peaceful-prayer-music-223373/
+  作者附加条款：成品只能作为多媒体项目的一部分使用，不得单独上传 Spotify/TikTok 等平台。
+- `audio/bgm/nature_walk.mp3` =「Nature Walk」folk_acoustic（ID 124997，5:24）
+  https://pixabay.com/music/nature-walk-124997/
+
 ## 音效
 - `audio/se/terminal_beep.ogg`：本仓库 ffmpeg 合成占位音，无第三方版权。

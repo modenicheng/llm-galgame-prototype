@@ -240,6 +240,59 @@ bgm:
       欢快的、节奏快的流行纯音乐；有律动感的鼓组；
       原声吉他作为铺垫，主旋律主要由合成器演奏，音色富有弹性
 
+  # —— 2026-09-20 新增七曲（下载自 Pixabay，授权记录见 assets/ATTRIBUTION.md）——
+  # description 目前是待填模板：按「第一行：调性；氛围与适用场景；节奏与情绪 /
+  # 第二行：配器与主题走向」两行式填写，参考上面 relax/calm/mountain 的写法。
+  # 【待填】替换完之前不要让模型选到该曲（占位文字会被模型当真读进去）。
+  beach:
+    # Pixabay「Beach - Beach Music」PaulYudin（ID 595941，1:23；站方标签：电子/流行舞曲，明亮、有活力）
+    src: audio/bgm/beach.mp3
+    description: |
+      大调；快节奏，6 4 5 1 和声。整体偏短，适合循环
+      以电音合成器为主体，富有律动与弹性，十分具有活力
+
+  serene:
+    # Pixabay「Calm Music」AtlasAudio（ID 594874，3:04；站方标签：原声/流行（含人声），充满希望、平和、Chill）
+    src: audio/bgm/serene.mp3
+    description: |
+      大调、明亮，使用常见的 1 5 6 4 和声走向，宁静平和却富有希望感。节奏较快。
+      纯钢琴曲。前半段右手主要在中音曲重复演奏主题，而后半段升到高音区，情绪递进。
+
+  gentle:
+    # Pixabay「Calm - Calm Music」andriig（ID 604047，2:17；站方标签：原声吉他/流行（含人声），平和、Chill）
+    src: audio/bgm/gentle.mp3
+    description: |
+      大调，每句末尾有离调。旋律色彩多变。平淡，整体走向无大起伏。平和、放松，但是带一点怀念、一点向前看的希望。
+      原生吉他主奏+伴奏，音色明亮，擦弦声清晰可见，富有金属质感。
+
+  sad_piano:
+    # Pixabay「Sad Piano」leberch（ID 445172，1:39；站方标签：钢琴独奏/古典，怀旧、安宁）
+    src: audio/bgm/sad_piano.mp3
+    description: |
+      小调；宁静，忧伤，婉转。速度不均匀，叙事感极强，仿佛在讲述努力后却一场空，又无可奈何的释然。
+      纯钢琴曲，后半段相较前半段音区提升，情绪有较为明显的推进。
+
+  inspiring_piano:
+    # Pixabay「Inspiring Piano」PaulYudin（ID 152960，1:38；站方标签：钢琴独奏/现代古典，浪漫、梦幻、明亮、充满希望）
+    src: audio/bgm/inspiring_piano.mp3
+    description: |
+      大调；明亮，有一点 1 5 6 4 里面 六级和弦带来的不稳定之感；整体速度较快，日常，活力与平凡交织。时长较短。
+      钢琴为主
+
+  prayer_piano:
+    # Pixabay「Worship Piano Instrumental Peaceful Prayer Music」Denis-Pavlov-Music（ID 223373，9:45；站方标签：钢琴独奏/氛围，梦幻、安宁、 Sentimental）
+    src: audio/bgm/prayer_piano.mp3
+    description: |
+      大调：时长很长（~10min），整体中速，平淡，有希望。乐曲安静，叙事感强。
+      主要是钢琴曲，带氛围组弦乐。
+
+  nature_walk:
+    # Pixabay「Nature Walk」folk_acoustic（ID 124997，5:24；站方标签：独奏吉他/原声，梦幻、恬淡、明亮、充满希望）
+    src: audio/bgm/nature_walk.mp3
+    description: |
+      大调；明亮、自然，轻松，速度中速。适于日常场景
+      主要是原声吉他，钢琴和合成器逐渐加入，中段加入电吉他作为和声声部拨弦；还有微弱的人声合成器填充高频部分。
+
 sound_effects:
   terminal_beep:
     src: audio/se/terminal_beep.ogg
