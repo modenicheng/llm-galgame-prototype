@@ -1,0 +1,4 @@
+{"seq":1,"turn":1,"timestamp":"2026-09-01T10:00:01.000Z","source":"player","type":"player_choice","choice_id":"opt_a","text":"走近苏遥"}
+{"seq":2,"turn":1,"timestamp":"2026-09-01T10:00:02.000Z","source":"model","type":"dialogue","speaker":"苏遥","text":"……你会后悔和我说话的。","line_id":"line_old_2"}
+{"seq":3,"turn":1,"timestamp":"2026-09-01T10:00:03.000Z","source":"model","type":"narration","text":"海风掠过天台，她的侧脸在暮色里显得很远。","line_id":"line_old_3"}
+{"seq":4,"turn":1,"timestamp":"2026-09-01T10:00:04.000Z","source":"model","type":"interaction","mode":"choice","interaction_id":"interaction_1","prompt":"苏遥欲言又止，你要追问吗？","options":[{"id":"yes","text":"追问"},{"id":"no","text":"沉默"}]}

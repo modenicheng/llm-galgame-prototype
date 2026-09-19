@@ -14,7 +14,9 @@ import type {
   DecisionNode,
   InteractionFormSnapshot,
   MemoryDigest,
+  SnapshotIdentityState,
 } from "../graph/types.js";
+import type { SessionMigrationReport } from "./identity-snapshot-port.js";
 import type { DecisionId, EndingId, RunId } from "../graph/ids.js";
 
 /** 快照时刻的运行时状态（决策入口与结局末态共用）。 */
@@ -24,6 +26,12 @@ export interface RuntimeMoment {
   memoryDigest: MemoryDigest;
   /** M1 无编剧期恒为 0；大纲修订计数（M3）接入后递增。 */
   outlineRevision: number;
+  /**
+   * M3（快照 v4）：快照时刻的身份块——协议版本、roster scope/revision、
+   * 名牌状态与 cast。回溯/恢复按节点快照还原（不读当前游标的可变状态）；
+   * 汇流比较的前置条件包含协议版本与 roster revision。
+   */
+  identity: SnapshotIdentityState;
 }
 
 /** 玩家的解决方式（边的 choice 语义）。 */
@@ -38,8 +46,10 @@ export interface RestorePoint {
   decision: DecisionNode;
   /**
    * 本周目根 → 游标的全部边负载事件（提交历史，按剧情序）。导演追赶把它
-   * 喂给 observeCommitted——内部按 seq 水位过滤，恰好只入队未整理窗口；
-   * Game 同时用它重建演员的生成上下文。
+   * 喂给 observeCommitted——内部按尝试游标去重（成功水位与尝试游标分离，
+   * §6.2 M2：降级区间不重试、成功水位不越过缺口），恰好只补齐未尝试窗口；
+   * Game 同时用它重建演员的生成上下文。M3：旧事件（无 characterId 的
+   * v1 对白）已按身份映射在内存升级，原负载字节不动。
    */
   pathEvents: StoredEvent[];
   /**
@@ -51,6 +61,12 @@ export interface RestorePoint {
   nextSeq: number;
   /** turn 播种：路径末事件（游标交互事件自身）的 turn；首个决策点为 1。 */
   turnFloor: number;
+  /**
+   * M3：迁移/读回诊断（仅在**有异常发现**时携带——旧边负载出现 alias
+   * 升级或 unresolved 只读回放时）。干净恢复不产生报告（无诊断噪音）；
+   * 原存档字节永不因迁移改写。
+   */
+  migration?: SessionMigrationReport;
 }
 
 /** 「继续游戏」入口的三态结果：全新 / 周目已完结 / 游标恢复。 */

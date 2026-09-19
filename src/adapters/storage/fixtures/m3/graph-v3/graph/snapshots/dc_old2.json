@@ -1,0 +1,44 @@
+{
+  "snapshotVersion": 3,
+  "storyState": {
+    "scene": { "id": "scene_old_1", "location": "旧校舍天台", "purpose": "傍晚的初次对话" },
+    "characters": {},
+    "recent_summary": "林澈选择走近，苏遥欲言又止。"
+  },
+  "visualState": {
+    "background": "bg_rooftop_dusk",
+    "characters": {
+      "林澈": { "spriteSet": "linche", "variant": "normal", "position": "left", "displayName": "林澈", "visible": true },
+      "苏遥": { "spriteSet": "suyao", "variant": "wary", "position": "center", "displayName": "苏遥", "visible": true }
+    }
+  },
+  "memoryDigest": {
+    "revision": 1,
+    "consolidatedThroughEventSeq": 2,
+    "checkpointCount": 1,
+    "threads": [],
+    "setups": [],
+    "anchors": [],
+    "facts": [
+      {
+        "id": "fact_old_1",
+        "content": "苏遥常在天台独自看海。",
+        "evidenceEventSeqs": [2],
+        "checkpoint": 1,
+        "superseded": false,
+        "scope": { "characters": ["林澈", "苏遥"], "location": "旧校舍天台" }
+      }
+    ],
+    "beliefs": [
+      {
+        "id": "belief_old_1",
+        "characterId": "苏遥",
+        "content": "这个突然搭话的人也许没有恶意。",
+        "status": "active",
+        "createdAtCheckpoint": 1,
+        "origin": "believe"
+      }
+    ]
+  },
+  "outlineRevision": 0
+}

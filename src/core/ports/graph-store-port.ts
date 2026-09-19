@@ -16,6 +16,7 @@
  *   汇流边的真实末态按定义只与后继入口 ≈ 相等（§3.3），凭据承担差异。
  */
 import type { StoredEvent } from "../../schema.js";
+import type { CharacterRoster } from "../characters/types.js";
 import type {
   ActiveCursor,
   DecisionNode,
@@ -32,6 +33,16 @@ export interface GraphStorePort {
 
   /** Create the layout directories this store writes. Idempotent. */
   initialize(): Promise<void>;
+
+  /**
+   * M3：共享不可变 roster blob 按 revision 落盘（幂等：同 revision 已有
+   * blob 即跳过，不覆写）。快照/边只引用 {scopeId, revision}，不重复整份
+   * 人设。恢复路径在图水合前用它重建世界 registry 与身份映射。
+   */
+  putRosterBlob(roster: CharacterRoster): Promise<void>;
+
+  /** 按 revision 读取 roster blob；缺失为 null（读取方决定后续语义）。 */
+  getRosterBlob(revision: string): Promise<CharacterRoster | null>;
 
   putScene(scene: SceneNode): Promise<void>;
 

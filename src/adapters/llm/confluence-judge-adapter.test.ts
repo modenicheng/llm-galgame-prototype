@@ -11,6 +11,7 @@ import type { AppConfig } from "../../config.js";
 import { createInitialState } from "../../story/state.js";
 import type { StateSnapshot } from "../../core/graph/types.js";
 import { EMPTY_MEMORY_DIGEST } from "../../core/graph/memory-digest.js";
+import { makeIdentity } from "../../core/graph/testing.js";
 import { ConfluenceJudgeAdapter } from "./confluence-judge-adapter.js";
 
 // ---------------------------------------------------------------------------
@@ -52,11 +53,12 @@ function makeSnapshot(overrides?: {
       : {}),
   });
   return {
-    snapshotVersion: 3,
+    snapshotVersion: 4,
     storyState,
     visualState: { characters: {} },
     memoryDigest: EMPTY_MEMORY_DIGEST,
     outlineRevision: 0,
+    identity: makeIdentity(),
   };
 }
 

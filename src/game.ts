@@ -29,7 +29,8 @@ import {
   formSnapshotFromInteraction,
   interactionFromFormSnapshot,
 } from "./core/graph/form.js";
-import type { MemoryDigest } from "./core/graph/types.js";
+import type { MemoryDigest, SnapshotIdentityState } from "./core/graph/types.js";
+import { SNAPSHOT_IDENTITY_SCHEMA_VERSION } from "./core/ports/identity-snapshot-port.js";
 import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { NarrativeDirectorPort } from "./core/ports/narrative-director-port.js";
@@ -517,8 +518,10 @@ export class Game implements InteractionHost {
   /**
    * M1.4（游标恢复）：从决策节点入口快照完整重建运行时。快照是唯一真源
    * （M1.1 决议）：story/visual 两态直接还原；导演记忆先 restoreFromDigest
-   * 再全路径重放（observeCommitted 内部按 seq 水位过滤，恰好只入队未整理
-   * 窗口）；seq/turn 计数器按恢复点播种（下一个分配槽位），周目内单调。
+   * 再全路径重放（observeCommitted 内部按尝试游标去重——成功水位与尝试
+   * 游标分离（§6.2 M2），恰好只补齐未尝试窗口）；seq/turn 计数器按恢复点
+   * 播种（下一个分配槽位），周目内单调。M3：名牌状态从节点快照身份块还原
+   * （不读当前游标的可变 labels），被弃分支的预测副本一并丢弃（分支隔离）。
    */
   private startRestoredSegment(restore: RestorePoint): ActiveSegment {
     const entry = restore.decision.entryState;
@@ -534,6 +537,26 @@ export class Game implements InteractionHost {
     this.events.push(...restore.pathEvents);
     this.seq = restore.nextSeq;
     this.activeSegmentTurn = restore.turnFloor;
+    // M3：节点级名牌状态还原（快照身份块是唯一真源；v3 快照经升级后
+    // labels 为空——名牌回退 roster initialLabel）。分支隔离：被弃周目/
+    // 分支遗留的预测名牌副本与舞台副本一并清空，绝不带进新周目。
+    this.characterState = cloneCharacterRuntimeState({
+      labels: entry.identity.characterLabels,
+    });
+    this.branchCharacterStates.clear();
+    this.branchTailStates.clear();
+    // M3：迁移报告（仅在旧数据有异常发现时携带）→ 诊断通道透出，可数可诊断。
+    if (restore.migration !== undefined) {
+      const eventReport = restore.migration.events;
+      this.diagnostics.warn(
+        "Game",
+        `恢复含旧数据迁移发现：对白 ${eventReport.byCategory.alias_resolved} 条按显式映射升级、` +
+          `${eventReport.byCategory.unresolved_ambiguous +
+            eventReport.byCategory.unresolved_unknown_id +
+            eventReport.byCategory.unresolved_unregistered} 条无法唯一解析（只读回放）；` +
+          `unresolved 引用：${eventReport.unresolvedRefs.join("、") || "（无）"}`,
+      );
+    }
     this.status.setPhase("恢复游戏", "已从上次决策点还原，等待你的决定");
     const segment: ActiveSegment = {
       turn: restore.turnFloor,
@@ -1557,7 +1580,9 @@ export class Game implements InteractionHost {
 
   /**
    * 快照时刻的运行时状态（决策入口/结局末态共用）——记忆真源来自导演
-   * 子层摘要（M1.1 决议），visualState 取玩家实际所见。
+   * 子层摘要（M1.1 决议），visualState 取玩家实际所见；M3 起嵌入身份块
+   * （协议版本、roster scope/revision、名牌状态、cast——与
+   * generationIdentity 同一权威，legacy 会话显式记 "legacy"，不伪造 roster）。
    */
   private currentMoment() {
     const memoryDigest: MemoryDigest =
@@ -1567,6 +1592,47 @@ export class Game implements InteractionHost {
       visualState: this.renderedVisualState,
       memoryDigest,
       outlineRevision: this.graph.currentOutlineRevision(),
+      identity: this.momentIdentity(),
+    };
+  }
+
+  /**
+   * M3：快照身份块。registry 缺席（窄测试/legacy 兼容世界）时 scope/revision
+   * 显式记 "legacy"（与 legacyGenerationIdentity 同一标记），labels/cast
+   * 取该会话的实际值——快照永远如实记录「这局用什么身份契约在演」。
+   */
+  private momentIdentity(): SnapshotIdentityState {
+    const registry = this.characterRegistry;
+    const labels = Object.create(null) as Record<string, string>;
+    for (const key of Object.keys(this.characterState.labels)) {
+      if (Object.hasOwn(this.characterState.labels, key)) {
+        labels[key] = this.characterState.labels[key]!;
+      }
+    }
+    if (registry === undefined) {
+      const ids = this.registry.entries().map((entry) => entry.characterId);
+      return {
+        identitySchemaVersion: SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+        dslProtocolVersion: this.config.dsl?.protocol_version ?? 1,
+        rosterScopeId: "legacy",
+        rosterRevision: "legacy",
+        characterLabels: labels,
+        cast: { allowedSpeakerIds: ids, sceneParticipantIds: ids },
+      };
+    }
+    const npcIds = registry.roster.characters
+      .filter((definition) => definition.control === "npc")
+      .map((definition) => definition.id);
+    return {
+      identitySchemaVersion: SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+      dslProtocolVersion: this.config.dsl?.protocol_version ?? 1,
+      rosterScopeId: registry.roster.scopeId,
+      rosterRevision: registry.roster.revision,
+      characterLabels: labels,
+      cast: {
+        allowedSpeakerIds: npcIds,
+        sceneParticipantIds: registry.roster.characters.map((definition) => definition.id),
+      },
     };
   }
 

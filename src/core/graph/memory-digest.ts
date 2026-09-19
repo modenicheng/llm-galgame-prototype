@@ -55,7 +55,9 @@ export function memoryStateFromDigest(digest: MemoryDigest): NarrativeMemoryStat
     recentEpisodeIds: [],
     facts: digest.facts.map((fact) => ({ ...fact })),
     beliefs: digest.beliefs.map((belief) => ({ ...belief })),
-    // 旧快照 digest 缺省（pre-M2）= 无失败区间。
+    // v4 起契约必填（v3→v4 升级适配器已为旧摘要补 []）。映射层仍容忍缺省：
+    // 运行时边界（测试替身、直构对象）可能持有 pre-v4 形状的摘要，缺省 =
+    // 无失败区间——schema 校验入口在快照读取侧，不在本纯函数。
     consolidationFailedIntervals:
       digest.consolidationFailedIntervals?.map((interval) => ({ ...interval })) ??
       [],

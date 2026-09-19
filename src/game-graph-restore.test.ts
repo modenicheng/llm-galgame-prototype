@@ -8,6 +8,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Game } from "./game.js";
 import { RetraceRequestedError } from "./core/runtime/errors.js";
+import { createInitialState } from "./story/state.js";
+import {
+  buildCharacterRoster,
+  createCharacterRegistry,
+} from "./core/characters/registry.js";
+import { makeIdentity } from "./core/graph/testing.js";
 
 import { GameGraphStore } from "./adapters/storage/game-graph-store.js";
 import { RunGraphCoordinator } from "./application/graph/run-graph-coordinator.js";
@@ -744,6 +750,117 @@ describe("M1.4 游标恢复（真存储跨重启）", () => {
     expect(await store2.listEdges()).toHaveLength(2);
     game2.dispatch({ type: "shutdown" });
     await expect(run2b).rejects.toThrow("运行时已收到关闭指令");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M3：回溯的名牌/身份状态隔离（节点级快照是唯一真源）
+// ---------------------------------------------------------------------------
+
+describe("M3 回溯身份状态隔离（v4 快照身份块）", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(path.join(tmpdir(), "galgame-m3-iso-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("恢复/回溯按节点快照还原名牌状态；分支预测副本不跨周目泄漏", async () => {
+    const ASSETS = { guidance: "", backgrounds: {}, bgm: {}, soundEffects: {}, spriteSets: {} };
+    const roster = buildCharacterRoster({
+      schemaVersion: 2,
+      scopeId: "world:game_m3_iso",
+      playerId: "player",
+      characters: [
+        { id: "player", name: "玩家", control: "player", initialLabel: "你", persona: "玩家。" },
+        { id: "suyao", name: "苏遥", control: "npc", initialLabel: "苏遥", persona: "同班同学。" },
+      ],
+    });
+    const registry = createCharacterRegistry(roster, ASSETS);
+    let n = 0;
+    const newId = (prefix: string) => `${prefix}iso${++n}`;
+
+    function identityOf(labels: Record<string, string>) {
+      return makeIdentity({
+        rosterScopeId: roster.scopeId,
+        rosterRevision: roster.revision,
+        characterLabels: labels,
+        cast: {
+          allowedSpeakerIds: ["suyao"],
+          sceneParticipantIds: ["player", "suyao"],
+        },
+      });
+    }
+    function moment(labels: Record<string, string>) {
+      const base = createInitialState();
+      return {
+        storyState: { ...base, recent_summary: "M3 隔离测试" },
+        visualState: { characters: {} },
+        memoryDigest: EMPTY_MEMORY_DIGEST,
+        outlineRevision: 0,
+        identity: identityOf(labels),
+      };
+    }
+
+    // —— 直接经协调器搭图：D1（名牌空）→ D2（suyao 已改名「海雾中的她」）——
+    const store = new GameGraphStore(tempDir, "game_m3_iso");
+    const builder = new RunGraphCoordinator(store, new FakeClock(), newId);
+    await builder.startRootRun();
+    const d1 = await builder.openDecision({
+      modelSceneId: "scene_iso",
+      form: { mode: "choice", prompt: "第一处：", options: ["留下", "离开"] },
+      moment: moment({}),
+    });
+    await builder.beginEdge({ kind: "option", text: "留下" });
+    await builder.appendEdgeEvents([
+      { seq: 1, turn: 1, timestamp: "2026-09-19T00:00:01Z", source: "player", type: "player_choice", choice_id: "a", text: "留下" },
+      { seq: 2, turn: 1, timestamp: "2026-09-19T00:00:02Z", source: "model", type: "narration", text: "暮色里的天台。", line_id: "l2" },
+      { seq: 3, turn: 1, timestamp: "2026-09-19T00:00:03Z", source: "model", type: "interaction", mode: "choice", interaction_id: "interaction_1", prompt: "第二处：", options: [{ id: "x", text: "追问" }] },
+    ] as never);
+    const d2 = await builder.openDecision({
+      modelSceneId: "scene_iso",
+      form: { mode: "choice", prompt: "第二处：", options: ["追问", "沉默"] },
+      moment: moment({ suyao: "海雾中的她" }),
+    });
+    expect(await store.loadCursor()).toEqual({ runId: expect.any(String), position: d2 });
+
+    // —— Game 恢复在 D2：名牌按节点快照身份块还原（不读当前游标可变状态）——
+    const graph = new RunGraphCoordinator(store, new FakeClock(), newId);
+    const generator = makeMockGenerator();
+    const game = new Game(
+      makeGameConfig(), generator, makeMockStatus(), makeMockMedia(), undefined,
+      // characterRegistry：C2 roster（身份投影真源；快照身份块的
+      // rosterScopeId/revision 与之同源）。
+      { ...makeTestPorts({ graph }), sessionId: "m3-iso", characterRegistry: registry },
+      undefined,
+    );
+    const controller = new MemoryController();
+    controller.attach(game);
+    const run1 = game.run();
+    await vi.waitFor(() => {
+      expect(controller.count("interaction_opened")).toBe(1);
+    });
+    expect(game.generationIdentity().characterState.labels).toEqual({ suyao: "海雾中的她" });
+
+    // 埋一个“被弃分支”的预测名牌副本：回溯后绝不能带入新周目。
+    game.branchCharacterStates.set("opt_stale", { labels: { suyao: "预测副本" } });
+
+    // —— 回溯到 D1：D1 的节点快照名牌为空 → 名牌回退 roster initialLabel ——
+    game.dispatch({ type: "retrace", decisionId: d1 });
+    await expect(run1).rejects.toThrow(RetraceRequestedError);
+    await game.prepareRetrace(d1);
+    const run2 = game.run();
+    await vi.waitFor(() => {
+      expect(controller.count("interaction_opened")).toBe(2);
+    });
+    expect(game.generationIdentity().characterState.labels).toEqual({});
+    expect(game.branchCharacterStates.size).toBe(0); // 分支预测副本已随回溯清空
+    expect(game.generationIdentity().rosterRevision).toBe(roster.revision);
+    game.dispatch({ type: "shutdown" });
+    await expect(run2).rejects.toThrow("运行时已收到关闭指令");
   });
 });
 

@@ -6,12 +6,29 @@ import type {
   DecisionNode,
   InteractionFormSnapshot,
   PlotEdge,
+  SnapshotIdentityState,
   StateSnapshot,
 } from "./types.js";
+import { SNAPSHOT_IDENTITY_SCHEMA_VERSION } from "../ports/identity-snapshot-port.js";
+
+/** v4 快照身份块的默认夹具（legacy 视图：无 roster、空名牌）。 */
+export function makeIdentity(
+  overrides?: Partial<SnapshotIdentityState>,
+): SnapshotIdentityState {
+  return {
+    identitySchemaVersion: SNAPSHOT_IDENTITY_SCHEMA_VERSION,
+    dslProtocolVersion: 1,
+    rosterScopeId: "legacy",
+    rosterRevision: "legacy",
+    characterLabels: {},
+    cast: { allowedSpeakerIds: [], sceneParticipantIds: [] },
+    ...overrides,
+  };
+}
 
 export function makeSnapshot(overrides?: Partial<StateSnapshot>): StateSnapshot {
   return {
-    snapshotVersion: 3,
+    snapshotVersion: 4,
     storyState: {
       scene: { id: "scene_1", location: "地下室", purpose: "发现旧终端" },
       characters: {},
@@ -30,6 +47,7 @@ export function makeSnapshot(overrides?: Partial<StateSnapshot>): StateSnapshot 
       consolidationFailedIntervals: [],
     },
     outlineRevision: 0,
+    identity: makeIdentity(),
     ...overrides,
   };
 }

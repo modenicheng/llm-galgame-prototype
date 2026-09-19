@@ -10,7 +10,7 @@ import path from "node:path";
 import { GameGraphStore } from "../../adapters/storage/game-graph-store.js";
 import { RunGraphCoordinator } from "./run-graph-coordinator.js";
 import { FakeClock } from "../../test-helpers.js";
-import { makeDecision, makeEdge, makeForm, makeSnapshot } from "../../core/graph/testing.js";
+import { makeDecision, makeEdge, makeForm, makeIdentity, makeSnapshot } from "../../core/graph/testing.js";
 import type { MemoryDigest, PlotEdge } from "../../core/graph/types.js";
 import type { RuntimeMoment } from "../../core/ports/run-graph-port.js";
 import type { StoredEvent } from "../../schema.js";
@@ -28,8 +28,10 @@ function moment(marker: string): RuntimeMoment {
     memoryDigest: {
       revision: 0, consolidatedThroughEventSeq: 0, checkpointCount: 0,
       threads: [], setups: [], anchors: [], facts: [], beliefs: [],
+      consolidationFailedIntervals: [],
     } as MemoryDigest,
     outlineRevision: 0,
+    identity: makeIdentity(),
   };
 }
 

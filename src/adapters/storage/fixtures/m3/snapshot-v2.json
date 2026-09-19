@@ -1,0 +1,20 @@
+{
+  "snapshotVersion": 2,
+  "storyState": {
+    "scene": { "id": "scene_v2", "location": "老宅书房", "purpose": "v2 dev 存档" },
+    "characters": {},
+    "recent_summary": "v2 时代的开发存档（facts/beliefs 嵌入版）。"
+  },
+  "visualState": { "characters": {} },
+  "memoryDigest": {
+    "revision": 0,
+    "consolidatedThroughEventSeq": 0,
+    "checkpointCount": 0,
+    "threads": [],
+    "setups": [],
+    "anchors": [],
+    "facts": [],
+    "beliefs": []
+  },
+  "outlineRevision": 0
+}

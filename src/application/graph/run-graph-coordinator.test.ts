@@ -14,7 +14,7 @@ import path from "node:path";
 import { GameGraphStore } from "../../adapters/storage/game-graph-store.js";
 import { RunGraphCoordinator } from "./run-graph-coordinator.js";
 import { FakeClock } from "../../test-helpers.js";
-import { makeForm } from "../../core/graph/testing.js";
+import { makeForm, makeIdentity } from "../../core/graph/testing.js";
 import { createInitialState } from "../../story/state.js";
 import type { RuntimeMoment } from "../../core/ports/run-graph-port.js";
 import type { StoredEvent } from "../../schema.js";
@@ -69,8 +69,10 @@ function makeMoment(): RuntimeMoment {
       anchors: [],
       facts: [],
       beliefs: [],
+      consolidationFailedIntervals: [],
     },
     outlineRevision: 0,
+    identity: makeIdentity(),
   };
 }
 
@@ -118,7 +120,7 @@ describe("RunGraphCoordinator", () => {
       expect(edges[0]?.choice).toEqual({ kind: "option", text: "追问" });
       expect(edges[0]?.payload).toEqual({ eventCount: 2, firstSeq: 4, lastSeq: 5 });
       // endState 复用后继入口快照（同一次快照写两处）
-      expect(edges[0]?.endState).toEqual({ snapshotVersion: 3, ...entry2 });
+      expect(edges[0]?.endState).toEqual({ snapshotVersion: 4, ...entry2 });
 
       expect(await store.listDecisions()).toHaveLength(2);
       expect((await store.loadCursor())?.position).toBe(d2);
@@ -222,7 +224,7 @@ describe("RunGraphCoordinator restore (M1.4)", () => {
 
       expect(resume.restore.decision.id).toBe(built.d2);
       expect(resume.restore.decision.form).toEqual(makeForm({ prompt: "第二个决策" }));
-      expect(resume.restore.decision.entryState).toEqual({ snapshotVersion: 3, ...built.entry2 });
+      expect(resume.restore.decision.entryState).toEqual({ snapshotVersion: 4, ...built.entry2 });
       expect(resume.restore.pathEvents).toEqual(built.e1Events);
       // nextSeq = max(世界最大 seq 5, 路径末 seq 5, digest 水位 3) + 1；turn = 路径末事件 turn
       expect(resume.restore.nextSeq).toBe(6);

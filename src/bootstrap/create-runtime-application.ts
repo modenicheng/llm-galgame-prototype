@@ -27,6 +27,7 @@ import { CanonStore } from "../adapters/storage/canon-store.js";
 import { StatsStore } from "../adapters/storage/stats-store.js";
 import { ReviewStore } from "../adapters/storage/review-store.js";
 import type { CanonStorePort } from "../core/ports/canon-store-port.js";
+import type { GraphIdentityContext } from "../core/ports/identity-snapshot-port.js";
 import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
 import { CanonAdjudicatorAdapter } from "../adapters/llm/canon-adjudicator-adapter.js";
 import { AgentRunnerAdapter } from "../adapters/llm/agent-runner-adapter.js";
@@ -248,15 +249,20 @@ async function buildVoiceViews(input: {
  * v2 剧情图协调器（§9）：confluence.enabled 时给协调器挂 LLM 判定员（后台
  * 比较，不阻塞播放）；判定失败只告警，运行时不受影响。confluence 段容忍
  * 手拼 config 的缺省（options.config 可绕过 zod 默认值填充）。
+ * M3：store 与协调器共用同一身份上下文（v3→v4 快照升级、旧边负载升级、
+ * roster blob 写入同源）。
  */
 function buildGraphCoordinator(
   gamesRoot: string,
   gameId: string,
+  identity: GraphIdentityContext | undefined,
   outline?: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort },
   confluenceJudge?: ConfluenceJudgePort,
   canon?: CanonStorePort,
 ): RunGraphCoordinator {
-  const graphStore = new GameGraphStore(gamesRoot, gameId);
+  const graphStore = new GameGraphStore(gamesRoot, gameId, {
+    ...(identity !== undefined ? { identity } : {}),
+  });
   return new RunGraphCoordinator(
     graphStore,
     new SystemClock(),
@@ -267,6 +273,7 @@ function buildGraphCoordinator(
         : {}),
       ...(outline !== undefined ? { outline } : {}),
       ...(canon !== undefined ? { canon } : {}),
+      ...(identity !== undefined ? { identity } : {}),
       // M5.4：周目完结结算（结局达成 + 边通过计数）。
       stats: new StatsStore(gamesRoot, gameId),
       // M5.5 ②：通关评注喂回编剧维护输入。
@@ -289,11 +296,15 @@ function buildDirectorService(options: {
   outline?: { store: OutlineStorePort; maintainer?: OutlineMaintainerPort } | undefined;
   canon: CanonStorePort;
   speakerPalette?: (characterId: string) => SpeakerVoicePalette | undefined;
+  /** M3：图存储读 v3 旧档时的身份上下文（与协调器共用）。 */
+  identity?: GraphIdentityContext | undefined;
 }): DirectorService {
   const { gamesRoot, gameId, apiKey, api } = options;
   return new DirectorService({
     runner: new AgentRunnerAdapter({ apiKey, api }),
-    store: new GameGraphStore(gamesRoot, gameId),
+    store: new GameGraphStore(gamesRoot, gameId, {
+      ...(options.identity !== undefined ? { identity: options.identity } : {}),
+    }),
     // M3.5 ①：导演读大纲 ending 候选；缺省新世界无大纲 → endingPressure
     // 只能来自模型判定。
     ...(options.outline !== undefined ? { outline: options.outline.store } : {}),
@@ -319,10 +330,14 @@ function buildCanonPromoter(options: {
   apiKey: string;
   api: AppConfig["api"];
   canon: CanonStorePort;
+  /** M3：图存储读 v3 旧档时的身份上下文（与协调器共用）。 */
+  identity?: GraphIdentityContext | undefined;
 }): CanonPromoter {
   const { gamesRoot, gameId, apiKey, api } = options;
   return new CanonPromoter({
-    graph: new GameGraphStore(gamesRoot, gameId),
+    graph: new GameGraphStore(gamesRoot, gameId, {
+      ...(options.identity !== undefined ? { identity: options.identity } : {}),
+    }),
     canon: options.canon,
     adjudicator: new CanonAdjudicatorAdapter({
       apiKey,
@@ -491,6 +506,16 @@ export async function createRuntimeApplication(
   // 零改动）。confluence.enabled 门控不变（测试/CI 零网络）。
   const confluenceEnabled =
     config.narrative.confluence?.enabled ?? DEFAULT_NARRATIVE_CONFIG.confluence.enabled;
+  // M3：图存储/协调器共用的身份上下文——roster 来自 M1 registry 装配，
+  // 协议版本来自 config；legacy 世界（无 roster）上下文缺席，旧 v3 快照
+  // 读取将显式报错（不猜读）。legacyMapping 由宿主显式登记（当前无来源）。
+  const graphIdentityContext: GraphIdentityContext | undefined =
+    characterRegistry.registry !== undefined
+      ? {
+          roster: () => characterRegistry.registry?.roster,
+          dslProtocolVersion: () => config.dsl?.protocol_version ?? 1,
+        }
+      : undefined;
   const director = buildDirectorService({
     gamesRoot,
     gameId,
@@ -500,10 +525,12 @@ export async function createRuntimeApplication(
     outline,
     canon: canonStore,
     speakerPalette: buildSpeakerPalette(voiceViews),
+    ...(graphIdentityContext !== undefined ? { identity: graphIdentityContext } : {}),
   });
   const graphCoordinator = buildGraphCoordinator(
     gamesRoot,
     gameId,
+    graphIdentityContext,
     outline,
     director.exposeConfluenceJudge(),
     canonStore,
@@ -514,6 +541,7 @@ export async function createRuntimeApplication(
     apiKey,
     api: config.api,
     canon: canonStore,
+    ...(graphIdentityContext !== undefined ? { identity: graphIdentityContext } : {}),
   });
 
   /**

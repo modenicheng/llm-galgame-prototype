@@ -13,7 +13,7 @@ import path from "node:path";
 import { GameGraphStore } from "../../adapters/storage/game-graph-store.js";
 import { RunGraphCoordinator } from "./run-graph-coordinator.js";
 import { FakeClock } from "../../test-helpers.js";
-import { makeForm } from "../../core/graph/testing.js";
+import { makeForm, makeIdentity } from "../../core/graph/testing.js";
 import { createInitialState } from "../../story/state.js";
 import type { CharacterState } from "../../story/types.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
@@ -21,7 +21,7 @@ import type {
   ConfluenceJudgment,
   ConfluenceJudgePort,
 } from "../../core/ports/confluence-judge-port.js";
-import type { StateSnapshot } from "../../core/graph/types.js";
+import type { SnapshotIdentityState, StateSnapshot } from "../../core/graph/types.js";
 import type { RuntimeMoment } from "../../core/ports/run-graph-port.js";
 import type { StoredEvent } from "../../schema.js";
 
@@ -73,7 +73,12 @@ const NO_MATCH: ConfluenceJudgment = {
 function makeMoment(
   marker: string,
   sceneId = SCENE_A,
-  overrides?: { location?: string; characters?: Record<string, CharacterState> },
+  overrides?: {
+    location?: string;
+    characters?: Record<string, CharacterState>;
+    /** M3：身份契约键覆写（汇流版本闸门测试用）。 */
+    identity?: Partial<SnapshotIdentityState>;
+  },
 ): RuntimeMoment {
   const base = createInitialState();
   return {
@@ -92,8 +97,10 @@ function makeMoment(
       anchors: [],
       facts: [],
       beliefs: [],
+      consolidationFailedIntervals: [],
     },
     outlineRevision: 0,
+    identity: makeIdentity(overrides?.identity),
   };
 }
 
@@ -495,6 +502,94 @@ describe("RunGraphCoordinator confluence (M2.2)", () => {
       expect((await store.loadCursor())?.position).toBe(openedBId);
       // 让后台检查完全落地后再清理（Windows 目录句柄时序）。
       await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    } finally {
+      await rm(harness.root, { recursive: true, force: true });
+    }
+  });
+
+  it("M3 version gate (roster revision): different identity contracts never reach the judge or reuse verdicts", async () => {
+    // 全部候选都给 match——若版本闸门失效，任何跨契约节点都会被改绑。
+    const harness = await makeHarness(() => match(0.99));
+    const { coordinator, store, judge } = harness;
+    try {
+      // 周目 1（roster rev-b）主线两节点 → 结局：同契约的滞后候选。
+      await coordinator.startRootRun();
+      const revB = { rosterRevision: "rev-b" };
+      await coordinator.openDecision({ modelSceneId: SCENE_A, form: makeForm(), moment: makeMoment("state-D1", SCENE_A, { identity: revB }) });
+      await coordinator.beginEdge({ kind: "option", text: "A" });
+      await coordinator.appendEdgeEvents([makeStoredEvent(4)]);
+      await coordinator.openDecision({ modelSceneId: SCENE_A, form: makeForm({ prompt: "二" }), moment: makeMoment("state-D2", SCENE_A, { identity: revB }) });
+      await coordinator.beginEdge({ kind: "option", text: "B" });
+      await coordinator.appendEdgeEvents([makeEndEvent(5, "落幕。")]);
+      await coordinator.reachEnding({ endingId: "fin", moment: makeMoment("state-end", SCENE_A, { identity: revB }) });
+
+      // 周目 2 换身份契约（roster rev-a）：末态键与 state-D1/D2 完全等价
+      //（location/在场角色集全同），但身份契约不同 → 不送判、不改绑。
+      const { coordinator: c2 } = await harness.reopen();
+      const resume2 = await c2.restoreOrCreateRun({ restart: true });
+      if (resume2.kind !== "fresh") throw new Error(`expected fresh, got ${resume2.kind}`);
+      const revA = { rosterRevision: "rev-a" };
+      await c2.openDecision({ modelSceneId: SCENE_A, form: makeForm(), moment: makeMoment("state-D1-run2", SCENE_A, { identity: revA }) });
+      await c2.beginEdge({ kind: "option", text: "A" });
+      await c2.appendEdgeEvents([makeStoredEvent(6), makeStoredEvent(7)]);
+      await c2.openDecision({ modelSceneId: SCENE_A, form: makeForm({ prompt: "二" }), moment: makeMoment("state-D2-run2", SCENE_A, { identity: revA }) });
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      expect(judge.candidateMarkers).toEqual([]);
+      expect((await store.listEdges()).every((edge) => edge.confluence === undefined)).toBe(true);
+      // 收束周目 2，便于周目 3 以 fresh 开局。
+      await c2.beginEdge({ kind: "option", text: "C" });
+      await c2.appendEdgeEvents([makeEndEvent(8, "周目二落幕。")]);
+      await c2.reachEnding({ endingId: "fin2", moment: makeMoment("state-end2", SCENE_A, { identity: revA }) });
+
+      // 对照组（周目 3，同契约 rev-b）：同样的等价键确实送判并可改绑——
+      // 证明上一步的零送判来自身份闸门，而非预筛键缺失。
+      const { coordinator: c3 } = await harness.reopen();
+      const resume3 = await c3.restoreOrCreateRun({ restart: true });
+      if (resume3.kind !== "fresh") throw new Error(`expected fresh, got ${resume3.kind}`);
+      await c3.openDecision({ modelSceneId: SCENE_A, form: makeForm(), moment: makeMoment("state-D1-run3", SCENE_A, { identity: revB }) });
+      await c3.beginEdge({ kind: "option", text: "A" });
+      await c3.appendEdgeEvents([makeStoredEvent(9), makeStoredEvent(10)]);
+      await c3.openDecision({ modelSceneId: SCENE_A, form: makeForm({ prompt: "二" }), moment: makeMoment("state-D2-run3", SCENE_A, { identity: revB }) });
+      // 周目 1 的 D1 无入边（周目首节点，结构过滤排除）、D2 有入边且同
+      // 契约 → 恰好送判一次；若身份闸门失效，rev-a 的周目 2 节点也会入列。
+      await judge.waitCalls(1);
+      expect(judge.candidateMarkers).toEqual(["state-D2"]);
+      await vi.waitFor(async () => {
+        expect(
+          (await store.listEdges()).some((edge) => edge.confluence !== undefined),
+        ).toBe(true);
+      });
+    } finally {
+      await rm(harness.root, { recursive: true, force: true });
+    }
+  });
+
+  it("M3 version gate (protocol version): a protocol bump alone also blocks judging", async () => {
+    const harness = await makeHarness(() => match(0.99));
+    const { coordinator, store, judge } = harness;
+    try {
+      await coordinator.startRootRun();
+      const proto1 = { dslProtocolVersion: 1, rosterRevision: "rev-b" };
+      await coordinator.openDecision({ modelSceneId: SCENE_A, form: makeForm(), moment: makeMoment("state-P1", SCENE_A, { identity: proto1 }) });
+      await coordinator.beginEdge({ kind: "option", text: "A" });
+      await coordinator.appendEdgeEvents([makeStoredEvent(4)]);
+      await coordinator.openDecision({ modelSceneId: SCENE_A, form: makeForm({ prompt: "二" }), moment: makeMoment("state-P2", SCENE_A, { identity: proto1 }) });
+      await coordinator.beginEdge({ kind: "option", text: "B" });
+      await coordinator.appendEdgeEvents([makeEndEvent(5, "落幕。")]);
+      await coordinator.reachEnding({ endingId: "fin", moment: makeMoment("state-end", SCENE_A, { identity: proto1 }) });
+
+      const { coordinator: c2 } = await harness.reopen();
+      const resume = await c2.restoreOrCreateRun({ restart: true });
+      if (resume.kind !== "fresh") throw new Error(`expected fresh, got ${resume.kind}`);
+      const proto2 = { dslProtocolVersion: 2, rosterRevision: "rev-b" };
+      await c2.openDecision({ modelSceneId: SCENE_A, form: makeForm(), moment: makeMoment("state-P1-run2", SCENE_A, { identity: proto2 }) });
+      await c2.beginEdge({ kind: "option", text: "A" });
+      await c2.appendEdgeEvents([makeStoredEvent(6)]);
+      await c2.openDecision({ modelSceneId: SCENE_A, form: makeForm({ prompt: "二" }), moment: makeMoment("state-P2-run2", SCENE_A, { identity: proto2 }) });
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      expect(judge.candidateMarkers).toEqual([]);
+      expect((await store.listEdges()).every((edge) => edge.confluence === undefined)).toBe(true);
     } finally {
       await rm(harness.root, { recursive: true, force: true });
     }

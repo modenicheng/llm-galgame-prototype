@@ -1,0 +1,18 @@
+{
+  "revision": 0,
+  "worldSetting": "海风小镇的旧校舍，暮色与未寄出的信。",
+  "characters": [
+    {
+      "id": "su_yao",
+      "name": "苏遥",
+      "description": "总在天台看海的三年级学生，说话简短，警惕但并不冷漠。"
+    },
+    {
+      "id": "lin_che",
+      "name": "林澈",
+      "description": "刚转学来的二年级学生，对旧校舍的传闻感到好奇。"
+    }
+  ],
+  "promotedFacts": [],
+  "exceptions": []
+}

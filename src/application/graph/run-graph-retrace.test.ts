@@ -12,7 +12,7 @@ import path from "node:path";
 import { GameGraphStore } from "../../adapters/storage/game-graph-store.js";
 import { RunGraphCoordinator } from "./run-graph-coordinator.js";
 import { FakeClock } from "../../test-helpers.js";
-import { makeForm } from "../../core/graph/testing.js";
+import { makeForm, makeIdentity } from "../../core/graph/testing.js";
 import type { StoredEvent } from "../../schema.js";
 
 let idCounter = 0;
@@ -35,8 +35,10 @@ function makeMoment(marker: string): import("../../core/ports/run-graph-port.js"
       anchors: [],
       facts: [],
       beliefs: [],
+      consolidationFailedIntervals: [],
     },
     outlineRevision: 0,
+    identity: makeIdentity(),
   };
 }
 

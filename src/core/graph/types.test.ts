@@ -13,7 +13,7 @@ import {
   type InteractionFormSnapshot,
 } from "./types.js";
 import { formSnapshotFromInteraction } from "./form.js";
-import { makeSnapshot } from "./testing.js";
+import { makeIdentity, makeSnapshot } from "./testing.js";
 
 const hybridForm = {
   mode: "hybrid",
@@ -25,7 +25,7 @@ const hybridForm = {
 describe("StateSnapshot", () => {
   it("accepts a minimal valid snapshot", () => {
     const parsed = StateSnapshotSchema.parse(makeSnapshot());
-    expect(parsed.snapshotVersion).toBe(3);
+    expect(parsed.snapshotVersion).toBe(4);
   });
 
   it("rejects an unknown snapshotVersion", () => {
@@ -37,6 +37,31 @@ describe("StateSnapshot", () => {
   it("rejects a snapshot missing memoryDigest", () => {
     const { memoryDigest: _omitted, ...rest } = makeSnapshot();
     expect(StateSnapshotSchema.safeParse(rest).success).toBe(false);
+  });
+
+  it("M3 v4: rejects a snapshot missing the identity block", () => {
+    const { identity: _omitted, ...rest } = makeSnapshot();
+    expect(StateSnapshotSchema.safeParse(rest).success).toBe(false);
+  });
+
+  it("M3 v4: requires consolidationFailedIntervals in the digest", () => {
+    const digest = {
+      ...makeSnapshot().memoryDigest,
+    } as Record<string, unknown>;
+    delete digest.consolidationFailedIntervals;
+    expect(
+      StateSnapshotSchema.safeParse({ ...makeSnapshot(), memoryDigest: digest }).success,
+    ).toBe(false);
+  });
+
+  it("M3 v4: rejects dangerous keys in characterLabels", () => {
+    // JSON.parse('{"__proto__":…}') 的产物自有键会被 preprocess 拒绝
+    //（对象字面量写 __proto__ 只改原型，必须走 JSON 文本注入）。
+    const raw = JSON.stringify(makeSnapshot()).replace(
+      '"characterLabels":{}',
+      '"characterLabels":{"__proto__":"x"}',
+    );
+    expect(StateSnapshotSchema.safeParse(JSON.parse(raw)).success).toBe(false);
   });
 });
 

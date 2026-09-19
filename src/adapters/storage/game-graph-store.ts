@@ -19,6 +19,8 @@ import path from "node:path";
 import { z } from "zod";
 import { isStoredEvent } from "./stored-event.js";
 import type { StoredEvent } from "../../schema.js";
+import type { CharacterRoster } from "../../core/characters/types.js";
+import type { GraphIdentityContext } from "../../core/ports/identity-snapshot-port.js";
 import type {
   ActiveCursor,
   DecisionNode,
@@ -39,8 +41,14 @@ import {
   PlotEdgeSchema,
   RunRecordSchema,
   SceneNodeSchema,
+  SNAPSHOT_VERSION,
   StateSnapshotSchema,
 } from "../../core/graph/types.js";
+import {
+  assertSupportedSnapshotVersion,
+  readSnapshotVersion,
+  upcastSnapshotV3ToV4,
+} from "../../core/graph/snapshot-upcast.js";
 import {
   DecisionIdSchema,
   EdgeIdSchema,
@@ -50,10 +58,12 @@ import {
   GameIdSchema,
   decisionSnapshotPath,
   edgePayloadPath,
+  rosterBlobPath,
   type DecisionId,
   type EdgeId,
   type RunId,
 } from "../../core/graph/ids.js";
+import { CharacterRosterSchema } from "../../core/characters/types.js";
 import type { GraphStorePort } from "../../core/ports/graph-store-port.js";
 
 // ---------------------------------------------------------------------------
@@ -79,8 +89,10 @@ const EdgeRecordSchema = z
     /**
      * 内联 ⟺ 结局端点（无快照归宿）或汇流边（真实末态与后继入口 ≈ 不等，
      * §3.3；凭据承担差异）。普通决策端点由后继入口快照派生、不落盘。
+     * 载荷以 unknown 透传：旧世界的内联末态是 v3 形状，统一在 composeEdge
+     * 走版本闸门 + 升级适配（此处过 v4 schema 会把旧行当损坏行静默丢弃）。
      */
-    endState: z.exactOptional(StateSnapshotSchema),
+    endState: z.exactOptional(z.unknown()),
     confluence: z.exactOptional(ConfluenceEvidenceSchema),
   })
   .refine(
@@ -116,6 +128,16 @@ async function readJsonlLines(filePath: string): Promise<string[]> {
     return [];
   }
   return raw.split("\n").filter((line) => line.trim().length > 0);
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await readFile(filePath, "utf8");
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 /** 解析 JSONL 行，损坏行跳过。M5.6 tombstone：`{"id":"…","deleted":true}`
@@ -186,12 +208,26 @@ function latestById<T extends { id: string }>(records: readonly T[]): Map<string
 
 export class GameGraphStore implements GraphStorePort {
   readonly location: string;
+  /**
+   * M3 身份上下文（可选装配）：
+   * - 读取：v3 快照经显式适配器升级为 v4（身份映射解析在图水合前完成）；
+   *   未装配时 v3 读取显式报错（不静默按某套身份猜读）。
+   * - 写入：快照引用的 roster revision 首次出现时落共享不可变 blob。
+   */
+  private readonly identity: GraphIdentityContext | undefined;
+  /** 已确认落盘的 roster revision（幂等跳过）。 */
+  private readonly rosterBlobRevisions = new Set<string>();
 
-  constructor(gamesRoot: string, gameId: string) {
+  constructor(
+    gamesRoot: string,
+    gameId: string,
+    options?: { identity?: GraphIdentityContext },
+  ) {
     if (!GameIdSchema.safeParse(gameId).success) {
       throw new Error(`非法 gameId：${gameId}`);
     }
     this.location = path.resolve(gamesRoot, gameId);
+    this.identity = options?.identity;
   }
 
   private filePath(relPath: string): string {
@@ -205,6 +241,55 @@ export class GameGraphStore implements GraphStorePort {
   async initialize(): Promise<void> {
     await mkdir(this.filePath(GAME_STORAGE_LAYOUT.payloadsDir), { recursive: true });
     await mkdir(this.filePath(GAME_STORAGE_LAYOUT.snapshotsDir), { recursive: true });
+    await mkdir(this.filePath(GAME_STORAGE_LAYOUT.rostersDir), { recursive: true });
+  }
+
+  // -- roster blobs（M3：共享不可变，按 revision 一份） --------------------------
+
+  async putRosterBlob(roster: CharacterRoster): Promise<void> {
+    const parsed = CharacterRosterSchema.parse(roster);
+    if (this.rosterBlobRevisions.has(parsed.revision)) return;
+    const blobPath = this.filePath(rosterBlobPath(parsed.revision));
+    if (await fileExists(blobPath)) {
+      // 不可变 blob：revision 相同即内容相同（revision 是规范化定义的摘要）。
+      // 已存在不覆写——append-only 纪律在 roster 维度的对应物。
+      this.rosterBlobRevisions.add(parsed.revision);
+      return;
+    }
+    const tmpPath = `${blobPath}.tmp-${process.pid}-${Date.now()}`;
+    await mkdir(path.dirname(blobPath), { recursive: true });
+    await writeFile(tmpPath, JSON.stringify(parsed), "utf8");
+    await rename(tmpPath, blobPath);
+    this.rosterBlobRevisions.add(parsed.revision);
+  }
+
+  async getRosterBlob(revision: string): Promise<CharacterRoster | null> {
+    const blobPath = this.filePath(rosterBlobPath(revision));
+    let raw: string;
+    try {
+      raw = await readFile(blobPath, "utf8");
+    } catch {
+      return null;
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `roster blob 损坏（${blobPath}）：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return CharacterRosterSchema.parse(payload);
+  }
+
+  /** 写快照后确保其引用的 roster blob 存在（有当前 roster 且 revision 对得上）。 */
+  private async ensureRosterBlobOf(snapshot: StateSnapshot): Promise<void> {
+    if (this.identity === undefined) return;
+    const roster = this.identity.roster();
+    if (roster === undefined || roster.revision !== snapshot.identity.rosterRevision) {
+      return; // legacy 会话或历史 revision：blob 由写入当时的进程负责
+    }
+    await this.putRosterBlob(roster);
   }
 
   // -- scenes / endings / runs ------------------------------------------------
@@ -275,6 +360,51 @@ export class GameGraphStore implements GraphStorePort {
     const tmpPath = `${snapshotPath}.tmp-${process.pid}-${Date.now()}`;
     await writeFile(tmpPath, JSON.stringify(snapshot), "utf8");
     await rename(tmpPath, snapshotPath);
+    await this.ensureRosterBlobOf(snapshot);
+  }
+
+  /**
+   * 快照载荷解析（文件快照与边内联末态共用）：v4 直接过契约 schema；v3
+   * 走显式升级适配器（需要身份上下文——世界 registry 与身份映射在图水合
+   * 前解析）；v1/v2 与未来版本按版本闸门显式拒绝，不静默误读。原文件字节
+   * 不动（升级只在内存副本上完成）。
+   */
+  private normalizeSnapshotPayload(payload: unknown, where: string): StateSnapshot {
+    const version = readSnapshotVersion(payload);
+    if (version === undefined) {
+      // 无版本字段 = 结构损坏，交给契约 schema 报详情（大声失败语义不变）。
+      return StateSnapshotSchema.parse(payload);
+    }
+    assertSupportedSnapshotVersion(version);
+    if (version === SNAPSHOT_VERSION) {
+      return StateSnapshotSchema.parse(payload);
+    }
+    // v3：显式升级。无身份上下文 = 无法诚实解析身份引用，明确报错。
+    if (this.identity === undefined) {
+      throw new Error(
+        `${where} 为 v3（旧身份格式），但本 store 未装配身份上下文` +
+          "（GraphIdentityContext）——无法完成 v3→v4 身份升级，拒绝猜读",
+      );
+    }
+    const roster = this.identity.roster();
+    if (roster === undefined) {
+      throw new Error(
+        `${where} 为 v3（旧身份格式），但当前世界没有 roster` +
+          "（legacy 兼容世界）——无法完成 v3→v4 身份升级，拒绝猜读",
+      );
+    }
+    return upcastSnapshotV3ToV4(payload, {
+      roster: {
+        scopeId: roster.scopeId,
+        revision: roster.revision,
+        playerId: roster.playerId,
+        characters: roster.characters,
+      },
+      dslProtocolVersion: this.identity.dslProtocolVersion(),
+      ...(this.identity.legacyMapping !== undefined
+        ? { legacyMapping: this.identity.legacyMapping }
+        : {}),
+    });
   }
 
   private async readSnapshot(decisionId: DecisionId): Promise<StateSnapshot> {
@@ -285,7 +415,15 @@ export class GameGraphStore implements GraphStorePort {
     } catch {
       throw new Error(`决策节点快照缺失（结构损坏）：${snapshotPath}`);
     }
-    return StateSnapshotSchema.parse(JSON.parse(raw));
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `决策节点快照损坏（JSON 解析失败）：${snapshotPath}——${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return this.normalizeSnapshotPayload(payload, `决策节点快照 ${snapshotPath}`);
   }
 
   private async composeDecision(
@@ -352,9 +490,12 @@ export class GameGraphStore implements GraphStorePort {
   }
 
   private async composeEdge(record: EdgeRecord): Promise<PlotEdge> {
-    // 内联真实末态（结局端点/汇流边）优先；普通决策端点从后继入口派生。
+    // 内联真实末态（结局端点/汇流边）优先——旧世界的内联末态是 v3 形状，
+    // 与文件快照同一版本闸门/升级适配；普通决策端点从后继入口派生。
     const endState =
-      record.endState !== undefined ? record.endState : await this.readSnapshot(record.to.id);
+      record.endState !== undefined
+        ? this.normalizeSnapshotPayload(record.endState, `边 ${record.id} 的内联末态`)
+        : await this.readSnapshot(record.to.id);
     return {
       id: record.id,
       from: record.from,

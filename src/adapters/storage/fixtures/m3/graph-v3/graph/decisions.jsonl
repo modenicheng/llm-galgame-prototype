@@ -1,0 +1,2 @@
+{"id":"dc_old1","sceneId":"sc_old1","form":{"mode":"choice","prompt":"天台上，先和谁说话？","options":["走近苏遥","转身离开"]}}
+{"id":"dc_old2","sceneId":"sc_old1","form":{"mode":"choice","prompt":"苏遥欲言又止，你要追问吗？","options":["追问","沉默"]}}
