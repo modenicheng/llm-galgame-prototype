@@ -48,10 +48,7 @@ import type {
 } from "./core/characters/types.js";
 import type { AssetCatalog } from "./core/assets/types.js";
 import type { StoryContextEvent } from "./schema.js";
-import {
-  AudioDescriptorFactory,
-  type AudioDescriptorFactoryOptions,
-} from "./application/audio/audio-descriptor-factory.js";
+import { AudioDescriptorFactory } from "./application/audio/audio-descriptor-factory.js";
 import type { VoicesConfig } from "./config/voices.js";
 import type { PerformanceCompiler } from "./application/audio/performance-compiler.js";
 import { WorldGenerator } from "./application/world/world-generator.js";
@@ -100,7 +97,6 @@ function contractRosterRegistry(): RosterRegistry {
     bgm: {},
     soundEffects: {},
     spriteSets: {},
-    characters: {},
   };
   return createCharacterRegistry(
     buildCharacterRoster({
@@ -209,16 +205,49 @@ const contractVoices: VoicesConfig = {
   },
 };
 
-const contractCharacters: AudioDescriptorFactoryOptions["characters"] = {
-  [VOICE_PROFILE_STABILITY_CASE.ttsConfigKey]: {
-    name: VOICE_PROFILE_STABILITY_CASE.ttsConfigName,
-    voice_profile: VOICE_PROFILE_STABILITY_CASE.voiceProfile,
-  },
-};
+/**
+ * C7 形状适配（断言语义不变）：身份真源 = roster（female_A 绑定
+ * voiceProfileId=xuwanqing_main，即迁移表真实取值）；工厂不再有
+ * speaker/name 键控的 characters 表。
+ */
+function contractRegistry(): RosterRegistry {
+  const assets: AssetCatalog = {
+    guidance: "",
+    backgrounds: {},
+    bgm: {},
+    soundEffects: {},
+    spriteSets: {},
+  };
+  return createCharacterRegistry(
+    buildCharacterRoster({
+      schemaVersion: 2,
+      scopeId: "r02-contract",
+      playerId: "player_one",
+      characters: [
+        {
+          id: "player_one",
+          name: "玩家",
+          control: "player",
+          initialLabel: "你",
+          persona: "玩家本人（契约向量）。",
+        },
+        {
+          id: RENAME_IDENTITY_CASE.characterId,
+          name: VOICE_PROFILE_STABILITY_CASE.ttsConfigName,
+          control: "npc",
+          initialLabel: VOICE_PROFILE_STABILITY_CASE.ttsConfigName,
+          persona: "契约向量角色。",
+          voiceProfileId: VOICE_PROFILE_STABILITY_CASE.voiceProfile,
+        },
+      ],
+    }),
+    assets,
+  );
+}
 
 function contractFactory(): AudioDescriptorFactory {
   return new AudioDescriptorFactory({
-    characters: contractCharacters,
+    registry: contractRegistry(),
     voices: contractVoices,
     provider: "dashscope",
     modelProfile: "cosyvoice_v3_flash",
@@ -276,17 +305,16 @@ describe("character identity contract — shared vectors (C1)", () => {
       "current",
     );
 
-    // 原名版本靠 byName 兜底命中音色（现状，绿）：
-    expect(original).not.toBeNull();
-    expect(original!.recipe.voiceId).toBe(VOICE_PROFILE_STABILITY_CASE.voiceId);
-
-    // 缺陷（红灯）：改名标签版本 byId（characters 无 female_A 键）/
-    // bySpeaker（键是 xuwanqing）/byName（名字是许晚晴）三路全 miss，
-    // build 返回 null——角色一行台词静默失去声音。
-    expect(renamed).not.toBeNull();
-    expect(renamed!.recipe.voiceId).toBe(original!.recipe.voiceId);
-    expect(renamed!.recipe.voiceRevision).toBe(original!.recipe.voiceRevision);
-    expect(renamed!.descriptor.speakerId).toBe(RENAME_IDENTITY_CASE.characterId);
+    // 原名版本与改名版本都按 characterId=female_A 解析同一音色身份
+    //（C7 转绿：名牌快照只进 displaySpeaker，不进身份/缓存键）。
+    expect(original?.voiceAvailability).toBe("available");
+    expect(renamed?.voiceAvailability).toBe("available");
+    const originalOk = original as Exclude<typeof original, { voiceAvailability: "unavailable" } | null>;
+    const renamedOk = renamed as Exclude<typeof renamed, { voiceAvailability: "unavailable" } | null>;
+    expect(originalOk.recipe.voiceId).toBe(VOICE_PROFILE_STABILITY_CASE.voiceId);
+    expect(renamedOk.recipe.voiceId).toBe(originalOk.recipe.voiceId);
+    expect(renamedOk.recipe.voiceRevision).toBe(originalOk.recipe.voiceRevision);
+    expect(renamedOk.descriptor.speakerId).toBe(RENAME_IDENTITY_CASE.characterId);
   });
 
   it("R03: renderTemplate 字面单遍替换（期望行为，当前红灯——模块由 C6 落地）", async () => {

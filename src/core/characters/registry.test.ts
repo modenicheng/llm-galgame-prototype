@@ -42,7 +42,6 @@ const ASSETS: AssetCatalog = {
       },
     },
   },
-  characters: {},
 };
 
 function playerDef(id = "player_one"): CharacterDefinition {

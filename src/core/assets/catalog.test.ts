@@ -2,9 +2,22 @@
  * Tests for the pure asset catalog projections (docs §58–§60).
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import type { AssetCatalog, ModelAssetCatalog } from "./types.js";
 import { createAssetResolver, toCharacterRegistry, toModelCatalog } from "./catalog.js";
+
+// ---------------------------------------------------------------------------
+// C7 兼容形状移除（类型级）：characters 段不再存在于任何资产目录形状
+// ---------------------------------------------------------------------------
+
+describe("C7 compat-shape removal", () => {
+  it("AssetCatalog / ModelAssetCatalog 不携带 characters 字段（身份真源 = roster）", () => {
+    expectTypeOf<AssetCatalog>().not.toHaveProperty("characters");
+    expectTypeOf<ModelAssetCatalog>().not.toHaveProperty("characters");
+    // 运行期投影同样无该键。
+    expect("characters" in toModelCatalog(catalog)).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Fixture (mirrors the real assets/resources.yaml shape)
@@ -38,27 +51,56 @@ const catalog: AssetCatalog = {
       },
     },
   },
-  characters: {
-    suyao: {
-      characterId: "suyao",
-      scriptName: "苏遥",
-      displayName: "苏遥",
-      spriteSet: "suyao",
-      defaultVariant: "neutral",
-      defaultPosition: "left",
-      allowedSpriteSets: ["suyao"],
-    },
-    mysterious_woman: {
-      characterId: "mysterious_woman",
-      scriptName: "神秘女子",
-      displayName: "神秘女子",
-      spriteSet: "mysterious_woman",
-      defaultVariant: "gentle_smile",
-      defaultPosition: "right",
-      allowedSpriteSets: ["mysterious_woman"],
-    },
-  },
 };
+
+/**
+ * C7：AssetCatalog.characters 兼容形状已移除——toCharacterRegistry 从
+ * C2 roster 派生（与旧 fixture 等价的 roster：同一 ID/名字/立绘绑定）。
+ */
+function fixtureRoster() {
+  return {
+    schemaVersion: 2 as const,
+    scopeId: "catalog-test",
+    revision: "test",
+    playerId: "player_one",
+    characters: [
+      {
+        id: "player_one",
+        name: "玩家",
+        control: "player" as const,
+        initialLabel: "你",
+        persona: "玩家本人。",
+      },
+      {
+        id: "suyao",
+        name: "苏遥",
+        control: "npc" as const,
+        initialLabel: "苏遥",
+        persona: "测试角色。",
+        presentation: {
+          defaultLook: "neutral",
+          defaultPosition: "left" as const,
+          looks: {
+            neutral: { spriteSet: "suyao", variant: "neutral" },
+            speaking_smile: { spriteSet: "suyao", variant: "speaking_smile" },
+          },
+        },
+      },
+      {
+        id: "mysterious_woman",
+        name: "神秘女子",
+        control: "npc" as const,
+        initialLabel: "神秘女子",
+        persona: "测试角色。",
+        presentation: {
+          defaultLook: "gentle_smile",
+          defaultPosition: "right" as const,
+          looks: { gentle_smile: { spriteSet: "mysterious_woman", variant: "gentle_smile" } },
+        },
+      },
+    ],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // toModelCatalog
@@ -99,24 +141,9 @@ describe("toModelCatalog", () => {
     });
   });
 
-  it("keeps character bindings", () => {
+  it("C7: 模型目录不再携带 characters 段（身份随 roster 渲染）", () => {
     const model = toModelCatalog(catalog);
-    expect(model.characters.suyao).toEqual({
-      scriptName: "苏遥",
-      displayName: "苏遥",
-      spriteSet: "suyao",
-      defaultVariant: "neutral",
-      defaultPosition: "left",
-      allowedSpriteSets: ["suyao"],
-    });
-    expect(model.characters.mysterious_woman).toEqual({
-      scriptName: "神秘女子",
-      displayName: "神秘女子",
-      spriteSet: "mysterious_woman",
-      defaultVariant: "gentle_smile",
-      defaultPosition: "right",
-      allowedSpriteSets: ["mysterious_woman"],
-    });
+    expect("characters" in model).toBe(false);
   });
 });
 
@@ -125,7 +152,7 @@ describe("toModelCatalog", () => {
 // ---------------------------------------------------------------------------
 
 describe("toCharacterRegistry", () => {
-  const registry = toCharacterRegistry(catalog);
+  const registry = toCharacterRegistry(fixtureRoster());
 
   it("resolves a dialogue-header script name", () => {
     expect(registry.resolveByScriptName("苏遥")).toEqual({

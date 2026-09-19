@@ -314,7 +314,12 @@ export class Game implements InteractionHost {
     this.interactionPolicy = new InteractionPolicy(config.interaction);
     this.storyState = createInitialState();
     this.catalog = catalog;
-    this.registry = catalog ? toCharacterRegistry(catalog) : EMPTY_CHARACTER_REGISTRY;
+    // C7：v1 编译边界的展示注册表由 C2 roster 派生（toCharacterRegistry
+    // 接收 roster，资产目录 characters 兼容形状已移除）；registry 缺席的
+    // 窄测试/legacy 世界走 EMPTY_CHARACTER_REGISTRY。
+    this.registry = ports.characterRegistry
+      ? toCharacterRegistry(ports.characterRegistry.roster)
+      : EMPTY_CHARACTER_REGISTRY;
     this.characterRegistry = ports.characterRegistry;
     this.defaults = createDefaultsFromRegistry(this.registry);
     this.reduce = createVisualStateReducer(this.defaults);
@@ -1571,10 +1576,12 @@ export class Game implements InteractionHost {
     await this.graph.reachEnding({ endingId: ending.ending_id, moment: this.currentMoment() });
   }
 
-  /** 已注册角色 id 集（幻影角色过滤的已知集；无素材目录时 undefined = 只按语法兜底过滤）。 */
+  /** 已注册角色 id 集合——reconcile 用它挡住幻影发言者入库（上下文污染）。 */
   private knownCharacterIds(): ReadonlySet<string> | undefined {
-    return this.catalog !== undefined
-      ? new Set(Object.keys(this.catalog.characters))
+    // C7：角色 ID 真源是 C2 registry（roster）；registry 缺席（窄测试/
+    // legacy 世界）返回 undefined（调用方语义：不做过滤），不再从资产目录推导。
+    return this.characterRegistry !== undefined
+      ? new Set(this.characterRegistry.roster.characters.map((definition) => definition.id))
       : undefined;
   }
 

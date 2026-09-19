@@ -106,6 +106,12 @@ export type RuntimeDialogueEvent = DialogueDraftEvent & {
    * llm-outputs-refactor.md §10, §62).
    */
   characterId?: string;
+  /**
+   * C7（§6.1）：严格事件的名牌快照（与 speaker 同值，语义化字段）——
+   * audio/UI 只把它当展示文本，绝不参与身份寻址或缓存键。v1 事件缺省
+   * 由消费方回退读 speaker（同为 label 快照）。
+   */
+  displayLabel?: string;
   /** Stage cues applied together with this line (docs §63). */
   stage?: StageCue[];
 };

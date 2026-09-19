@@ -111,15 +111,6 @@ sprite_sets:
 
       speaking_smile:
         src: characters/suyao/speaking_smile.png
-
-characters:
-  suyao:
-    script_name: 苏遥
-    display_name: 苏遥
-
-    sprite_set: suyao
-    default_variant: neutral
-    default_position: left
 `;
 
 // ---------------------------------------------------------------------------
@@ -165,16 +156,8 @@ describe("loadAssetCatalog", () => {
       },
     });
 
-    // Character bindings
-    expect(catalog.characters.suyao).toEqual({
-      characterId: "suyao",
-      scriptName: "苏遥",
-      displayName: "苏遥",
-      spriteSet: "suyao",
-      defaultVariant: "neutral",
-      defaultPosition: "left",
-      allowedSpriteSets: ["suyao"],
-    });
+    // C7：资源目录不再产出 characters 身份表（真源是 characters.yaml）。
+    expect("characters" in catalog).toBe(false);
   });
 
   it("strips leading/trailing whitespace from descriptions", async () => {
@@ -192,7 +175,6 @@ describe("loadAssetCatalog", () => {
         "bgm: {}",
         "sound_effects: {}",
         "sprite_sets: {}",
-        "characters: {}",
       ].join("\n"),
     );
     const catalog = await loadAssetCatalog(filePath);
@@ -224,24 +206,8 @@ describe("loadAssetCatalog", () => {
     expect(catalog.bgm.mountain!.src).toBe("audio/bgm/mountain.mp3");
     expect(catalog.soundEffects.terminal_beep!.src).toBe("audio/se/terminal_beep.ogg");
     expect(Object.keys(catalog.spriteSets)).toEqual(["suyao", "linche"]);
-    expect(catalog.characters.suyao).toEqual({
-      characterId: "suyao",
-      scriptName: "苏遥",
-      displayName: "苏遥",
-      spriteSet: "suyao",
-      defaultVariant: "neutral",
-      defaultPosition: "left",
-      allowedSpriteSets: ["suyao"],
-    });
-    expect(catalog.characters.linche).toEqual({
-      characterId: "linche",
-      scriptName: "林澈",
-      displayName: "林澈",
-      spriteSet: "linche",
-      defaultVariant: "calm",
-      defaultPosition: "right",
-      allowedSpriteSets: ["linche"],
-    });
+    // C7：资源目录不承载角色身份——身份真源是 characters.yaml roster。
+    expect("characters" in catalog).toBe(false);
     // Lin Che's set is the real josei_12 art — distinct files per variant.
     expect(catalog.spriteSets.linche!.variants.calm!.src).toBe(
       "characters/linche/calm.png",
@@ -271,9 +237,9 @@ describe("loadAssetCatalog failures", () => {
     await expect(loadAssetCatalog(filePath)).rejects.toThrow(/顶层必须是一个对象/);
   });
 
-  it("throws on a schema violation (invalid position)", async () => {
+  it("C7：携带已移除的 characters 段显式报错（不静默丢弃）", async () => {
     const filePath = await writeTempYaml(
-      "bad-position",
+      "removed-characters-section",
       [
         "guidance: x",
         "backgrounds: {}",
@@ -286,10 +252,10 @@ describe("loadAssetCatalog failures", () => {
         "    display_name: 苏遥",
         "    sprite_set: suyao",
         "    default_variant: normal",
-        "    default_position: top",
+        "    default_position: left",
       ].join("\n"),
     );
-    await expect(loadAssetCatalog(filePath)).rejects.toThrow(/default_position/);
+    await expect(loadAssetCatalog(filePath)).rejects.toThrow(/characters 身份定义已迁移/);
   });
 
   it("throws when a required asset field is missing", async () => {
@@ -303,7 +269,6 @@ describe("loadAssetCatalog failures", () => {
         "bgm: {}",
         "sound_effects: {}",
         "sprite_sets: {}",
-        "characters: {}",
       ].join("\n"),
     );
     await expect(loadAssetCatalog(filePath)).rejects.toThrow(/src/);
@@ -312,221 +277,6 @@ describe("loadAssetCatalog failures", () => {
   it("throws when the file does not exist", async () => {
     const missing = path.join(tmpdir(), `galgame-assets-missing-${Date.now()}.yaml`);
     await expect(loadAssetCatalog(missing)).rejects.toThrow(/无法读取资产目录/);
-  });
-
-  it("拒绝 characters.sprite_set 引用不存在的 sprite_set", async () => {
-    const dir = await makeTempDir();
-    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
-    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
-    await writeFile(
-      path.join(dir, "resources.yaml"),
-      [
-        "guidance: x",
-        "backgrounds:",
-        "  a: { src: bg.png, description: d }",
-        "bgm: {}",
-        "sound_effects: {}",
-        "sprite_sets:",
-        "  good:",
-        "    variants:",
-        "      normal: { src: sprite.png }",
-        "characters:",
-        "  c:",
-        "    script_name: 测试",
-        "    display_name: 测试",
-        "    sprite_set: missing",
-        "    default_variant: normal",
-        "    default_position: left",
-      ].join("\n"),
-    );
-    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/sprite_set/);
-  });
-
-  it("拒绝 default_variant 不存在于 sprite_set", async () => {
-    const dir = await makeTempDir();
-    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
-    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
-    await writeFile(
-      path.join(dir, "resources.yaml"),
-      [
-        "guidance: x",
-        "backgrounds:",
-        "  a: { src: bg.png, description: d }",
-        "bgm: {}",
-        "sound_effects: {}",
-        "sprite_sets:",
-        "  good:",
-        "    variants:",
-        "      normal: { src: sprite.png }",
-        "characters:",
-        "  c:",
-        "    script_name: 测试",
-        "    display_name: 测试",
-        "    sprite_set: good",
-        "    default_variant: nope",
-        "    default_position: left",
-      ].join("\n"),
-    );
-    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/default_variant/);
-  });
-
-  it("allowed_sprite_sets 缺省为仅自身；显式列表被保留", async () => {
-    const dir = await makeTempDir();
-    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
-    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
-    await writeFile(path.join(dir, "sprite2.png"), Buffer.from("x"));
-    await writeFile(
-      path.join(dir, "resources.yaml"),
-      [
-        "guidance: x",
-        "backgrounds:",
-        "  a: { src: bg.png, description: d }",
-        "bgm: {}",
-        "sound_effects: {}",
-        "sprite_sets:",
-        "  good:",
-        "    variants:",
-        "      normal: { src: sprite.png }",
-        "  alt:",
-        "    variants:",
-        "      alt_v: { src: sprite2.png }",
-        "characters:",
-        "  own_only:",
-        "    script_name: 默认角色",
-        "    display_name: 默认角色",
-        "    sprite_set: good",
-        "    default_variant: normal",
-        "    default_position: left",
-        "  disguised:",
-        "    script_name: 伪装者",
-        "    display_name: 伪装者",
-        "    sprite_set: good",
-        "    default_variant: normal",
-        "    default_position: left",
-        "    allowed_sprite_sets: [good, alt]",
-      ].join("\n"),
-    );
-    const catalog = await loadAssetCatalog(path.join(dir, "resources.yaml"));
-    expect(catalog.characters.own_only!.allowedSpriteSets).toEqual(["good"]);
-    expect(catalog.characters.disguised!.allowedSpriteSets).toEqual(["good", "alt"]);
-  });
-
-  it("拒绝 allowed_sprite_sets 引用不存在的 sprite_set", async () => {
-    const dir = await makeTempDir();
-    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
-    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
-    await writeFile(
-      path.join(dir, "resources.yaml"),
-      [
-        "guidance: x",
-        "backgrounds:",
-        "  a: { src: bg.png, description: d }",
-        "bgm: {}",
-        "sound_effects: {}",
-        "sprite_sets:",
-        "  good:",
-        "    variants:",
-        "      normal: { src: sprite.png }",
-        "characters:",
-        "  c:",
-        "    script_name: 测试",
-        "    display_name: 测试",
-        "    sprite_set: good",
-        "    default_variant: normal",
-        "    default_position: left",
-        "    allowed_sprite_sets: [good, ghost]",
-      ].join("\n"),
-    );
-    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/allowed_sprite_sets/);
-  });
-
-  it("拒绝 allowed_sprite_sets 遗漏自身 sprite_set", async () => {
-    const dir = await makeTempDir();
-    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
-    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
-    await writeFile(path.join(dir, "sprite2.png"), Buffer.from("x"));
-    await writeFile(
-      path.join(dir, "resources.yaml"),
-      [
-        "guidance: x",
-        "backgrounds:",
-        "  a: { src: bg.png, description: d }",
-        "bgm: {}",
-        "sound_effects: {}",
-        "sprite_sets:",
-        "  good:",
-        "    variants:",
-        "      normal: { src: sprite.png }",
-        "  alt:",
-        "    variants:",
-        "      alt_v: { src: sprite2.png }",
-        "characters:",
-        "  c:",
-        "    script_name: 测试",
-        "    display_name: 测试",
-        "    sprite_set: good",
-        "    default_variant: normal",
-        "    default_position: left",
-        "    allowed_sprite_sets: [alt]",
-      ].join("\n"),
-    );
-    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/必须包含自身/);
-  });
-
-  it("拒绝原型链键（constructor）作为 default_variant", async () => {
-    const dir = await makeTempDir();
-    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
-    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
-    await writeFile(
-      path.join(dir, "resources.yaml"),
-      [
-        "guidance: x",
-        "backgrounds:",
-        "  a: { src: bg.png, description: d }",
-        "bgm: {}",
-        "sound_effects: {}",
-        "sprite_sets:",
-        "  good:",
-        "    variants:",
-        "      normal: { src: sprite.png }",
-        "characters:",
-        "  c:",
-        "    script_name: 测试",
-        "    display_name: 测试",
-        "    sprite_set: good",
-        "    default_variant: constructor",
-        "    default_position: left",
-      ].join("\n"),
-    );
-    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/default_variant/);
-  });
-
-  it("拒绝原型链键（constructor）作为 sprite_set", async () => {
-    const dir = await makeTempDir();
-    await writeFile(path.join(dir, "bg.png"), Buffer.from("x"));
-    await writeFile(path.join(dir, "sprite.png"), Buffer.from("x"));
-    await writeFile(
-      path.join(dir, "resources.yaml"),
-      [
-        "guidance: x",
-        "backgrounds:",
-        "  a: { src: bg.png, description: d }",
-        "bgm: {}",
-        "sound_effects: {}",
-        "sprite_sets:",
-        "  good:",
-        "    variants:",
-        "      normal: { src: sprite.png }",
-        "characters:",
-        "  c:",
-        "    script_name: 测试",
-        "    display_name: 测试",
-        "    sprite_set: constructor",
-        "    default_variant: normal",
-        "    default_position: left",
-      ].join("\n"),
-    );
-    await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/sprite_set/);
   });
 
   it("拒绝 src 逃逸素材根目录", async () => {
@@ -540,7 +290,6 @@ describe("loadAssetCatalog failures", () => {
         "bgm: {}",
         "sound_effects: {}",
         "sprite_sets: {}",
-        "characters: {}",
       ].join("\n"),
     );
     await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/逃逸|escape/);
@@ -557,7 +306,6 @@ describe("loadAssetCatalog failures", () => {
         "bgm: {}",
         "sound_effects: {}",
         "sprite_sets: {}",
-        "characters: {}",
       ].join("\n"),
     );
     await expect(loadAssetCatalog(path.join(dir, "resources.yaml"))).rejects.toThrow(/不存在|missing/);

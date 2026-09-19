@@ -47,7 +47,6 @@ const ASSETS: AssetCatalog = {
   bgm: {},
   soundEffects: {},
   spriteSets: {},
-  characters: {},
 };
 
 function snapshotRegistry(): CharacterRegistry {

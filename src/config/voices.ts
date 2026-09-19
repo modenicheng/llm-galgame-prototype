@@ -19,6 +19,32 @@ import path from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 
+const DANGEROUS_RECORD_KEYS: readonly string[] = ["__proto__", "prototype", "constructor"];
+
+/**
+ * 原型链安全记录 schema（C2 safeRecord 模式在 voices 的最小重实现）：
+ * zod v4 的 `z.record` 不把自有 `__proto__` 数据键交给键 schema 校验
+ * （静默丢弃）——先在原始输入上拒绝危险键，再做键/值校验，两道叠加。
+ */
+function safeRecord<K extends z.ZodType<string>, V extends z.ZodType>(
+  keySchema: K,
+  valueSchema: V,
+) {
+  return z.preprocess((input, ctx) => {
+    if (typeof input === "object" && input !== null) {
+      for (const key of Object.keys(input)) {
+        if (DANGEROUS_RECORD_KEYS.includes(key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `profiles 键不允许使用对象原型危险键：${JSON.stringify(key)}`,
+          });
+        }
+      }
+    }
+    return input;
+  }, z.record(keySchema, valueSchema));
+}
+
 /** DashScope instruction policy for a voice. */
 export type InstructionMode = "free" | "fixed_emotion" | "none";
 
@@ -105,7 +131,7 @@ const VoiceProfileSchema = z
 const VoicesConfigSchema = z
   .object({
     version: z.literal(3),
-    profiles: z.record(z.string(), VoiceProfileSchema),
+    profiles: safeRecord(z.string().min(1), VoiceProfileSchema),
   })
   .strict();
 

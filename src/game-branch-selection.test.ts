@@ -14,6 +14,8 @@ import { RuntimeStatus } from "./runtime/status.js";
 import { MemoryController } from "./test-helpers.js";
 import type { RuntimeOutput } from "./core/runtime/runtime-output.js";
 import type { AssetCatalog } from "./core/assets/types.js";
+import { buildCharacterRoster, createCharacterRegistry } from "./core/characters/registry.js";
+import type { CharacterRegistry as RosterRegistry } from "./core/characters/types.js";
 import type { ServerMessage } from "./shared/wire/server-message.js";
 
 const DUMMY_API_KEY = "sk-dummy";
@@ -65,18 +67,45 @@ const CATALOG: AssetCatalog = {
       },
     },
   },
-  characters: {
-    suyao: {
-      characterId: "suyao",
-      scriptName: "苏遥",
-      displayName: "苏遥",
-      spriteSet: "suyao",
-      defaultVariant: "normal",
-      defaultPosition: "left",
-      allowedSpriteSets: ["suyao"],
-    },
-  },
 };
+/**
+ * C7：AssetCatalog.characters 兼容形状已移除——v1 编译边界的展示注册表由
+ * C2 roster 派生（suyao NPC 与旧目录条目等价：脚本名 苏遥、normal 立绘、
+ * 默认 left）。
+ */
+const DSL_REGISTRY: RosterRegistry = createCharacterRegistry(
+  buildCharacterRoster({
+    schemaVersion: 2,
+    scopeId: "dsl-test",
+    playerId: "player_one",
+    characters: [
+      {
+        id: "player_one",
+        name: "玩家",
+        control: "player",
+        initialLabel: "你",
+        persona: "玩家本人（DSL 测试）。",
+      },
+      {
+        id: "suyao",
+        name: "苏遥",
+        control: "npc",
+        initialLabel: "苏遥",
+        persona: "同班同学（DSL 测试）。",
+        presentation: {
+          defaultLook: "normal",
+          defaultPosition: "left",
+          looks: {
+            normal: { spriteSet: "suyao", variant: "normal" },
+            anxious: { spriteSet: "suyao", variant: "anxious" },
+          },
+        },
+      },
+    ],
+  }),
+  CATALOG,
+);
+
 
 function makeMockStatus(): RuntimeStatus {
   return {
@@ -184,7 +213,7 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
       onInteractionOpened: (output) =>
         controller.select(output.interactionId, `${output.interactionId}_opt_0`),
     });
-    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     controller.attach(game);
     await game.run();
 
@@ -247,7 +276,7 @@ describe("repro2: real DSL generator — loaded branch selection", () => {
       onInteractionOpened: (output) =>
         controller.select(output.interactionId, `${output.interactionId}_opt_0`),
     });
-    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     controller.attach(game);
 
     let runError: unknown = null;
@@ -329,7 +358,7 @@ describe("hybrid preview-cancel re-arm then select (real generator)", () => {
       },
       onInputPreviewOpened: (output) => controller.cancel(output.previewId),
     });
-    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     controller.attach(game);
 
     let runError: unknown = null;
@@ -418,7 +447,7 @@ describe("aborted streamed input response then branch select (buffer race)", () 
       },
       onInputPreviewOpened: (output) => controller.cancel(output.previewId),
     });
-    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     controller.attach(game);
 
     let runError: unknown = null;
@@ -486,7 +515,7 @@ describe("stray group after the interaction terminal is discarded (docs §50)", 
       onInteractionOpened: (output) =>
         controller.select(output.interactionId, `${output.interactionId}_opt_0`),
     });
-    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts(), CATALOG);
+    const game = new Game(config, new GeneratorPortFacade(generator), status, media, undefined, makeTestPorts({ characterRegistry: DSL_REGISTRY }), CATALOG);
     controller.attach(game);
 
     let runError: unknown = null;

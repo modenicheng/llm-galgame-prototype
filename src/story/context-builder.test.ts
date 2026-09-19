@@ -219,7 +219,6 @@ describe("buildDslUserPrompt", () => {
         bgm: {},
         soundEffects: {},
         spriteSets: {},
-        characters: {},
       },
     };
 
@@ -277,7 +276,6 @@ function r01RosterRegistry(): RosterRegistry {
     bgm: {},
     soundEffects: {},
     spriteSets: {},
-    characters: {},
   };
   return createCharacterRegistry(
     buildCharacterRoster({
@@ -353,7 +351,6 @@ function castRosterRegistry(): RosterRegistry {
         },
       },
     },
-    characters: {},
   };
   return createCharacterRegistry(
     buildCharacterRoster({
@@ -487,8 +484,28 @@ describe("prompt-level identity rendering (C5 移交 C6 的测试欠账)", () =>
           },
         },
       },
-      // 传了 roster 字符映射也不该出现「不在场」清单（那是 cast 段的职责）
-      { female_A: { scriptName: "契约角色", displayName: "契约角色", spriteSet: "female_A", defaultVariant: "base", defaultPosition: "right", allowedSpriteSets: ["female_A"] } },
+      // 传了 roster 也不该出现「不在场」清单（那是 cast 段的职责）——
+      // 在场集合与 roster 可见角色重合时不输出该行。
+      buildCharacterRoster({
+        schemaVersion: 2,
+        scopeId: "visual-truth-test",
+        playerId: "player_one",
+        characters: [
+          { id: "player_one", name: "玩家", control: "player", initialLabel: "你", persona: "玩家。" },
+          {
+            id: "female_A",
+            name: "契约角色",
+            control: "npc",
+            initialLabel: "契约角色",
+            persona: "契约角色。",
+            presentation: {
+              defaultLook: "base",
+              defaultPosition: "right",
+              looks: { base: { spriteSet: "female_A", variant: "base" } },
+            },
+          },
+        ],
+      }),
     );
     expect(visual).toContain("背景：library");
     expect(visual).toContain("female_A（显示名：契约角色）");
@@ -522,22 +539,46 @@ describe("prompt-level identity rendering (C5 移交 C6 的测试欠账)", () =>
         },
       },
     };
-    const catalogCharacters = {
-      player_one: {
-        scriptName: "玩家",
-        displayName: "你",
-        spriteSet: "",
-        defaultVariant: "",
-        defaultPosition: "right" as const,
-        allowedSpriteSets: [] as string[],
-      },
-    };
-    // identity 在场（buildDslUserPrompt 的调用形态）：不传 roster 映射 → 无「不在场」。
+    // C7：不在场名单从 registry roster 派生（不再走模型目录 characters）。
+    // 驱动名单 = 有舞台绑定但未登台的 roster 角色（玩家无绑定，不进名单）。
+    const legacyRoster = buildCharacterRoster({
+      schemaVersion: 2,
+      scopeId: "identity-delta-test",
+      playerId: "player_one",
+      characters: [
+        { id: "player_one", name: "玩家", control: "player", initialLabel: "你", persona: "玩家。" },
+        {
+          id: "female_A",
+          name: "契约角色",
+          control: "npc",
+          initialLabel: "契约角色",
+          persona: "契约角色。",
+          presentation: {
+            defaultLook: "base",
+            defaultPosition: "right",
+            looks: { base: { spriteSet: "female_A", variant: "base" } },
+          },
+        },
+        {
+          id: "yuki",
+          name: "由纪",
+          control: "npc",
+          initialLabel: "由纪",
+          persona: "同级生。",
+          presentation: {
+            defaultLook: "base",
+            defaultPosition: "left",
+            looks: { base: { spriteSet: "female_A", variant: "base" } },
+          },
+        },
+      ],
+    });
+    // identity 在场（buildDslUserPrompt 的调用形态）：不传 roster → 无「不在场」。
     const withIdentity = serializeVisualContext(visualState);
     expect(withIdentity).not.toContain("不在场");
-    // identity 缺省（兼容路径）：传 roster 映射 → 列出不在场（旧推导行为）。
-    const legacy = serializeVisualContext(visualState, catalogCharacters);
-    expect(legacy).toContain("不在场：你");
+    // identity 缺省（兼容路径）：从 roster 派生 → 列出不在场（由纪未登台）。
+    const legacy = serializeVisualContext(visualState, legacyRoster);
+    expect(legacy).toContain("不在场：由纪");
     // 整 prompt 层面双向钉死（buildDslUserPrompt 按是否携带 identity 切换）。
     const identityPrompt = buildDslUserPrompt(3, {
       prompts: makePrompts(),
@@ -554,7 +595,6 @@ describe("prompt-level identity rendering (C5 移交 C6 的测试欠账)", () =>
         bgm: {},
         soundEffects: {},
         spriteSets: {},
-        characters: catalogCharacters,
       },
     });
     expect(identityPrompt).not.toContain("不在场：");
@@ -564,17 +604,27 @@ describe("prompt-level identity rendering (C5 移交 C6 的测试欠账)", () =>
       generationNonce: "d41f",
       targetLines: 6,
       tailVisualState: visualState,
+      // C7：identity 缺省的兼容路径从 registry roster 派生不在场名单
+      //（不再走模型目录 characters）。
+      registry: createCharacterRegistry(legacyRoster, {
+        guidance: "",
+        backgrounds: {},
+        bgm: {},
+        soundEffects: {},
+        spriteSets: {
+          female_A: { id: "female_A", variants: { base: { id: "base", src: "a.png", description: "" } } },
+        },
+      }),
       modelAssetCatalog: {
         guidance: "",
         backgrounds: {},
         bgm: {},
         soundEffects: {},
         spriteSets: {},
-        characters: catalogCharacters,
       },
     } as DslContextInput;
     const legacyPrompt = buildDslUserPrompt(3, withoutIdentity as DslContextInput);
-    expect(legacyPrompt).toContain("不在场：你");
+    expect(legacyPrompt).toContain("不在场：由纪");
   });
 });
 
@@ -598,16 +648,6 @@ describe("serializeModelAssetCatalog roster 去重（C6 §5.4）", () => {
         variants: { base: { description: "常态" }, smile: { description: "微笑" } },
       },
     },
-    characters: {
-      female_A: {
-        scriptName: "契约角色",
-        displayName: "契约角色",
-        spriteSet: "female_A",
-        defaultVariant: "base",
-        defaultPosition: "right",
-        allowedSpriteSets: ["female_A"],
-      },
-    },
   };
 
   it("registry 在场：外观按角色列 look，不再给全量 spriteSets + characters 双份", () => {
@@ -618,12 +658,12 @@ describe("serializeModelAssetCatalog roster 去重（C6 §5.4）", () => {
     expect(text).not.toContain("可用立绘组");
   });
 
-  it("无 roster 兼容路径：旧渲染字节不变（spriteSets 清单 + characters 映射）", () => {
+  it("C7：无 roster 兼容路径只列素材清单（模型目录不再携带 characters 段）", () => {
     const text = serializeModelAssetCatalog(catalog);
     expect(text).toContain("立绘组 female_A：契约角色立绘");
     expect(text).toContain("  base — 常态");
-    expect(text).toContain("脚本名：契约角色");
-    expect(text).toContain("可用立绘组：female_A");
+    expect(text).not.toContain("脚本名：契约角色");
+    expect(text).not.toContain("可用立绘组");
   });
 
   it("roster 里无 presentation 的角色：明示「可以说话，不配立绘」；玩家标注不由你代写台词", () => {
@@ -643,7 +683,6 @@ describe("serializeModelAssetCatalog roster 去重（C6 §5.4）", () => {
         bgm: {},
         soundEffects: {},
         spriteSets: {},
-        characters: {},
       },
     );
     const text = serializeModelAssetCatalog(catalog, bare.roster);

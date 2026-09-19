@@ -26,6 +26,5 @@ export function makeAssetCatalog(): AssetCatalog {
         },
       },
     },
-    characters: {},
   };
 }

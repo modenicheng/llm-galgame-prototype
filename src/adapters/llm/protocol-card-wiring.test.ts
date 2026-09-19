@@ -48,7 +48,6 @@ const ASSETS: AssetCatalog = {
   spriteSets: {
     heroine: { id: "heroine", variants: { base: { id: "base", src: "a.png", description: "" } } },
   },
-  characters: {},
 };
 
 function registry() {

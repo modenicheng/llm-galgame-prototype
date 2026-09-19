@@ -107,14 +107,6 @@ media:
 # 移除——角色到 profile 的权威绑定由根目录 characters.yaml 名册给出，
 # 两侧冲突会在装配期大声报错（禁止 last-wins）。缺任一角色 → 该角色
 # 台词静音（build-skip no-character）。
-characters:
-  suyao:
-    name: 苏遥
-    voice_profile: suyao_main
-  linche:
-    name: 林澈
-    voice_profile: linche_main
-
 game:
   sessions_dir: sessions
   show_line_ids: true

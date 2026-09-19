@@ -6,7 +6,6 @@ import type {
   AssetCatalog,
   BackgroundAsset,
   BgmAsset,
-  CharacterAssetBinding,
   SoundEffectAsset,
   SpriteSet,
   SpriteVariant,
@@ -15,8 +14,6 @@ import type {
 // ---------------------------------------------------------------------------
 // Raw YAML shape (snake_case, docs §58)
 // ---------------------------------------------------------------------------
-
-const POSITIONS = ["far_left", "left", "center", "right", "far_right"] as const;
 
 const AssetEntrySchema = z.object({
   src: z.string().min(1),
@@ -33,22 +30,12 @@ const SpriteSetSchema = z.object({
   variants: z.record(z.string(), SpriteVariantSchema),
 });
 
-const CharacterBindingSchema = z.object({
-  script_name: z.string().min(1),
-  display_name: z.string().min(1),
-  sprite_set: z.string().min(1),
-  default_variant: z.string().min(1),
-  default_position: z.enum(POSITIONS),
-  allowed_sprite_sets: z.array(z.string().min(1)).optional(),
-});
-
 const ResourceYamlSchema = z.object({
   guidance: z.string(),
   backgrounds: z.record(z.string(), AssetEntrySchema),
   bgm: z.record(z.string(), AssetEntrySchema),
   sound_effects: z.record(z.string(), AssetEntrySchema),
   sprite_sets: z.record(z.string(), SpriteSetSchema),
-  characters: z.record(z.string(), CharacterBindingSchema),
 });
 
 type ResourceYaml = z.infer<typeof ResourceYamlSchema>;
@@ -91,6 +78,15 @@ export async function loadAssetCatalog(filePath: string): Promise<AssetCatalog> 
     throw new Error(`资产目录格式错误 ${absolutePath}: YAML 顶层必须是一个对象。`);
   }
 
+  // C7：资源目录不再承载角色身份（真源是 characters.yaml roster / canon）。
+  // 顶层出现 characters 键时显式报错，防止静默丢弃让作者以为绑定仍生效。
+  if (Object.hasOwn(parsed, "characters")) {
+    throw new Error(
+      `资产目录校验失败 ${absolutePath}: characters 身份定义已迁移（真源是 characters.yaml /` +
+        ` 世界 canon roster）；资源目录只承载素材，请删除本段。`,
+    );
+  }
+
   const result = ResourceYamlSchema.safeParse(parsed);
   if (!result.success) {
     const detail = result.error.issues
@@ -115,32 +111,8 @@ async function validateCatalog(
 ): Promise<void> {
   const rootResolved = resolve(assetRoot);
 
-  for (const [characterId, binding] of Object.entries(catalog.characters)) {
-    // hasOwn: prototype keys (e.g. "constructor") must not satisfy the lookup.
-    const set = catalog.spriteSets[binding.spriteSet];
-    if (set === undefined || !Object.hasOwn(catalog.spriteSets, binding.spriteSet)) {
-      throw new Error(
-        `资产目录校验失败: characters.${characterId}.sprite_set "${binding.spriteSet}" 不存在于 sprite_sets`,
-      );
-    }
-    if (!Object.hasOwn(set.variants, binding.defaultVariant)) {
-      throw new Error(
-        `资产目录校验失败: characters.${characterId}.default_variant "${binding.defaultVariant}" 不存在于 sprite_set "${binding.spriteSet}"`,
-      );
-    }
-    if (!binding.allowedSpriteSets.includes(binding.spriteSet)) {
-      throw new Error(
-        `资产目录校验失败: characters.${characterId}.allowed_sprite_sets 必须包含自身的 sprite_set "${binding.spriteSet}"`,
-      );
-    }
-    for (const allowed of binding.allowedSpriteSets) {
-      if (!Object.hasOwn(catalog.spriteSets, allowed)) {
-        throw new Error(
-          `资产目录校验失败: characters.${characterId}.allowed_sprite_sets 引用不存在的 sprite_set "${allowed}"`,
-        );
-      }
-    }
-  }
+  // C7：角色→素材的交叉校验随 characters 身份段一并移除——look 绑定由
+  // CharacterRegistry 构造时按 sprite_sets 注册表校验（core/characters）。
 
   const srcs: Array<{ where: string; src: string }> = [
     ...Object.entries(catalog.backgrounds).map(([id, a]) => ({ where: `backgrounds.${id}`, src: a.src })),
@@ -215,18 +187,8 @@ function mapToCatalog(data: ResourceYaml): AssetCatalog {
     };
   }
 
-  const characters: Record<string, CharacterAssetBinding> = {};
-  for (const [characterId, binding] of Object.entries(data.characters)) {
-    characters[characterId] = {
-      characterId,
-      scriptName: binding.script_name,
-      displayName: binding.display_name,
-      spriteSet: binding.sprite_set,
-      defaultVariant: binding.default_variant,
-      defaultPosition: binding.default_position,
-      allowedSpriteSets: binding.allowed_sprite_sets ?? [binding.sprite_set],
-    };
-  }
+  // C7：资源目录不承载角色身份——AssetCatalog.characters 兼容形状已移除，
+  // 身份真源是 characters.yaml roster / 世界 canon（C2 CharacterRegistry）。
 
   return {
     guidance: data.guidance.trim(),
@@ -234,6 +196,5 @@ function mapToCatalog(data: ResourceYaml): AssetCatalog {
     bgm,
     soundEffects,
     spriteSets,
-    characters,
   };
 }

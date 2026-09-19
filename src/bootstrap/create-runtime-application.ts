@@ -46,6 +46,7 @@ import { VoiceDirectionHub } from "../application/audio/voice-direction-hub.js";
 import type { VoiceDirectionTarget } from "../application/audio/performance-compiler.js";
 import {
   DASHSCOPE_VOICE_FALLBACK_ENV,
+  audioRosterFromViews,
   mergeVoiceDesignViews,
   type VoiceDesignViews,
 } from "../application/audio/voice-design-views.js";
@@ -65,8 +66,12 @@ import type {
   RuntimeApplicationOptions,
 } from "../application/runtime-application.js";
 import { loadAssetCatalog } from "../application/assets/asset-catalog-loader.js";
-import { createCharacterRegistry, type CharacterRegistryProvider } from "../core/characters/registry.js";
-import type { CharacterRoster } from "../core/characters/types.js";
+import {
+  buildCharacterRoster,
+  createCharacterRegistry,
+  type CharacterRegistryProvider,
+} from "../core/characters/registry.js";
+import type { CharacterRegistry, CharacterRoster } from "../core/characters/types.js";
 import { loadCharacterPackRoster } from "../adapters/static/character-pack-loader.js";
 import {
   isRosterCapableCanon,
@@ -163,10 +168,11 @@ function buildAudioStack(
   voices: Awaited<ReturnType<typeof loadVoices>>,
   provider: TtsProviderPort | null,
   wiring: {
-    characters: Record<string, { name: string; voice_profile: string }>;
+    /** C7：音频身份真源——与 writer/game 同源 roster 派生的 registry。 */
+    registry: CharacterRegistry;
     factoryProvider: "dashscope" | "local" | "mock";
     modelProfile: string;
-    voiceDirectionFor?: (speakerId: string) => VoiceDirectionTarget | undefined;
+    voiceDirectionFor?: (characterId: string) => VoiceDirectionTarget | undefined;
     voiceDesigns?: Record<string, CharacterVoiceDesign>;
   },
 ): {
@@ -178,7 +184,7 @@ function buildAudioStack(
   const synthesis = config.media.audio.synthesis;
   const catalog = new AudioCatalogServiceImpl();
   const factory = new AudioDescriptorFactory({
-    characters: wiring.characters,
+    registry: wiring.registry,
     voices,
     // The factory needs a discriminator even when synthesis is disabled;
     // "mock" yields stable mock bindings for every speaker.
@@ -213,36 +219,6 @@ function buildAudioStack(
 }
 
 /**
- * M1（§3.2/§6.1）：角色 → 音色 profile 的绑定由 roster 给出（按 ID join），
- * config.characters 只保留 author 兼容视图。同 ID 出现在两侧且 profile
- * 不同 = 意图不明的同键覆盖，直接报错（禁止 last-wins）；roster 侧新增
- * 绑定补入；其余 config 键原样保留（兼容边界 C4/V1 收口）。
- */
-function mergeRosterVoiceBindings(
-  authorCharacters: Record<string, { name: string; voice_profile: string }>,
-  roster: CharacterRoster | undefined,
-): Record<string, { name: string; voice_profile: string }> {
-  if (roster === undefined) return authorCharacters;
-  const merged: Record<string, { name: string; voice_profile: string }> = {
-    ...authorCharacters,
-  };
-  for (const character of roster.characters) {
-    if (character.voiceProfileId === undefined) continue;
-    const existing = Object.hasOwn(merged, character.id) ? merged[character.id] : undefined;
-    if (existing !== undefined) {
-      if (existing.voice_profile !== character.voiceProfileId) {
-        throw new Error(
-          `角色音色绑定冲突（${character.id}）：config.characters 指向 ${existing.voice_profile}，roster 指向 ${character.voiceProfileId}——意图不明的同键覆盖，禁止 last-wins`,
-        );
-      }
-      continue;
-    }
-    merged[character.id] = { name: character.name, voice_profile: character.voiceProfileId };
-  }
-  return merged;
-}
-
-/**
  * V2（角色音频特征设计 §4.1）：世界创建期落盘的编剧画像 → factory/导演
  * 共用的合并视图（缺失/无画像角色 = 与 author 视图等价）。文件损坏大声
  * 抛错（世界资产损坏语义）。
@@ -250,14 +226,15 @@ function mergeRosterVoiceBindings(
 async function buildVoiceViews(input: {
   gamesRoot: string;
   gameId: string;
-  config: AppConfig;
+  /** M1 绑定基座（C7：config.characters 退役，基座 = roster.voiceProfileId）。 */
+  roster: CharacterRoster | undefined;
   voices: Awaited<ReturnType<typeof loadVoices>>;
   provider: "dashscope" | "local" | "mock";
   modelProfile: string;
 }): Promise<VoiceDesignViews> {
   const designFile = await new VoiceDesignStore(input.gamesRoot, input.gameId).load();
   return mergeVoiceDesignViews({
-    authorCharacters: input.config.characters,
+    roster: input.roster,
     authorVoices: input.voices,
     designFile,
     provider: input.provider,
@@ -469,28 +446,50 @@ export async function createRuntimeApplication(
       ? synthesisProvider
       : "mock";
   const modelProfile = config.media.audio.synthesis?.model_profile ?? "cosyvoice_v3_flash";
-  // V2（角色音频特征设计 §4.1）：编剧画像 → 动态角色注入视图。M1：音频
-  // 绑定基座 = config.characters ⊕ roster 的 voiceProfileId（按 ID join，
-  // 同键不同 profile 的意图不明覆盖直接报错，禁止 last-wins）。
+  // V2/C7（角色音频特征设计 §4.1 + §6.1）：编剧画像 → 动态角色注入视图。
+  // M1 绑定基座 = roster.voiceProfileId（键恒为稳定 CharacterId；
+  // config.characters 别名键已移除）。工厂侧 registry 与 writer/game 同源
+  // roster：静态世界绑定在 characters.yaml；动态世界由设计注入补绑定
+  //（audioRosterFromViews，身份不变，仅补 voiceProfileId）。legacy 世界
+  //（pre-M1 canon）无 roster：音频走显式不可用降级（文字照播），绝不按
+  // 名牌猜身份。
   const voiceViews = await buildVoiceViews({
     gamesRoot,
     gameId,
-    config: {
-      ...config,
-      characters: mergeRosterVoiceBindings(
-        config.characters,
-        characterRegistry.registry?.roster,
-      ),
-    },
+    roster: characterRegistry.registry?.roster,
     voices,
     provider: factoryProvider,
     modelProfile,
   });
+  const audioRegistry: CharacterRegistry =
+    characterRegistry.registry !== undefined
+      ? createCharacterRegistry(
+          audioRosterFromViews(characterRegistry.registry.roster, voiceViews),
+          assetCatalog,
+        )
+      : createCharacterRegistry(
+          buildCharacterRoster({
+            schemaVersion: 2,
+            scopeId: `world:${gameId}`,
+            playerId: "player",
+            characters: [
+              {
+                id: "player",
+                name: "玩家",
+                control: "player",
+                initialLabel: "你",
+                persona: "legacy 世界无名玩家（音频工厂占位 roster）。",
+              },
+            ],
+          }),
+          assetCatalog,
+        );
   // 导演声音指导桥（角色音频特征设计 §4.2）：hub 先于会话存在，
-  // buildGameFor 建完 game 后重绑 source。
+  // buildGameFor 建完 game 后重绑 source。工厂侧只按稳定 characterId 查询
+  //（R18 的导演侧键校验属 M2）。
   const voiceDirectionHub = new VoiceDirectionHub();
   const { catalog, planner, ttsTasks, taskStatusListeners } = buildAudioStack(config, voiceViews.voices, provider, {
-    characters: voiceViews.characters,
+    registry: audioRegistry,
     factoryProvider,
     modelProfile,
     voiceDirectionFor: voiceDirectionHub.for.bind(voiceDirectionHub),

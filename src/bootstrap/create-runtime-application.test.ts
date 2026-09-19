@@ -178,11 +178,7 @@ describe("createRuntimeApplication", () => {
   });
 
   it("builds a RuntimeApplication with all wiring exposed", async () => {
-    const config = makeTestConfig({
-      characters: {
-        suyao: { name: "苏遥", voice_profile: "suyao_main" },
-      },
-    });
+    const config = makeTestConfig();
     const app = await createRuntimeApplication({ config });
 
     expect(app.game).toBeDefined();
@@ -266,10 +262,6 @@ describe("createRuntimeApplication", () => {
           "  port: 0",
           "  open_browser: false",
           "  controller_limit: 1",
-          "characters:",
-          "  suyao:",
-          "    name: 苏遥",
-          "    voice_profile: suyao_main",
           "",
         ].join("\n"),
         "utf8",
@@ -319,9 +311,6 @@ function dashscopeConfig(): AppConfig {
           sample_rate: 22050,
         },
       },
-    },
-    characters: {
-      suyao: { name: "苏遥", voice_profile: "suyao_main" },
     },
   });
 }
@@ -394,11 +383,7 @@ function dashscopeConfig(): AppConfig {
   });
 
   it("drives a session end-to-end with the MemoryController and the run loop exits", async () => {
-    const config = makeTestConfig({
-      characters: {
-        suyao: { name: "苏遥", voice_profile: "suyao_main" },
-      },
-    });
+    const config = makeTestConfig();
     const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-session-"));
     generatorState.opening = {
       events: [],
@@ -430,11 +415,7 @@ function dashscopeConfig(): AppConfig {
   });
 
   it("shutdown dispatches the shutdown command and stops a pending run loop", async () => {
-    const config = makeTestConfig({
-      characters: {
-        suyao: { name: "苏遥", voice_profile: "suyao_main" },
-      },
-    });
+    const config = makeTestConfig();
     const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-session-"));
     // Opening yields only an input interaction: no controller attached, so
     // run() parks inside handleInteractionInput awaiting preview_input.
@@ -484,11 +465,7 @@ function dashscopeConfig(): AppConfig {
   });
 
   it("shutdown flushes narrative pending events and game snapshot into the session dir", async () => {
-    const config = makeTestConfig({
-      characters: {
-        suyao: { name: "苏遥", voice_profile: "suyao_main" },
-      },
-    });
+    const config = makeTestConfig();
     const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-flush-"));
     // Opening commits a narration event, then parks inside the input
     // interaction so run() stays pending until shutdown.
@@ -589,9 +566,7 @@ function dashscopeConfig(): AppConfig {
   }
 
   it("M1：生成世界（继续游戏入口）从当前游戏 canon 构建 roster，不掺入 fallback cast", async () => {
-    const config = makeTestConfig({
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
-    });
+    const config = makeTestConfig();
     const root = await mkdtemp(path.join(tmpdir(), "galgame-m1-world-"));
     try {
       const gamesRoot = path.join(root, "games");
@@ -648,9 +623,7 @@ function dashscopeConfig(): AppConfig {
   });
 
   it("M1：缺人物卡的生成世界在启动时由 canon 再生（身份不依赖卡）", async () => {
-    const config = makeTestConfig({
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
-    });
+    const config = makeTestConfig();
     const root = await mkdtemp(path.join(tmpdir(), "galgame-m1-card-"));
     try {
       const gamesRoot = path.join(root, "games");
@@ -680,9 +653,7 @@ function dashscopeConfig(): AppConfig {
   });
 
   it("M1：旧世界（canon 无 control 元信息）保持 legacy 兼容模式，不猜测玩家", async () => {
-    const config = makeTestConfig({
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
-    });
+    const config = makeTestConfig();
     const root = await mkdtemp(path.join(tmpdir(), "galgame-m1-legacy-"));
     try {
       const gamesRoot = path.join(root, "games");
@@ -724,9 +695,7 @@ function dashscopeConfig(): AppConfig {
   });
 
   it("M1：v2 世界 canon 内容损坏（重复 ID）在装配期大声失败——registry 先于任何演员装配", async () => {
-    const config = makeTestConfig({
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
-    });
+    const config = makeTestConfig();
     const root = await mkdtemp(path.join(tmpdir(), "galgame-m1-bad-"));
     try {
       const gamesRoot = path.join(root, "games");
@@ -766,9 +735,7 @@ function dashscopeConfig(): AppConfig {
   });
 
   it("M1：回溯（retrace）入口——同一世界内重开周目，registry 身份不变", async () => {
-    const config = makeTestConfig({
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
-    });
+    const config = makeTestConfig();
     const root = await mkdtemp(path.join(tmpdir(), "galgame-m1-retrace-"));
     try {
       const gamesRoot = path.join(root, "games");
@@ -849,9 +816,7 @@ function dashscopeConfig(): AppConfig {
   }
 
   it("exposes the explicit gameId and a generated one when omitted", async () => {
-    const config = makeTestConfig({
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
-    });
+    const config = makeTestConfig();
     const root = await mkdtemp(path.join(tmpdir(), "galgame-m50-"));
     generatorState.opening = {
       events: [],
@@ -883,9 +848,7 @@ function dashscopeConfig(): AppConfig {
   });
 
   it("reuses the same graph world and restores the cursor across launches with an explicit gameId", async () => {
-    const config = makeTestConfig({
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
-    });
+    const config = makeTestConfig();
     const root = await mkdtemp(path.join(tmpdir(), "galgame-m50-"));
     const gamesRoot = path.join(root, "games");
     await seedWorldPrompts(gamesRoot, "game_m50");
@@ -1029,7 +992,6 @@ function dashscopeConfig(): AppConfig {
         },
       },
       game: { sessions_dir: sessionDir },
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
     });
 
     // Two narration lines → two committed events → consolidation fires
@@ -1092,7 +1054,6 @@ function dashscopeConfig(): AppConfig {
         },
       },
       game: { sessions_dir: sessionDir },
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
     });
 
     // 开场：一段旁白 + 一个 choice 交互；选择后走 post-choice 续写结束。
@@ -1154,9 +1115,7 @@ function dashscopeConfig(): AppConfig {
   });
 
   it("restart rebuilds the runtime in place with a fresh game", async () => {
-    const config = makeTestConfig({
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
-    });
+    const config = makeTestConfig();
     const sessionDir = await mkdtemp(path.join(tmpdir(), "galgame-rs-"));
     try {
       const first = await createRuntimeApplication({ config, sessionId: "sess-restart-1", sessionDir, gamesRoot: path.join(sessionDir, "games") });
@@ -1191,7 +1150,6 @@ function dashscopeConfig(): AppConfig {
         },
       },
       game: { sessions_dir: sessionDir },
-      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
     });
 
     // Same envelope as the narrative test: narration groups + segmentEnd

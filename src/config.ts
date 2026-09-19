@@ -190,8 +190,11 @@ export interface AppConfig {
     open_browser: boolean;
     controller_limit: number;
   };
-  /** Character → voice profile mapping (V2). */
-  characters: Record<string, { name: string; voice_profile: string }>;
+  /**
+   * C7：旧 `characters`（角色→音色绑定别名键）兼容形状已移除——绑定由
+   * characters.yaml 的 voiceProfileId / 世界 canon roster 给出。
+   * config.yaml 携带该段在 loadConfig 显式报错，不静默丢弃。
+   */
   game: {
     sessions_dir: string;
     show_line_ids: boolean;
@@ -520,13 +523,6 @@ const ConfigSchema = z.object({
       open_browser: true,
       controller_limit: 1,
     }),
-  characters: z.record(
-    z.string(),
-    z.object({
-      name: z.string().min(1),
-      voice_profile: z.string().min(1),
-    }),
-  ).default({}),
   game: z.object({
     sessions_dir: z.string().min(1).default("sessions"),
     show_line_ids: z.boolean().default(true)
@@ -608,6 +604,19 @@ export async function loadConfig(configPath: string): Promise<AppConfig> {
   const absolutePath = path.resolve(configPath);
   const raw = await readFile(absolutePath, "utf8");
   const parsed: unknown = parse(raw);
+  // C7：已移除的 characters 段（角色→音色绑定别名键）携带即显式报错——
+  // 静默丢弃会让作者以为绑定仍生效（与资源目录 characters 拒绝同构）。
+  // 绑定请写 characters.yaml 的 voiceProfileId（M1 roster）。
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    Object.hasOwn(parsed, "characters")
+  ) {
+    throw new Error(
+      `config.yaml 的 characters 段已移除（C7）：角色→音色绑定由 characters.yaml 的 ` +
+        `voiceProfileId / 世界 canon roster 给出。请删除本段。`,
+    );
+  }
   return ConfigSchema.parse(parsed) as AppConfig;
 }
 

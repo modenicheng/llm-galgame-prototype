@@ -287,11 +287,13 @@ export class StoryGenerator {
     this.modelCatalog = catalog ? toModelCatalog(catalog) : undefined;
     this.assetCatalog = catalog;
     this.characterRegistry = characterRegistry;
-    if (catalog !== undefined) {
+    // C7：行头归一化的已知说话人集合从 roster 派生（正式 name + 稳定 ID），
+    // 不再走资产目录 characters 兼容形状。
+    if (characterRegistry !== undefined) {
       const speakers = new Set<string>();
-      for (const [characterId, binding] of Object.entries(catalog.characters)) {
-        speakers.add(binding.scriptName);
-        speakers.add(characterId);
+      for (const definition of characterRegistry.roster.characters) {
+        speakers.add(definition.name);
+        speakers.add(definition.id);
       }
       this.knownSpeakers = speakers;
     }
@@ -393,7 +395,6 @@ export class StoryGenerator {
         bgm: {},
         soundEffects: {},
         spriteSets: {},
-        characters: {},
       },
       protocolVersion: identity?.protocolVersion ?? 1,
     });
