@@ -16,6 +16,7 @@ import {
   buildCharacterRoster,
   createCharacterRegistry,
 } from "./core/characters/registry.js";
+import { createCharacterRuntimeState } from "./core/characters/types.js";
 import type { CharacterRegistry as RosterRegistry } from "./core/characters/types.js";
 import type { AssetCatalog } from "./core/assets/types.js";
 import type { StoryState, GenerationEnvelope } from "./story/types.js";
@@ -1072,5 +1073,99 @@ describe("DSL mode generation", () => {
       nonce: expect.any(String),
       reason: "buffer",
     });
+  });
+
+  it("protocolCardText 无 identity 兼容回退与显式 Game 等价 identity 产出同一张卡（C6-port minor 等价测试）", async () => {
+    // 生产路径恒传 identity（Game.generationIdentity）；无 identity 的直连
+    // 调用（窄测试）从 roster 派生「全体 NPC 可发声 + 全体在场」的兼容
+    // cast。断言该回退与显式传入 Game 同源推导的 cast + protocolVersion 1
+    // 得到的任务协议卡逐字节一致——两条派生路径不许各自漂移。
+    const assets: AssetCatalog = {
+      guidance: "",
+      backgrounds: {},
+      bgm: {},
+      soundEffects: {},
+      spriteSets: {},
+    };
+    const registry = createCharacterRegistry(
+      buildCharacterRoster({
+        schemaVersion: 2,
+        scopeId: "llm-card-equiv",
+        playerId: "player_one",
+        characters: [
+          {
+            id: "player_one",
+            name: "玩家",
+            control: "player",
+            initialLabel: "你",
+            persona: "玩家本人（卡等价向量）。",
+          },
+          {
+            id: "npc_a",
+            name: "角色甲",
+            control: "npc",
+            initialLabel: "角色甲",
+            persona: "契约向量角色。",
+          },
+        ],
+      }),
+      assets,
+    );
+    const openingTemplate = makeTestInstructions().opening;
+
+    const runOnce = async (identity?: unknown): Promise<string> => {
+      const gen = new StoryGenerator(
+        makeTestConfig(),
+        makeTestPrompts(),
+        makeTestInstructions(),
+        DUMMY_API_KEY,
+        undefined,
+        undefined,
+        undefined,
+        registry,
+      );
+      let user = "";
+      (gen as any).client = {
+        chat: {
+          completions: {
+            create: vi.fn(async (request: { messages: Array<{ content: string }> }) => {
+              user = request.messages[1]!.content as string;
+              const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(user)?.[1] ?? "aaaa";
+              return dslStream(["开场旁白。", `@end ${nonce} buffer`]);
+            }),
+          },
+        },
+      };
+      await (gen as any).generateOpening(1, createInitialState(), undefined, identity);
+      // 卡区 = 【任务协议卡：… 至任务模板之前；nonce 逐次不同，归一后再比。
+      const start = user.indexOf("【任务协议卡：");
+      const end = user.indexOf(openingTemplate);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      const nonce = /生成段 nonce：([0-9a-f]{4})/.exec(user)?.[1] ?? "";
+      return user
+        .slice(start, end)
+        .split(nonce)
+        .join("<nonce>");
+    };
+
+    const fallbackCard = await runOnce();
+    // 显式 identity = Game.generationIdentity 的 roster 路径同款推导
+    //（game.ts：NPC 过滤 + 全体参与者 + config 缺省协议版本 1）。
+    const gameEquivalentIdentity = {
+      protocolVersion: 1,
+      rosterRevision: registry.roster.revision,
+      cast: {
+        allowedSpeakerIds: registry.roster.characters
+          .filter((definition) => definition.control === "npc")
+          .map((definition) => definition.id),
+        sceneParticipantIds: registry.roster.characters.map((definition) => definition.id),
+      },
+      characterState: createCharacterRuntimeState(),
+    };
+    const explicitCard = await runOnce(gameEquivalentIdentity);
+    expect(fallbackCard).toBe(explicitCard);
+    // 回退不是空卡：示例说话人来自兼容 cast 的首个 NPC（v1 表面用注册名）。
+    expect(fallbackCard).toContain("角色甲");
   });
 });

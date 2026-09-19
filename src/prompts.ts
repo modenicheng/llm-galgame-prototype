@@ -50,6 +50,14 @@ export interface InstructionSet {
    * Template for recovery continuation (DSL). Placeholders: {nonce},
    * {repair_reason}. main 当前没有收尾（wrapUp）生成路径——模板键保留，
    * 已知变量按 as-built 声明。
+   *
+   * 账本注记（C6-port review minor，V1 落笔）：本键在 main 是**已声明的
+   * 死键**——与已删除的 `ending` 键处置不对称，属有意决策：ending 从未
+   * 被任何生成路径读取（纯死入口，删除 + 一次性弃用诊断）；recovery 是
+   * 共享 instructions.yaml 形状的一部分（campus 侧有真实消费方），删除
+   * 会造成两分支配置形状分叉。处置 = 保留 + schema min(1) 启动校验 +
+   * TEMPLATE_KEY_VARIABLES 变量表钉住（openai-compatible-generator.ts），
+   * 待 main 移植收尾生成路径时直接接线即可。
    */
   recovery: string;
 }

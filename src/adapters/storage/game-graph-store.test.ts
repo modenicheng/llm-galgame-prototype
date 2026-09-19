@@ -511,6 +511,44 @@ describe("M3 快照 v4 与 v3→v4 兼容读取（fixture 矩阵，R24/R25）", 
     }
   });
 
+  it("干净 v4 世界恢复：RestorePoint 不携带 migration（无发现零报告，干净读回无诊断噪音）", async () => {
+    // M3 minor（V1 补测）：migration-on-findings 的另一半——干净 v4 读回
+    // 必须 migration === undefined，而不是空报告对象（报告仅在出现
+    // alias 升级或 unresolved 时携带；否则恢复方无从区分「干净」与
+    // 「有发现但计数恰为零」）。
+    const root = await mkdtemp(path.join(tmpdir(), "galgame-m3clean-"));
+    try {
+      const roster = fixtureRoster();
+      const context = fixtureIdentityContext({ roster: () => roster });
+      const store = new GameGraphStore(root, "game_v4clean", { identity: context });
+      await store.initialize();
+      const identity = makeIdentity({
+        rosterScopeId: roster.scopeId,
+        rosterRevision: roster.revision,
+      });
+      await store.putDecision(
+        makeDecision({ id: "dc_clean", entryState: makeSnapshot({ identity }) }),
+      );
+      await store.putRun({
+        id: "run_clean",
+        origin: { kind: "root" },
+        startedAt: "2026-09-01T10:00:00.000Z",
+      });
+      await store.saveCursor({ runId: "run_clean", position: "dc_clean" });
+
+      const coordinator = new RunGraphCoordinator(store, new FakeClock(), (p) => `${p}v4c`, {
+        identity: context,
+      });
+      const resume = await coordinator.restoreOrCreateRun();
+      if (resume.kind !== "active") throw new Error(`expected active, got ${resume.kind}`);
+      expect(resume.restore.migration).toBeUndefined();
+      expect(resume.restore.pathEvents).toEqual([]);
+      expect(resume.restore.decision.id).toBe("dc_clean");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("旧边负载升级：恢复路径的对白补 characterId（内容摘要不变），migration 报告仅在发现异常时携带", async () => {
     const { root } = await copyFixtureWorld();
     try {

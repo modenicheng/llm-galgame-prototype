@@ -1620,19 +1620,14 @@ export class Game implements InteractionHost {
         cast: { allowedSpeakerIds: ids, sceneParticipantIds: ids },
       };
     }
-    const npcIds = registry.roster.characters
-      .filter((definition) => definition.control === "npc")
-      .map((definition) => definition.id);
+    const cast = this.rosterDefaultCast(registry);
     return {
       identitySchemaVersion: SNAPSHOT_IDENTITY_SCHEMA_VERSION,
       dslProtocolVersion: this.config.dsl?.protocol_version ?? 1,
       rosterScopeId: registry.roster.scopeId,
       rosterRevision: registry.roster.revision,
       characterLabels: labels,
-      cast: {
-        allowedSpeakerIds: npcIds,
-        sceneParticipantIds: registry.roster.characters.map((definition) => definition.id),
-      },
+      cast,
     };
   }
 
@@ -1683,6 +1678,26 @@ export class Game implements InteractionHost {
   }
 
   /**
+   * roster 默认会话 cast（M3 minor 收敛，V1 落笔）：允许说话人 = roster
+   * 全体 NPC（玩家由运行时代言），场景参与者 = roster 全体（含电话/画外/
+   * 无立绘角色）。快照身份块（momentIdentity）、生成身份
+   * （generationIdentity）与导演场景名单（directorSceneCast）三处共用同一
+   * 派生，防漂移；协议卡兼容回退（openai-compatible-generator）与 v3→v4
+   * upcaster 语义相同但输入源不同（注入 registry / roster blob），不在此
+   * 收敛。
+   */
+  private rosterDefaultCast(
+    registry: CoreCharacterRegistry,
+  ): { allowedSpeakerIds: string[]; sceneParticipantIds: string[] } {
+    return {
+      allowedSpeakerIds: registry.roster.characters
+        .filter((definition) => definition.control === "npc")
+        .map((definition) => definition.id),
+      sceneParticipantIds: registry.roster.characters.map((definition) => definition.id),
+    };
+  }
+
+  /**
    * M2 §6.2：导演场景名单——显式会话 cast 上下文（与 generationIdentity
    * 的允许说话人同一权威：roster NPC，含电话/画外/无立绘角色；玩家由
    * 运行时代言，不进模型 voice 指导名单）。registry 缺席的 legacy 会话
@@ -1690,9 +1705,7 @@ export class Game implements InteractionHost {
    */
   private directorSceneCast(): string[] {
     if (this.characterRegistry !== undefined) {
-      return this.characterRegistry.roster.characters
-        .filter((definition) => definition.control === "npc")
-        .map((definition) => definition.id);
+      return this.rosterDefaultCast(this.characterRegistry).allowedSpeakerIds;
     }
     return this.registry.entries().map((entry) => entry.characterId);
   }
@@ -1746,9 +1759,6 @@ export class Game implements InteractionHost {
         sceneParticipantIds: ids,
       });
     }
-    const npcIds = registry.roster.characters
-      .filter((definition) => definition.control === "npc")
-      .map((definition) => definition.id);
     const base =
       branchOptionId !== undefined
         ? this.branchCharacterStates.get(branchOptionId)
@@ -1759,10 +1769,7 @@ export class Game implements InteractionHost {
       rosterRevision: registry.roster.revision,
       // 场景参与者 = 本局 roster 全体（含电话/画外角色；不从立绘推导）。
       // 场景计划接入（后续波次）后改由场景计划给出。
-      cast: {
-        allowedSpeakerIds: npcIds,
-        sceneParticipantIds: registry.roster.characters.map((definition) => definition.id),
-      },
+      cast: this.rosterDefaultCast(registry),
       characterState: cloneCharacterRuntimeState(base ?? this.characterState),
     };
   }
