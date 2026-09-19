@@ -58,7 +58,9 @@ export interface MonitorWriterRepair {
     | "form_prompt_merge"
     | "strip_continue"
     | "sentinel_autoclose"
-    | "narration_label";
+    | "narration_label"
+    /** 检测专用，不改写文本：疑似台词尾缀旁白，仅计数。 */
+    | "tail_narration";
   lineIndex: number;
   message: string;
 }

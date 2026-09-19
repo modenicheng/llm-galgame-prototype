@@ -13,7 +13,11 @@ import { toModelCatalog } from "../../core/assets/catalog.js";
 import type { AssetCatalog, ModelAssetCatalog } from "../../core/assets/types.js";
 import type { VisualState } from "../../core/presentation/types.js";
 import { StreamLineDecoder } from "../../core/protocol/gal-dsl/stream-decoder.js";
-import { parseDslLine, stripNarrationLabel } from "../../core/protocol/gal-dsl/line-parser.js";
+import {
+  detectDialogueTailNarration,
+  parseDslLine,
+  stripNarrationLabel,
+} from "../../core/protocol/gal-dsl/line-parser.js";
 import {
   repairDslClosingLine,
   repairSwappedVisualSlots,
@@ -1187,6 +1191,16 @@ export class StoryGenerator {
             throw error;
           }
 
+          // 疑似台词尾缀旁白：叙述被模型缀在台词同行尾部，会进角色配音。
+          // 无法确定性拆分（可能误伤合法台词），只上报监控计数，播放不变。
+          if (parsed.kind === "dialogue" && detectDialogueTailNarration(parsed.text)) {
+            observer?.onRepair?.(attemptId, {
+              kind: "tail_narration",
+              lineIndex,
+              message: `疑似台词尾缀旁白（未改动，仅计数）：“…${parsed.text.slice(-40)}”。`,
+            });
+          }
+
           // 裸 `@?` 不立刻入 parser：模型高频把表单提示写在下一行（实测
           // deepseek 每次表单都如此），直接入 parser 会在空提示上炸掉整段。
           // 延迟一行等待：下一行是旁白 → 合并为 `@? 提示`；否则按空提示
@@ -1446,6 +1460,16 @@ export class StoryGenerator {
                   tailLabel ?? tailSwap?.line ?? closingRepair?.line ?? trimmed,
                   this.knownSpeakers,
                 );
+                if (
+                  tailParsed.kind === "dialogue" &&
+                  detectDialogueTailNarration(tailParsed.text)
+                ) {
+                  observer?.onRepair?.(attemptId, {
+                    kind: "tail_narration",
+                    lineIndex: tailIndex,
+                    message: `疑似台词尾缀旁白（未改动，仅计数）：“…${tailParsed.text.slice(-40)}”。`,
+                  });
+                }
                 if (
                   tailParsed.kind === "segment_end" &&
                   tailParsed.reason === "interaction" &&

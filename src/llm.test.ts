@@ -713,6 +713,37 @@ describe("DSL mode generation", () => {
     expect(repairs[0]?.message).toContain("旁白自标注前缀");
   });
 
+  it("counts suspected dialogue-tail narration without altering playback", async () => {
+    const repairs: Array<{ kind: string; lineIndex: number; message: string }> = [];
+    const observer = {
+      onAttemptStart: vi.fn(),
+      onDelta: vi.fn(),
+      onLine: vi.fn(),
+      onGroup: vi.fn(),
+      onRepair: vi.fn((_attemptId: string, repair: (typeof repairs)[number]) => repairs.push(repair)),
+      onUsage: vi.fn(),
+      onAttemptEnd: vi.fn(),
+    } as DslStreamObserver;
+    const gen = makeDslGenerator(undefined, observer);
+    const tailText = "定稿啦？剩下的一半留那天。她拈一颗塞进嘴里，又推两颗到我手边。";
+    mockDslClient(gen, (nonce) => [
+      `树莓娘[joyful]: ${tailText}`,
+      `@end ${nonce} interaction`,
+    ]);
+
+    const received: EventGroupDraft[] = [];
+    const envelope = await (gen as any).generateOpening(1, createInitialState(), undefined, {
+      onGroup: (group: EventGroupDraft) => received.push(group),
+    });
+
+    // 拆分不安全：文本原样播出，只是监控多一条检测记录。
+    expect(received).toHaveLength(1);
+    expect(received[0]?.main).toMatchObject({ type: "dialogue", text: tailText });
+    expect(envelope.segmentEnd).toMatchObject({ kind: "complete", reason: "interaction" });
+    expect(repairs.map((repair) => repair.kind)).toEqual(["tail_narration"]);
+    expect(repairs[0]?.message).toContain("未改动，仅计数");
+  });
+
   it("repairs an empty @? into the form end while a form is open", async () => {
     const repairs: Array<{ kind: string; lineIndex: number; message: string }> = [];
     const observer = {

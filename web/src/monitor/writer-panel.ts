@@ -42,6 +42,7 @@ const REPAIR_KIND_LABELS: Record<string, string> = {
   strip_continue: "断行续写",
   sentinel_autoclose: "补哨兵",
   narration_label: "剥旁白标签",
+  tail_narration: "台词尾旁白?",
 };
 
 /** Distance from the bottom inside which the panel keeps following. */

@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { parseDslLine, interpretEndingEpilogue, stripNarrationLabel } from "./line-parser.js";
+import {
+  parseDslLine,
+  interpretEndingEpilogue,
+  stripNarrationLabel,
+  detectDialogueTailNarration,
+} from "./line-parser.js";
 import { DslProtocolError } from "./types.js";
 import type { DslErrorCode } from "./types.js";
 
@@ -572,6 +577,32 @@ describe("旁白 self-label strip (stripNarrationLabel)", () => {
     expect(stripNarrationLabel("旁白君没有冒号。")).toBeNull();
     expect(stripNarrationLabel("旁白：")).toBeNull();
     expect(stripNarrationLabel("旁白：正文。", new Set(["旁白"]))).toBeNull();
+  });
+});
+
+describe("台词尾缀旁白 detection (detectDialogueTailNarration)", () => {
+  // 实测事故形态（2026-09-19 真机局）：动作旁白缀在台词同行尾部，
+  // 叙述被当作台词用该角色配音念出。
+  it("flags narration riding after a sentence-final stop", () => {
+    expect(
+      detectDialogueTailNarration(
+        "定稿啦？那我先把庆功糖分了——剩下的一半留那天。她拈一颗塞进嘴里，又推两颗到我手边。",
+      ),
+    ).toBe(true);
+    expect(detectDialogueTailNarration("出去。她拈起一颗糖塞进嘴里。")).toBe(true);
+    // 句末标点与代词之间允许收尾引号/空白。
+    expect(detectDialogueTailNarration("先走吧。” 她已经出了门。")).toBe(true);
+  });
+
+  it("does not flag plain dialogue without a third-person sentence start", () => {
+    expect(detectDialogueTailNarration("你会怎么跟一个没听过网协的同学介绍这儿？")).toBe(false);
+    expect(detectDialogueTailNarration("唔……她走得也太快了。")).toBe(false);
+    expect(detectDialogueTailNarration("我放轻脚步，贴着墙沿摸到门口。")).toBe(false);
+  });
+
+  it("accepts the known false-positive class — heuristic only, never auto-split", () => {
+    // 句号后「她/他」起句也可能是角色在说第三者：只计数，不改写。
+    expect(detectDialogueTailNarration("你去问她。她会答应的。")).toBe(true);
   });
 });
 
