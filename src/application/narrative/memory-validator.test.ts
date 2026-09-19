@@ -17,7 +17,14 @@ import {
   setupPrerequisitesSatisfied,
   applyThreadOpToState,
   rejectionRule,
+  validateCharacterTags,
+  validateEvidenceRefs,
+  validateReferenceTags,
+  acceptedProposal,
+  rejectedProposal,
+  describeCharacterTag,
 } from "./memory-validator.js";
+import type { MemoryIdentityView } from "./memory-validator.js";
 
 import type { NarrativeConfig } from "../../config.js";
 import type {
@@ -29,6 +36,7 @@ import type {
   ThreadOp,
   SetupOp,
   EpisodeSummaryOp,
+  IdentityValidationIssue,
 } from "../../core/narrative/memory-operation.js";
 import { ThreadOpSchema } from "../../core/narrative/memory-operation.js";
 import type { SetupDirective } from "../../core/narrative/setup-directive.js";
@@ -862,7 +870,6 @@ describe("classifySetup with prerequisites", () => {
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // MA-A 确定性规则（记忆 spec §8.1/§8.2/§8.3）
 // ---------------------------------------------------------------------------
@@ -986,5 +993,259 @@ describe("MA-A deterministic rules", () => {
     expect(
       "payoffMissing" in classifySetup(declared, 1, undefined, true, 50)!,
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §6.2 shared identity validators (C8) — the branch-shared validation shape.
+// Campus carries the registry identity view + evidence; main's fact/belief
+// hooks (M2) extend the same view without changing these contracts.
+// ---------------------------------------------------------------------------
+
+describe("§6.2 identity validators (C8)", () => {
+  function makeIdentityView(
+    overrides: Partial<MemoryIdentityView> = {},
+  ): MemoryIdentityView {
+    return {
+      rosterRevision: "v2-testrev",
+      knownCharacterIds: new Set([
+        "player",
+        "suyao",
+        "linche",
+        "twin_ayaka",
+        "twin_aoi",
+      ]),
+      charactersByDisplayName: new Map([
+        ["苏遥", ["suyao"]],
+        ["林澈", ["linche"]],
+        // 同名两角色：显示名 → 两个 ID，绝不择一合并。
+        ["绫香", ["twin_ayaka", "twin_aoi"]],
+      ]),
+      allowedCharacterIds: new Set(["suyao", "linche"]),
+      evidenceCharacterIds: new Set(["suyao"]),
+      evidenceSeqRange: { min: 1, max: 12 },
+      canonicalLocations: new Set(["clubroom"]),
+      ...overrides,
+    };
+  }
+
+  // -- validateCharacterTags ------------------------------------------------
+
+  describe("validateCharacterTags", () => {
+    it("accepts legal stable IDs within the allowed set (no issues)", () => {
+      const issues = validateCharacterTags(
+        ["suyao", "linche"],
+        makeIdentityView(),
+        "episode.characters",
+      );
+      expect(issues).toEqual([]);
+    });
+
+    it("accepts a registered ID backed by evidence even outside the scene cast", () => {
+      // suyao 不在 allowed（场景名单）但出现在 evidence 中 → 证据支撑获知。
+      const view = makeIdentityView({
+        allowedCharacterIds: new Set(["linche"]),
+        evidenceCharacterIds: new Set(["suyao"]),
+      });
+      expect(validateCharacterTags(["suyao"], view, "episode.characters")).toEqual([]);
+    });
+
+    it("rejects a display-name misfill with UNKNOWN_CHARACTER_ID + path + value", () => {
+      const issues = validateCharacterTags(
+        ["苏遥", "linche"],
+        makeIdentityView(),
+        "episode.characters",
+      );
+      expect(issues).toEqual([
+        {
+          code: "UNKNOWN_CHARACTER_ID",
+          path: "episode.characters[0]",
+          value: "苏遥",
+        },
+      ]);
+    });
+
+    it("rejects an unknown ID with UNKNOWN_CHARACTER_ID", () => {
+      const issues = validateCharacterTags(
+        ["ghost_x"],
+        makeIdentityView(),
+        "episode.characters",
+      );
+      expect(issues).toEqual([
+        {
+          code: "UNKNOWN_CHARACTER_ID",
+          path: "episode.characters[0]",
+          value: "ghost_x",
+        },
+      ]);
+    });
+
+    it("rejects a registered character with no allowed-set membership and no evidence (KNOWLEDGE_NOT_SUPPORTED)", () => {
+      const view = makeIdentityView({
+        allowedCharacterIds: new Set(["suyao"]),
+        evidenceCharacterIds: new Set(["suyao"]),
+      });
+      expect(validateCharacterTags(["linche"], view, "episode.characters")).toEqual([
+        {
+          code: "KNOWLEDGE_NOT_SUPPORTED",
+          path: "episode.characters[0]",
+          value: "linche",
+        },
+      ]);
+    });
+
+    it("keeps an empty allowed set strictly empty (never degrades to unrestricted)", () => {
+      const view = makeIdentityView({
+        allowedCharacterIds: new Set(),
+        evidenceCharacterIds: new Set(),
+      });
+      // 注册表非空（knownCharacterIds 有 5 个），但允许集合为空：任何标签
+      // 都拒——不退化为“全部注册角色可用”。
+      const issues = validateCharacterTags(
+        ["suyao", "linche"],
+        view,
+        "episode.characters",
+      );
+      expect(issues.map((i) => [i.code, i.path, i.value])).toEqual([
+        ["KNOWLEDGE_NOT_SUPPORTED", "episode.characters[0]", "suyao"],
+        ["KNOWLEDGE_NOT_SUPPORTED", "episode.characters[1]", "linche"],
+      ]);
+    });
+
+    it("same-name twins never merge: the shared display name is rejected, both distinct IDs pass", () => {
+      const view = makeIdentityView({
+        allowedCharacterIds: new Set(["twin_ayaka", "twin_aoi"]),
+        evidenceCharacterIds: new Set(),
+      });
+      // 显示名“绫香”同时是两个角色的名字——绝不解析为其中之一。
+      expect(validateCharacterTags(["绫香"], view, "episode.characters")).toEqual([
+        {
+          code: "UNKNOWN_CHARACTER_ID",
+          path: "episode.characters[0]",
+          value: "绫香",
+        },
+      ]);
+      // 两个稳定 ID 各自独立通过，互不合并。
+      expect(
+        validateCharacterTags(["twin_ayaka", "twin_aoi"], view, "episode.characters"),
+      ).toEqual([]);
+    });
+
+    it("reports every offending tag (never masks later errors behind the first)", () => {
+      const issues = validateCharacterTags(
+        ["苏遥", "ghost_x", "linche"],
+        makeIdentityView(),
+        "episode.characters",
+      );
+      expect(issues).toHaveLength(2);
+      expect(issues.map((i) => i.path)).toEqual([
+        "episode.characters[0]",
+        "episode.characters[1]",
+      ]);
+    });
+  });
+
+  // -- validateEvidenceRefs -------------------------------------------------
+
+  describe("validateEvidenceRefs", () => {
+    it("accepts refs inside the committed evidence range", () => {
+      expect(
+        validateEvidenceRefs(["1", "7", "12"], makeIdentityView(), "setupOps[0].evidenceEventIds"),
+      ).toEqual([]);
+    });
+
+    it("rejects out-of-range and non-numeric refs with EVIDENCE_OUT_OF_RANGE + path + value", () => {
+      const issues = validateEvidenceRefs(
+        ["99", "x", "0"],
+        makeIdentityView(),
+        "setupOps[0].evidenceEventIds",
+      );
+      expect(issues.map((i) => [i.code, i.path, i.value])).toEqual([
+        ["EVIDENCE_OUT_OF_RANGE", "setupOps[0].evidenceEventIds[0]", "99"],
+        ["EVIDENCE_OUT_OF_RANGE", "setupOps[0].evidenceEventIds[1]", "x"],
+        ["EVIDENCE_OUT_OF_RANGE", "setupOps[0].evidenceEventIds[2]", "0"],
+      ]);
+    });
+
+    it("skips validation when no evidence range is carried (legacy)", () => {
+      const view = makeIdentityView({ evidenceSeqRange: undefined });
+      expect(
+        validateEvidenceRefs(["99"], view, "setupOps[0].evidenceEventIds"),
+      ).toEqual([]);
+    });
+  });
+
+  // -- validateReferenceTags ------------------------------------------------
+
+  describe("validateReferenceTags", () => {
+    it("accepts tags inside the authority set", () => {
+      expect(
+        validateReferenceTags(["t1", "t2"], new Set(["t1", "t2"]), "episode.threads"),
+      ).toEqual([]);
+    });
+
+    it("rejects unknown tags with INVALID_REFERENCE + path + value", () => {
+      expect(
+        validateReferenceTags(["t1", "t-ghost"], new Set(["t1"]), "episode.threads"),
+      ).toEqual([
+        {
+          code: "INVALID_REFERENCE",
+          path: "episode.threads[1]",
+          value: "t-ghost",
+        },
+      ]);
+    });
+
+    it("skips validation when the authority set is absent (undefined = no authority, not empty)", () => {
+      expect(
+        validateReferenceTags(["任意旧地点"], undefined, "episode.locations"),
+      ).toEqual([]);
+    });
+  });
+
+  // -- ValidatedProposal helpers ---------------------------------------------
+
+  describe("ValidatedProposal helpers", () => {
+    it("acceptedProposal carries the value with empty issues", () => {
+      const proposal = acceptedProposal({ id: "ep_1_1" });
+      expect(proposal.status).toBe("accepted");
+      if (proposal.status === "accepted") {
+        expect(proposal.value).toEqual({ id: "ep_1_1" });
+        expect(proposal.issues).toEqual([]);
+      }
+    });
+
+    it("rejectedProposal carries the issues without a value", () => {
+      const issue: IdentityValidationIssue = {
+        code: "UNKNOWN_CHARACTER_ID",
+        path: "episode.characters[0]",
+        value: "苏遥",
+      };
+      const proposal = rejectedProposal([issue]);
+      expect(proposal.status).toBe("rejected");
+      if (proposal.status === "rejected") {
+        expect(proposal.issues).toEqual([issue]);
+      }
+    });
+  });
+
+  // -- describeCharacterTag (diagnostics only) -------------------------------
+
+  describe("describeCharacterTag", () => {
+    it("explains a display-name misfill without ever resolving it to an ID", () => {
+      const view = makeIdentityView();
+      expect(describeCharacterTag("苏遥", view)).toContain("苏遥");
+      expect(describeCharacterTag("苏遥", view)).toContain("suyao");
+      // 同名两角色：诊断列出全部候选，绝不择一。
+      const twin = describeCharacterTag("绫香", view);
+      expect(twin).toContain("twin_ayaka");
+      expect(twin).toContain("twin_aoi");
+    });
+
+    it("reports plain unknown values as unknown", () => {
+      expect(describeCharacterTag("ghost_x", makeIdentityView())).toContain(
+        "UNKNOWN_CHARACTER_ID",
+      );
+    });
   });
 });

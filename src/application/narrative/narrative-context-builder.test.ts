@@ -190,4 +190,40 @@ describe("renderMemoryProjection MA-A sections", () => {
     });
     expect(renderMemoryProjection(brief, 40)).toContain("未定回收计划");
   });
+
+  // -----------------------------------------------------------------------
+  // C8 §6.2 — recap 自然语言不参与反向实体建表：导演便签里的长线记忆是
+  // 纯文本梗概，按固定格式渲染，绝不从 prose 解析出角色标签/实体表。
+  // -----------------------------------------------------------------------
+  it("renders episode memories as verbatim prose and never derives a character table from the text", () => {
+    const summary = "林澈回忆起苏遥提到的旧终端，两人约好周末去图书馆查证。";
+    const brief = makeBrief({
+      relevantEpisodes: [
+        {
+          id: "ep_1_10",
+          fromEventSeq: 10,
+          toEventSeq: 20,
+          summary,
+          characters: ["linche"],
+          locations: ["library"],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+      ],
+    });
+
+    const note = renderMemoryProjection(brief, 40);
+
+    // 梗概逐字渲染为单行文本。
+    expect(note).toContain(`- 事件 10-20：${summary}`);
+    // 不从 prose 反向建实体表：没有角色清单段、没有“显示名→ID”映射，
+    // 标签数组（characters/locations）不进入便签文本。
+    expect(note).not.toContain("[角色]");
+    expect(note).not.toContain("[出场角色]");
+    expect(note).not.toContain("linche");
+    expect(note).not.toContain("library");
+    expect(note).not.toContain("苏遥→");
+    expect(note).not.toContain("→suyao");
+  });
 });

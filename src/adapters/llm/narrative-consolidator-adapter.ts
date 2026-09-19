@@ -24,12 +24,14 @@ import {
   projectMemoryEvidence,
   renderProjectedEvents,
 } from "../../story/event-projection.js";
+import type { ProjectedEvent } from "../../story/event-projection.js";
 import type { CharacterRegistry } from "../../core/characters/types.js";
 import type {
   MemoryConsolidatorPort,
   ConsolidationRequest,
   ConsolidationResult,
 } from "../../application/narrative/memory-consolidator.js";
+import type { MemoryIdentityView } from "../../application/narrative/memory-validator.js";
 
 // ---------------------------------------------------------------------------
 // System prompt (fixed Chinese instruction — Task 9 brief)
@@ -46,6 +48,8 @@ const SYSTEM_PROMPT =
   "threads/setups 只能引用给定列表中的 id；唯一例外：threadOps 可用 " +
   "type=create 创建全新线程（id 自拟且不得与列表重复，必须携带 " +
   "kind∈{main,character,mystery,relationship,promise} 与 importance∈{major,minor}）。" +
+  "episode.characters 只能使用用户消息「权威角色 ID」清单中的稳定 ID；" +
+  "显示名（角色姓名/名牌）不是 ID，同名角色以稳定 ID 区分，绝不合并。" +
   "summary 不超过 200 字。" +
   "factOps：type=establish 登记剧情已确立、未来会被引用的事实（≤120 字，" +
   "每批最多 3 条；content 用「<主语/范围> + <事实>」句式），type=amend 修订" +
@@ -108,10 +112,26 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
       });
     this.model = opts.api.model;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
+    // 注：main 侧不存在 campus 的 this.registry 未赋值缺陷——main 以
+    // `private readonly opts` 参数属性持有注册表（this.opts.registry 恒
+    // 可用），C5 的注入自始生效。
   }
 
   async consolidate(request: ConsolidationRequest): Promise<ConsolidationResult> {
-    const userMessage = this.buildUserMessage(request);
+    // C8 §6.2（main 接线）：身份视图与记忆证据投影由 MemoryConsolidator
+    // 构造并随 REQUEST 显式携带（campus 在 adapter 构造后随结果回传，
+    // 校验函数零差异）。adapter 只消费：用请求携带的 evidenceEvents 渲染
+    // 身份稳定事件、用 identity 渲染权威 ID 段——模型被告知的权威与提案
+    // 校验同源。请求未携带时回退 C5 行为（adapter 自带 registry 投影），
+    // 再退 legacy 冻结渲染。
+    const evidence =
+      request.evidenceEvents ??
+      (this.opts.registry !== undefined
+        ? projectMemoryEvidence(request.events, this.opts.registry)
+        : undefined);
+    const identity = request.identity;
+
+    const userMessage = this.buildUserMessage(request, evidence, identity);
 
     const response = await this.client.chat.completions.create({
       model: this.model,
@@ -160,16 +180,20 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
   // Helpers
   // -----------------------------------------------------------------------
 
-  private buildUserMessage(request: ConsolidationRequest): string {
+  private buildUserMessage(
+    request: ConsolidationRequest,
+    evidence: readonly ProjectedEvent[] | undefined,
+    identity: MemoryIdentityView | undefined,
+  ): string {
     const parts: string[] = [];
 
     // Events section
     parts.push("===== 剧情事件 =====");
     // C5 §5.1：身份稳定的事件 JSON（registry 缺席 = 兼容路径，冻结 legacy
-    // 渲染）。
+    // 渲染）。C8 起优先渲染请求携带的 evidenceEvents（与 identity 同源）。
     parts.push(
-      this.opts.registry !== undefined
-        ? renderProjectedEvents(projectMemoryEvidence(request.events, this.opts.registry))
+      evidence !== undefined
+        ? renderProjectedEvents(evidence)
         : serializeStoryContextLegacy(request.events),
     );
 
@@ -185,17 +209,39 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
       parts.push(`- ${s.id}（${s.status}）：${s.setup}`);
     }
 
-    // Canonical ids（audit P1-6）：episode 的 characters/locations 只能引用
-    // 权威 ID，否则 EpisodeRetriever 的精确匹配永远落空。
-    if (request.stateCharacters.length > 0) {
-      parts.push("===== 权威角色 ID =====");
-      parts.push(
-        `episode.characters 只能使用以下 ID：${request.stateCharacters.join("、")}`,
-      );
-    }
-    if (request.stateLocation !== "") {
-      parts.push("===== 当前地点 ID =====");
-      parts.push(`episode.locations 只能引用：${request.stateLocation}`);
+    if (identity !== undefined) {
+      // C8 §6.2 权威角色 ID：允许集合 = 证据登场 ∪ 场景名单。空集合
+      // 严格为空——明确告知模型必须输出空数组，不退化为不限。
+      parts.push(`===== 权威角色 ID（roster ${identity.rosterRevision}） =====`);
+      if (identity.allowedCharacterIds.size > 0) {
+        parts.push(
+          `episode.characters 只能使用以下稳定 ID：${[...identity.allowedCharacterIds].join("、")}。` +
+            "显示名（角色姓名/名牌）不是合法取值；同名角色以稳定 ID 区分，绝不合并。",
+        );
+      } else {
+        parts.push(
+          "本批证据无可归因角色，允许集合为空：episode.characters 必须是空数组 []。" +
+            "空允许集合严格为空——任何 ID 或显示名都会被整案拒绝。",
+        );
+      }
+      if (identity.canonicalLocations !== undefined) {
+        parts.push("===== 当前地点 ID =====");
+        parts.push(
+          `episode.locations 只能引用：${request.stateLocation}（其他地点标签将被拒绝）。`,
+        );
+      }
+    } else {
+      // Legacy（无 registry）：兼容渲染冻结，不携带身份权威。
+      if (request.stateCharacters.length > 0) {
+        parts.push("===== 权威角色 ID =====");
+        parts.push(
+          `episode.characters 只能使用以下 ID：${request.stateCharacters.join("、")}`,
+        );
+      }
+      if (request.stateLocation !== "") {
+        parts.push("===== 当前地点 ID =====");
+        parts.push(`episode.locations 只能引用：${request.stateLocation}`);
+      }
     }
 
     return parts.join("\n\n");

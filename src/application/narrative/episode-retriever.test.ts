@@ -164,4 +164,100 @@ describe("retrieveEpisodes", () => {
     retrieveEpisodes(pool, { characters: ["aiko"], locations: [], threads: [], max: 6 });
     expect(pool).toEqual(copy);
   });
+
+  // -----------------------------------------------------------------------
+  // C8 §6.2 — stable-ID tags: 检索只认稳定 CharacterId；显示名不是标签，
+  // recap 自然语言（summary 文本）绝不参与反向实体建表。
+  // -----------------------------------------------------------------------
+  describe("stable-ID tags (C8 §6.2)", () => {
+    it("hits the same character by stable ID after a save/read/restore round trip", () => {
+      const episodes = [
+        ep({ id: "ep-save", toEventSeq: 30, characters: ["female_A"] }),
+        ep({ id: "ep-other", toEventSeq: 20, characters: ["female_B"] }),
+      ];
+      // 保存 → 读取 → 恢复（JSON 序列化往返；存档不重编号稳定 ID）。
+      const restored = JSON.parse(JSON.stringify(episodes)) as EpisodeMemory[];
+
+      const byId = retrieveEpisodes(restored, {
+        characters: ["female_A"],
+        locations: [],
+        threads: [],
+        max: 6,
+      });
+      expect(ids(byId)).toEqual(["ep-save"]);
+
+      const byOther = retrieveEpisodes(restored, {
+        characters: ["female_B"],
+        locations: [],
+        threads: [],
+        max: 6,
+      });
+      expect(ids(byOther)).toEqual(["ep-other"]);
+    });
+
+    it("never matches a display-name query against stable-ID tags (no reverse name resolution)", () => {
+      const episodes = [
+        ep({ id: "ep-id", toEventSeq: 30, characters: ["suyao"] }),
+      ];
+      // “苏遥”是 suyao 的显示名：显示名不是机器键，字符交集精确匹配落空。
+      const byName = retrieveEpisodes(episodes, {
+        characters: ["苏遥"],
+        locations: [],
+        threads: [],
+        max: 6,
+      });
+      expect(byName).toEqual([]);
+      const byId = retrieveEpisodes(episodes, {
+        characters: ["suyao"],
+        locations: [],
+        threads: [],
+        max: 6,
+      });
+      expect(ids(byId)).toEqual(["ep-id"]);
+    });
+
+    it("keeps same-name twin episodes isolated per ID (never merged by name)", () => {
+      const episodes = [
+        ep({ id: "ep-ayaka", toEventSeq: 30, characters: ["twin_ayaka"] }),
+        ep({ id: "ep-aoi", toEventSeq: 20, characters: ["twin_aoi"] }),
+      ];
+      // 两个角色同名“绫香”：按各自稳定 ID 检索互不串线。
+      expect(
+        ids(retrieveEpisodes(episodes, { characters: ["twin_ayaka"], locations: [], threads: [], max: 6 })),
+      ).toEqual(["ep-ayaka"]);
+      expect(
+        ids(retrieveEpisodes(episodes, { characters: ["twin_aoi"], locations: [], threads: [], max: 6 })),
+      ).toEqual(["ep-aoi"]);
+    });
+
+    it("never mines recap prose for identity: summary text mentioning a display name does not match", () => {
+      // summary 自然语言里出现了“苏遥”，但角色标签只有 ["linche"]。
+      // 检索绝不解析 summary 文本建实体表——按“苏遥”查询不得命中。
+      const episodes = [
+        ep({
+          id: "ep-prose",
+          toEventSeq: 30,
+          characters: ["linche"],
+          summary: "林澈回忆起苏遥说过的线索，决定独自去旧图书馆查证。",
+        }),
+      ];
+      expect(
+        retrieveEpisodes(episodes, { characters: ["苏遥"], locations: [], threads: [], max: 6 }),
+      ).toEqual([]);
+      expect(
+        ids(retrieveEpisodes(episodes, { characters: ["linche"], locations: [], threads: [], max: 6 })),
+      ).toEqual(["ep-prose"]);
+    });
+
+    it("an empty characters filter stays empty (contributes no episodes; majors still apply)", () => {
+      // 空过滤集不退化为“全部命中”：只有 major 兜底照常生效。
+      const episodes = [
+        ep({ id: "ep-normal", toEventSeq: 30, characters: ["suyao"] }),
+        ep({ id: "ep-major", toEventSeq: 20, characters: ["linche"], importance: "major" }),
+      ];
+      expect(
+        ids(retrieveEpisodes(episodes, { characters: [], locations: [], threads: [], max: 6 })),
+      ).toEqual(["ep-major"]);
+    });
+  });
 });

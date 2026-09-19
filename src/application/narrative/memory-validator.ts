@@ -5,10 +5,21 @@
  * No IO, no classes — every function is a total pure function returning
  * `string | null` (null = accept). Reason strings are human-readable
  * Chinese diagnostics recorded via `RejectedOp` by later tasks.
+ *
+ * C8 §6.2 additions: the shared identity validators below are the
+ * branch-shared validation core. Campus validates character tags / evidence
+ * refs / reference tags against a `MemoryIdentityView`; main's fact/belief
+ * specifics (M2) extend the same view (fact/belief reference sets, belief
+ * learning sources) without changing these function contracts —
+ * KNOWLEDGE_NOT_SUPPORTED is the code main reuses for belief learning.
  */
 
 import { VALID_THREAD_TRANSITIONS } from "../../core/narrative/memory-types.js";
 
+import type { StoredEvent } from "../../schema.js";
+import { projectMemoryEvidence } from "../../story/event-projection.js";
+import type { ProjectedEvent } from "../../story/event-projection.js";
+import type { CharacterId, CharacterRegistry } from "../../core/characters/types.js";
 import type {
   NarrativeMemoryState,
   PlotThread,
@@ -23,6 +34,8 @@ import type {
   FactOp,
   BeliefOp,
   AuditFinding,
+  IdentityValidationIssue,
+  ValidatedProposal,
 } from "../../core/narrative/memory-operation.js";
 import type { SetupDirective } from "../../core/narrative/setup-directive.js";
 import type { NarrativeConfig } from "../../config.js";
@@ -686,5 +699,260 @@ export function classifySetup(
     urgency: "normal",
     premise: item.setup,
     ...(payoffMissing ? { payoffMissing: true } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// C8 §6.2 — shared identity validation core (campus / main 共用形状)
+//
+// 记忆请求显式携带 registry 身份视图与证据；校验返回 ValidatedProposal
+// （accepted + 空 issues / rejected + IdentityValidationIssue[]），绝不静默
+// 过滤。M2 的 main 侧在同一视图上扩展 fact/belief 引用集与 belief 获知
+// 来源（KNOWLEDGE_NOT_SUPPORTED 复用），不改变本节函数契约。
+// ---------------------------------------------------------------------------
+
+/**
+ * §6.2 记忆身份视图：一次提案校验的全部身份权威。
+ *
+ * - campus：由 NarrativeConsolidatorAdapter 从 registry + 请求证据构造，
+ *   随 ConsolidationResult 返回，供消费方用同一视图校验；
+ * - main（M2）：请求侧直接携带（§6.2 “main 请求必须携带…允许角色及
+ *   evidence 范围”），并扩展 fact/belief 引用集。
+ */
+export interface MemoryIdentityView {
+  /** 校验时的 roster revision（审计溯源）。 */
+  rosterRevision: string;
+  /** 全体已注册角色稳定 ID（含玩家）。 */
+  knownCharacterIds: ReadonlySet<CharacterId>;
+  /**
+   * 显示名 → 同名角色 ID 列表（name 与 initialLabel 都入表）。仅供诊断
+   * 提示与定向修复——绝不用作反向解析：同名两角色的显示名映射到两个
+   * ID，校验时任何显示名标签一律 UNKNOWN_CHARACTER_ID，绝不择一合并。
+   */
+  charactersByDisplayName: ReadonlyMap<string, readonly CharacterId[]>;
+  /**
+   * 本提案允许引用的角色（§6.2 允许角色 ∪ 证据登场）。空集合严格为空：
+   * 任何角色标签都会被拒，绝不退化为“全部注册角色可用”。
+   */
+  allowedCharacterIds: ReadonlySet<CharacterId>;
+  /** 证据事件中实际登场的角色 ID（场景参与获知依据）。 */
+  evidenceCharacterIds: ReadonlySet<CharacterId>;
+  /** 证据事件 seq 区间（已提交，含端点）；undefined = 无证据约束（legacy）。 */
+  evidenceSeqRange: { min: number; max: number } | undefined;
+  /**
+   * 地点权威集合；undefined = 无地点权威（场景地点未知，显式 legacy——
+   * 不是“空集合”，不校验地点标签）。
+   */
+  canonicalLocations: ReadonlySet<string> | undefined;
+}
+
+/** §6.2 accepted 构造子：合法提案（含合法空提案 = no-op）。 */
+export function acceptedProposal<T>(value: T): ValidatedProposal<T> {
+  return { status: "accepted", value, issues: [] };
+}
+
+/** §6.2 rejected 构造子：身份/引用非法——不是 no-op，也不伪装成空成功。 */
+export function rejectedProposal<T>(
+  issues: readonly IdentityValidationIssue[],
+): ValidatedProposal<T> {
+  return { status: "rejected", issues: [...issues] };
+}
+
+/**
+ * 校验角色标签列表（episode.characters 等）。
+ *
+ * - 标签不是注册表稳定 ID（含显示名误填、未知 ID）→ UNKNOWN_CHARACTER_ID；
+ * - 已注册但既不在允许集合也无证据登场 → KNOWLEDGE_NOT_SUPPORTED
+ *   （main 的 belief 获知校验复用本 code）；
+ * - 允许集合为空时严格为空：任何标签都被拒。
+ * 每个违规标签独立成条（path 带下标、value 为原值），不掩盖后续错误。
+ */
+export function validateCharacterTags(
+  tags: readonly string[],
+  view: MemoryIdentityView,
+  basePath: string,
+): IdentityValidationIssue[] {
+  const issues: IdentityValidationIssue[] = [];
+  tags.forEach((tag, index) => {
+    if (!view.knownCharacterIds.has(tag)) {
+      issues.push({
+        code: "UNKNOWN_CHARACTER_ID",
+        path: `${basePath}[${index}]`,
+        value: tag,
+      });
+      return;
+    }
+    if (
+      !view.allowedCharacterIds.has(tag) &&
+      !view.evidenceCharacterIds.has(tag)
+    ) {
+      issues.push({
+        code: "KNOWLEDGE_NOT_SUPPORTED",
+        path: `${basePath}[${index}]`,
+        value: tag,
+      });
+    }
+  });
+  return issues;
+}
+
+/**
+ * 校验证据事件引用（setupOps[].evidenceEventIds）：每个引用必须是整数
+ * seq 且落在已提交区间 [min, max] 内。越界/非数字 → EVIDENCE_OUT_OF_RANGE。
+ * 区间缺席（legacy，无证据权威）不校验。
+ */
+export function validateEvidenceRefs(
+  refs: readonly string[],
+  view: MemoryIdentityView,
+  basePath: string,
+): IdentityValidationIssue[] {
+  const range = view.evidenceSeqRange;
+  if (range === undefined) {
+    return [];
+  }
+  const issues: IdentityValidationIssue[] = [];
+  refs.forEach((ref, index) => {
+    const seq = Number(ref);
+    if (!Number.isInteger(seq) || seq < range.min || seq > range.max) {
+      issues.push({
+        code: "EVIDENCE_OUT_OF_RANGE",
+        path: `${basePath}[${index}]`,
+        value: ref,
+      });
+    }
+  });
+  return issues;
+}
+
+/**
+ * 校验引用标签（episode.threads/setups/locations）：必须存在于权威集合。
+ * knownIds 为 undefined 表示无权威（legacy，不校验）；空集合则每个标签
+ * 都是 INVALID_REFERENCE——空集合不退化为不限。
+ */
+export function validateReferenceTags(
+  tags: readonly string[],
+  knownIds: ReadonlySet<string> | undefined,
+  basePath: string,
+): IdentityValidationIssue[] {
+  if (knownIds === undefined) {
+    return [];
+  }
+  const issues: IdentityValidationIssue[] = [];
+  tags.forEach((tag, index) => {
+    if (!knownIds.has(tag)) {
+      issues.push({
+        code: "INVALID_REFERENCE",
+        path: `${basePath}[${index}]`,
+        value: tag,
+      });
+    }
+  });
+  return issues;
+}
+
+/**
+ * 角色标签的人类可读诊断（只用于 RejectedOp.reason / 定向修复提示）。
+ * 显示名命中时列出全部同名候选——绝不择一，也绝不据此放行标签。
+ */
+export function describeCharacterTag(
+  tag: string,
+  view: MemoryIdentityView,
+): string {
+  const sameName = view.charactersByDisplayName.get(tag);
+  if (sameName !== undefined && sameName.length > 0) {
+    return (
+      `UNKNOWN_CHARACTER_ID：${JSON.stringify(tag)} 是显示名，不是稳定 ID` +
+      `（同名角色：${sameName.join("、")}——同名绝不合并，请改用稳定 ID）`
+    );
+  }
+  return `UNKNOWN_CHARACTER_ID：${JSON.stringify(tag)} 不是注册表稳定 ID`;
+}
+
+/**
+ * 把 §6.2 issues 渲染成单条 reason 字符串（RejectedOp.reason 用）。
+ * 角色类问题附带显示名诊断，便于“最多 1 次定向修复”。
+ */
+export function formatIdentityIssues(
+  issues: readonly IdentityValidationIssue[],
+  view: MemoryIdentityView | undefined,
+): string {
+  return issues
+    .map((issue) => {
+      if (issue.code === "UNKNOWN_CHARACTER_ID" && view !== undefined) {
+        return `${issue.path}：${describeCharacterTag(issue.value, view)}`;
+      }
+      return `${issue.path}=${issue.value}（${issue.code}）`;
+    })
+    .join("；");
+}
+
+/**
+ * §6.2 身份视图构造（main：请求侧，campus 的对等物在 adapter 内构造后
+ * 随 ConsolidationResult 回传）：
+ * - 允许集合 = 证据登场角色 ∪（场景名单 ∩ 注册表）——场景名单中的非
+ *   注册表字符串是 legacy 残留，只在此处做请求侧归一（不影响提案校验
+ *   的严格性）；
+ * - 显示名表（name/initialLabel → 同名 ID 列表）仅供诊断提示，绝不
+ *   反向解析；
+ * - 证据区间 = [1, 本批最后已提交 seq]；
+ * - 地点权威：场景地点非空才有（空字符串 = 无权威，不是“空集合”）。
+ *
+ * M2 扩展点：main 的 fact/belief 引用集与 belief 获知来源在同一视图上
+ * 扩展（KNOWLEDGE_NOT_SUPPORTED 复用），不改变本函数与校验函数契约。
+ */
+export function buildMemoryIdentityView(input: {
+  events: readonly StoredEvent[];
+  registry: CharacterRegistry;
+  stateCharacters: readonly string[];
+  stateLocation: string;
+  /** 预先算好的记忆证据投影（同一批 events + registry）；缺席则现算。 */
+  evidence?: readonly ProjectedEvent[];
+}): MemoryIdentityView {
+  const { registry } = input;
+  const evidence =
+    input.evidence ?? projectMemoryEvidence(input.events, registry);
+
+  const evidenceCharacterIds = new Set<CharacterId>();
+  for (const event of evidence) {
+    if (event.characterId !== undefined) {
+      evidenceCharacterIds.add(event.characterId);
+    }
+  }
+  const allowedCharacterIds = new Set<CharacterId>(evidenceCharacterIds);
+  for (const id of input.stateCharacters) {
+    if (registry.get(id) !== undefined) {
+      allowedCharacterIds.add(id);
+    }
+  }
+
+  const charactersByDisplayName = new Map<string, CharacterId[]>();
+  for (const definition of registry.roster.characters) {
+    for (const label of [definition.name, definition.initialLabel]) {
+      const ids = charactersByDisplayName.get(label) ?? [];
+      if (!ids.includes(definition.id)) {
+        ids.push(definition.id);
+      }
+      charactersByDisplayName.set(label, ids);
+    }
+  }
+
+  let maxSeq = 0;
+  for (const event of input.events) {
+    if (event.seq > maxSeq) {
+      maxSeq = event.seq;
+    }
+  }
+
+  return {
+    rosterRevision: registry.roster.revision,
+    knownCharacterIds: new Set(
+      registry.roster.characters.map((definition) => definition.id),
+    ),
+    charactersByDisplayName,
+    allowedCharacterIds,
+    evidenceCharacterIds,
+    evidenceSeqRange: { min: 1, max: maxSeq },
+    canonicalLocations:
+      input.stateLocation !== "" ? new Set([input.stateLocation]) : undefined,
   };
 }

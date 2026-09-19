@@ -6,6 +6,10 @@
  * annotation, optional director goal (phase / goal / beats), active threads,
  * setup directives, long-form episode memories, anchor progress, and reveal
  * locks. Each subsection is rendered only when its content is present.
+ *
+ * C8 §6.2：长线记忆（recap 梗概）按固定格式渲染为纯文本——本模块绝不
+ * 从自然语言解析角色标签/实体表（反向建表），角色身份只走稳定 ID 标签
+ * （见 episode-retriever）。
  */
 
 import type { MemoryProjection } from "../../core/narrative/memory-projection.js";
