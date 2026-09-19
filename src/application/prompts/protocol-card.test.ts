@@ -3,7 +3,7 @@
  *
  * 覆盖：双协议版本（v1 legacy 行式 / v2 显式指令）、每个任务的卡示例
  * 经**真实** parser/compiler 解析编译（v1：parseDslLine → DslSegmentParser
- * → compileEventGroups；v2：compileSegmentV2）、校园真实 roster、无
+ * → compileEventGroups；v2：compileSegmentV2）、main 真实内容包 roster、无
  * presentation 的 fallback roster（main/动态世界形态）、空 NPC cast 的
  * narration-only 示例、provenance 来源信息、确定性输出、共享模板无内容
  * 包专名、修复卡派生。
@@ -17,7 +17,7 @@ import {
   buildCharacterRoster,
   createCharacterRegistry,
 } from "../../core/characters/registry.js";
-import { loadCharacterRoster } from "../characters/character-roster-loader.js";
+import { loadCharacterPackRoster } from "../../adapters/static/character-pack-loader.js";
 import type {
   CharacterDefinition,
   CharacterRegistry,
@@ -48,7 +48,7 @@ const TASKS: readonly BaseDslTaskType[] = [
   "input_bridge",
 ];
 
-/** 带 presentation 的 NPC + 玩家（校园形态的最小合成）。 */
+/** 带 presentation 的 NPC + 玩家（内容包形态的最小合成）。 */
 function fullDefinitions(): CharacterDefinition[] {
   return [
     { id: "player_one", name: "玩家", control: "player", initialLabel: "你", persona: "玩家。" },
@@ -128,13 +128,13 @@ function emptyCast(): CastContext {
   return { allowedSpeakerIds: [], sceneParticipantIds: ["player_one"] };
 }
 
-/** 校园真实 roster（characters.yaml）：spriteSets 由 looks 机械派生（1:1）。 */
-async function campusRegistry(): Promise<CharacterRegistry> {
+/** main 真实内容包 roster（characters.yaml 静态 fallback 世界）：spriteSets 由 looks 机械派生（1:1）。 */
+async function packRegistry(): Promise<CharacterRegistry> {
   const rosterPath = path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     "../../../characters.yaml",
   );
-  const roster = await loadCharacterRoster(rosterPath);
+  const roster = await loadCharacterPackRoster(rosterPath);
   const spriteSets: AssetCatalog["spriteSets"] = {};
   for (const definition of roster.characters) {
     for (const look of Object.values(definition.presentation?.looks ?? {})) {
@@ -153,7 +153,7 @@ async function campusRegistry(): Promise<CharacterRegistry> {
   return createCharacterRegistry(roster, assets);
 }
 
-function campusCast(registry: CharacterRegistry): CastContext {
+function packCast(registry: CharacterRegistry): CastContext {
   const npcIds = registry.roster.characters
     .filter((definition) => definition.control === "npc")
     .map((definition) => definition.id);
@@ -222,7 +222,7 @@ function compileV1Example(exampleText: string, registry: CharacterRegistry, asse
   if (!bound.startsWith("@end")) {
     expect(compiled.length, `v1 示例必须编译出可播放组：${bound}`).toBeGreaterThan(0);
   } else {
-    expect(status.reason).toBe("ending");
+    expect(status.kind === "complete" && status.reason).toBe("ending");
   }
 }
 
@@ -448,9 +448,9 @@ describe("buildProtocolCard — 每个任务的示例都能被真实 parser/comp
     compileV2Example(mainV2.text, registry, BARE_ASSETS, "input_response", bareCast());
   });
 
-  it("校园真实 roster（characters.yaml）：双版本全部任务编译通过且示例人物来自 roster", async () => {
-    const registry = await campusRegistry();
-    const cast = campusCast(registry);
+  it("真实内容包 roster（characters.yaml，main 静态 fallback 世界）：双版本全部任务编译通过且示例人物来自 roster", async () => {
+    const registry = await packRegistry();
+    const cast = packCast(registry);
     const npcNames = registry.roster.characters
       .filter((definition) => definition.control === "npc")
       .map((definition) => definition.name);
