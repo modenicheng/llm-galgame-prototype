@@ -38,18 +38,20 @@ async function readRequiredFile(filePath: string): Promise<string> {
 export interface InstructionSet {
   /** Extra instruction for opening generation. */
   opening: string;
-  /** Template for branch prefetch. Placeholders: {choice_prompt}, {option_text}, {min_dialogue} */
+  /** Template for branch prefetch. Placeholders: {choice_prompt}, {option_text}, {min_dialogue}, {nonce} */
   branch_prefetch: string;
-  /** Template for free-text input NPC response. Placeholders: {interaction_prompt}, {player_input} */
+  /** Template for free-text input NPC response. Placeholders: {interaction_prompt}, {player_input}, {nonce} */
   input_response: string;
-  /** Template for continuation after prefetch playthrough. Placeholder: {prefetched} */
+  /** Template for continuation after prefetch playthrough. Placeholders: {nonce}, {target_lines}, {prefetched} */
   continuation: string;
-  /** Template for input bridge narration (DSL). Placeholder: {interaction_prompt} */
+  /** Template for input bridge narration (DSL). Placeholder: {interaction_prompt}, {nonce} */
   input_bridge: string;
-  /** Template for recovery continuation (DSL). Placeholder: {repair_reason} */
+  /**
+   * Template for recovery continuation (DSL). Placeholders: {nonce},
+   * {repair_reason}. main 当前没有收尾（wrapUp）生成路径——模板键保留，
+   * 已知变量按 as-built 声明。
+   */
   recovery: string;
-  /** Template for ending wrap-up (DSL). Placeholder: {nonce} */
-  ending: string;
 }
 
 const InstructionSetSchema = z.object({
@@ -59,8 +61,21 @@ const InstructionSetSchema = z.object({
   continuation: z.string().min(1),
   input_bridge: z.string().min(1),
   recovery: z.string().min(1),
-  ending: z.string().min(1),
 });
+
+/**
+ * C6 配置清理（port 自 campus 0b8de2e）：`instructions.ending` 是死入口
+ * ——真实结束约束在 continuation/recovery 模板与任务协议卡里，该字段从
+ * 未被任何生成路径读取。旧配置携带它时给出**一次**弃用诊断后忽略（不
+ * 新增生成分支）。
+ */
+function warnDeprecatedInstructionsKeys(raw: unknown): void {
+  if (raw !== null && typeof raw === "object" && Object.hasOwn(raw, "ending")) {
+    console.warn(
+      "[prompts] instructions.yaml 的 ending 键已弃用并删除（C6）：结束约束由 continuation/recovery 任务模板与任务协议卡携带，该配置被忽略。",
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Loader — reads everything from the prompts directory
@@ -124,6 +139,7 @@ export async function loadPrompts(
   ]);
 
   const parsed: unknown = parse(rawYaml);
+  warnDeprecatedInstructionsKeys(parsed);
   const instructions = InstructionSetSchema.parse(parsed) as InstructionSet;
 
   return {

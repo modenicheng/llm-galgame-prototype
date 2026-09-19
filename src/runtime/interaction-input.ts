@@ -34,6 +34,7 @@ export function startBridgePrefetch(
 
   const bridgeBrief = host.makeBriefing(turn + 1);
   const handle = host.generator.generateInputBridge({
+    identity: host.generationIdentity(),
     turn: turn + 1,
     state: host.storyState,
     interaction,
@@ -334,6 +335,7 @@ function startInputResponseGeneration(
 
   const brief = host.makeBriefing(turn + 1);
   const handle = host.generator.generateInputResponse({
+    identity: host.generationIdentity(),
     turn: turn + 1,
     state: host.storyState,
     history: [...host.events],

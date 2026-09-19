@@ -149,6 +149,7 @@ export async function adoptSelectedBranch(
     host.status.setJob("selected-branch-retry", "已选分支重试", "running");
     const retryBrief = host.makeBriefing(turn + 1);
     const handle = host.generator.generateBranchPrefetch({
+      identity: host.generationIdentity(selected.id),
       turn: turn + 1,
       state: host.storyState,
       history: prefetchContext,
@@ -175,7 +176,10 @@ export async function adoptSelectedBranch(
   const branchTail = host.branchTailStates.get(selected.id);
   if (branchTail !== undefined) {
     host.tailVisualState = branchTail;
-  } else {
+  }
+  // 选中分支的预测名牌副本才转正；其余分支的副本随 clear 一并丢弃。
+  host.promoteBranchCharacterState(selected.id);
+  if (branchTail === undefined) {
     const cues: StageCue[] = [];
     for (const event of preview) {
       const stage = (event as { stage?: StageCue[] }).stage;
@@ -225,8 +229,15 @@ export function createBranchManager(
       // state seeded from the current tail (docs §56). Unselected
       // branches never execute, so their states stay isolated here.
       let branchState = host.tailVisualState;
+      // C5 §5.1 + C6（C5 评审 minor，port 自 campus 0b8de2e）：名牌状态
+      // 按分支持副本（绑定本局 roster revision），身份只克隆一次——预取
+      // 请求与分支名牌副本共用同一份 characterState（两者都只读；下次
+      // 派生再另行克隆）。未选/取消/修复失败随分支丢弃。
+      const branchIdentity = host.generationIdentity(option.id);
+      const branchLabels = branchIdentity.characterState;
       const prefetchBrief = host.makeBriefing(turn + 1);
       const handle = host.generator.generateBranchPrefetch({
+        identity: branchIdentity,
         turn: turn + 1,
         state: host.storyState,
         history: prefetchContext,
@@ -259,6 +270,7 @@ export function createBranchManager(
       }
       await pump;
       host.branchTailStates.set(option.id, branchState);
+      host.branchCharacterStates.set(option.id, branchLabels);
       return materialized;
     },
     onReady: (option, branchEvents) => {

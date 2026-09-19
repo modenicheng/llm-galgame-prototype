@@ -6,7 +6,10 @@ import { describe, it, expect } from "vitest";
 import {
   buildDslUserPrompt,
   buildSystemContext,
+  renderCastSection,
+  serializeModelAssetCatalog,
   serializeStoryContext,
+  serializeVisualContext,
   type ContextInput,
   type DslContextInput,
 } from "./context-builder.js";
@@ -16,7 +19,8 @@ import {
   createCharacterRegistry,
 } from "../core/characters/registry.js";
 import type { CharacterRegistry as RosterRegistry } from "../core/characters/types.js";
-import type { AssetCatalog } from "../core/assets/types.js";
+import type { GenerationIdentity } from "../core/ports/story-generator-port.js";
+import type { AssetCatalog, ModelAssetCatalog } from "../core/assets/types.js";
 import { createInitialState } from "./state.js";
 import type { MemoryProjection } from "../core/narrative/memory-projection.js";
 import type { PromptBundle } from "../prompts.js";
@@ -323,5 +327,343 @@ describe("C1 contract vector — identity after rename (R01)", () => {
     expect(serialized).toContain(RENAME_IDENTITY_CASE.characterId);
     // 冒号行头格式（半角/全角）不得出现。
     expect(serialized).not.toMatch(/神秘女子[:：]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C5 评审移交 C6（carried finding 1，port 自 campus 0b8de2e）：prompt 层
+// 身份渲染此前零测试覆盖。在 main 的字符串拼装 API 上钉住：cast 段
+// （允许发声 + 场景参与者）、任务头的协议/身份版本行、视觉段的 visible
+// 真值推导、空允许 cast 的「仅旁白」消息。
+// ---------------------------------------------------------------------------
+
+/** 带 looks 的 roster registry（cast/素材段测试用）。 */
+function castRosterRegistry(): RosterRegistry {
+  const assets: AssetCatalog = {
+    guidance: "",
+    backgrounds: { library: { id: "library", src: "l.jpg", description: "图书馆" } },
+    bgm: {},
+    soundEffects: {},
+    spriteSets: {
+      female_A: {
+        id: "female_A",
+        variants: {
+          base: { id: "base", src: "a.png", description: "" },
+          smile: { id: "smile", src: "a2.png", description: "" },
+        },
+      },
+    },
+    characters: {},
+  };
+  return createCharacterRegistry(
+    buildCharacterRoster({
+      schemaVersion: 2,
+      scopeId: "cast-render-test",
+      playerId: "player_one",
+      characters: [
+        {
+          id: "player_one",
+          name: "玩家",
+          control: "player",
+          initialLabel: "你",
+          persona: "玩家本人。",
+        },
+        {
+          id: "female_A",
+          name: "契约角色",
+          control: "npc",
+          initialLabel: "契约角色",
+          persona: "契约人设。",
+          presentation: {
+            defaultLook: "base",
+            defaultPosition: "right",
+            looks: {
+              base: { spriteSet: "female_A", variant: "base" },
+              smile: { spriteSet: "female_A", variant: "smile" },
+            },
+          },
+        },
+      ],
+    }),
+    assets,
+  );
+}
+
+function makeIdentity(
+  registry: RosterRegistry,
+  overrides?: Partial<GenerationIdentity>,
+): GenerationIdentity {
+  return {
+    protocolVersion: 1,
+    rosterRevision: registry.roster.revision,
+    cast: {
+      allowedSpeakerIds: ["female_A"],
+      sceneParticipantIds: ["player_one", "female_A"],
+    },
+    characterState: { labels: Object.create(null) },
+    ...overrides,
+  };
+}
+
+describe("prompt-level identity rendering (C5 移交 C6 的测试欠账)", () => {
+  const registry = castRosterRegistry();
+
+  it("cast 段：允许发声与场景参与者分列；名牌覆盖显示为「id（当前名牌：…）」", () => {
+    const section = renderCastSection(
+      makeIdentity(registry, {
+        characterState: { labels: { female_A: "化名" } as Record<string, string> },
+      }),
+    );
+    expect(section).toContain("允许发声（本段 NPC 台词仅限这些角色 ID）：female_A（当前名牌：化名）");
+    expect(section).toContain("场景参与者（含电话/画外角色，不等于台上可见）：player_one、female_A（当前名牌：化名）");
+  });
+
+  it("cast 段：空允许 cast 输出「仅旁白」消息，不硬塞角色", () => {
+    const section = renderCastSection(
+      makeIdentity(registry, {
+        cast: { allowedSpeakerIds: [], sceneParticipantIds: ["player_one"] },
+      }),
+    );
+    expect(section).toContain("允许发声：本段没有可发声 NPC——不要输出任何角色台词，只写旁白。");
+  });
+
+  it("任务头携带 DSL 协议版本与身份版本（roster revision）行；无 identity 时缺省", () => {
+    const base: DslContextInput = {
+      prompts: makePrompts(),
+      state: createInitialState(),
+      recentEvents: [],
+      taskType: "continuation",
+      generationNonce: "d41f",
+      targetLines: 6,
+      identity: makeIdentity(registry),
+    };
+    const withIdentity = buildDslUserPrompt(3, base);
+    expect(withIdentity).toContain("DSL 协议版本：1");
+    expect(withIdentity).toContain(`身份版本（roster revision）：${registry.roster.revision}`);
+
+    const { identity: _omit, ...withoutIdentityInput } = base;
+    const withoutIdentity = buildDslUserPrompt(
+      3,
+      withoutIdentityInput as DslContextInput,
+    );
+    expect(withoutIdentity).not.toContain("DSL 协议版本");
+    expect(withoutIdentity).not.toContain("身份版本（roster revision）");
+  });
+
+  it("identity 在场的用户 prompt：cast 段恰一次（分节头逐字节）；cast 段在易变区", () => {
+    const prompt = buildDslUserPrompt(3, {
+      prompts: makePrompts(),
+      state: createInitialState(),
+      recentEvents: [],
+      taskType: "continuation",
+      generationNonce: "d41f",
+      targetLines: 6,
+      registry,
+      identity: makeIdentity(registry),
+    });
+    // 分节头逐字节恰一次（port 自 campus 05f3772 补钉）。
+    expect(prompt).toContain("===== 本段 cast =====");
+    expect(prompt.split("===== 本段 cast =====")).toHaveLength(2);
+    // cast 段在任务头之前、素材/状态之后（易变区中部，不打散稳定前缀）。
+    expect(prompt.indexOf("===== 本段 cast =====")).toBeGreaterThan(
+      prompt.indexOf("===== 当前故事状态 ====="),
+    );
+    expect(prompt.indexOf("===== 本段 cast =====")).toBeLessThan(
+      prompt.indexOf("任务类型："),
+    );
+  });
+
+  it("视觉段按 visible 真值渲染；identity 在场时不从素材目录推导不在场名单", () => {
+    const visual = serializeVisualContext(
+      {
+        background: "library",
+        characters: {
+          female_A: {
+            displayName: "契约角色",
+            spriteSet: "female_A",
+            variant: "base",
+            position: "right",
+            visible: true,
+          },
+        },
+      },
+      // 传了 roster 字符映射也不该出现「不在场」清单（那是 cast 段的职责）
+      { female_A: { scriptName: "契约角色", displayName: "契约角色", spriteSet: "female_A", defaultVariant: "base", defaultPosition: "right", allowedSpriteSets: ["female_A"] } },
+    );
+    expect(visual).toContain("背景：library");
+    expect(visual).toContain("female_A（显示名：契约角色）");
+    expect(visual).not.toContain("不在场");
+    // 隐藏角色必须显式说明（visible 真值，不是省略）。
+    const hidden = serializeVisualContext({
+      characters: {
+        female_A: {
+          displayName: "契约角色",
+          spriteSet: "female_A",
+          variant: "base",
+          position: "right",
+          visible: false,
+        },
+      },
+    });
+    expect(hidden).toContain("隐藏（说话不会自动显示，需 @ch female_A show 恢复）");
+  });
+
+  it("视觉段的 identity 增量（campus 05f3772 补钉）：两角色一名在场一名不在场——identity 在场时不列「不在场」，缺省时才列", () => {
+    // roster 有 female_A / player_one；视觉状态只有 female_A 在场。
+    const visualState = {
+      background: "library",
+      characters: {
+        female_A: {
+          displayName: "契约角色",
+          spriteSet: "female_A",
+          variant: "base",
+          position: "right" as const,
+          visible: true,
+        },
+      },
+    };
+    const catalogCharacters = {
+      player_one: {
+        scriptName: "玩家",
+        displayName: "你",
+        spriteSet: "",
+        defaultVariant: "",
+        defaultPosition: "right" as const,
+        allowedSpriteSets: [] as string[],
+      },
+    };
+    // identity 在场（buildDslUserPrompt 的调用形态）：不传 roster 映射 → 无「不在场」。
+    const withIdentity = serializeVisualContext(visualState);
+    expect(withIdentity).not.toContain("不在场");
+    // identity 缺省（兼容路径）：传 roster 映射 → 列出不在场（旧推导行为）。
+    const legacy = serializeVisualContext(visualState, catalogCharacters);
+    expect(legacy).toContain("不在场：你");
+    // 整 prompt 层面双向钉死（buildDslUserPrompt 按是否携带 identity 切换）。
+    const identityPrompt = buildDslUserPrompt(3, {
+      prompts: makePrompts(),
+      state: createInitialState(),
+      recentEvents: [],
+      taskType: "continuation",
+      generationNonce: "d41f",
+      targetLines: 6,
+      identity: makeIdentity(registry),
+      tailVisualState: visualState,
+      modelAssetCatalog: {
+        guidance: "",
+        backgrounds: {},
+        bgm: {},
+        soundEffects: {},
+        spriteSets: {},
+        characters: catalogCharacters,
+      },
+    });
+    expect(identityPrompt).not.toContain("不在场：");
+    const { identity: _omit, ...withoutIdentity } = {
+      ...makeDefaultContext(),
+      taskType: "continuation",
+      generationNonce: "d41f",
+      targetLines: 6,
+      tailVisualState: visualState,
+      modelAssetCatalog: {
+        guidance: "",
+        backgrounds: {},
+        bgm: {},
+        soundEffects: {},
+        spriteSets: {},
+        characters: catalogCharacters,
+      },
+    } as DslContextInput;
+    const legacyPrompt = buildDslUserPrompt(3, withoutIdentity as DslContextInput);
+    expect(legacyPrompt).toContain("不在场：你");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C6 §5.4 素材目录去重：registry 在场时外观按角色列 look（不再同时给
+// 全量 spriteSets 清单 + characters 映射双份）；无 roster 兼容路径保持
+// 旧渲染字节（port 自 campus 0b8de2e，字符串 API 适配）。
+// ---------------------------------------------------------------------------
+
+describe("serializeModelAssetCatalog roster 去重（C6 §5.4）", () => {
+  const registry = castRosterRegistry();
+
+  const catalog: ModelAssetCatalog = {
+    guidance: "素材目录说明。",
+    backgrounds: { library: { description: "图书馆" } },
+    bgm: {},
+    soundEffects: {},
+    spriteSets: {
+      female_A: {
+        description: "契约角色立绘",
+        variants: { base: { description: "常态" }, smile: { description: "微笑" } },
+      },
+    },
+    characters: {
+      female_A: {
+        scriptName: "契约角色",
+        displayName: "契约角色",
+        spriteSet: "female_A",
+        defaultVariant: "base",
+        defaultPosition: "right",
+        allowedSpriteSets: ["female_A"],
+      },
+    },
+  };
+
+  it("registry 在场：外观按角色列 look，不再给全量 spriteSets + characters 双份", () => {
+    const text = serializeModelAssetCatalog(catalog, registry.roster);
+    expect(text).toContain("素材目录说明。");
+    expect(text).toContain("- female_A（脚本名：契约角色，默认位置：right）可用外观 look：base、smile");
+    expect(text).not.toMatch(/^立绘组 /m);
+    expect(text).not.toContain("可用立绘组");
+  });
+
+  it("无 roster 兼容路径：旧渲染字节不变（spriteSets 清单 + characters 映射）", () => {
+    const text = serializeModelAssetCatalog(catalog);
+    expect(text).toContain("立绘组 female_A：契约角色立绘");
+    expect(text).toContain("  base — 常态");
+    expect(text).toContain("脚本名：契约角色");
+    expect(text).toContain("可用立绘组：female_A");
+  });
+
+  it("roster 里无 presentation 的角色：明示「可以说话，不配立绘」；玩家标注不由你代写台词", () => {
+    const bare = createCharacterRegistry(
+      buildCharacterRoster({
+        schemaVersion: 2,
+        scopeId: "bare-dedup-test",
+        playerId: "player_one",
+        characters: [
+          { id: "player_one", name: "玩家", control: "player", initialLabel: "你", persona: "玩家。" },
+          { id: "wanderer", name: "过客", control: "npc", initialLabel: "过客", persona: "无立绘。" },
+        ],
+      }),
+      {
+        guidance: "",
+        backgrounds: {},
+        bgm: {},
+        soundEffects: {},
+        spriteSets: {},
+        characters: {},
+      },
+    );
+    const text = serializeModelAssetCatalog(catalog, bare.roster);
+    expect(text).toContain("player_one（脚本名：玩家，玩家本人——不由你代写台词）");
+    expect(text).toContain("wanderer（脚本名：过客，无立绘：可以说话，不配立绘）");
+  });
+
+  it("buildDslUserPrompt：registry 在场时可用素材段走去重渲染，分节头恰一次", () => {
+    const prompt = buildDslUserPrompt(5, {
+      prompts: makePrompts(),
+      state: createInitialState(),
+      recentEvents: [],
+      taskType: "continuation",
+      generationNonce: "d41f",
+      targetLines: 6,
+      registry,
+      modelAssetCatalog: catalog,
+    });
+    expect(prompt).toContain("可用外观 look：base、smile");
+    expect(prompt).not.toMatch(/^立绘组 /m);
+    expect(prompt.split("===== 可用素材 =====")).toHaveLength(2);
   });
 });

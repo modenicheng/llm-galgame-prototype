@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { loadPrompts } from "./prompts.js";
 import { dslTaskCapability } from "./core/protocol/gal-dsl/capabilities.js";
 import { mkdir, writeFile, rm } from "node:fs/promises";
@@ -13,7 +13,6 @@ const MINIMAL_INSTRUCTIONS_YAML = [
   "continuation: '预取片段：{prefetched}。继续生成。'",
   "input_bridge: '交互点：{interaction_prompt}。生成 1–2 条 narration 过渡。'",
   "recovery: '上一次输出被拒绝：{repair_reason}。请修正后继续。'",
-  "ending: '剧情收束，用 @end {nonce} ending 结束。'",
 ].join("\n");
 
 describe("loadPrompts", () => {
@@ -62,7 +61,6 @@ describe("loadPrompts", () => {
     expect(instructions.opening).toContain("开场");
     expect(instructions.input_bridge).toContain("narration");
     expect(instructions.recovery).toContain("repair_reason");
-    expect(instructions.ending).toContain("ending");
   });
 
   it("reads story_line.txt only from the per-game dir when provided", async () => {
@@ -152,6 +150,65 @@ describe("loadPrompts", () => {
     await expect(loadPrompts(dir)).rejects.toThrow();
   });
 
+  // ---------------------------------------------------------------------
+  // C6 配置清理（port 自 campus 0b8de2e）：instructions.ending 死入口
+  // 删除 + 一次性弃用诊断。
+  // ---------------------------------------------------------------------
+  describe("instructions.ending 弃用诊断（C6）", () => {
+    async function populateDeprecatedDir(withEnding: boolean): Promise<string> {
+      const dir = path.join(
+        tmpdir(),
+        `prompts-test-${withEnding ? "deprecated" : "clean"}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      );
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, "characters.txt"), "Alice", "utf8");
+      await writeFile(path.join(dir, "guideline.txt"), "Guide", "utf8");
+      await writeFile(path.join(dir, "dsl-protocol.txt"), "协议", "utf8");
+      await writeFile(
+        path.join(dir, "instructions.yaml"),
+        withEnding
+          ? `${MINIMAL_INSTRUCTIONS_YAML}\nending: '旧结局模板'`
+          : MINIMAL_INSTRUCTIONS_YAML,
+        "utf8",
+      );
+      return dir;
+    }
+
+    it("旧配置携带 ending 键：加载成功，给出一次弃用提示后忽略", async () => {
+      const dir = await populateDeprecatedDir(true);
+      try {
+        const warnings: string[] = [];
+        const spy = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+          warnings.push(args.join(" "));
+        });
+        const { instructions } = await loadPrompts(dir);
+        // 加载成功（不因旧键失败），字段被忽略。
+        expect(instructions.opening).toContain("开场");
+        expect(instructions).not.toHaveProperty("ending");
+        // 一次性弃用诊断。
+        expect(warnings.some((w) => w.includes("ending") && w.includes("弃用"))).toBe(true);
+        spy.mockRestore();
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("新配置没有 ending 键：无弃用提示", async () => {
+      const dir = await populateDeprecatedDir(false);
+      try {
+        const warnings: string[] = [];
+        const spy = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+          warnings.push(args.join(" "));
+        });
+        await loadPrompts(dir);
+        expect(warnings).toEqual([]);
+        spy.mockRestore();
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("real instructions.yaml is the DSL task-template set; the protocol spec lives in dsl-protocol.txt", async () => {
     const repoPrompts = path.join(
       path.dirname(fileURLToPath(import.meta.url)),
@@ -168,19 +225,54 @@ describe("loadPrompts", () => {
     expect(bundle.dslProtocol).toContain("hybrid");
     expect(bundle.dslProtocol).toContain("@end <nonce> <reason>");
 
-    // Input-response additions.
-    expect(instructions.input_response).toContain(
-      "玩家输入只是玩家尝试表达的内容",
-    );
+    // Input-response additions（C6：玩家输入以结构化数据块插入）。
+    expect(instructions.input_response).toContain("source=player");
     expect(instructions.input_response).toContain(
       "NPC 可以质疑、拒绝、误解或要求证据",
     );
+    expect(instructions.input_response).toContain("{player_input}");
 
     // New DSL task templates exist with their placeholders.
     expect(instructions.input_bridge).toContain("{interaction_prompt}");
     expect(instructions.input_bridge).toContain("@end {nonce} buffer");
     expect(instructions.recovery).toContain("{repair_reason}");
-    expect(instructions.ending).toContain("{nonce}");
+    // C6 死入口清理：ending 模板已删除。
+    expect(instructions).not.toHaveProperty("ending");
+  });
+
+  it("公共协议模板不含内容包专名；任务级规则交给任务协议卡（C6 §5.4）", async () => {
+    // 共享模板（dsl-protocol.txt / instructions.yaml）是派生基座：示例
+    // 人物与素材 id 由任务协议卡从实际 roster/资源目录生成，模板里不得
+    // 手写内容包人名或资源 id（内容包自身文件 characters.txt 等可保留
+    // 真实姓名）。
+    const { bundle, instructions } = await loadPrompts(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "prompts"),
+    );
+    const PACK_NAMES = [
+      "苏遥",
+      "许晚晴",
+      "林澈",
+      "树莓娘",
+      "林小满",
+      "夏一鸣",
+      "韩澈",
+      "suyao",
+      "linche",
+      "raspberry",
+      "wencui",
+      "female_A",
+      "male_A",
+    ];
+    for (const template of [bundle.dslProtocol, instructions.opening,
+      instructions.continuation, instructions.branch_prefetch,
+      instructions.input_response, instructions.input_bridge, instructions.recovery]) {
+      for (const name of PACK_NAMES) {
+        expect(template, `共享模板不得出现内容包专名 ${name}`).not.toContain(name);
+      }
+    }
+    // dsl-protocol 是语法基座：任务级能力/收束规则声明由任务协议卡携带
+    //（它按任务从能力表派生——不再有第二份手写 grammar）。
+    expect(bundle.dslProtocol).toContain("任务协议卡");
   });
 
   // ---------------------------------------------------------------------
