@@ -9,7 +9,7 @@
 import type { AuthorConfig } from "../config.js";
 import type { ModelAssetCatalog } from "../core/assets/types.js";
 import type { VisualState } from "../core/presentation/types.js";
-import type { CharacterRegistry } from "../core/characters/types.js";
+import type { CharacterRegistry, CharacterRoster } from "../core/characters/types.js";
 import type { GenerationIdentity } from "../core/ports/story-generator-port.js";
 import type { PromptBundle } from "../prompts.js";
 import type { StoryContextEvent } from "../schema.js";
@@ -224,8 +224,16 @@ export function serializeVisualContext(
  * Compact listing of the model-facing asset catalog (docs §59, §70): the
  * catalog guidance followed by one line per background / bgm / sound effect
  * / sprite-set variant and one line per character binding.
+ *
+ * C6 §5.4 去重（port 自 campus 0b8de2e）：给定 roster 时不再同时输出
+ * 「全量 spriteSets 清单」和「characters 映射」两份——外观按角色列
+ * look（键=变体，同名折叠），人物身份（脚本名）随同一行列出；无 roster
+ * 的兼容路径保持旧渲染（字节不变）。
  */
-export function serializeModelAssetCatalog(catalog: ModelAssetCatalog): string {
+export function serializeModelAssetCatalog(
+  catalog: ModelAssetCatalog,
+  roster?: CharacterRoster,
+): string {
   const lines: string[] = [];
   if (catalog.guidance) lines.push(catalog.guidance.trim());
 
@@ -238,20 +246,45 @@ export function serializeModelAssetCatalog(catalog: ModelAssetCatalog): string {
   for (const [id, asset] of Object.entries(catalog.soundEffects)) {
     lines.push(`音效：${id} — ${asset.description}`);
   }
-  for (const [id, set] of Object.entries(catalog.spriteSets)) {
-    lines.push(`立绘组 ${id}：${set.description ?? ""}`);
-    for (const [variantId, variant] of Object.entries(set.variants)) {
-      lines.push(`  ${variantId} — ${variant.description ?? ""}`);
+
+  if (roster === undefined) {
+    for (const [id, set] of Object.entries(catalog.spriteSets)) {
+      lines.push(`立绘组 ${id}：${set.description ?? ""}`);
+      for (const [variantId, variant] of Object.entries(set.variants)) {
+        lines.push(`  ${variantId} — ${variant.description ?? ""}`);
+      }
     }
+
+    const characterIds = Object.keys(catalog.characters);
+    if (characterIds.length > 0) {
+      lines.push("角色：");
+      for (const id of characterIds) {
+        const binding = catalog.characters[id]!;
+        lines.push(
+          `- ${id}（脚本名：${binding.scriptName}，默认显示名：${binding.displayName}，立绘组：${binding.spriteSet}，默认立绘：${binding.defaultVariant}，默认位置：${binding.defaultPosition}，可用立绘组：${binding.allowedSpriteSets.join("/")}）`,
+        );
+      }
+    }
+    return lines.join("\n");
   }
 
-  const characterIds = Object.keys(catalog.characters);
+  // roster 在场：外观按角色列 look；不再给全量 spriteSets + characters 双份。
+  const characterIds = roster.characters.map((definition) => definition.id);
   if (characterIds.length > 0) {
     lines.push("角色：");
-    for (const id of characterIds) {
-      const binding = catalog.characters[id]!;
+    for (const definition of roster.characters) {
+      const presentation = definition.presentation;
+      if (presentation === undefined) {
+        lines.push(
+          `- ${definition.id}（脚本名：${definition.name}${definition.control === "player" ? "，玩家本人——不由你代写台词" : "，无立绘：可以说话，不配立绘"}）`,
+        );
+        continue;
+      }
+      const looks = Object.entries(presentation.looks).map(
+        ([key, look]) => (key === look.variant ? key : `${key}(变体:${look.variant})`),
+      );
       lines.push(
-        `- ${id}（脚本名：${binding.scriptName}，默认显示名：${binding.displayName}，立绘组：${binding.spriteSet}，默认立绘：${binding.defaultVariant}，默认位置：${binding.defaultPosition}，可用立绘组：${binding.allowedSpriteSets.join("/")}）`,
+        `- ${definition.id}（脚本名：${definition.name}，默认位置：${presentation.defaultPosition}）可用外观 look：${looks.join("、")}`,
       );
     }
   }
@@ -334,7 +367,9 @@ export function buildDslUserPrompt(
 
   if (input.modelAssetCatalog) {
     sections.push("===== 可用素材 =====");
-    sections.push(serializeModelAssetCatalog(input.modelAssetCatalog));
+    // C6 §5.4：registry 在场时外观按角色列 look（去 spriteSets/characters
+    // 双份）；兼容路径保持旧渲染。
+    sections.push(serializeModelAssetCatalog(input.modelAssetCatalog, input.registry?.roster));
   }
 
   sections.push("===== 当前故事状态 =====");

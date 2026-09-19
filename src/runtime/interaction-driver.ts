@@ -415,10 +415,14 @@ export class InteractionDriver {
         let branchState = this.host.tailVisualState;
         // C5 §5.1：名牌状态同样按分支持副本（绑定本局 roster revision）；
         // 预测性改名只落副本，未选/取消/修复失败随分支丢弃。
-        let branchLabels = this.host.generationIdentity(option.id).characterState;
+        // C6（C5 评审 minor，port 自 campus 0b8de2e）：身份只克隆一次——
+        // 预取请求与分支名牌副本共用同一份 characterState（两者都只读；
+        // 下次派生再另行克隆）。
+        const branchIdentity = this.host.generationIdentity(option.id);
+        const branchLabels = branchIdentity.characterState;
         const prefetchBrief = this.host.makeBriefing(turn + 1);
         const handle = this.host.generator.generateBranchPrefetch({
-          identity: this.host.generationIdentity(option.id),
+          identity: branchIdentity,
           turn: turn + 1,
           state: this.host.storyState,
           history: prefetchContext,

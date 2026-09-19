@@ -30,6 +30,15 @@ import {
   type SegmentEndStatus,
 } from "../../core/protocol/gal-dsl/types.js";
 import type { InstructionSet, PromptBundle } from "../../prompts.js";
+import {
+  assertKnownTemplateVariables,
+  renderTemplate,
+} from "../../application/prompts/template.js";
+import {
+  bindProtocolCardNonce,
+  buildProtocolCard,
+} from "../../application/prompts/protocol-card.js";
+import type { BaseDslTaskType } from "../../core/protocol/gal-dsl/capabilities.js";
 import type { LLMRequestCounts } from "../../runtime/metrics.js";
 import { Metrics } from "../../runtime/metrics.js";
 import type {
@@ -51,15 +60,54 @@ import {
 } from "../../core/ports/story-generator-port.js";
 
 // ---------------------------------------------------------------------------
-// Tiny template engine: replace {key} placeholders with values
+// Template engine (C6 §5.3，port 自 campus 0b8de2e)：renderTemplate 单遍
+// 字面替换。
+//
+// 各任务模板的**已知变量表**在此声明（启动期检查镜像）：模板声明了表外
+// 变量 → 构造即抛错（不静默漏替换）；运行期调用方漏传 → renderTemplate
+// 抛 UNKNOWN_TEMPLATE_VARIABLE。
 // ---------------------------------------------------------------------------
 
-function fill(template: string, vars: Record<string, string | number>): string {
-  let result = template;
-  for (const [key, value] of Object.entries(vars)) {
-    result = result.replaceAll(`{${key}}`, String(value));
+/** 任务模板 → 该模板各调用点的全部已知变量（prompts.test.ts 双保险钉死）。 */
+const TASK_TEMPLATE_VARIABLES: Readonly<Record<BaseDslTaskType, readonly string[]>> = {
+  opening: ["nonce"],
+  continuation: ["nonce", "target_lines", "prefetched"],
+  branch_prefetch: ["choice_prompt", "option_text", "min_dialogue", "nonce"],
+  input_response: ["interaction_prompt", "player_input", "nonce"],
+  input_bridge: ["interaction_prompt", "nonce"],
+};
+
+/**
+ * instructions.yaml 模板键 → 已知变量。recovery 不是能力任务类型——
+ * main 当前没有收尾（wrapUp）生成路径，模板键保留（未来移植收尾模式时
+ * 直接接线），已知变量按 main 模板 as-built 声明。
+ */
+const TEMPLATE_KEY_VARIABLES: Readonly<Record<string, readonly string[]>> = {
+  ...TASK_TEMPLATE_VARIABLES,
+  recovery: ["nonce", "repair_reason"],
+};
+
+/** 启动期检查：真实模板声明的变量必须在已知变量表内（§5.3）。 */
+function checkInstructionTemplates(instructions: InstructionSet): void {
+  for (const [key, known] of Object.entries(TEMPLATE_KEY_VARIABLES)) {
+    const template = instructions[key as keyof InstructionSet] as string | undefined;
+    if (template === undefined) continue;
+    assertKnownTemplateVariables(`prompts/instructions.yaml#${key}`, template, known);
   }
-  return result;
+}
+
+// ---------------------------------------------------------------------------
+// 结构化数据块（C6 §5.3）：玩家输入以 JSON 字符串序列化插入（kind +
+// source 字段），不做可被误读为新章节或 DSL 的未转义正文拼接。
+// ---------------------------------------------------------------------------
+
+function playerInputDataBlock(interaction: InteractionEvent, playerInput: string): string {
+  return JSON.stringify({
+    kind: "player_input",
+    source: "player",
+    interaction_id: interaction.interaction_id,
+    text: playerInput,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -206,9 +254,12 @@ export class StoryGenerator {
   private readonly knownSpeakers: ReadonlySet<string> | undefined;
   /**
    * C2 角色注册表（身份投影真源，C5 起由 bootstrap 注入）。缺席 = 兼容
-   * 路径（窄测试直连）：历史走冻结的 legacy 渲染，无 cast/身份版本段。
+   * 路径（窄测试直连）：历史走冻结的 legacy 渲染，无 cast/身份版本段，
+   * 也不注入任务协议卡。
    */
   private readonly characterRegistry: CharacterRegistry | undefined;
+  /** 资源目录原稿（任务协议卡的示例素材来源；模型目录是其投影）。 */
+  private readonly assetCatalog: AssetCatalog | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -227,10 +278,14 @@ export class StoryGenerator {
     });
     this.prompts = prompts;
     this.instructions = instructions;
+    // C6 §5.3 启动期检查：真实模板声明的变量必须在已知变量表内——配置
+    // 错误在构造时炸掉，而不是生成请求静默漏替换。
+    checkInstructionTemplates(instructions);
     this.systemPrompt = buildSystemContext(
       this.makeCtx(null as unknown as StoryState, []),
     );
     this.modelCatalog = catalog ? toModelCatalog(catalog) : undefined;
+    this.assetCatalog = catalog;
     this.characterRegistry = characterRegistry;
     if (catalog !== undefined) {
       const speakers = new Set<string>();
@@ -301,6 +356,64 @@ export class StoryGenerator {
       : serializeStoryContextLegacy(events);
   }
 
+  /**
+   * C6 §5.2 任务协议卡文本：每个请求按任务类型从能力表派生一张卡（规则 +
+   * 可执行示例，示例人物/素材来自实际 registry/资源目录）。registry 缺席
+   * 的兼容路径（窄测试直连）不注入。卡拼在任务模板之前（易变尾部），
+   * 不打断稳定前缀缓存。
+   */
+  private protocolCardText(
+    task: BaseDslTaskType,
+    nonce: string,
+    options?: GenerationStreamOptions,
+  ): string | null {
+    const registry = this.characterRegistry;
+    if (registry === undefined) return null;
+    const identity = options?.identity;
+    // cast 缺席（无 identity 的直连调用）从 roster 派生：全体 NPC 可发声
+    // （与 Game.generationIdentity 的 legacy 视图一致），不静默扩大或缩小。
+    const cast =
+      identity?.cast ??
+      (() => {
+        const ids = registry.roster.characters
+          .filter((definition) => definition.control === "npc")
+          .map((definition) => definition.id);
+        return {
+          allowedSpeakerIds: ids,
+          sceneParticipantIds: registry.roster.characters.map((definition) => definition.id),
+        };
+      })();
+    const card = buildProtocolCard({
+      task,
+      registry,
+      cast,
+      assets: this.assetCatalog ?? {
+        guidance: "",
+        backgrounds: {},
+        bgm: {},
+        soundEffects: {},
+        spriteSets: {},
+        characters: {},
+      },
+      protocolVersion: identity?.protocolVersion ?? 1,
+    });
+    return bindProtocolCardNonce(card.text, nonce);
+  }
+
+  /**
+   * 任务协议卡 + 任务模板的公共拼装（卡缺席时只有模板）——卡先于模板，
+   * 同处易变尾部。
+   */
+  private taskInstructions(
+    task: BaseDslTaskType,
+    template: string,
+    nonce: string,
+    options?: GenerationStreamOptions,
+  ): string {
+    const card = this.protocolCardText(task, nonce, options);
+    return card !== null ? `${card}\n\n${template}` : template;
+  }
+
   generateOpening(
     turn: number,
     state: StoryState,
@@ -314,7 +427,16 @@ export class StoryGenerator {
       "opening",
       ["buffer", "interaction", "ending"],
       nonce,
-      buildDslUserPrompt(turn, ctx, fill(this.instructions.opening, { nonce })),
+      buildDslUserPrompt(
+        turn,
+        ctx,
+        this.taskInstructions(
+          "opening",
+          renderTemplate(this.instructions.opening, { nonce }),
+          nonce,
+          options,
+        ),
+      ),
       signal,
       options,
     );
@@ -331,12 +453,17 @@ export class StoryGenerator {
   ): Promise<GenerationEnvelope> {
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, history, "branch_prefetch", nonce, options);
-    const extra = fill(this.instructions.branch_prefetch, {
-      choice_prompt: choice.prompt,
-      option_text: JSON.stringify(option),
-      min_dialogue: String(this.config.prefetch.branch_dialogue_lines),
+    const extra = this.taskInstructions(
+      "branch_prefetch",
+      renderTemplate(this.instructions.branch_prefetch, {
+        choice_prompt: choice.prompt,
+        option_text: JSON.stringify(option),
+        min_dialogue: String(this.config.prefetch.branch_dialogue_lines),
+        nonce,
+      }),
       nonce,
-    });
+      options,
+    );
     return this.requestDslEnvelope(
       "branch_prefetch",
       "branch_prefetch",
@@ -369,11 +496,18 @@ export class StoryGenerator {
   ): Promise<GenerationEnvelope> {
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, history, "input_response", nonce, options);
-    const extra = fill(this.instructions.input_response, {
-      interaction_prompt: interaction.prompt,
-      player_input: playerInput,
+    // C6 §5.3：玩家输入是结构化数据块（JSON + kind/source），不是裸正文——
+    // 玩家话语里出现伪指令/伪分节时只能作为数据被引用，不能被误读为协议。
+    const extra = this.taskInstructions(
+      "input_response",
+      renderTemplate(this.instructions.input_response, {
+        interaction_prompt: interaction.prompt,
+        player_input: playerInputDataBlock(interaction, playerInput),
+        nonce,
+      }),
       nonce,
-    });
+      options,
+    );
     return this.requestDslEnvelope(
       "continuation",
       "input_response",
@@ -407,10 +541,15 @@ export class StoryGenerator {
   ): Promise<GenerationEnvelope> {
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, [], "input_bridge", nonce, options);
-    const extra = fill(this.instructions.input_bridge, {
-      interaction_prompt: interaction.prompt,
+    const extra = this.taskInstructions(
+      "input_bridge",
+      renderTemplate(this.instructions.input_bridge, {
+        interaction_prompt: interaction.prompt,
+        nonce,
+      }),
       nonce,
-    });
+      options,
+    );
     return this.requestDslEnvelope(
       "continuation",
       "input_bridge",
@@ -432,11 +571,16 @@ export class StoryGenerator {
   ): Promise<GenerationEnvelope> {
     const nonce = generateNonce();
     const ctx = this.buildDslCtx(state, history, "continuation", nonce, options);
-    let extra = fill(this.instructions.continuation, {
+    let extra = this.taskInstructions(
+      "continuation",
+      renderTemplate(this.instructions.continuation, {
+        nonce,
+        target_lines: String(this.config.text_buffer.target_lines),
+        prefetched: this.serializeHistory(prefetchedEvents),
+      }),
       nonce,
-      target_lines: String(this.config.text_buffer.target_lines),
-      prefetched: this.serializeHistory(prefetchedEvents),
-    });
+      options,
+    );
     return this.requestDslEnvelope(
       "continuation",
       "continuation",

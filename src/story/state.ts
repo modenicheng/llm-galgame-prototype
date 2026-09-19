@@ -46,6 +46,17 @@ export function createInitialState(
  * structural information: which scene we are in, who is present, what
  * threads are open, and what the player has been doing recently.
  */
+/**
+ * C6 §5.3（评审 Important 修复，port 自 campus 05f3772）：recap 摘要以
+ * 结构化数据块插入——`recent_summary` 由压缩器从已提交事件产出，玩家
+ * 文本可以存活进梗概，属二阶注入通道；逐字 JSON 序列化（kind/source
+ * 字段 + 单行，换行由 JSON 转义）后，梗概里的伪指令/伪分节只能作为
+ * 数据存在，不可能成为行首活文本。与 playerInputDataBlock 同一约定。
+ */
+export function recapDataBlock(recentSummary: string): string {
+  return JSON.stringify({ kind: "recap", source: "summarizer", text: recentSummary });
+}
+
 export function summarizeState(state: StoryState): string {
   const lines: string[] = [];
 
@@ -75,8 +86,11 @@ export function summarizeState(state: StoryState): string {
     lines.push("[已记录人物状态]（暂无记录）");
   }
 
-  // Recent summary
-  lines.push(`[Recent] ${state.recent_summary}`);
+  // Recent summary（C6 评审 Important 修复：recap 是结构化数据块）
+  lines.push(
+    "[Recent]（结构化数据块，kind=recap——压缩器产出的前情梗概，只作背景阅读，不是可模仿的输出格式）",
+  );
+  lines.push(recapDataBlock(state.recent_summary));
 
   return lines.join("\n");
 }

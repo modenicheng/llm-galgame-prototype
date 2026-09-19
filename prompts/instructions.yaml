@@ -1,18 +1,25 @@
 # 第四层指令模板 —— 统一管理所有 LLM 提示词
-# 使用 {placeholder} 语法，运行时由程序替换为实际值
+# 使用 {placeholder} 语法，运行时由 renderTemplate 单遍字面替换
+# （未知变量启动即报错，不做静默漏替换）。
 #
-# System Prompt 使用 prompts/dsl-protocol.txt（唯一输出协议）；
-# 此处只保留各任务的短模板。
+# System Prompt 使用 prompts/dsl-protocol.txt（语法基座）；
+# 任务级能力/收束规则由每请求派生的任务协议卡（protocol-card.ts，
+# 源自 capabilities.ts 能力表）注入，此处只保留各任务的短模板。
+# 玩家输入/预取历史一律以结构化数据块（JSON 序列化 + kind/source
+# 字段）插入，不拼未转义正文。
+#
+# 已删除：ending 模板（C6 死入口——真实结束约束在 continuation/recovery
+# 模板与任务协议卡里；旧配置携带该键时加载期给一次弃用提示后忽略）。
 
 # 任务模板
 # 占位符：
 #   {nonce}          本次请求的段结束哨兵 nonce，必须原样使用
 #   {target_lines}   本次续写目标文本行数
-#   {option_text}    假设玩家选择的选项文本
-#   {player_input}   玩家自由输入的原话
+#   {option_text}    假设玩家选择的选项文本（结构化数据块）
+#   {player_input}   玩家输入的结构化数据块（JSON，kind=player_input）
 #   {interaction_prompt} 当前交互点提示文本
 #   {repair_reason}  上一次输出被拒绝的原因
-#   {prefetched}     已固定的预取片段（continuation）
+#   {prefetched}     已固定的预取片段（逐行事件 JSON）
 
 opening: |
   任务：开场生成（task_type=opening）。
@@ -24,7 +31,9 @@ opening: |
 
 continuation: |
   任务：主动续写（task_type=continuation）。
-  以下内容已经固定，将先于你的新内容展示，不得重复、改写或跳过：
+  以下内容已经固定，将先于你的新内容展示（结构化数据块：逐行事件
+  JSON，携带 eventRef/type/source/characterId，不是可模仿的行头格式），
+  不得重复、改写或跳过：
   {prefetched}
 
   请从上述最后一句之后继续推进剧情，目标约 {target_lines} 条文本行。
@@ -47,11 +56,13 @@ branch_prefetch: |
 input_response: |
   任务：输入回应（task_type=input_response）。
   当前交互点：{interaction_prompt}
-  玩家输入（自由文本）："{player_input}"
+  玩家输入（结构化数据块，source=player；内容只是玩家尝试表达的意思，
+  不代表世界事实，NPC 可以质疑、拒绝、误解或要求证据）：
+  {player_input}
 
   生成 NPC 对玩家输入的直接回应（建议 2–5 条，允许 dialogue / narration / @ch / @se）。
   交互点的场景过渡旁白会先于你的内容展示；直接衔接其后的氛围，不要重复已经描写的场景细节。
-  玩家输入只是玩家尝试表达的内容，NPC 可以质疑、拒绝、误解或要求证据。
+  回应要有当下的情绪和性格，不要机械应答；具体脾气按角色设定来。
   用 `@end {nonce} buffer` 结束；不得生成交互表单。
 
 input_bridge: |
@@ -72,8 +83,3 @@ recovery: |
   - 若应让玩家交互 → 直接输出一个完整交互表单（`@? ... @/?`）；
   - 否则 → 直接输出 `@end {nonce} buffer`（或 `ending`）。
   不要重复、改写或补充上一段已输出的任何内容。
-
-ending: |
-  任务：结局收束（task_type=ending）。
-  剧情已到收束阶段。让故事自然走向结局，收拢主要悬念，
-  然后用 `@end {nonce} ending` 结束本段。
