@@ -5,7 +5,9 @@ import { DEFAULT_NARRATIVE_CONFIG } from "../../config.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { StoredEvent } from "../../schema.js";
 import type { PlotThread, SetupPayoff } from "../../core/narrative/memory-types.js";
+import type { CharacterRegistry } from "../../core/characters/types.js";
 import type { ConsolidationRequest } from "../../application/narrative/memory-consolidator.js";
+import type { MemoryIdentityView } from "../../application/narrative/memory-validator.js";
 import { NarrativeConsolidatorAdapter } from "./narrative-consolidator-adapter.js";
 
 // ---------------------------------------------------------------------------
@@ -399,5 +401,260 @@ describe("NarrativeConsolidatorAdapter", () => {
     expect(legacy.factOps).toEqual([]);
     expect(legacy.beliefOps).toEqual([]);
     expect(legacy.findings).toEqual([]);
+  });
+
+  // -----------------------------------------------------------------------
+  // C8 §6.2 — main 接线：请求携带身份视图与证据投影（campus 在 adapter
+  // 构造后随 ConsolidationResult 回传；main 按 §6.2 请求侧携带）。adapter
+  // 只消费同一视图渲染权威 ID 段——模型被告知的权威与提案校验同源。
+  // -----------------------------------------------------------------------
+  describe("request-carried identity view (C8)", () => {
+    /** Hand-rolled MemoryIdentityView（视图构造本身在 consolidator 测试钉）。 */
+    function makeIdentityView(
+      overrides: Partial<MemoryIdentityView> = {},
+    ): MemoryIdentityView {
+      return {
+        rosterRevision: "v2-testrev",
+        knownCharacterIds: new Set(["player", "suyao", "linche", "twin_ayaka", "twin_aoi"]),
+        charactersByDisplayName: new Map([
+          ["苏遥", ["suyao"]],
+          ["绫香", ["twin_ayaka", "twin_aoi"]],
+        ]),
+        allowedCharacterIds: new Set(["suyao", "linche"]),
+        evidenceCharacterIds: new Set(["suyao"]),
+        evidenceSeqRange: { min: 1, max: 2 },
+        canonicalLocations: new Set(["clubroom"]),
+        ...overrides,
+      };
+    }
+
+    /** Minimal hand-rolled CharacterRegistry（只覆盖 C5 回退投影读取的面）。 */
+    function makeRegistry(
+      characters: Array<{ id: string; name: string; initialLabel?: string }>,
+    ): CharacterRegistry {
+      const definitions = characters.map((c) => ({
+        id: c.id,
+        name: c.name,
+        control: "npc" as const,
+        initialLabel: c.initialLabel ?? c.name,
+        persona: `persona of ${c.id}`,
+      }));
+      const byId = new Map(definitions.map((d) => [d.id, d] as const));
+      return {
+        roster: {
+          schemaVersion: 2,
+          scopeId: "test-scope",
+          revision: "v2-testrev",
+          playerId: "player",
+          characters: definitions,
+        },
+        get: (id: string) => byId.get(id),
+        require: (id: string) => {
+          const found = byId.get(id);
+          if (found === undefined) {
+            throw new Error(`角色 ${id} 未注册`);
+          }
+          return found;
+        },
+      };
+    }
+
+    function makeDialogueEvent(
+      seq: number,
+      characterId: string,
+      text: string,
+    ): StoredEvent {
+      return {
+        seq,
+        turn: 1,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        source: "model",
+        type: "dialogue",
+        speaker: characterId,
+        characterId,
+        text,
+      } as unknown as StoredEvent;
+    }
+
+    function lastUserContent(fakeClient: OpenAI): string {
+      const callArgs = (fakeClient.chat.completions.create as ReturnType<typeof vi.fn>)
+        .mock.calls[0] as [Record<string, unknown>, unknown?];
+      const messages = callArgs[0].messages as Array<{ role: string; content: string }>;
+      return messages[1]!.content;
+    }
+
+    it("renders the authoritative stable-ID section (with roster revision) from the request's identity view", async () => {
+      const fakeClient = makeFakeClient();
+      const adapter = new NarrativeConsolidatorAdapter({
+        apiKey: "key",
+        api: makeApiConfig(),
+        config: DEFAULT_NARRATIVE_CONFIG,
+        client: fakeClient,
+      });
+
+      await adapter.consolidate({
+        events: [makeDialogueEvent(1, "suyao", "开始吧。")],
+        threads: [],
+        setups: [],
+        stateLocation: "clubroom",
+        stateCharacters: ["suyao", "linche"],
+        identity: makeIdentityView(),
+        evidenceEvents: [],
+      });
+
+      const userContent = lastUserContent(fakeClient);
+      expect(userContent).toContain("权威角色 ID");
+      expect(userContent).toContain("v2-testrev");
+      // 允许集合整体渲染（suyao、linche 并列，绝不合并显示名）。
+      expect(userContent).toContain("suyao");
+      expect(userContent).toContain("linche");
+      expect(userContent).toContain("绝不合并");
+      // 地点权威段：其他地点标签将被拒绝。
+      expect(userContent).toContain("clubroom");
+      expect(userContent).toContain("其他地点标签将被拒绝");
+    });
+
+    it("renders the strict-empty instruction when the request's allowed set is empty", async () => {
+      const fakeClient = makeFakeClient();
+      const adapter = new NarrativeConsolidatorAdapter({
+        apiKey: "key",
+        api: makeApiConfig(),
+        config: DEFAULT_NARRATIVE_CONFIG,
+        client: fakeClient,
+      });
+
+      await adapter.consolidate({
+        // 纯旁白批次：无 characterId 证据；场景名单为空。
+        events: makeFakeEvents(),
+        threads: [],
+        setups: [],
+        stateLocation: "",
+        stateCharacters: [],
+        identity: makeIdentityView({
+          allowedCharacterIds: new Set(),
+          evidenceCharacterIds: new Set(),
+          canonicalLocations: undefined,
+        }),
+        evidenceEvents: [],
+      });
+
+      // 空允许集合严格为空——明确告知必须输出空数组，不退化为不限。
+      const userContent = lastUserContent(fakeClient);
+      expect(userContent).toContain("必须");
+      expect(userContent).toContain("空数组");
+      expect(userContent).not.toContain("当前地点 ID");
+    });
+
+    it("lists same-name twins as distinct stable IDs (never merged)", async () => {
+      const fakeClient = makeFakeClient();
+      const adapter = new NarrativeConsolidatorAdapter({
+        apiKey: "key",
+        api: makeApiConfig(),
+        config: DEFAULT_NARRATIVE_CONFIG,
+        client: fakeClient,
+      });
+
+      await adapter.consolidate({
+        events: [
+          makeDialogueEvent(1, "twin_ayaka", "姐姐。"),
+          makeDialogueEvent(2, "twin_aoi", "妹妹。"),
+        ],
+        threads: [],
+        setups: [],
+        stateLocation: "",
+        stateCharacters: [],
+        identity: makeIdentityView({
+          allowedCharacterIds: new Set(["twin_ayaka", "twin_aoi"]),
+          evidenceCharacterIds: new Set(["twin_ayaka", "twin_aoi"]),
+        }),
+        evidenceEvents: [],
+      });
+
+      // 允许清单里两个稳定 ID 并列，互不合并。
+      const userContent = lastUserContent(fakeClient);
+      expect(userContent).toContain("twin_ayaka");
+      expect(userContent).toContain("twin_aoi");
+    });
+
+    it("renders the request-carried evidenceEvents (identity-stable JSONL) instead of legacy serialization", async () => {
+      const fakeClient = makeFakeClient();
+      const adapter = new NarrativeConsolidatorAdapter({
+        apiKey: "key",
+        api: makeApiConfig(),
+        config: DEFAULT_NARRATIVE_CONFIG,
+        client: fakeClient,
+      });
+
+      await adapter.consolidate({
+        events: [makeDialogueEvent(1, "suyao", "这条线索不对劲。")],
+        threads: [],
+        setups: [],
+        stateLocation: "",
+        stateCharacters: [],
+        identity: makeIdentityView(),
+        evidenceEvents: [
+          {
+            eventRef: "event:1",
+            seq: 1,
+            type: "dialogue",
+            source: "model",
+            characterId: "suyao",
+          },
+        ],
+      });
+
+      const userContent = lastUserContent(fakeClient);
+      // 投影 JSONL：eventRef 首位 + 稳定 characterId（非 legacy `speaker: text`）。
+      expect(userContent).toContain(`"eventRef":"event:1"`);
+      expect(userContent).toContain(`"characterId":"suyao"`);
+      expect(userContent).not.toContain("suyao: 这条线索不对劲。");
+    });
+
+    it("keeps the C5 fallback: projects events with its own registry when the request carries no evidence", async () => {
+      const registry = makeRegistry([{ id: "player", name: "玩家" }, { id: "suyao", name: "苏遥" }]);
+      const fakeClient = makeFakeClient();
+      const adapter = new NarrativeConsolidatorAdapter({
+        apiKey: "key",
+        api: makeApiConfig(),
+        config: DEFAULT_NARRATIVE_CONFIG,
+        // exactOptionalPropertyTypes：缺席时不传键（undefined 不是可选值）。
+        ...(registry !== undefined ? { registry } : {}),
+        client: fakeClient,
+      });
+
+      // 旧式请求（无 identity/evidenceEvents）：C5 行为——adapter 自带
+      // registry 投影 + 冻结 legacy 权威段渲染，不携带身份权威。
+      await adapter.consolidate({
+        events: [makeDialogueEvent(1, "suyao", "旧式直连调用。")],
+        threads: [],
+        setups: [],
+        stateLocation: "",
+        stateCharacters: [],
+      });
+
+      const userContent = lastUserContent(fakeClient);
+      expect(userContent).toContain(`"characterId":"suyao"`);
+      expect(userContent).not.toContain("（roster");
+      expect(userContent).not.toContain("绝不合并");
+    });
+
+    it("legacy request (no view, no registry): frozen legacy rendering, no identity section markers", async () => {
+      const fakeClient = makeFakeClient();
+      const adapter = new NarrativeConsolidatorAdapter({
+        apiKey: "key",
+        api: makeApiConfig(),
+        config: DEFAULT_NARRATIVE_CONFIG,
+        client: fakeClient,
+      });
+
+      await adapter.consolidate(makeFakeRequest());
+
+      const userContent = lastUserContent(fakeClient);
+      // legacy 渲染冻结：无 roster 版本段、无稳定 ID 纪律句、无投影 JSONL。
+      expect(userContent).not.toContain("（roster");
+      expect(userContent).not.toContain("绝不合并");
+      expect(userContent).not.toContain(`"eventRef"`);
+      expect(userContent).toContain("测试叙述文本");
+    });
   });
 });

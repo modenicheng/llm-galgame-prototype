@@ -2,6 +2,11 @@
  * Pure episode retrieval for the narrative brief (narrative director,
  * Task 5).
  *
+ * C8 §6.2：episode 标签是稳定 CharacterId（保存/读取/恢复后仍命中同一
+ * 角色）。字符交集只做精确 ID 匹配——显示名不参与（无反向姓名解析），
+ * summary 等 recap 自然语言也绝不参与标签匹配或反向实体建表。空过滤
+ * 列表严格为空：不贡献任何命中，不退化为“全部命中”（major 兜底除外）。
+ *
  * No IO, no classes. Selection order:
  *  1) episodes whose characters intersect `opts.characters`, most recent 2
  *  2) episodes whose locations intersect `opts.locations`, most recent 2

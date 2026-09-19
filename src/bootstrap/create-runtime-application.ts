@@ -576,6 +576,11 @@ export async function createRuntimeApplication(
         store: narrativeStore,
         consolidator,
         plan,
+        // C8 §6.2：与 adapter 同一份 registry——记忆整理请求侧携带身份视图，
+        // 校验与模型被告知的权威同源。
+        ...(characterRegistry.registry !== undefined
+          ? { registry: characterRegistry.registry }
+          : {}),
         diagnostics,
       });
       await service.initialize();

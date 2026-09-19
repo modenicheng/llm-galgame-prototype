@@ -30,6 +30,7 @@ import type {
   ConsolidationRequest,
   ConsolidationResult,
 } from "./memory-consolidator.js";
+import type { CharacterRegistry } from "../../core/characters/types.js";
 
 // ---------------------------------------------------------------------------
 // Fakes / fixtures
@@ -46,6 +47,24 @@ function makeEvent(seq: number, turn = 1): StoredEvent {
     text: `Event ${seq}`,
     line_id: `line-${seq}`,
   } as StoredEvent;
+}
+
+/** Dialogue StoredEvent with a stable characterId（身份视图证据登场）。 */
+function makeDialogueEvent(
+  seq: number,
+  characterId: string,
+  text: string,
+): StoredEvent {
+  return {
+    seq,
+    turn: 1,
+    timestamp: new Date().toISOString(),
+    source: "model",
+    type: "dialogue",
+    speaker: characterId,
+    characterId,
+    text,
+  } as unknown as StoredEvent;
 }
 
 function makeConfig(
@@ -209,6 +228,9 @@ describe("MemoryConsolidator", () => {
       const consolidator = makeConsolidator({ consolidate });
       const memory = emptyState();
       memory.revision = 2;
+      // episode.threads/setups 引用权威清单中的 id（活跃线程/非终结伏笔）。
+      memory.threads = { t1: makeThread({ id: "t1", status: "open" }) };
+      memory.setups = { s1: makeSetup({ id: "s1", status: "planned" }) };
 
       const outcome = await consolidator.consolidate(
         [makeEvent(10), makeEvent(11), makeEvent(12)],
@@ -265,28 +287,154 @@ describe("MemoryConsolidator", () => {
   });
 
   // -----------------------------------------------------------------------
-  // Canonical tag filtering (audit P1-6)
   // -----------------------------------------------------------------------
-  describe("consolidate — canonical tag filtering", () => {
-    it("filters episode tags outside the canonical sets (non-empty sets only)", async () => {
-      const port = {
-        consolidate: vi.fn().mockResolvedValue({
-          episode: {
-            summary: "苏遥在终端前发现了异常。",
-            characters: ["苏遥", "linche"],
-            locations: ["clubroom", "basement"],
-            threads: [],
-            setups: [],
-            importance: "normal",
-          },
-          threadOps: [],
-          setupOps: [],
-          factOps: [],
-          beliefOps: [],
-          findings: [],
-        }),
+  // §6.2 identity/reference validation (C8) — explicit ValidatedProposal,
+  // no silent tag filtering. main 接线：身份视图由 MemoryConsolidator 从
+  // registry + 批事件构造并随 REQUEST 携带（campus 经 port 结果回传），
+  // 测试以注入 registry 的方式驱动 identity 模式。
+  // -----------------------------------------------------------------------
+  describe("consolidate — §6.2 identity validation", () => {
+    /** Minimal hand-rolled CharacterRegistry（只覆盖身份视图读取的面）。 */
+    function makeRegistry(
+      characters: Array<{ id: string; name: string; initialLabel?: string }>,
+    ): CharacterRegistry {
+      const definitions = characters.map((c) => ({
+        id: c.id,
+        name: c.name,
+        control: "npc" as const,
+        initialLabel: c.initialLabel ?? c.name,
+        persona: `persona of ${c.id}`,
+      }));
+      const byId = new Map(definitions.map((d) => [d.id, d] as const));
+      return {
+        roster: {
+          schemaVersion: 2,
+          scopeId: "test-scope",
+          revision: "v2-testrev",
+          playerId: "player",
+          characters: definitions,
+        },
+        get: (id: string) => byId.get(id),
+        require: (id: string) => {
+          const found = byId.get(id);
+          if (found === undefined) {
+            throw new Error(`角色 ${id} 未注册`);
+          }
+          return found;
+        },
       };
-      const consolidator = makeConsolidator(port);
+    }
+
+    /** 含同名双胞胎的注册表（twin_ayaka/twin_aoi 都叫「绫香」）。 */
+    const REGISTRY = makeRegistry([
+      { id: "player", name: "玩家" },
+      { id: "suyao", name: "苏遥" },
+      { id: "linche", name: "林澈" },
+      { id: "twin_ayaka", name: "绫香" },
+      { id: "twin_aoi", name: "绫香" },
+    ]);
+
+    const TWIN_REGISTRY = makeRegistry([
+      { id: "player", name: "玩家" },
+      { id: "twin_ayaka", name: "绫香" },
+      { id: "twin_aoi", name: "绫香" },
+    ]);
+
+    function makeConsolidatorWithRegistry(
+      port: MemoryConsolidatorPort,
+      registry: CharacterRegistry | undefined,
+    ): MemoryConsolidator {
+      return new MemoryConsolidator({
+        port,
+        config: makeConfig(),
+        // exactOptionalPropertyTypes：缺席时不传键（undefined 不是可选值）。
+        ...(registry !== undefined ? { registry } : {}),
+        diagnostics: diag,
+      });
+    }
+
+    it("carries the identity view on the REQUEST: allowed = evidence ∪ scene cast ∩ registry, evidenceEvents ride along", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(makeResult()),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, REGISTRY);
+
+      await consolidator.consolidate(
+        [
+          makeDialogueEvent(1, "suyao", "这条线索不对劲。"),
+          makeDialogueEvent(2, "player", "我们去查证。"),
+        ],
+        emptyState(),
+        "clubroom",
+        // 场景名单含非注册表字符串（legacy 残留）：请求侧归一只留 linche。
+        ["linche", "神秘女子"],
+      );
+
+      const request = port.consolidate.mock.calls[0]![0] as ConsolidationRequest;
+      expect(request.identity).toBeDefined();
+      const view = request.identity!;
+      expect(view.rosterRevision).toBe("v2-testrev");
+      expect([...view.knownCharacterIds].sort()).toEqual([
+        "linche",
+        "player",
+        "suyao",
+        "twin_aoi",
+        "twin_ayaka",
+      ]);
+      // 允许集合 = 证据登场（suyao/player）∪ 场景名单∩注册表（linche）。
+      expect([...view.allowedCharacterIds].sort()).toEqual([
+        "linche",
+        "player",
+        "suyao",
+      ]);
+      expect([...view.evidenceCharacterIds].sort()).toEqual(["player", "suyao"]);
+      // 证据区间覆盖已提交 seq。
+      expect(view.evidenceSeqRange).toEqual({ min: 1, max: 2 });
+      expect([...view.canonicalLocations!]).toEqual(["clubroom"]);
+      // 显示名 → ID 只作诊断，同名绝不合并。
+      expect(view.charactersByDisplayName.get("苏遥")).toEqual(["suyao"]);
+      expect(view.charactersByDisplayName.get("绫香")).toEqual([
+        "twin_ayaka",
+        "twin_aoi",
+      ]);
+      // 证据投影随请求携带（adapter 直接渲染，不各自投影）。
+      expect(request.evidenceEvents).toHaveLength(2);
+    });
+
+    it("legacy (no registry): the request carries no identity view and no evidence projection", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(makeResult()),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, undefined);
+
+      await consolidator.consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "",
+        [],
+      );
+
+      const request = port.consolidate.mock.calls[0]![0] as ConsolidationRequest;
+      expect(request.identity).toBeUndefined();
+      expect(request.evidenceEvents).toBeUndefined();
+    });
+
+    it("accepts legal stable IDs and returns an accepted episode proposal with empty issues", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "苏遥与林澈在社团室整理线索。",
+              characters: ["suyao", "linche"],
+              locations: ["clubroom"],
+              threads: [],
+              setups: [],
+              importance: "normal",
+            },
+          }),
+        ),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, REGISTRY);
 
       const outcome = await consolidator.consolidate(
         [makeEvent(1), makeEvent(2)],
@@ -295,30 +443,106 @@ describe("MemoryConsolidator", () => {
         ["suyao", "linche"],
       );
 
-      expect(outcome.episode?.characters).toEqual(["linche"]);
-      expect(outcome.episode?.locations).toEqual(["clubroom"]);
-      expect(outcome.rejected).toHaveLength(0);
+      expect(outcome.validationMode).toBe("identity");
+      expect(outcome.episodeProposal!.status).toBe("accepted");
+      if (outcome.episodeProposal!.status === "accepted") {
+        expect(outcome.episodeProposal!.issues).toEqual([]);
+        expect(outcome.episodeProposal!.value.characters).toEqual(["suyao", "linche"]);
+      }
+      expect(outcome.episode?.characters).toEqual(["suyao", "linche"]);
+      expect(outcome.identityIssues).toEqual([]);
+      expect(outcome.rejected).toEqual([]);
     });
 
-    it("keeps tags as-is when the canonical set is empty (no authority yet)", async () => {
+    it("treats a legal EMPTY proposal as an accepted no-op (empty characters pass)", async () => {
       const port = {
-        consolidate: vi.fn().mockResolvedValue({
-          episode: {
-            summary: "新角色登场。",
-            characters: ["神秘女子"],
-            locations: [],
-            threads: [],
-            setups: [],
-            importance: "normal",
-          },
-          threadOps: [],
-          setupOps: [],
-          factOps: [],
-          beliefOps: [],
-          findings: [],
-        }),
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "只有环境描写的过场。",
+              characters: [],
+              locations: [],
+              threads: [],
+              setups: [],
+              importance: "normal",
+            },
+          }),
+        ),
       };
-      const consolidator = makeConsolidator(port);
+      const consolidator = makeConsolidatorWithRegistry(port, REGISTRY);
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "clubroom",
+        ["suyao"],
+      );
+
+      // 合法空提案 = accepted no-op（水位推进由 director 决定，这里只报结果）。
+      expect(outcome.episodeProposal!.status).toBe("accepted");
+      expect(outcome.episode?.characters).toEqual([]);
+      expect(outcome.rejected).toEqual([]);
+      expect(outcome.identityIssues).toEqual([]);
+    });
+
+    it("rejects a display-name misfill with UNKNOWN_CHARACTER_ID — never silently filters", async () => {
+      const episode = {
+        summary: "苏遥在终端前发现了异常。",
+        characters: ["苏遥", "linche"],
+        locations: ["clubroom"],
+        threads: [],
+        setups: [],
+        importance: "normal" as const,
+      };
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(makeResult({ episode })),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, REGISTRY);
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(1), makeEvent(2)],
+        emptyState(),
+        "clubroom",
+        ["suyao", "linche"],
+      );
+
+      // 整案拒绝：不用过滤后的 ["linche"] 伪装成功。
+      expect(outcome.episode).toBeNull();
+      expect(outcome.episodeProposal!.status).toBe("rejected");
+      expect(outcome.episodeProposal!.issues).toEqual([
+        {
+          code: "UNKNOWN_CHARACTER_ID",
+          path: "episode.characters[0]",
+          value: "苏遥",
+        },
+      ]);
+      expect(outcome.identityIssues).toEqual(outcome.episodeProposal!.issues);
+      // RejectedOp 携带结构化 issues（字段路径 + 违规值），不掩盖原提案错误。
+      expect(outcome.rejected).toHaveLength(1);
+      expect(outcome.rejected[0]!.kind).toBe("episode");
+      expect(outcome.rejected[0]!.op).toBe(episode);
+      expect(outcome.rejected[0]!.issues).toEqual([
+        { code: "UNKNOWN_CHARACTER_ID", path: "episode.characters[0]", value: "苏遥" },
+      ]);
+      expect(outcome.rejected[0]!.reason).toContain("苏遥");
+    });
+
+    it("rejects an unknown character ID with UNKNOWN_CHARACTER_ID", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "有人在暗处窥视。",
+              characters: ["ghost_x"],
+              locations: [],
+              threads: [],
+              setups: [],
+              importance: "normal",
+            },
+          }),
+        ),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, REGISTRY);
 
       const outcome = await consolidator.consolidate(
         [makeEvent(1)],
@@ -327,7 +551,324 @@ describe("MemoryConsolidator", () => {
         [],
       );
 
+      expect(outcome.episode).toBeNull();
+      expect(outcome.identityIssues).toEqual([
+        { code: "UNKNOWN_CHARACTER_ID", path: "episode.characters[0]", value: "ghost_x" },
+      ]);
+    });
+
+    it("rejects a registered character outside allowed ∪ evidence with KNOWLEDGE_NOT_SUPPORTED", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "林澈没有出场却被写进了记忆。",
+              characters: ["linche"],
+              locations: [],
+              threads: [],
+              setups: [],
+              importance: "normal",
+            },
+          }),
+        ),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, REGISTRY);
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "",
+        // 允许集合与证据都只有 suyao：linche 已注册但无获知依据。
+        ["suyao"],
+      );
+
+      expect(outcome.episode).toBeNull();
+      expect(outcome.identityIssues).toEqual([
+        { code: "KNOWLEDGE_NOT_SUPPORTED", path: "episode.characters[0]", value: "linche" },
+      ]);
+    });
+
+    it("keeps an EMPTY allowed set strictly empty — any character tag is rejected, not unrestricted", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "纯旁白批次。",
+              characters: ["suyao"],
+              locations: [],
+              threads: [],
+              setups: [],
+              importance: "normal",
+            },
+          }),
+        ),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, REGISTRY);
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "",
+        [],
+      );
+
+      // 注册表里明明有 suyao，但允许集合为空：不退化为「全部注册角色可用」。
+      expect(outcome.episode).toBeNull();
+      expect(outcome.identityIssues).toEqual([
+        { code: "KNOWLEDGE_NOT_SUPPORTED", path: "episode.characters[0]", value: "suyao" },
+      ]);
+    });
+
+    it("same-name twins never merge: display name rejected, both distinct IDs accepted", async () => {
+      // 「绫香」是两个角色的显示名 → 拒绝，绝不解析为其中之一。
+      const misfillPort = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "绫香出现了。",
+              characters: ["绫香"],
+              locations: [],
+              threads: [],
+              setups: [],
+              importance: "normal",
+            },
+          }),
+        ),
+      };
+      const misfillOutcome = await makeConsolidatorWithRegistry(
+        misfillPort,
+        TWIN_REGISTRY,
+      ).consolidate(
+        [
+          makeDialogueEvent(1, "twin_ayaka", "姐姐。"),
+          makeDialogueEvent(2, "twin_aoi", "妹妹。"),
+        ],
+        emptyState(),
+        "",
+        [],
+      );
+      expect(misfillOutcome.episode).toBeNull();
+      expect(misfillOutcome.identityIssues).toEqual([
+        { code: "UNKNOWN_CHARACTER_ID", path: "episode.characters[0]", value: "绫香" },
+      ]);
+
+      // 两个稳定 ID 独立通过，互不合并（证据登场双胞胎 → 允许集合并列）。
+      const distinctPort = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "两个绫香同场。",
+              characters: ["twin_ayaka", "twin_aoi"],
+              locations: [],
+              threads: [],
+              setups: [],
+              importance: "normal",
+            },
+          }),
+        ),
+      };
+      const distinctOutcome = await makeConsolidatorWithRegistry(
+        distinctPort,
+        TWIN_REGISTRY,
+      ).consolidate(
+        [
+          makeDialogueEvent(1, "twin_ayaka", "姐姐。"),
+          makeDialogueEvent(2, "twin_aoi", "妹妹。"),
+        ],
+        emptyState(),
+        "",
+        [],
+      );
+      expect(distinctOutcome.episodeProposal!.status).toBe("accepted");
+      expect(distinctOutcome.episode?.characters).toEqual(["twin_ayaka", "twin_aoi"]);
+    });
+
+    it("aggregates every issue across fields in ONE rejection (never masks later errors)", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "多字段违规。",
+              characters: ["苏遥", "ghost_x"],
+              locations: ["basement"],
+              threads: ["t-ghost"],
+              setups: ["s-ghost"],
+              importance: "normal",
+            },
+          }),
+        ),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, REGISTRY);
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "clubroom",
+        ["suyao", "linche"],
+      );
+
+      expect(outcome.episode).toBeNull();
+      expect(
+        outcome.identityIssues!.map((i) => [i.code, i.path, i.value]),
+      ).toEqual([
+        ["UNKNOWN_CHARACTER_ID", "episode.characters[0]", "苏遥"],
+        ["UNKNOWN_CHARACTER_ID", "episode.characters[1]", "ghost_x"],
+        ["INVALID_REFERENCE", "episode.locations[0]", "basement"],
+        ["INVALID_REFERENCE", "episode.threads[0]", "t-ghost"],
+        ["INVALID_REFERENCE", "episode.setups[0]", "s-ghost"],
+      ]);
+    });
+
+    it("rejects setup evidence refs outside the committed range with EVIDENCE_OUT_OF_RANGE", async () => {
+      const memory = emptyState();
+      memory.setups = { s1: makeSetup({ id: "s1", status: "seeded" }) };
+      const op = {
+        type: "hold" as const,
+        id: "s1",
+        evidenceEventIds: ["2", "99", "x"],
+      };
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: makeEpisodeOp({ characters: ["suyao"], locations: ["clubroom"] }),
+            setupOps: [op],
+          }),
+        ),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, REGISTRY);
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(1), makeEvent(2)],
+        memory,
+        "",
+        ["suyao"],
+      );
+
+      // 证据非法的 op 整条拒绝，不静默丢弃证据字段。
+      expect(outcome.setupOps).toEqual([]);
+      expect(outcome.rejected).toHaveLength(1);
+      expect(outcome.rejected[0]!.kind).toBe("setup");
+      expect(outcome.rejected[0]!.issues).toEqual([
+        { code: "EVIDENCE_OUT_OF_RANGE", path: "setupOps[0].evidenceEventIds[1]", value: "99" },
+        { code: "EVIDENCE_OUT_OF_RANGE", path: "setupOps[0].evidenceEventIds[2]", value: "x" },
+      ]);
+      expect(outcome.identityIssues!.map((i) => [i.code, i.path])).toEqual([
+        ["EVIDENCE_OUT_OF_RANGE", "setupOps[0].evidenceEventIds[1]"],
+        ["EVIDENCE_OUT_OF_RANGE", "setupOps[0].evidenceEventIds[2]"],
+      ]);
+    });
+
+    it("accepts a thread tag created by a same-batch create op, rejects a dead thread tag", async () => {
+      // episode.threads 引用同批 create 的新线程 → 合法。
+      const createPort = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "新线索出现。",
+              characters: [],
+              locations: [],
+              threads: ["t-new"],
+              setups: [],
+              importance: "normal",
+            },
+            threadOps: [
+              { type: "create" as const, id: "t-new", kind: "mystery" as const, importance: "minor" as const },
+            ],
+          }),
+        ),
+      };
+      const createOutcome = await makeConsolidatorWithRegistry(
+        createPort,
+        REGISTRY,
+      ).consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "",
+        [],
+      );
+      expect(createOutcome.episodeProposal!.status).toBe("accepted");
+      expect(createOutcome.episode?.threads).toEqual(["t-new"]);
+
+      // episode.threads 引用不存在的线程 → INVALID_REFERENCE（legacy 模式
+      // 也没有豁免：请求线程清单就是权威）。
+      const deadPort = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "引用了幽灵线程。",
+              characters: [],
+              locations: [],
+              threads: ["t-ghost"],
+              setups: [],
+              importance: "normal",
+            },
+          }),
+        ),
+      };
+      const deadOutcome = await makeConsolidatorWithRegistry(
+        deadPort,
+        REGISTRY,
+      ).consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "",
+        [],
+      );
+      expect(deadOutcome.episode).toBeNull();
+      expect(deadOutcome.episodeProposal!.issues).toEqual([
+        { code: "INVALID_REFERENCE", path: "episode.threads[0]", value: "t-ghost" },
+      ]);
+    });
+
+    it("legacy (no registry): keeps tags as-is and runs no identity validation", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: {
+              summary: "新角色登场。",
+              characters: ["神秘女子"],
+              locations: [],
+              threads: [],
+              setups: [],
+              importance: "normal",
+            },
+          }),
+        ),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, undefined);
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(1)],
+        emptyState(),
+        "",
+        [],
+      );
+
+      expect(outcome.validationMode).toBe("legacy");
       expect(outcome.episode?.characters).toEqual(["神秘女子"]);
+      expect(outcome.identityIssues).toEqual([]);
+    });
+
+    it("shape-invalid episode stays rejected with the rule reason (identity issues reported separately)", async () => {
+      const badEpisode = makeEpisodeOp({ summary: "", characters: [], locations: [] });
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(makeResult({ episode: badEpisode })),
+      };
+      const consolidator = makeConsolidatorWithRegistry(port, REGISTRY);
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(10)],
+        emptyState(),
+        "",
+        [],
+      );
+
+      expect(outcome.episode).toBeNull();
+      expect(outcome.episodeProposal!.status).toBe("rejected");
+      // 形状（summary 为空）不是身份问题：issues 为空，原因在 rejected[].reason。
+      expect(outcome.episodeProposal!.issues).toEqual([]);
+      expect(outcome.rejected[0]!.reason).toContain("episode summary");
+      expect(outcome.rejected[0]!.rule).toBe("EPISODE_EMPTY_SUMMARY");
     });
   });
 

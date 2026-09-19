@@ -96,8 +96,9 @@ abstract class DslSegmentParserBase<L extends AnyDslLine, G extends AnyEventGrou
 
     if (line.kind === "ending_epilogue") {
       // 哨兵前出现 @ending：几乎总是模型把 @end 误写成 @ending 的信号，
-      // 响亮报错交给 strip-continue 剔除续写（v2 移植注：该码未进本线
-      // 白名单——协议不教 @ending，此分支为惰性防御，见 P0-A 提交说明）。
+      // 响亮报错交给 strip-continue 剔除续写（C6 起协议卡已教 @ending——
+      // 合法位置是 @end <nonce> ending 哨兵之后；本分支拦的是越位/误写
+      // 形态，不再是「协议不教 @ending」时期的惰性防御）。
       throw new DslProtocolError(
         "ENDING_EPILOGUE_ORPHAN",
         `@ending 出现的位置不合法（只能紧跟在 @end <nonce> ending 哨兵之后）："@ending ${line.raw}"。`,

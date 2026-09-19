@@ -20,6 +20,7 @@ import type {
 } from "../../core/ports/narrative-director-port.js";
 import type { StoryPlan } from "../../adapters/static/story-plan-loader.js";
 import type { StoredEvent } from "../../schema.js";
+import type { CharacterRegistry } from "../../core/characters/types.js";
 import type {
   NarrativeMemoryState,
   PlotThread,
@@ -173,6 +174,8 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     store: NarrativeMemoryStorePort;
     consolidator: MemoryConsolidatorPort | undefined;
     plan: StoryPlan;
+    /** C8 §6.2：registry 在场时记忆整理请求携带身份视图与证据投影。 */
+    registry?: CharacterRegistry;
     diagnostics?: DiagnosticSink;
   }) {
     this.config = normalizeNarrativeConfig(opts.config);
@@ -189,6 +192,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     this.consolidator = new MemoryConsolidator({
       port: opts.consolidator,
       config: this.config,
+      ...(opts.registry !== undefined ? { registry: opts.registry } : {}),
       diagnostics: this.diagnostics,
     });
   }
