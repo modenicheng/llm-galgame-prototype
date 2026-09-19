@@ -1,0 +1,1 @@
+{"id":"eg_old1","from":"dc_old1","choice":{"kind":"option","text":"走近苏遥"},"payload":{"eventCount":4,"firstSeq":1,"lastSeq":4},"to":{"kind":"decision","id":"dc_old2"}}

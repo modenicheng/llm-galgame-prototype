@@ -45,6 +45,9 @@ interface EndStateKey {
   location: string;
   characters: string[];
   outlineLocation?: string;
+  /** M3：身份契约键（协议版本 + roster revision）——汇流比较的前置条件。 */
+  dslProtocolVersion: number;
+  rosterRevision: string;
   entryState: StateSnapshot;
 }
 
@@ -144,14 +147,18 @@ export class ConfluenceChecker {
       edges.filter((edge) => edge.to.kind === "decision").map((edge) => edge.to.id),
     );
     const pathNodes = pathAncestors(edges, context.newNodeId);
-    // 保留：非自身、不在当前路径上（防成环）、有入边（孤儿/周目首节点排除）。
+    // 保留：非自身、不在当前路径上（防成环）、有入边（孤儿/周目首节点排除）、
+    // 身份契约一致（M3：协议版本 + roster revision 任一不同即不送判——不同
+    // 身份契约的节点绝不复用旧 confluence 判定，无论预筛键多像）。
     const allKeys = [...index.values()].flat();
     const scored = allKeys
       .filter(
         (key) =>
           key.decisionId !== context.newNodeId &&
           !pathNodes.has(key.decisionId) &&
-          withInEdge.has(key.decisionId),
+          withInEdge.has(key.decisionId) &&
+          key.dslProtocolVersion === newKey.dslProtocolVersion &&
+          key.rosterRevision === newKey.rosterRevision,
       )
       .map((key) => ({ key, score: prescreenScore(newKey, key) }))
       .filter(({ score }) => score > 0) // 确定性预筛限流：无等价键不送 judge
@@ -215,6 +222,18 @@ export class ConfluenceChecker {
       edge.confluence !== undefined
     ) {
       return; // 已被改绑或世界已变化
+    }
+    // M3 身份契约闸门（互斥链内复核）：候选快照与本次末态的协议版本 /
+    // roster revision 任一不同即放弃——不同身份契约不复用旧判定。
+    const candidateEntry = await this.store.getDecision(candidate);
+    if (
+      candidateEntry === null ||
+      candidateEntry.entryState.identity.dslProtocolVersion !==
+        context.endState.identity.dslProtocolVersion ||
+      candidateEntry.entryState.identity.rosterRevision !==
+        context.endState.identity.rosterRevision
+    ) {
+      return;
     }
     const cursor = await this.store.loadCursor();
     if (
@@ -302,6 +321,9 @@ function extractEndStateKey(
     sceneId,
     location: snapshot.storyState.scene.location,
     characters: Object.keys(snapshot.storyState.characters).sort(),
+    // M3：身份契约键来自快照身份块（v3 快照已经 store 升级为 v4）。
+    dslProtocolVersion: snapshot.identity.dslProtocolVersion,
+    rosterRevision: snapshot.identity.rosterRevision,
     entryState: snapshot,
   };
 }

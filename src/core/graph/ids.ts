@@ -45,6 +45,8 @@ export const OutlineNodeIdSchema: z.ZodType<OutlineNodeId> =
 export const GAME_STORAGE_LAYOUT = {
   worldCanon: "world/canon.json",
   worldCanonLog: "world/canon.log.jsonl",
+  /** M3：共享不可变 roster blob 目录（按 revision 一份，快照只引用）。 */
+  rostersDir: "world/rosters",
   outline: "outline.json",
   outlineLog: "outline.log.jsonl",
   scenes: "graph/scenes.jsonl",
@@ -67,4 +69,13 @@ export function edgePayloadPath(edgeId: EdgeId): string {
 /** 某个决策节点的入口状态快照。 */
 export function decisionSnapshotPath(decisionId: DecisionId): string {
   return `${GAME_STORAGE_LAYOUT.snapshotsDir}/${decisionId}.json`;
+}
+
+/**
+ * 某个 roster revision 的共享不可变 blob 文件（M3）。revision 是规范化
+ * 定义的稳定摘要（无时间戳、无路径分隔符），文件名再做防御性清洗。
+ */
+export function rosterBlobPath(revision: string): string {
+  const safe = revision.replace(/[^A-Za-z0-9._-]/g, "_");
+  return `${GAME_STORAGE_LAYOUT.rostersDir}/${safe.length > 0 ? safe : "unnamed"}.json`;
 }

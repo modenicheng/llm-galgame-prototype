@@ -11,7 +11,7 @@ import path from "node:path";
 import { GameGraphStore } from "../../adapters/storage/game-graph-store.js";
 import { OutlineStore } from "../../adapters/storage/outline-store.js";
 import { buildGraphView } from "./graph-view.js";
-import { makeDecision, makeEdge, makeSnapshot } from "../../core/graph/testing.js";
+import { makeDecision, makeEdge, makeIdentity, makeSnapshot } from "../../core/graph/testing.js";
 
 describe("buildGraphView", () => {
   let root: string;
@@ -107,5 +107,37 @@ describe("buildGraphView", () => {
     expect(view.scenes).toHaveLength(1);
     expect(view.scenes[0]!.groupKey).toBe("scene_1"); // 模型场景 id 回退
     expect(view.scenes[0]!.outlineRef).toBeUndefined();
+  });
+
+  it("M3: exposes the cursor node's identity contract fingerprint (no roster/labels)", async () => {
+    await graph.putScene({ id: "sc_1", outlineRef: "ol_seed", status: "active" });
+    await graph.putDecision(
+      makeDecision({
+        id: "dc_1",
+        sceneId: "sc_1",
+        entryState: makeSnapshot({
+          identity: makeIdentity({
+            rosterScopeId: "world:game_graph_view",
+            rosterRevision: "rev-x1",
+            dslProtocolVersion: 2,
+            characterLabels: { suyao: "海雾中的她" },
+          }),
+        }),
+      }),
+    );
+    // 无游标 → identity 缺省。
+    const withoutCursor = await buildGraphView({ gameId: "game_graph_view", graph });
+    expect(withoutCursor.identity).toBeUndefined();
+
+    await graph.putRun({ id: "run_1", origin: { kind: "root" }, startedAt: "t" });
+    await graph.saveCursor({ runId: "run_1", position: "dc_1" });
+    const view = await buildGraphView({ gameId: "game_graph_view", graph });
+    expect(view.identity).toEqual({
+      rosterScopeId: "world:game_graph_view",
+      rosterRevision: "rev-x1",
+      dslProtocolVersion: 2,
+    });
+    // 脱敏：名牌/人设不进视图。
+    expect(JSON.stringify(view)).not.toContain("海雾中的她");
   });
 });

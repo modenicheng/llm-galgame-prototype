@@ -1,0 +1,18 @@
+{
+  "snapshotVersion": 1,
+  "storyState": {
+    "scene": { "id": "scene_v1", "location": "老宅客厅", "purpose": "v1 dev 存档" },
+    "characters": { "npc_a": { "canon": "v1 富字段（已随 MA-A2 瘦身删除）" } },
+    "recent_summary": "v1 时代的开发存档。"
+  },
+  "visualState": { "characters": {} },
+  "memoryDigest": {
+    "revision": 0,
+    "consolidatedThroughEventSeq": 0,
+    "checkpointCount": 0,
+    "threads": [],
+    "setups": [],
+    "anchors": []
+  },
+  "outlineRevision": 0
+}

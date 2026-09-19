@@ -71,6 +71,15 @@ export interface GraphView {
   cursor?: { runId: string; decisionId: string } | undefined;
   runs: GraphRunStats;
   /**
+   * M3：当前游标停驻节点的身份契约（roster scope/revision + 协议版本）。
+   * 无活动游标时缺省。只暴露契约指纹，不暴露 roster 内容/名牌/人设。
+   */
+  identity?: {
+    rosterScopeId: string;
+    rosterRevision: string;
+    dslProtocolVersion: number;
+  } | undefined;
+  /**
    * M5.5 ③：大纲回顾（通关后解锁）——路径触及的 outline act（按 location
    * 分组）与已达成结局。未通关（无已结算周目）时不返回该字段。
    */
@@ -102,6 +111,7 @@ export async function buildGraphView(stores: GraphViewStores): Promise<GraphView
   ]);
 
   const actRefBySceneId = await actWhitelistByScene(scenes, stores.outline);
+  const cursorIdentity = cursorIdentityOf(decisions, cursor?.position ?? null);
   const sceneViews = sceneViewsOf(decisions, edges, scenes, cursor?.position ?? null, actRefBySceneId);
   const runStats: GraphRunStats = {
     total: runs.length,
@@ -115,8 +125,26 @@ export async function buildGraphView(stores: GraphViewStores): Promise<GraphView
     gameId: stores.gameId,
     scenes: sceneViews,
     ...(cursor !== null ? { cursor: { runId: cursor.runId, decisionId: cursor.position } } : {}),
+    // M3：游标节点的身份契约指纹（脱敏：只报 scope/revision/协议版本）。
+    ...(cursorIdentity !== undefined ? { identity: cursorIdentity } : {}),
     runs: runStats,
     ...(outlineReview !== undefined ? { outlineReview } : {}),
+  };
+}
+
+/** M3：游标决策节点快照的身份契约（游标缺席 → undefined）。 */
+function cursorIdentityOf(
+  decisions: DecisionNode[],
+  cursorPosition: string | null,
+): GraphView["identity"] {
+  if (cursorPosition === null) return undefined;
+  const identity = decisions.find((decision) => decision.id === cursorPosition)?.entryState
+    .identity;
+  if (identity === undefined) return undefined;
+  return {
+    rosterScopeId: identity.rosterScopeId,
+    rosterRevision: identity.rosterRevision,
+    dslProtocolVersion: identity.dslProtocolVersion,
   };
 }
 

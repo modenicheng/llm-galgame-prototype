@@ -20,6 +20,9 @@ import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { CanonSnapshot, CanonStorePort } from "../../core/ports/canon-store-port.js";
 import type { StatsStorePort } from "../../core/ports/stats-store-port.js";
 import type { ReviewStorePort } from "../../core/ports/review-store-port.js";
+import type { GraphIdentityContext } from "../../core/ports/identity-snapshot-port.js";
+import type { SessionMigrationReport } from "../../core/ports/identity-snapshot-port.js";
+import { upcastLegacyEvents } from "../../adapters/storage/identity-upcaster.js";
 import type {
   EdgeChoice,
   RestorePoint,
@@ -125,6 +128,12 @@ export class RunGraphCoordinator implements RunGraphPort {
   private readonly stats: StatsStorePort | undefined;
   /** M5.5 ②：通关评注喂回（可选装配）。 */
   private readonly reviewStore: ReviewStorePort | undefined;
+  /**
+   * M3：身份上下文（与 store 共用同一对象）。恢复路径用它把旧边负载
+   * （无 characterId 的 v1 对白）在内存升级为新身份信封事件；roster
+   * revision 与 store 的 blob 写入同源。
+   */
+  private readonly identity: GraphIdentityContext | undefined;
 
   constructor(
     private readonly store: GraphStorePort,
@@ -139,6 +148,8 @@ export class RunGraphCoordinator implements RunGraphPort {
       stats?: StatsStorePort;
       /** M5.5 ②：历史通关评注喂回编剧维护输入。 */
       reviewStore?: ReviewStorePort;
+      /** M3：身份上下文（旧事件升级 + roster blob 同源）。 */
+      identity?: GraphIdentityContext;
     },
   ) {
     this.location = store.location;
@@ -169,6 +180,7 @@ export class RunGraphCoordinator implements RunGraphPort {
     this.canon = options?.canon;
     this.stats = options?.stats;
     this.reviewStore = options?.reviewStore;
+    this.identity = options?.identity;
   }
 
   /** 串行执行一次图变更（见 mutationChain）。 */
@@ -327,7 +339,12 @@ export class RunGraphCoordinator implements RunGraphPort {
       chunks.push(await this.store.readPayload(inEdge.id));
       nodeId = inEdge.from;
     }
-    const pathEvents = chunks.reverse().flat();
+    let pathEvents = chunks.reverse().flat();
+    // M3：旧边负载（无 characterId 的 v1 对白）按身份映射在内存升级——
+    // 原负载字节不动；unresolved 台词保持只读回放并计入迁移报告（只有
+    // 出现 alias 升级或 unresolved 时才携带报告：干净读回无诊断噪音）。
+    const migration = this.upcastPathEventsForReplay([...pathEvents]);
+    pathEvents = migration.events;
 
     const watermark = decision.entryState.memoryDigest.consolidatedThroughEventSeq;
     const pathLastSeq = pathEvents.at(-1)?.seq ?? 0;
@@ -341,6 +358,64 @@ export class RunGraphCoordinator implements RunGraphPort {
       // 同世界其他周目（含被弃分支）的 seq 撞号（跨周目单调，M2.1 决议）。
       nextSeq: Math.max(worldMaxSeq(edges), pathLastSeq, watermark) + 1,
       turnFloor: pathEvents.at(-1)?.turn ?? 1,
+      ...(migration.report !== undefined ? { migration: migration.report } : {}),
+    };
+  }
+
+  /**
+   * 旧路径事件的身份升级（内存副本；无身份上下文/无 roster = 原样透传——
+   * 窄测试与 legacy 兼容世界没有可升级的契约）。报告仅在**有异常发现**
+   * （alias_resolved / unresolved_* 计数 > 0）时返回。
+   */
+  private upcastPathEventsForReplay(
+    events: readonly StoredEvent[],
+  ): { events: StoredEvent[]; report?: SessionMigrationReport } {
+    const context = this.identity;
+    if (context === undefined) return { events: [...events] };
+    const roster = context.roster();
+    if (roster === undefined) return { events: [...events] };
+    const result = upcastLegacyEvents(events, {
+      roster: {
+        scopeId: roster.scopeId,
+        revision: roster.revision,
+        playerId: roster.playerId,
+        characters: roster.characters,
+      },
+      legacyMapping:
+        context.legacyMapping ?? {
+          // 未登记映射 = 空 legacy 表：一切旧名字按 unknown 只读回放。
+          scope: { scopeId: roster.scopeId, schemaVersion: 1 },
+          scriptNames: [],
+        },
+    });
+    const { byCategory } = result.diagnostics;
+    const findings =
+      byCategory.alias_resolved +
+      byCategory.unresolved_ambiguous +
+      byCategory.unresolved_unknown_id +
+      byCategory.unresolved_unregistered;
+    if (findings === 0) return { events: result.events };
+    if (result.diagnostics.unresolvedRefs.length > 0) {
+      this.diagnostics.warn(
+        "RunGraphCoordinator",
+        `路径回放有 ${result.diagnostics.unresolvedRefs.length} 条旧对白无法唯一解析身份` +
+          `（${result.diagnostics.unresolvedRefs.join("、")}）——只读回放，继续生成前需要显式补充角色映射或重开`,
+      );
+    }
+    return {
+      events: result.events,
+      report: {
+        events: result.diagnostics,
+        snapshot: {
+          sourceFormat: "graph-v4",
+          characterLabelsRecovered: 0,
+          corruptFieldsDropped: [],
+          notes:
+            result.diagnostics.unresolvedRefs.length > 0
+              ? ["旧边负载含 unresolved 对白（只读回放，不补 guessed characterId）"]
+              : ["旧边负载含 legacy alias 对白（已按显式映射升级）"],
+        },
+      },
     };
   }
 

@@ -14,6 +14,7 @@ import type { OutlineStorePort } from "../../core/ports/outline-store-port.js";
 import type { OutlineMaintainerPort } from "../../application/outline/outline-writer.js";
 import type { OutlineNode } from "../../core/outline/types.js";
 import { createInitialState } from "../../story/state.js";
+import { makeIdentity } from "../../core/graph/testing.js";
 import type { RuntimeMoment } from "../../core/ports/run-graph-port.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 
@@ -40,8 +41,10 @@ function makeMoment(overrides?: { recentSummary?: string }): RuntimeMoment {
       anchors: [],
       facts: [],
       beliefs: [],
+      consolidationFailedIntervals: [],
     },
     outlineRevision: 0,
+    identity: makeIdentity(),
   };
 }
 

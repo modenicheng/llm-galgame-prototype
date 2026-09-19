@@ -2,8 +2,12 @@
  * v2 剧情图契约（v1 冻结）——
  * docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md §3。
  *
- * 本模块是图结构的唯一类型与 schema 来源。字段集属于冻结契约：增删字段
- * 必须修订 snapshotVersion 并记录契约变更，不允许静默改动。
+ * 本模块是图结构的唯一类型与 schema 来源。字段集属于冻结契约，修订规则：
+ * **删除字段、类型变更、新增必填字段**必须递增 snapshotVersion 并记录契约
+ * 变更（读取方按版本拒绝或走显式升级适配器）；**新增可选字段**（读取端
+ * 容忍缺省、语义向后兼容）不翻版本，但必须在本文件注释中登记（如
+ * MemoryDigest.consolidationFailedIntervals 在 v3 内追加为可选、v4 转必填
+ * 的先例）。不允许任何静默的字段语义改动。
  * 纯类型与纯 schema，无 IO。
  */
 
@@ -19,6 +23,13 @@ import {
 } from "../narrative/memory-types.js";
 import { VisualStateSchema } from "../presentation/types.js";
 import {
+  DANGEROUS_ID_KEYS,
+  CharacterLabelSchema,
+  isDangerousKey,
+  isValidCharacterKey,
+} from "../characters/types.js";
+import { SNAPSHOT_IDENTITY_SCHEMA_VERSION } from "../ports/identity-snapshot-port.js";
+import {
   DecisionIdSchema,
   EdgeIdSchema,
   EndingIdSchema,
@@ -30,8 +41,65 @@ import {
 /** 快照契约版本。字段集变更时递增，读取方按版本拒绝不认识的快照。
  * v2（决议 D4，MA-B）：MemoryDigest 增 facts/beliefs 全文嵌入（D6）；
  * v3（决议 D10，MA-A2）：StoryState 瘦身（删 canon/open_threads/
- * player_profile/角色富字段）。旧版本快照读取即拒（dev 存档废弃不做迁移）。 */
-export const SNAPSHOT_VERSION = 3;
+ * player_profile/角色富字段）；
+ * v4（M3，身份 DSL）：快照增身份块 SnapshotIdentityState（身份/协议版本、
+ * roster scope/revision 引用、名牌状态、cast），共享不可变 roster blob 按
+ * revision 落盘、快照只引用；MemoryDigest.consolidationFailedIntervals 由
+ * v3 的可选追加转必填。v3 → v4 由 reader 的显式升级适配器
+ * （core/graph/snapshot-upcast.ts）在内存完成，原文件字节不动；v1/v2 沿用
+ * 读取即拒策略（dev 存档废弃不做迁移）。 */
+export const SNAPSHOT_VERSION = 4;
+
+// ---------------------------------------------------------------------------
+// 快照身份块（M3 v4）——身份/协议版本、roster 引用、名牌状态与 cast
+// ---------------------------------------------------------------------------
+
+/** 原型链安全的名牌记录（键 = 稳定 CharacterId；危险键预处理后仍走 record）。 */
+const characterLabelsRecord = z.preprocess(
+  (input, ctx) => {
+    if (typeof input === "object" && input !== null) {
+      for (const key of Object.keys(input)) {
+        if (isDangerousKey(key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `名牌键不允许使用对象原型危险键：${DANGEROUS_ID_KEYS.join("/")}`,
+          });
+        }
+      }
+    }
+    return input;
+  },
+  z.record(
+    z.string().refine(isValidCharacterKey, {
+      message: "名牌键必须是合法角色 ID（字母开头，禁空白/冒号/括号）",
+    }),
+    CharacterLabelSchema,
+  ),
+);
+
+/**
+ * 快照身份块：写入时「这局用什么身份契约在演」。roster 只引用
+ * {scopeId, revision}——完整人设是共享不可变 blob（按 revision 落盘于
+ * world/rosters/，见 GAME_STORAGE_LAYOUT），不随每条边/快照重复。
+ */
+export const SnapshotIdentityStateSchema = z.object({
+  /** 身份契约版本（identity-snapshot-port；与校园 F3 对齐）。 */
+  identitySchemaVersion: z.literal(SNAPSHOT_IDENTITY_SCHEMA_VERSION),
+  /** 写入时的 DSL 协议版本（C7 wire；读取端允许旧值，漂移只报告）。 */
+  dslProtocolVersion: z.number().int().min(1),
+  /** roster 作用域引用（内容包/世界 id；legacy 兼容会话为 "legacy"）。 */
+  rosterScopeId: z.string().min(1),
+  /** roster revision 引用（blob 文件名/身份契约指纹）。 */
+  rosterRevision: z.string().min(1),
+  /** 名牌状态（CharacterId → 当前名牌；恢复按节点快照还原，不读当前游标）。 */
+  characterLabels: characterLabelsRecord,
+  /** cast 快照：允许说话人/场景参与者（汇流比较的前置条件之一）。 */
+  cast: z.object({
+    allowedSpeakerIds: z.array(z.string().min(1)),
+    sceneParticipantIds: z.array(z.string().min(1)),
+  }),
+});
+export type SnapshotIdentityState = z.infer<typeof SnapshotIdentityStateSchema>;
 
 // ---------------------------------------------------------------------------
 // 交互表单快照 — 决策节点上"当时呈现给玩家的表单"
@@ -74,10 +142,10 @@ export const MemoryDigestSchema = z.object({
   // 会话工作缓存的可用性。
   facts: z.array(FactRecordSchema),
   beliefs: z.array(BeliefStateSchema),
-  // §6.2 M2（追加字段，可选读取兼容旧快照，快照版本不翻）：失败整理
-  // 区间随摘要入盘——恢复后成功水位仍不越过缺口，已降级区间不再重试。
-  // 旧快照缺省 = 无失败区间（pre-M2 会话没有降级语义）。
-  consolidationFailedIntervals: z.array(ConsolidationFailedIntervalSchema).optional(),
+  // §6.2 M2：失败整理区间随摘要入盘——恢复后成功水位仍不越过缺口，已降级
+  // 区间不再重试。v3 内为可选追加（旧快照缺省 = 无失败区间）；v4 起必填
+  // （快照版本是新鲜契约，v3→v4 升级适配器为旧摘要补 []）。
+  consolidationFailedIntervals: z.array(ConsolidationFailedIntervalSchema),
 });
 export type MemoryDigest = z.infer<typeof MemoryDigestSchema>;
 
@@ -91,6 +159,8 @@ export const StateSnapshotSchema = z.object({
   visualState: VisualStateSchema,
   memoryDigest: MemoryDigestSchema,
   outlineRevision: z.number().int().nonnegative(),
+  /** M3（v4）：身份块——见 SnapshotIdentityStateSchema。 */
+  identity: SnapshotIdentityStateSchema,
 });
 export type StateSnapshot = z.infer<typeof StateSnapshotSchema>;
 

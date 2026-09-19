@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "characters": {
+    "su_yao": {
+      "name": "苏遥",
+      "voice": {
+        "timbre": "年轻女性，清亮偏冷，气息轻",
+        "delivery": ["restrained", "hesitant"],
+        "avoid": ["playful"],
+        "baseline": { "pace": "slow", "volume": "soft" }
+      }
+    }
+  }
+}

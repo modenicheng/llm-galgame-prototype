@@ -65,6 +65,7 @@ describe("M5.5 评价喂回（维护请求携带评注）", () => {
       memoryDigest: MemoryDigestSchema.parse({
         revision: 0, consolidatedThroughEventSeq: 0, checkpointCount: 0,
         threads: [], setups: [], anchors: [], facts: [], beliefs: [],
+        consolidationFailedIntervals: [],
       }),
       reviews: [
         { runId: "run_1", rating: 5, comment: "回收惊艳", outlineFit: "完全贴合", reviewedAt: "t" },
@@ -122,6 +123,6 @@ describe("M5.5 大纲回顾通关解锁", () => {
   });
 
   it("typechecks the snapshot factory still produces valid digests", () => {
-    expect(makeSnapshot().snapshotVersion).toBe(3);
+    expect(makeSnapshot().snapshotVersion).toBe(4);
   });
 });

@@ -16,6 +16,7 @@ export function toStateSnapshot(moment: RuntimeMoment): StateSnapshot {
     visualState: moment.visualState,
     memoryDigest: moment.memoryDigest,
     outlineRevision: moment.outlineRevision,
+    identity: moment.identity,
   };
 }
 

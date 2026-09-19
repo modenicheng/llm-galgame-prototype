@@ -281,6 +281,25 @@ export const CharacterRuntimeStateSchema = z.object({
   labels: safeRecord(safeRecordKey, CharacterLabelSchema),
 });
 
+/** roster 的 zod schema（M3：roster blob 落盘/读回的共用校验闸门）。 */
+export const CharacterRosterSchema = z
+  .object({
+    schemaVersion: z.literal(2),
+    scopeId: z.string().min(1),
+    revision: z.string().min(1),
+    playerId: CharacterIdSchema,
+    characters: z.array(CharacterDefinitionSchema),
+  })
+  .superRefine((roster, ctx) => {
+    if (!roster.characters.some((definition) => definition.id === roster.playerId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["playerId"],
+        message: `playerId（${roster.playerId}）必须是 characters 内的稳定 ID`,
+      });
+    }
+  });
+
 // ---------------------------------------------------------------------------
 // 名牌运行时状态
 // ---------------------------------------------------------------------------

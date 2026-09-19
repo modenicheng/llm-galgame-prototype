@@ -17,6 +17,7 @@ import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js"
 import { loadAssetCatalog } from "../application/assets/asset-catalog-loader.js";
 import { loadCharacterPackRoster } from "../adapters/static/character-pack-loader.js";
 import { GameGraphStore } from "../adapters/storage/game-graph-store.js";
+import type { GraphIdentityContext } from "../core/ports/identity-snapshot-port.js";
 import { OutlineStore } from "../adapters/storage/outline-store.js";
 import { buildGraphView, buildSettlementView, buildGalleryView } from "../application/graph/graph-view.js";
 import { StatsStore } from "../adapters/storage/stats-store.js";
@@ -75,6 +76,19 @@ async function main(): Promise<void> {
     assets: worldAssets,
     authorCharacterIds: authorRoster.characters.map((definition) => definition.id),
   });
+  // M3：宿主侧图存储共享同一身份上下文（roster 来自 app 的 registry），
+  // 旧 v3 世界的快照在视图/结算/评分读取时同样走显式升级适配。
+  const graphIdentity: GraphIdentityContext | undefined =
+    app.characterRegistry.registry !== undefined
+      ? {
+          roster: () => app.characterRegistry.registry?.roster,
+          dslProtocolVersion: () => config.dsl?.protocol_version ?? 1,
+        }
+      : undefined;
+  const graphStoreFor = (gameId: string): GameGraphStore =>
+    new GameGraphStore(DEFAULT_GAMES_ROOT, gameId, {
+      ...(graphIdentity !== undefined ? { identity: graphIdentity } : {}),
+    });
   const host = new LocalWebHost({
     config,
     app,
@@ -97,14 +111,14 @@ async function main(): Promise<void> {
       build: (gameId) =>
         buildGraphView({
           gameId,
-          graph: new GameGraphStore(DEFAULT_GAMES_ROOT, gameId),
+          graph: graphStoreFor(gameId),
           outline: new OutlineStore(DEFAULT_GAMES_ROOT, gameId),
           stats: new StatsStore(DEFAULT_GAMES_ROOT, gameId),
         }),
       settlement: (gameId) =>
         buildSettlementView({
           gameId,
-          graph: new GameGraphStore(DEFAULT_GAMES_ROOT, gameId),
+          graph: graphStoreFor(gameId),
           outline: new OutlineStore(DEFAULT_GAMES_ROOT, gameId),
           stats: new StatsStore(DEFAULT_GAMES_ROOT, gameId),
           sessionsDir: config.game.sessions_dir,
@@ -113,7 +127,7 @@ async function main(): Promise<void> {
       gallery: (gameId) =>
         buildGalleryView({
           gameId,
-          graph: new GameGraphStore(DEFAULT_GAMES_ROOT, gameId),
+          graph: graphStoreFor(gameId),
           outline: new OutlineStore(DEFAULT_GAMES_ROOT, gameId),
           stats: new StatsStore(DEFAULT_GAMES_ROOT, gameId),
         }),
@@ -121,7 +135,7 @@ async function main(): Promise<void> {
     // M5.5 ①：通关评分（玩家星级 → 编剧评注 → reviews/<runId>.json）。
     reviews: {
       submit: async (gameId, rating, sessionId) => {
-        const graph = new GameGraphStore(DEFAULT_GAMES_ROOT, gameId);
+        const graph = graphStoreFor(gameId);
         const outlineStore = new OutlineStore(DEFAULT_GAMES_ROOT, gameId);
         const runs = await graph.listRuns();
         const last = [...runs].reverse().find((r) => r.ending !== undefined && r.endedAt !== undefined);

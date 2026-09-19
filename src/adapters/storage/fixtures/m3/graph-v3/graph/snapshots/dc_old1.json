@@ -1,0 +1,26 @@
+{
+  "snapshotVersion": 3,
+  "storyState": {
+    "scene": { "id": "scene_old_1", "location": "旧校舍天台", "purpose": "傍晚的初次对话" },
+    "characters": {},
+    "recent_summary": "林澈在天台遇见了独自看海的苏遥。"
+  },
+  "visualState": {
+    "background": "bg_rooftop_dusk",
+    "characters": {
+      "林澈": { "spriteSet": "linche", "variant": "normal", "position": "left", "displayName": "林澈", "visible": true },
+      "苏遥": { "spriteSet": "suyao", "variant": "normal", "position": "center", "displayName": "苏遥", "visible": true }
+    }
+  },
+  "memoryDigest": {
+    "revision": 0,
+    "consolidatedThroughEventSeq": 0,
+    "checkpointCount": 0,
+    "threads": [],
+    "setups": [],
+    "anchors": [],
+    "facts": [],
+    "beliefs": []
+  },
+  "outlineRevision": 0
+}
