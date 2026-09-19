@@ -14,6 +14,7 @@ import type { StoryState } from "../../story/types.js";
 import type { Metrics } from "../../runtime/metrics.js";
 import { parseLLMUsage } from "./llm-usage.js";
 import { thinkingRequestBody } from "./openai-compatible-generator.js";
+import type { ContextLlmRecorder, ContextLlmResult } from "../../core/ports/context-llm-recorder-port.js";
 
 const SYSTEM_PROMPT =
   "你是互动视觉小说的状态投影器。根据剧情片段，提取人物状态与世界事实的**增量**更新。" +
@@ -125,6 +126,7 @@ export class MemoryAgentAdapter implements SessionMemoryAgentPort {
   private readonly maxTokens: number;
   private readonly thinking: AppConfig["generation"]["thinking"] | undefined;
   private readonly tokenLimitField: AppConfig["api"]["token_limit_field"];
+  private readonly contextRecorder: ContextLlmRecorder | undefined;
 
   constructor(opts: {
     apiKey: string;
@@ -137,6 +139,8 @@ export class MemoryAgentAdapter implements SessionMemoryAgentPort {
     diagnostics?: DiagnosticSink;
     metrics?: Metrics;
     client?: OpenAI;
+    /** 请求审计落盘（observability.record_llm_streams）；缺省不录。 */
+    contextRecorder?: ContextLlmRecorder;
   }) {
     this.client =
       opts.client ??
@@ -151,6 +155,7 @@ export class MemoryAgentAdapter implements SessionMemoryAgentPort {
     this.maxTokens = opts.maxTokens ?? 1200;
     this.thinking = opts.thinking;
     this.tokenLimitField = opts.api.token_limit_field;
+    this.contextRecorder = opts.contextRecorder;
   }
 
   async derive(
@@ -163,15 +168,21 @@ export class MemoryAgentAdapter implements SessionMemoryAgentPort {
 
     const callStart = Date.now();
     try {
-      const response = await this.client.chat.completions.create({
+      // 显式字面量 role 注解：无注解的对象字面量会把 "system" 宽化成
+      // string，导致提取后的 body 再传给 create() 过不了类型检查。
+      const messages: [
+        { role: "system"; content: string },
+        { role: "user"; content: string },
+      ] = [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `【当前状态】\n${summarizeState(state)}\n\n【新剧情片段】\n${eventText}`,
+        },
+      ];
+      const requestBody = {
         model: this.model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: `【当前状态】\n${summarizeState(state)}\n\n【新剧情片段】\n${eventText}`,
-          },
-        ],
+        messages,
         temperature: 0.2,
         ...(this.tokenLimitField === "max_tokens"
           ? { max_tokens: this.maxTokens }
@@ -179,18 +190,32 @@ export class MemoryAgentAdapter implements SessionMemoryAgentPort {
         // DeepSeek thinking 顶层开关（+ reasoning_effort），与主写手同一
         // 形态；agents.memory.thinking 未配置时保持关闭。
         ...thinkingRequestBody(this.thinking),
-      });
+      };
+      const send = async (): Promise<ContextLlmResult> => {
+        const response = await this.client.chat.completions.create(requestBody);
+        return {
+          raw: response.choices[0]?.message?.content ?? "",
+          usage: parseLLMUsage(response.usage),
+        };
+      };
+      const { raw: untrimmed, usage } =
+        this.contextRecorder !== undefined
+          ? await this.contextRecorder.recordContextRequest(
+              { taskType: "memory_agent", body: requestBody, meta: { events: events.length } },
+              send,
+            )
+          : await send();
 
-      const raw = (response.choices[0]?.message?.content ?? "").trim();
+      const raw = untrimmed.trim();
       this.metrics?.recordLLMRequest(
         "memory_agent",
-        parseLLMUsage(response.usage) ?? { input: 0, output: Math.ceil(raw.length / 4) },
+        usage ?? { input: 0, output: Math.ceil(raw.length / 4) },
         Date.now() - callStart,
       );
 
       const parsed = ProposalSchema.safeParse(extractJson(raw));
       if (!parsed.success) {
-        // 带上原文摘录：落盘器不录背景代理，这条 warn 是唯一的现场。
+        // 带上原文摘录便于 /monitor 现场速览；完整原文已由落盘器留档。
         this.diagnostics.warn(
           "Game",
           `记忆代理输出无法解析为有效提案（模型 ${this.model}），本批跳过。原文摘录：${rawOutputExcerpt(raw) || "（空输出）"}`,

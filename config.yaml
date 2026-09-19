@@ -27,7 +27,7 @@ agents:
     thinking:
       type: enabled
       effort: max
-    max_tokens: 4000
+    max_tokens: 8192
   recap:
     # 前情梗概压缩器：保持关闭思考；细节化后预算放宽（默认 900）。
     # max_tokens: 900
@@ -156,9 +156,10 @@ game:
   sessions_dir: sessions
   show_line_ids: false
 
-# 可观测性：写手 DSL 流全量落盘（<sessions_dir>/<sessionId>/llm/）。
-# /monitor 只有有界内存视图（ring + 截断），落盘器把每次生成的输入
-# prompt 与输出流逐字节留档，事后可审计；含中途死亡的 attempt 现场。
+# 可观测性：LLM 请求全量落盘（<sessions_dir>/<sessionId>/llm/）。
+# /monitor 只有有界内存视图（ring + 截断），落盘器把每次 LLM 请求的输入
+# 与输出逐字节留档，事后可审计：写手 DSL 流（含中途死亡的 attempt 现场）
+# + 四个后台代理（记忆/前情梗概/长线整理/导演计划）的非流式请求与失败。
 observability:
   record_llm_streams: true
 

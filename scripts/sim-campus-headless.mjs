@@ -18,15 +18,17 @@ import { RuntimeShutdownError } from "../src/game.js";
 // 参数
 // ---------------------------------------------------------------------------
 function parseArgs(argv) {
-  const out = { persona: "quick", seed: undefined, maxWaitMin: 15, label: undefined };
+  const out = { persona: "quick", seed: undefined, maxWaitMin: 15, label: undefined, config: "config.yaml" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--persona") out.persona = argv[++i];
     else if (a === "--seed") out.seed = argv[++i];
     else if (a === "--max-wait-min") out.maxWaitMin = Number(argv[++i]);
     else if (a === "--label") out.label = argv[++i];
+    else if (a === "--config") out.config = argv[++i];
     else if (a.startsWith("--persona=")) out.persona = a.slice("--persona=".length);
     else if (a.startsWith("--seed=")) out.seed = a.slice("--seed=".length);
+    else if (a.startsWith("--config=")) out.config = a.slice("--config=".length);
   }
   if (!["quick", "explorer", "rambler", "farewell"].includes(out.persona)) {
     throw new Error(`未知 persona: ${out.persona}`);
@@ -96,9 +98,9 @@ function stamp() {
 }
 
 async function runSession() {
-  const config = await loadConfig("config.yaml");
+  const config = await loadConfig(args.config);
   const sessionId = `sim-${args.persona}-${args.label ?? "run"}-${Date.now().toString(36)}`;
-  const app = await createRuntimeApplication({ configPath: "config.yaml", config, sessionId });
+  const app = await createRuntimeApplication({ configPath: args.config, config, sessionId });
 
   const persona = PERSONAS[args.persona];
 

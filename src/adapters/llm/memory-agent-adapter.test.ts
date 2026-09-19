@@ -5,6 +5,18 @@ import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { createInitialState } from "../../story/state.js";
 import { MemoryAgentAdapter, extractJson, rawOutputExcerpt } from "./memory-agent-adapter.js";
 import type { StoredEvent } from "../../schema.js";
+import type {
+  ContextLlmRecorder,
+  ContextLlmRecorderRequest,
+} from "../../core/ports/context-llm-recorder-port.js";
+
+function makeFakeRecorder() {
+  return {
+    recordContextRequest: vi.fn(
+      (_request: unknown, call: () => Promise<unknown>) => call(),
+    ),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -217,5 +229,46 @@ describe("MemoryAgentAdapter.derive", () => {
     expect(body.thinking).toEqual({ type: "disabled" });
     expect(body.reasoning_effort).toBeUndefined();
     expect(body.max_completion_tokens).toBe(1200);
+  });
+
+  it("hands the exact request body to the context recorder (success and failure)", async () => {
+    // 成功：recorder 收到的 body 与 create() 收到的完全一致（记录即发送）。
+    const client = makeFakeClient(VALID_PROPOSAL_JSON);
+    const recorder = makeFakeRecorder();
+    const adapter = new MemoryAgentAdapter({
+      apiKey: "k",
+      api: makeApiConfig(),
+      client,
+      contextRecorder: recorder as unknown as ContextLlmRecorder,
+    });
+
+    const proposal = await adapter.derive(
+      [ev(1, { type: "narration", text: "旁白。" })],
+      createInitialState(),
+    );
+    expect(proposal).not.toBeNull();
+
+    expect(recorder.recordContextRequest).toHaveBeenCalledTimes(1);
+    const request = vi.mocked(recorder.recordContextRequest).mock.calls[0]![0] as unknown as ContextLlmRecorderRequest;
+    expect(request.taskType).toBe("memory_agent");
+    expect(request.meta).toEqual({ events: 1 });
+    const sentBody = vi.mocked(client.chat.completions.create).mock.calls[0]![0] as unknown;
+    expect(request.body).toEqual(sentBody);
+
+    // 失败：recorder 仍被调用（失败请求同样要可审计），适配器语义不变。
+    const failing = makeFakeClient("");
+    vi.mocked(failing.chat.completions.create).mockRejectedValue(new Error("timeout"));
+    const failingRecorder = makeFakeRecorder();
+    const failingAdapter = new MemoryAgentAdapter({
+      apiKey: "k",
+      api: makeApiConfig(),
+      client: failing,
+      contextRecorder: failingRecorder as unknown as ContextLlmRecorder,
+    });
+
+    expect(
+      await failingAdapter.derive([ev(1, { type: "narration", text: "旁白。" })], createInitialState()),
+    ).toBeNull();
+    expect(failingRecorder.recordContextRequest).toHaveBeenCalledTimes(1);
   });
 });

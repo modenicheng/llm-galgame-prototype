@@ -16,6 +16,7 @@ import {
 import { PLANNER_RECENT_EVENTS_MAX } from "../../application/narrative/plot-planner.js";
 import type { Metrics } from "../../runtime/metrics.js";
 import { parseLLMUsage } from "./llm-usage.js";
+import type { ContextLlmRecorder, ContextLlmResult } from "../../core/ports/context-llm-recorder-port.js";
 
 // ---------------------------------------------------------------------------
 // System prompt (fixed Chinese instruction — Task 7 brief)
@@ -39,6 +40,7 @@ export class PlotPlannerAdapter implements PlotPlannerPort {
   private readonly config: NarrativeConfig;
   private readonly diagnostics: DiagnosticSink;
   private readonly metrics: Metrics | undefined;
+  private readonly contextRecorder: ContextLlmRecorder | undefined;
 
   constructor(private readonly opts: {
     apiKey: string;
@@ -47,6 +49,8 @@ export class PlotPlannerAdapter implements PlotPlannerPort {
     diagnostics?: DiagnosticSink;
     client?: OpenAI;
     metrics?: Metrics;
+    /** 请求审计落盘（observability.record_llm_streams）；缺省不录。 */
+    contextRecorder?: ContextLlmRecorder;
   }) {
     this.client =
       opts.client ??
@@ -59,26 +63,49 @@ export class PlotPlannerAdapter implements PlotPlannerPort {
     this.config = opts.config;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
     this.metrics = opts.metrics;
+    this.contextRecorder = opts.contextRecorder;
   }
 
   async plan(request: PlotPlannerRequest): Promise<PlannerProposal> {
     const userMessage = this.buildUserMessage(request);
 
     const callStart = Date.now();
-    const response = await this.client.chat.completions.create({
+    // 显式字面量 role 注解：无注解的对象字面量会把 "system" 宽化成
+    // string，导致提取后的 body 再传给 create() 过不了类型检查。
+    const messages: [
+      { role: "system"; content: string },
+      { role: "user"; content: string },
+    ] = [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userMessage },
+    ];
+    const requestBody = {
       model: this.model,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userMessage },
-      ],
-      response_format: { type: "json_object" },
+      messages,
+      response_format: { type: "json_object" } as const,
       temperature: 0.5,
-    });
-
-    const rawContent = response.choices[0]?.message?.content ?? "";
+    };
+    const send = async (): Promise<ContextLlmResult> => {
+      const response = await this.client.chat.completions.create(requestBody);
+      return {
+        raw: response.choices[0]?.message?.content ?? "",
+        usage: parseLLMUsage(response.usage),
+      };
+    };
+    const { raw: rawContent, usage } =
+      this.contextRecorder !== undefined
+        ? await this.contextRecorder.recordContextRequest(
+            {
+              taskType: "plot_plan",
+              body: requestBody,
+              meta: { checkpoint: request.memory.checkpointCount },
+            },
+            send,
+          )
+        : await send();
     this.metrics?.recordLLMRequest(
       "plot_plan",
-      parseLLMUsage(response.usage) ?? {
+      usage ?? {
         input: 0,
         output: Math.ceil(rawContent.length / 4),
       },

@@ -11,6 +11,7 @@ import { serializeStoryContext } from "../../story/context-builder.js";
 import type { Metrics } from "../../runtime/metrics.js";
 import { parseLLMUsage } from "./llm-usage.js";
 import { thinkingRequestBody } from "./openai-compatible-generator.js";
+import type { ContextLlmRecorder, ContextLlmResult } from "../../core/ports/context-llm-recorder-port.js";
 
 const SYSTEM_PROMPT =
   "你是文字冒险游戏的剧情记录员。模型已经永远看不到你手上的剧情片段了，你的记录是这段剧情唯一的留存，" +
@@ -33,6 +34,7 @@ export class RecapSummarizerAdapter implements RecapSummarizerPort {
   private readonly maxTokens: number;
   private readonly thinking: AppConfig["generation"]["thinking"] | undefined;
   private readonly tokenLimitField: AppConfig["api"]["token_limit_field"];
+  private readonly contextRecorder: ContextLlmRecorder | undefined;
 
   constructor(opts: {
     apiKey: string;
@@ -44,6 +46,8 @@ export class RecapSummarizerAdapter implements RecapSummarizerPort {
     diagnostics?: DiagnosticSink;
     metrics?: Metrics;
     client?: OpenAI;
+    /** 请求审计落盘（observability.record_llm_streams）；缺省不录。 */
+    contextRecorder?: ContextLlmRecorder;
   }) {
     this.client =
       opts.client ??
@@ -58,6 +62,7 @@ export class RecapSummarizerAdapter implements RecapSummarizerPort {
     this.maxTokens = opts.maxTokens ?? 900;
     this.thinking = opts.thinking;
     this.tokenLimitField = opts.api.token_limit_field;
+    this.contextRecorder = opts.contextRecorder;
   }
 
   async summarize(
@@ -75,12 +80,18 @@ export class RecapSummarizerAdapter implements RecapSummarizerPort {
 
     const callStart = Date.now();
     try {
-      const response = await this.client.chat.completions.create({
+      // 显式字面量 role 注解：无注解的对象字面量会把 "system" 宽化成
+      // string，导致提取后的 body 再传给 create() 过不了类型检查。
+      const messages: [
+        { role: "system"; content: string },
+        { role: "user"; content: string },
+      ] = [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: fullMessage },
+      ];
+      const requestBody = {
         model: this.model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: fullMessage },
-        ],
+        messages,
         temperature: 0.3,
         ...(this.tokenLimitField === "max_tokens"
           ? { max_tokens: this.maxTokens }
@@ -88,12 +99,33 @@ export class RecapSummarizerAdapter implements RecapSummarizerPort {
         // DeepSeek thinking 顶层开关（+ reasoning_effort），与主写手同一
         // 形态；agents.recap.thinking 未配置时保持关闭。
         ...thinkingRequestBody(this.thinking),
-      });
+      };
+      const send = async (): Promise<ContextLlmResult> => {
+        const response = await this.client.chat.completions.create(requestBody);
+        return {
+          raw: response.choices[0]?.message?.content ?? "",
+          usage: parseLLMUsage(response.usage),
+        };
+      };
+      const { raw: untrimmed, usage } =
+        this.contextRecorder !== undefined
+          ? await this.contextRecorder.recordContextRequest(
+              {
+                taskType: "recap_summarization",
+                body: requestBody,
+                meta: {
+                  events: events.length,
+                  framework_digest: framework !== undefined && framework !== "",
+                },
+              },
+              send,
+            )
+          : await send();
 
-      const raw = (response.choices[0]?.message?.content ?? "").trim();
+      const raw = untrimmed.trim();
       this.metrics?.recordLLMRequest(
         "recap_summarization",
-        parseLLMUsage(response.usage) ?? {
+        usage ?? {
           input: 0,
           output: Math.ceil(raw.length / 4),
         },

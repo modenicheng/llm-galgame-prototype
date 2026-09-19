@@ -119,6 +119,29 @@ Game.getMonitorState() ──(400ms 轮询，JSON 变化才推)─────�
 - **事件合播**：25ms 窗口内的事件合成一条 `monitor.event` 批量帧，SSE 高频
   delta 不会打爆 WS。
 
+## 落盘记录（llm/）
+
+`observability.record_llm_streams`（默认 true）开启时，每次 LLM 请求都全量
+落盘到 `<sessions_dir>/<sessionId>/llm/`，覆盖写手 DSL 流与四个后台代理
+（记忆代理 / 前情梗概 / 长线整理 / 导演计划）的非流式请求：
+
+```
+llm/index.jsonl                       每个 settled 请求一行汇总（统一台账）
+llm/<seq4>-<attemptId>/prompts.jsonl  发给 provider 的请求（写手=逐段
+                                      prompt 报告；后台代理=完整请求体）
+llm/<seq4>-<attemptId>/output.raw.txt 原始输出（无截断；失败请求无此文件）
+llm/<seq4>-<attemptId>/events.jsonl   事件流水（start/usage/end 等，带 ts）
+```
+
+index 行字段：`seq, dir, attempt_id, task_id, task_type, task_index,
+started_at, ended_at, duration_ms, outcome(done|failed|retried|cancelled),
+[error], [segment_end], [meta]`。后台代理的 `task_type` 为
+`memory_agent | recap_summarization | narrative_consolidation | plot_plan`，
+失败请求 `outcome: failed` 携带错误信息，成功请求带触发上下文 `meta`
+（事件数 / checkpoint 等）。`/monitor/records` 只读路由按同一白名单提供
+三件套与 index 的访问（需会话 token）；应用关停时写队列显式排空，台账
+不丢行。
+
 ## 相关文件
 
 | 层 | 文件 |
@@ -128,6 +151,9 @@ Game.getMonitorState() ──(400ms 轮询，JSON 变化才推)─────�
 | 游戏快照 | `src/core/runtime/monitor-state.ts`、`Game.getMonitorState()` |
 | hub | `src/application/monitor/monitor-hub.ts` |
 | 上下文端口包装 | `src/application/monitor/instrumented-context-ports.ts` |
+| 落盘器 | `src/adapters/storage/llm-stream-recorder.ts` |
+| 后台代理审计端口 | `src/core/ports/context-llm-recorder-port.ts` |
+| 记录只读路由 | `src/hosts/local-web/monitor-records.ts` |
 | 诊断广播 | `src/adapters/platform/broadcast-diagnostic-sink.ts` |
 | WS 通道 | `src/hosts/local-web/monitor-websocket.ts` |
 | 前端 | `web/src/monitor/*`（boot 于 `main.ts` 的 `/monitor` 路由分支） |

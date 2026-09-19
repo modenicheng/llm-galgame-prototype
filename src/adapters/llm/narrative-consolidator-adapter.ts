@@ -16,6 +16,7 @@ import {
 import { serializeStoryContext } from "../../story/context-builder.js";
 import type { Metrics } from "../../runtime/metrics.js";
 import { parseLLMUsage } from "./llm-usage.js";
+import type { ContextLlmRecorder, ContextLlmResult } from "../../core/ports/context-llm-recorder-port.js";
 import type {
   MemoryConsolidatorPort,
   ConsolidationRequest,
@@ -63,6 +64,7 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
   private readonly model: string;
   private readonly diagnostics: DiagnosticSink;
   private readonly metrics: Metrics | undefined;
+  private readonly contextRecorder: ContextLlmRecorder | undefined;
 
   constructor(private readonly opts: {
     apiKey: string;
@@ -71,6 +73,8 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
     diagnostics?: DiagnosticSink;
     client?: OpenAI;
     metrics?: Metrics;
+    /** 请求审计落盘（observability.record_llm_streams）；缺省不录。 */
+    contextRecorder?: ContextLlmRecorder;
   }) {
     this.client =
       opts.client ??
@@ -82,26 +86,45 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
     this.model = opts.api.model;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
     this.metrics = opts.metrics;
+    this.contextRecorder = opts.contextRecorder;
   }
 
   async consolidate(request: ConsolidationRequest): Promise<ConsolidationResult> {
     const userMessage = this.buildUserMessage(request);
 
     const callStart = Date.now();
-    const response = await this.client.chat.completions.create({
+    // 显式字面量 role 注解：无注解的对象字面量会把 "system" 宽化成
+    // string，导致提取后的 body 再传给 create() 过不了类型检查。
+    const messages: [
+      { role: "system"; content: string },
+      { role: "user"; content: string },
+    ] = [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userMessage },
+    ];
+    const requestBody = {
       model: this.model,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userMessage },
-      ],
-      response_format: { type: "json_object" },
+      messages,
+      response_format: { type: "json_object" } as const,
       temperature: 0.3,
-    });
-
-    const rawContent = response.choices[0]?.message?.content ?? "";
+    };
+    const send = async (): Promise<ContextLlmResult> => {
+      const response = await this.client.chat.completions.create(requestBody);
+      return {
+        raw: response.choices[0]?.message?.content ?? "",
+        usage: parseLLMUsage(response.usage),
+      };
+    };
+    const { raw: rawContent, usage } =
+      this.contextRecorder !== undefined
+        ? await this.contextRecorder.recordContextRequest(
+            { taskType: "narrative_consolidation", body: requestBody, meta: { events: request.events.length } },
+            send,
+          )
+        : await send();
     this.metrics?.recordLLMRequest(
       "narrative_consolidation",
-      parseLLMUsage(response.usage) ?? {
+      usage ?? {
         input: 0,
         output: Math.ceil(rawContent.length / 4),
       },

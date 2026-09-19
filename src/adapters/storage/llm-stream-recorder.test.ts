@@ -17,6 +17,10 @@ import type {
   WriterAttemptInfo,
   WriterPromptReport,
 } from "../../core/ports/dsl-stream-observer.js";
+import type {
+  ContextLlmRecorderRequest,
+  ContextLlmResult,
+} from "../../core/ports/context-llm-recorder-port.js";
 
 function attemptInfo(attemptId: string, taskType = "continuation"): WriterAttemptInfo {
   const withoutAttempt = attemptId.split("#")[0]!;
@@ -49,8 +53,8 @@ function promptReport(attemptId: string, requestIndex: number, marker: string): 
 }
 
 /** Drive one complete, successful attempt through the observer hooks. */
-function runFullAttempt(recorder: LlmStreamRecorder, attemptId: string): void {
-  recorder.onAttemptStart(attemptInfo(attemptId));
+function runFullAttempt(recorder: LlmStreamRecorder, attemptId: string, taskType = "continuation"): void {
+  recorder.onAttemptStart(attemptInfo(attemptId, taskType));
   recorder.onPrompt(promptReport(attemptId, 0, "p0"));
   recorder.onDelta(attemptId, "第一句。\n");
   recorder.onDelta(attemptId, "@second 句\n");
@@ -75,6 +79,28 @@ async function readJsonl(filePath: string): Promise<Record<string, unknown>[]> {
     .split("\n")
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function contextRequest(
+  taskType: ContextLlmRecorderRequest["taskType"] = "recap_summarization",
+): ContextLlmRecorderRequest {
+  return {
+    taskType,
+    body: {
+      model: "test-model",
+      messages: [
+        { role: "system", content: `SYS[${taskType}]` },
+        { role: "user", content: `USER[${taskType}]` },
+      ],
+      temperature: 0.3,
+    },
+    meta: { events: 3 },
+  };
+}
+
+/** Drive one successful background request through the recorder. */
+function contextCall(raw = "背景代理原始输出"): () => Promise<ContextLlmResult> {
+  return async () => ({ raw, usage: { input: 300, output: 90, cachedInput: 120 } });
 }
 
 describe("LlmStreamRecorder", () => {
@@ -268,6 +294,142 @@ describe("LlmStreamRecorder", () => {
       expect(events[events.length - 1]).toMatchObject({ t: "end", state: "done" });
       const index = await readJsonl(path.join(dir, "sess-fail", "llm", "index.jsonl"));
       expect(index).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("records a background request with the three-piece layout, sharing the seq counter and index", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "llm-recorder-"));
+    try {
+      let t = 0;
+      const recorder = new LlmStreamRecorder({ now: () => (t += 50) });
+      await recorder.beginSession(dir, "sess-1");
+      runFullAttempt(recorder, "opening-ab01#0", "opening");
+      const result = await recorder.recordContextRequest(contextRequest(), contextCall());
+      await recorder.flush();
+
+      expect(result).toEqual({
+        raw: "背景代理原始输出",
+        usage: { input: 300, output: 90, cachedInput: 120 },
+      });
+
+      const llmDir = path.join(dir, "sess-1", "llm");
+      expect((await readdir(llmDir)).sort()).toEqual([
+        "0001-opening-ab01-0",
+        "0002-recap_summarization-2",
+        "index.jsonl",
+      ]);
+
+      const attemptDir = path.join(llmDir, "0002-recap_summarization-2");
+      // prompts.jsonl: the verbatim provider request body.
+      const prompts = await readJsonl(path.join(attemptDir, "prompts.jsonl"));
+      expect(prompts).toHaveLength(1);
+      expect(typeof prompts[0]!.ts).toBe("string");
+      expect(prompts[0]!.body).toEqual(contextRequest().body);
+
+      expect(await readFile(path.join(attemptDir, "output.raw.txt"), "utf8")).toBe(
+        "背景代理原始输出",
+      );
+
+      const events = await readJsonl(path.join(attemptDir, "events.jsonl"));
+      expect(events.map((event) => event.t)).toEqual(["start", "usage", "end"]);
+      expect(events[0]).toMatchObject({
+        task_type: "recap_summarization",
+        task_index: 0,
+      });
+      expect(events[1]).toMatchObject({
+        input: 300,
+        output: 90,
+        cached_input: 120,
+        source: "api",
+      });
+      expect(events[1]!.reasoning_tokens).toBeUndefined();
+      expect(events[2]).toMatchObject({ state: "done" });
+
+      const index = await readJsonl(path.join(llmDir, "index.jsonl"));
+      expect(index.map((row) => row.seq)).toEqual([1, 2]);
+      expect(index[1]).toMatchObject({
+        dir: "0002-recap_summarization-2",
+        attempt_id: "recap_summarization#2",
+        task_type: "recap_summarization",
+        outcome: "done",
+        meta: { events: 3 },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("records a failed background request and rethrows the original error", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "llm-recorder-"));
+    try {
+      const recorder = new LlmStreamRecorder({ now: () => 1000 });
+      await recorder.beginSession(dir, "sess-fail");
+      const boom = new Error("API 超时击穿");
+      await expect(
+        recorder.recordContextRequest(contextRequest("memory_agent"), async () => {
+          throw boom;
+        }),
+      ).rejects.toThrow("API 超时击穿");
+      await recorder.flush();
+
+      const llmDir = path.join(dir, "sess-fail", "llm");
+      expect((await readdir(llmDir)).sort()).toEqual(["0001-memory_agent-1", "index.jsonl"]);
+
+      const attemptDir = path.join(llmDir, "0001-memory_agent-1");
+      // 请求体已落盘（审计要能看到发了什么），但失败请求没有输出可录。
+      expect(await readJsonl(path.join(attemptDir, "prompts.jsonl"))).toHaveLength(1);
+      await expect(readFile(path.join(attemptDir, "output.raw.txt"), "utf8")).rejects.toThrow();
+
+      const events = await readJsonl(path.join(attemptDir, "events.jsonl"));
+      expect(events.map((event) => event.t)).toEqual(["start", "end"]);
+      expect(events[1]).toMatchObject({ state: "failed", error: "API 超时击穿" });
+
+      const index = await readJsonl(path.join(llmDir, "index.jsonl"));
+      expect(index).toHaveLength(1);
+      expect(index[0]).toMatchObject({
+        attempt_id: "memory_agent#1",
+        task_type: "memory_agent",
+        outcome: "failed",
+        error: "API 超时击穿",
+        meta: { events: 3 },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the provider call through untouched when recording before beginSession", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const recorder = new LlmStreamRecorder({ now: () => 1000 });
+    const result = await recorder.recordContextRequest(contextRequest(), async () => ({
+      raw: "ok",
+      usage: null,
+    }));
+    expect(result).toEqual({ raw: "ok", usage: null });
+    await recorder.flush();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining("before beginSession"),
+    );
+  });
+
+  it("orders the shared index by settlement across interleaved writer/context attempts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "llm-recorder-"));
+    try {
+      const recorder = new LlmStreamRecorder({ now: () => 1000 });
+      await recorder.beginSession(dir, "sess-mix");
+      // Writer attempt starts first (seq 1) but settles after the context
+      // request (seq 2) — index rows follow settlement order.
+      recorder.onAttemptStart(attemptInfo("continuation-cc03#0"));
+      await recorder.recordContextRequest(contextRequest(), contextCall());
+      recorder.onAttemptEnd("continuation-cc03#0", { state: "done", segmentEnd: "buffer" });
+      await recorder.flush();
+
+      const index = await readJsonl(path.join(dir, "sess-mix", "llm", "index.jsonl"));
+      expect(index.map((row) => row.seq)).toEqual([2, 1]);
+      expect(index[0]).toMatchObject({ task_type: "recap_summarization", outcome: "done" });
+      expect(index[1]).toMatchObject({ task_type: "continuation", outcome: "done" });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

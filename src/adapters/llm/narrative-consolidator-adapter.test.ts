@@ -7,6 +7,18 @@ import type { StoredEvent } from "../../schema.js";
 import type { PlotThread, SetupPayoff } from "../../core/narrative/memory-types.js";
 import type { ConsolidationRequest } from "../../application/narrative/memory-consolidator.js";
 import { NarrativeConsolidatorAdapter } from "./narrative-consolidator-adapter.js";
+import type {
+  ContextLlmRecorder,
+  ContextLlmRecorderRequest,
+} from "../../core/ports/context-llm-recorder-port.js";
+
+function makeFakeRecorder() {
+  return {
+    recordContextRequest: vi.fn(
+      (_request: unknown, call: () => Promise<unknown>) => call(),
+    ),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -324,5 +336,45 @@ describe("NarrativeConsolidatorAdapter", () => {
     expect(result.episode.summary).toBe("最小摘要");
     expect(result.threadOps).toEqual([]);
     expect(result.setupOps).toEqual([]);
+  });
+
+  it("hands the exact request body to the context recorder (success and failure)", async () => {
+    // 成功：recorder 收到的 body 与 create() 收到的完全一致（记录即发送）。
+    const fakeClient = makeFakeClient();
+    const recorder = makeFakeRecorder();
+    const adapter = new NarrativeConsolidatorAdapter({
+      apiKey: "key",
+      api: makeApiConfig(),
+      config: DEFAULT_NARRATIVE_CONFIG,
+      client: fakeClient,
+      contextRecorder: recorder as unknown as ContextLlmRecorder,
+    });
+
+    await adapter.consolidate(makeFakeRequest());
+
+    expect(recorder.recordContextRequest).toHaveBeenCalledTimes(1);
+    const request = vi.mocked(recorder.recordContextRequest).mock.calls[0]![0] as unknown as ContextLlmRecorderRequest;
+    expect(request.taskType).toBe("narrative_consolidation");
+    expect(request.meta).toEqual({ events: 1 });
+    const sentBody = (fakeClient.chat.completions.create as ReturnType<typeof vi.fn>).mock
+      .calls[0]![0] as unknown;
+    expect(request.body).toEqual(sentBody);
+
+    // 失败：recorder 仍被调用（失败请求同样要可审计），错误语义不变。
+    const failing = makeFakeClient();
+    (failing.chat.completions.create as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("timeout"),
+    );
+    const failingRecorder = makeFakeRecorder();
+    const failingAdapter = new NarrativeConsolidatorAdapter({
+      apiKey: "key",
+      api: makeApiConfig(),
+      config: DEFAULT_NARRATIVE_CONFIG,
+      client: failing,
+      contextRecorder: failingRecorder as unknown as ContextLlmRecorder,
+    });
+
+    await expect(failingAdapter.consolidate(makeFakeRequest())).rejects.toThrow("timeout");
+    expect(failingRecorder.recordContextRequest).toHaveBeenCalledTimes(1);
   });
 });

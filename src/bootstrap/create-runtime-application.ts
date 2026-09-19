@@ -315,6 +315,7 @@ export async function createRuntimeApplication(
           config: config.narrative,
           diagnostics,
           metrics,
+          ...(recorder !== null ? { contextRecorder: recorder } : {}),
         }),
         monitor,
       );
@@ -325,6 +326,7 @@ export async function createRuntimeApplication(
           config: config.narrative,
           diagnostics,
           metrics,
+          ...(recorder !== null ? { contextRecorder: recorder } : {}),
         }),
         monitor,
       );
@@ -371,6 +373,7 @@ export async function createRuntimeApplication(
           : {}),
         diagnostics,
         metrics,
+        ...(recorder !== null ? { contextRecorder: recorder } : {}),
       }),
       monitor,
     );
@@ -393,6 +396,7 @@ export async function createRuntimeApplication(
               : {}),
             diagnostics,
             metrics,
+            ...(recorder !== null ? { contextRecorder: recorder } : {}),
           })
         : undefined;
 
@@ -442,12 +446,16 @@ export async function createRuntimeApplication(
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       // 关停落盘：导演 pending 事件整理 + 计划/快照持久化（audit P1-7）。
       await game.flush();
+      // LLM 审计写队列排空：后台代理（memory/recap/consolidator/planner）
+      // 的请求此刻可能仍在异步落盘，显式等完保证审计台账不丢行。
+      if (recorder !== null) await recorder.flush();
     },
     restart: async () => {
       // 关停旧会话（unwind + 落盘），再用新 session id 重建 game。
       game.dispatch({ type: "shutdown" });
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       await game.flush();
+      if (recorder !== null) await recorder.flush();
       // 旧会话的音频描述符全部失效：catalog 是跨重建共享的，残留的
       // descriptor（priority 可能仍是 current）会在浏览器重连时被快照
       // 重放，触发对死行的缓存重放甚至真实重合成。

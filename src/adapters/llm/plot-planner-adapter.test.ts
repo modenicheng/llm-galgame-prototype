@@ -5,6 +5,18 @@ import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { NarrativeMemoryState } from "../../core/narrative/memory-types.js";
 import { PlotPlannerAdapter } from "./plot-planner-adapter.js";
 import type { PlotPlannerRequest } from "../../application/narrative/plot-planner.js";
+import type {
+  ContextLlmRecorder,
+  ContextLlmRecorderRequest,
+} from "../../core/ports/context-llm-recorder-port.js";
+
+function makeFakeRecorder() {
+  return {
+    recordContextRequest: vi.fn(
+      (_request: unknown, call: () => Promise<unknown>) => call(),
+    ),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -120,5 +132,45 @@ describe("PlotPlannerAdapter", () => {
     await expect(bad.plan(makeFakeRequest())).rejects.toThrow("planner 输出解析失败");
     const schemaBad = new PlotPlannerAdapter({ apiKey: "k", api: makeApiConfig(), config: DEFAULT_NARRATIVE_CONFIG, client: makeFakeClient({ content: JSON.stringify({ ...JSON.parse(VALID_JSON), beats: [] }) }) });
     await expect(schemaBad.plan(makeFakeRequest())).rejects.toThrow("planner 输出解析失败");
+  });
+
+  it("hands the exact request body to the context recorder (success and failure)", async () => {
+    // 成功：recorder 收到的 body 与 create() 收到的完全一致（记录即发送）。
+    const fakeClient = makeFakeClient({ content: VALID_JSON });
+    const recorder = makeFakeRecorder();
+    const adapter = new PlotPlannerAdapter({
+      apiKey: "k",
+      api: makeApiConfig(),
+      config: DEFAULT_NARRATIVE_CONFIG,
+      client: fakeClient,
+      contextRecorder: recorder as unknown as ContextLlmRecorder,
+    });
+
+    await adapter.plan(makeFakeRequest());
+
+    expect(recorder.recordContextRequest).toHaveBeenCalledTimes(1);
+    const request = vi.mocked(recorder.recordContextRequest).mock.calls[0]![0] as unknown as ContextLlmRecorderRequest;
+    expect(request.taskType).toBe("plot_plan");
+    expect(request.meta).toEqual({ checkpoint: 0 });
+    const sentBody = (fakeClient.chat.completions.create as ReturnType<typeof vi.fn>).mock
+      .calls[0]![0] as unknown;
+    expect(request.body).toEqual(sentBody);
+
+    // 失败：recorder 仍被调用（失败请求同样要可审计），错误语义不变。
+    const failing = makeFakeClient();
+    (failing.chat.completions.create as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("timeout"),
+    );
+    const failingRecorder = makeFakeRecorder();
+    const failingAdapter = new PlotPlannerAdapter({
+      apiKey: "k",
+      api: makeApiConfig(),
+      config: DEFAULT_NARRATIVE_CONFIG,
+      client: failing,
+      contextRecorder: failingRecorder as unknown as ContextLlmRecorder,
+    });
+
+    await expect(failingAdapter.plan(makeFakeRequest())).rejects.toThrow("timeout");
+    expect(failingRecorder.recordContextRequest).toHaveBeenCalledTimes(1);
   });
 });
