@@ -194,6 +194,8 @@ export class GameApp {
   /** Last projection-seq seen in the view model — a bump seeds the backlog
    * from `recentLines` (reconnect restore covers the lost window's tail). */
   private lastProjectionSeq = 0;
+  /** 已写入回看的引子所属 session（一局一次；重连重复投影不重写）。 */
+  private introPushedFor: string | null = null;
 
   constructor(options: GameAppOptions) {
     this.options = options;
@@ -615,6 +617,22 @@ export class GameApp {
   private handleViewNotify(): void {
     const view = this.viewModel.state();
     this.observeSessionChange(view.sessionId);
+    // 序章是本局剧情的一部分：引子进回看历史（narration 条目，无音频、
+    // 纯文本），一局只写一次——line_id 带 session id，重连重复投影被
+    // BacklogStore 按 id 去重，这里再按 session 二次防御。
+    const intro = view.sessionIntro;
+    if (
+      intro !== undefined &&
+      view.sessionId !== undefined &&
+      this.introPushedFor !== view.sessionId
+    ) {
+      this.introPushedFor = view.sessionId;
+      this.backlog.push({
+        type: "narration",
+        lineId: `session-intro:${view.sessionId}`,
+        text: intro.title !== undefined ? `【${intro.title}】\n${intro.text}` : intro.text,
+      });
+    }
     // A projection restore (reconnect) bumps projectionSeq: seed the backlog
     // from recentLines so the lost window's tail re-enters the history
     // (push dedupes; the current line's own re-presentation is a no-op).

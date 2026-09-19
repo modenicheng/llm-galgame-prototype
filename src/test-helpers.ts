@@ -182,7 +182,10 @@ export class FakeIdGenerator implements IdGeneratorPort {
  */
 export function makeTestPorts(
   overrides?: Partial<
-    Pick<GamePorts, "store" | "clock" | "ids" | "diagnostics" | "initialStoryState">
+    Pick<
+      GamePorts,
+      "store" | "clock" | "ids" | "diagnostics" | "initialStoryState" | "sessionIntro"
+    >
   >,
 ): GamePorts {
   return {

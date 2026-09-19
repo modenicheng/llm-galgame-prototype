@@ -236,6 +236,123 @@ button {
 }
 
 /* --------------------------------------------------------------------------
+   序章卡（本局引子）—— 开场生成期间的"等待即剧情"过场：模糊压暗舞台，
+   展示叙事引子（标题 + 全文），首条台词到达即整卡淡出。挂在 16:9 框内，
+   z 序位于 .scene（z:2）与回看（z:4）之间；遮罩本体是 backdrop-filter
+   元素，入退场均为自身 opacity 动画（Backdrop Root 限制只作用于祖先带
+   opacity 的情形，见 .dialogue 注释）。同 stage__bg-label：框内非缩放层，
+   字号/间距按 1280 参考宽设计、calc(--ui-scale) 随框等比。
+   -------------------------------------------------------------------------- */
+
+.intro {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, rgba(7, 9, 13, 0.66), rgba(5, 7, 10, 0.82));
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+  animation: veil-in 480ms var(--ease-out) both;
+}
+
+.intro--out {
+  animation: veil-out 380ms var(--ease-out) both;
+}
+
+/* compact 过场（同局后续生成等待）：只留标题与生成指示。 */
+.intro--compact .intro__eyebrow,
+.intro--compact .intro__text {
+  display: none;
+}
+
+.intro__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: calc(760px * var(--ui-scale, 1));
+  padding: 0 calc(24px * var(--ui-scale, 1));
+  text-align: center;
+}
+
+.intro__eyebrow {
+  font-family: var(--font-title);
+  font-size: calc(26px * var(--ui-scale, 1));
+  letter-spacing: 1.2em;
+  text-indent: 1.2em;
+  color: var(--lantern);
+  text-shadow: 0 0 18px rgba(232, 167, 92, 0.45);
+  animation: rise-in-solid 700ms var(--ease-out) both;
+}
+
+.intro__title {
+  margin-top: calc(18px * var(--ui-scale, 1));
+  font-family: var(--font-title);
+  font-weight: 400;
+  font-size: calc(50px * var(--ui-scale, 1));
+  line-height: 1.3;
+  letter-spacing: 0.12em;
+  text-indent: 0.12em;
+  color: var(--paper);
+  text-shadow: 0 0 30px rgba(232, 167, 92, 0.35);
+  animation: rise-in 800ms var(--ease-out) 120ms both;
+}
+
+.intro__rule {
+  display: flex;
+  align-items: center;
+  gap: calc(9px * var(--ui-scale, 1));
+  margin-top: calc(20px * var(--ui-scale, 1));
+  animation: rise-in 900ms var(--ease-out) 300ms both;
+}
+
+.intro__rule-bar {
+  width: calc(140px * var(--ui-scale, 1));
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--lantern), transparent);
+  box-shadow: 0 0 12px rgba(232, 167, 92, 0.5);
+}
+
+.intro__rule-tick {
+  width: calc(5px * var(--ui-scale, 1));
+  height: calc(5px * var(--ui-scale, 1));
+  background: var(--lantern);
+  transform: rotate(45deg);
+  box-shadow: 0 0 10px rgba(232, 167, 92, 0.8);
+}
+
+.intro__text {
+  margin-top: calc(14px * var(--ui-scale, 1));
+  font-size: calc(17px * var(--ui-scale, 1));
+  line-height: 2.1;
+  letter-spacing: 0.06em;
+  color: var(--paper-dim);
+  animation: rise-in 900ms var(--ease-out) 440ms both;
+}
+
+.intro__status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(12px * var(--ui-scale, 1));
+  margin-top: calc(30px * var(--ui-scale, 1));
+  animation: rise-in 900ms var(--ease-out) 560ms both;
+}
+
+.intro__status .waiting__dots i {
+  width: calc(8px * var(--ui-scale, 1));
+  height: calc(8px * var(--ui-scale, 1));
+}
+
+.intro__status-label {
+  font-size: calc(13px * var(--ui-scale, 1));
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  color: var(--paper-faint);
+}
+
+/* --------------------------------------------------------------------------
    Stage renderer layers (StageRenderer)
    background: a tinted slab or a 16:9 photo (object-fit cover 恰好满铺);
    characters: full-body 立绘贴底站立（gal 惯例——脚底压在舞台下缘，
@@ -1511,6 +1628,17 @@ button {
   }
   to {
     opacity: 1;
+  }
+}
+
+/* veil-in 的退场镜像：序章卡淡出（.intro--out），由 IntroCard 在
+   animationend/兜底计时后落 hidden。 */
+@keyframes veil-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
   }
 }
 

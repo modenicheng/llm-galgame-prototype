@@ -13,6 +13,7 @@ export interface AppDomRefs {
   stage: HTMLElement;
   scene: HTMLElement;
   interactionVeil: HTMLElement;
+  introRoot: HTMLElement;
   backlogRoot: HTMLElement;
   dialogueRoot: HTMLElement;
   interactionRoot: HTMLElement;
@@ -57,6 +58,31 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   interactionVeil.hidden = true;
 
   const scene = el("section", "scene") as HTMLElement;
+
+  // 序章卡（本局引子）：开场生成期间模糊压暗舞台并展示叙事引子，让等待
+  // 成为剧情的一部分（样式见 .intro）。创建即隐藏，显隐由 main.ts 的
+  // render 路由随等待态驱动；z 序位于 scene（z2）与回看（z4）之间。
+  const introRoot = el("section", "intro") as HTMLElement;
+  const introCard = el("div", "intro__card") as HTMLDivElement;
+  const introRule = el("div", "intro__rule") as HTMLDivElement;
+  introRule.append(
+    el("span", "intro__rule-tick"),
+    el("span", "intro__rule-bar"),
+    el("span", "intro__rule-tick"),
+  );
+  const introStatus = el("div", "intro__status") as HTMLDivElement;
+  const introDots = el("span", "waiting__dots") as HTMLSpanElement;
+  introDots.append(el("i"), el("i"), el("i"));
+  introStatus.append(introDots, el("span", "intro__status-label", "故事正在书写"));
+  introCard.append(
+    el("p", "intro__eyebrow", "序"),
+    el("h2", "intro__title", ""),
+    introRule,
+    el("p", "intro__text", ""),
+    introStatus,
+  );
+  introRoot.append(introCard);
+  introRoot.hidden = true;
 
   // Dialogue box — nameplate tab + paper panel.
   const dialogueRoot = el("section", "dialogue") as HTMLElement;
@@ -122,7 +148,7 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
   // 回看面板同框（盖住舞台，z 序高于 scene 低于视口级控制条），创建即隐藏。
   const backlogRoot = el("section", "backlog") as HTMLElement;
   backlogRoot.hidden = true;
-  stage.append(interactionVeil, scene, backlogRoot);
+  stage.append(interactionVeil, scene, introRoot, backlogRoot);
 
   const controlsRoot = el("section", "controls") as HTMLElement;
 
@@ -173,6 +199,7 @@ export function buildAppDom(root: HTMLElement): AppDomRefs {
     stage,
     scene,
     interactionVeil,
+    introRoot,
     backlogRoot,
     dialogueRoot,
     interactionRoot,

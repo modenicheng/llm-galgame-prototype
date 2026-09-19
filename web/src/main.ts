@@ -16,6 +16,7 @@ import { StartScreen } from "./ui/start-screen.js";
 import { DialogueBox } from "./ui/dialogue-box.js";
 import { InteractionPanel } from "./ui/interaction-panel.js";
 import { PreviewPanel } from "./ui/input-panel.js";
+import { IntroCard } from "./ui/intro-card.js";
 import { ControlsBar } from "./ui/controls.js";
 import { EndScreen } from "./ui/end-screen.js";
 import { installStageUiScale } from "./ui/stage-ui-scale.js";
@@ -122,6 +123,8 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     onConfirm: () => app.confirmPreview(),
     onCancel: () => app.cancelPreview(),
   });
+  // 序章卡（本局引子）：开场生成期间模糊压暗舞台展示叙事引子。
+  const introCard = new IntroCard(refs.introRoot);
   const controls = new ControlsBar(
     refs.controlsRoot,
     {
@@ -350,10 +353,22 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
     show(refs.dialogueRoot, mode === "PLAYING");
     show(refs.previewRoot, mode === "INPUT_PREVIEW");
-    show(
-      refs.waitingEl,
-      mode === "CONTENT_WAITING" || (started && mode === "BOOTSTRAP"),
-    );
+    const waitingForStory =
+      mode === "CONTENT_WAITING" || (started && mode === "BOOTSTRAP");
+    // 序章卡有引子素材时接管等待态（遮罩+卡片自带生成指示）；开场等待
+    // （本局还没有已呈现台词）展示全文，其余等待走 compact 过场，避免
+    // 同一段引子反复整版重读。没有素材（长线模式/续玩局）维持纯加载指示。
+    const intro = view.sessionIntro;
+    if (waitingForStory && intro !== undefined) {
+      introCard.show(intro, view.currentLine === undefined);
+      show(refs.waitingEl, false);
+    } else {
+      introCard.hide();
+      show(
+        refs.waitingEl,
+        waitingForStory,
+      );
+    }
     // 生成过程痕迹不上玩家端：等待页只保留静态文案，后台续写/修复链等
     // 阶段细节属于操作员信息（/monitor 实时流），不在这里露出。
     setText(refs.waitingPhaseEl, "");

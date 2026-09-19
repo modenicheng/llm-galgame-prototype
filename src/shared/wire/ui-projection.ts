@@ -8,7 +8,10 @@
  * erased at compile time.
  */
 import type { RuntimePlayableEvent } from "../../schema.js";
-import type { RuntimeInteractionEvent } from "../../core/runtime/runtime-output.js";
+import type {
+  RuntimeInteractionEvent,
+  SessionIntro,
+} from "../../core/runtime/runtime-output.js";
 import type { EndEvent } from "../../schema.js";
 import type { RuntimeStatusSnapshot } from "../../status.js";
 import type { VisualState } from "../../core/presentation/types.js";
@@ -33,4 +36,10 @@ export interface UiProjection {
   recentLines: RuntimePlayableEvent[];
   status?: RuntimeStatusSnapshot;
   ending?: EndEvent;
+
+  /**
+   * 本局引子（序章卡素材）：随 session_started 进投影，重连恢复时
+   * 开场等待仍能拿到。absent = 本局没有引子素材（长线模式/续玩局）。
+   */
+  sessionIntro?: SessionIntro;
 }

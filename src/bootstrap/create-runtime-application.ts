@@ -59,6 +59,7 @@ import { RecapSummarizerAdapter } from "../adapters/llm/recap-summarizer-adapter
 import { MemoryAgentAdapter } from "../adapters/llm/memory-agent-adapter.js";
 import { loadStoryPlan } from "../adapters/static/story-plan-loader.js";
 import type { NarrativeDirectorPort } from "../core/ports/narrative-director-port.js";
+import type { SessionIntro } from "../core/runtime/runtime-output.js";
 import {
   loadScenarioSeedCatalog,
   scenarioSeedToInitialState,
@@ -345,8 +346,11 @@ export async function createRuntimeApplication(
     // Campus branch: event-mode sessions start from one narrative seed,
     // chosen deterministically from the fresh session id (restart → new
     // session id → seed rotation). The generic runtime only ever sees a
-    // pre-seeded initial story state (GamePorts.initialStoryState).
+    // pre-seeded initial story state (GamePorts.initialStoryState) and a
+    // player-facing session intro (GamePorts.sessionIntro) — no campus
+    // naming crosses the port boundary.
     let initialStoryState: StoryState | undefined;
+    let sessionIntro: SessionIntro | undefined;
     if (config.narrative.mode === "event") {
       const catalog = await loadScenarioSeedCatalog(CAMPUS_SCENARIO_CATALOG);
       const seed = selectScenarioSeed(
@@ -355,6 +359,12 @@ export async function createRuntimeApplication(
         process.env[CAMPUS_SCENARIO_SEED_ENV],
       );
       initialStoryState = scenarioSeedToInitialState(seed);
+      // 序章卡素材：种子标题 + 正文。YAML 块标量的源码折行只是排版，
+      // CJK 连续散文拼回一段（与其进入提示词的形态一致）。
+      sessionIntro = {
+        title: seed.title,
+        text: seed.seed.trim().replace(/\s*\n\s*/g, ""),
+      };
     }
 
     // 滚动前情梗概压缩器（2026-09-17 上下文审计）：滑出历史窗口的事件
@@ -409,6 +419,7 @@ export async function createRuntimeApplication(
       recapSummarizer,
       ...(memoryAgent !== undefined ? { memoryAgent } : {}),
       ...(initialStoryState !== undefined ? { initialStoryState } : {}),
+      ...(sessionIntro !== undefined ? { sessionIntro } : {}),
       ...(narrativeDirector ? { narrativeDirector } : {}),
     }, assetCatalog);
   };

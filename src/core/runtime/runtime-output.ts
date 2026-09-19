@@ -25,9 +25,19 @@ export interface StagePresentationDelta {
   visualState: VisualState;
 }
 
+/**
+ * Player-facing session prologue（本局引子）：一声"序"卡在开场生成期间
+ * 展示，让等待成为剧情的一部分。来源是 composition root 选定的叙事素材
+ * （campus 线即叙事种子的 title/seed）；通用运行时只透传，不解释内容。
+ */
+export interface SessionIntro {
+  title?: string;
+  text: string;
+}
+
 export type RuntimeOutput =
   /** Session storage is ready; includes the host-specific location. */
-  | { type: "session_started"; sessionId: string; location: string }
+  | { type: "session_started"; sessionId: string; location: string; intro?: SessionIntro }
   /** One playable line is ready to be presented; await `advance`. */
   | {
       type: "playback_ready";

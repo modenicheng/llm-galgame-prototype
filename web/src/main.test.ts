@@ -640,4 +640,39 @@ describe("session restart (campus booth)", () => {
     const phase = document.querySelector(".waiting__phase") as HTMLElement;
     await vi.waitFor(() => expect(phase.textContent).toBe(""));
   });
+
+  it("shows the intro card during the opening wait and fades it on the first line", async () => {
+    await bootStarted();
+    feed({
+      type: "session_started",
+      sessionId: "sess-intro1",
+      location: "/sessions/sess-intro1",
+      intro: { title: "例会记录怎么全是兔子", text: "网协例会散场后的阶梯教室里……" },
+    });
+
+    const intro = document.querySelector(".intro") as HTMLElement;
+    await vi.waitFor(() => expect(intro.hasAttribute("hidden")).toBe(false));
+    expect(intro.textContent).toContain("例会记录怎么全是兔子");
+    // 序章卡接管等待态：纯加载指示收起，开局面（无已呈现台词）展示全文。
+    expect(intro.classList.contains("intro--compact")).toBe(false);
+    const waiting = document.querySelector(".waiting") as HTMLElement;
+    expect(waiting.hasAttribute("hidden")).toBe(true);
+
+    // 首条台词到达：卡片淡出，等待指示一并让位。
+    feed({
+      type: "playback_ready",
+      event: { type: "narration", line_id: "line_1", text: "开场。", speaker: "" },
+    });
+    await vi.waitFor(() => expect(intro.classList.contains("intro--out")).toBe(true));
+  });
+
+  it("falls back to the plain waiting indicator when the session has no intro", async () => {
+    await bootStarted();
+    feed({ type: "session_started", sessionId: "sess-nointro", location: "/sessions/sess-nointro" });
+
+    const intro = document.querySelector(".intro") as HTMLElement;
+    expect(intro.hasAttribute("hidden")).toBe(true);
+    const waiting = document.querySelector(".waiting") as HTMLElement;
+    await vi.waitFor(() => expect(waiting.hasAttribute("hidden")).toBe(false));
+  });
 });

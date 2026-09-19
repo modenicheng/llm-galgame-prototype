@@ -392,6 +392,34 @@ describe("GameViewModel", () => {
     expect(state.status).toEqual(fullStatus);
   });
 
+  it("captures the session intro from session_started and from a projection restore", () => {
+    const intro = { title: "例会记录怎么全是兔子", text: "网协例会散场后的阶梯教室里……" };
+    const vm = new GameViewModel();
+    vm.applyServerMessage({
+      type: "runtime.output",
+      sequence: 1,
+      output: {
+        type: "session_started",
+        sessionId: "sess-1",
+        location: "/tmp/sess-1.jsonl",
+        intro,
+      },
+    });
+    expect(vm.state().sessionIntro).toEqual(intro);
+
+    // 投影是权威画面：换局快照不带引子时，旧局的引子不得残留。
+    vm.applyProjection({ phase: "running", sessionId: "sess-2", recentLines: [] });
+    expect(vm.state().sessionIntro).toBeUndefined();
+
+    vm.applyProjection({
+      phase: "running",
+      sessionId: "sess-3",
+      recentLines: [],
+      sessionIntro: intro,
+    });
+    expect(vm.state().sessionIntro).toEqual(intro);
+  });
+
   it("restores full state from a projection after reconnect", () => {
     const vm = new GameViewModel();
     const projection: UiProjection = {

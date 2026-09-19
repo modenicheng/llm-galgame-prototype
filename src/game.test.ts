@@ -792,6 +792,60 @@ describe("JSONL store initialization", () => {
     expect(director.observeCommitted).toHaveBeenCalledWith([restoredEvent]);
   });
 
+  it("emits the session intro on session_started for a fresh session", async () => {
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [narrationEvent("开场。"), endEvent("intro-end")]),
+    );
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(
+      makeGameConfig(), generator, makeMockStatus(), makeMockMedia(), undefined,
+      makeTestPorts({
+        sessionIntro: { title: "规则我都懂，就是没赢过", text: "下午的阶梯教室里……" },
+      }),
+    );
+    game.subscribe((output) => outputs.push(output));
+    new MemoryController().attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+    const started = outputs.find((output) => output.type === "session_started");
+    expect(started).toMatchObject({
+      intro: { title: "规则我都懂，就是没赢过", text: "下午的阶梯教室里……" },
+    });
+  });
+
+  it("omits the session intro when the session is restored with history", async () => {
+    const store = makeTestPorts().store as import("./test-helpers.js").MemorySessionStore;
+    store.events.push({
+      seq: 1,
+      turn: 1,
+      timestamp: new Date().toISOString(),
+      source: "model",
+      type: "narration",
+      text: "历史事件。",
+      line_id: "history-line",
+    } as StoredEvent);
+    const generator = makeMockGenerator();
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [narrationEvent("恢复后。"), endEvent("restore-end")]),
+    );
+    const outputs: RuntimeOutput[] = [];
+    const game = new Game(
+      makeGameConfig(), generator, makeMockStatus(), makeMockMedia(), undefined,
+      makeTestPorts({
+        store,
+        sessionIntro: { title: "不应出现的引子", text: "续玩局不发引子" },
+      }),
+    );
+    game.subscribe((output) => outputs.push(output));
+    new MemoryController().attach(game);
+    await expect(game.run()).resolves.toBeUndefined();
+    const started = outputs.find((output) => output.type === "session_started") as
+      | Extract<RuntimeOutput, { type: "session_started" }>
+      | undefined;
+    expect(started).toBeDefined();
+    expect(started!.intro).toBeUndefined();
+  });
+
   it("preserves an active interaction cursor in the in-memory snapshot", async () => {
     const store = makeTestPorts().store as import("./test-helpers.js").MemorySessionStore;
     const generator = makeMockGenerator();

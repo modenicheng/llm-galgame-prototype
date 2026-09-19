@@ -143,4 +143,39 @@ describe("UiProjectionStore", () => {
     expect(snapshot.currentLine).toEqual(line);
     expect(snapshot.recentLines).toHaveLength(1);
   });
+
+  it("captures the session intro from session_started into the snapshot", () => {
+    const store = new UiProjectionStoreImpl();
+    const intro = { title: "规则我都懂，就是没赢过", text: "下午的阶梯教室里……" };
+    store.applyOutput({
+      type: "session_started",
+      sessionId: "sess-1",
+      location: "/tmp/a",
+      intro,
+    });
+    expect(store.snapshot().sessionIntro).toEqual(intro);
+  });
+
+  it("keeps the intro absent when session_started carries none, and replaces it per session", () => {
+    const store = new UiProjectionStoreImpl();
+    store.applyOutput({
+      type: "session_started",
+      sessionId: "sess-1",
+      location: "/tmp/a",
+      intro: { title: "旧引子", text: "旧局开场" },
+    });
+    // New session id rebuilds the projection; the old intro must not leak.
+    store.applyOutput({ type: "session_started", sessionId: "sess-2", location: "/tmp/b" });
+    expect(store.snapshot().sessionIntro).toBeUndefined();
+
+    // A same-id re-run without an intro keeps the existing one.
+    store.applyOutput({
+      type: "session_started",
+      sessionId: "sess-2",
+      location: "/tmp/b",
+      intro: { title: "新引子", text: "新局开场" },
+    });
+    store.applyOutput({ type: "session_started", sessionId: "sess-2", location: "/tmp/b" });
+    expect(store.snapshot().sessionIntro).toEqual({ title: "新引子", text: "新局开场" });
+  });
 });

@@ -8,6 +8,7 @@ import {
 import type { RuntimeCommand } from "./core/runtime/runtime-command.js";
 import type {
   RuntimeOutput,
+  SessionIntro,
   StagePresentationDelta,
 } from "./core/runtime/runtime-output.js";
 import type { ClockPort } from "./core/ports/clock-port.js";
@@ -217,6 +218,12 @@ export interface GamePorts {
    * Omitted → 不启用（长线模式由 NarrativeDirector 负责，不冲突）。
    */
   memoryAgent?: SessionMemoryAgentPort;
+  /**
+   * 本局引子（SessionIntro）：随 session_started 下发，玩家端在开场
+   * 生成期间作序章卡展示。仅新局有意义——续玩局的历史即引子，不再
+   * 重发。Omitted → 玩家端等待态维持纯加载指示。
+   */
+  sessionIntro?: SessionIntro;
 }
 
 /** Raised when the driver sends `shutdown`. */
@@ -333,6 +340,8 @@ export class Game {
   private readonly recapSummarizer: RecapSummarizerPort | undefined;
   /** Event 模式会话记忆代理；缺省 = 关闭。 */
   private readonly memoryAgent: SessionMemoryAgentPort | undefined;
+  /** 本局引子（新局随 session_started 下发一次）；缺省 = 玩家端纯加载指示。 */
+  private readonly sessionIntro: SessionIntro | undefined;
   /** 记忆代理已处理到的事件 seq（快照持久化，与 state 成对恢复）。 */
   private memoryWatermark = 0;
   /** 在飞的记忆提取（单飞）；快照落盘前等待它，状态与水位成对入盘。 */
@@ -432,6 +441,7 @@ export class Game {
     this.narrativeDirector = ports.narrativeDirector;
     this.recapSummarizer = ports.recapSummarizer;
     this.memoryAgent = ports.memoryAgent;
+    this.sessionIntro = ports.sessionIntro;
     this.sessionId = ports.sessionId ?? this.ids.nextSessionId();
     this.interactionPolicy = new InteractionPolicy(config.interaction);
     this.storyState = ports.initialStoryState ?? createInitialState();
@@ -539,10 +549,17 @@ export class Game {
     // Align the counter past the highest restored number (audit P2-3).
     this.ids.seedLineCounter?.(this.sessionId, restored.events);
     this.narrativeDirector?.observeCommitted(restored.events);
+    // 引子只属于新局：续玩局（恢复的历史/结局）不重发，避免旧局播着
+    // 别的种子开场的错位。
+    const intro: SessionIntro | undefined =
+      this.events.length === 0 && this.restoredEnding === undefined
+        ? this.sessionIntro
+        : undefined;
     this.emit({
       type: "session_started",
       sessionId: this.sessionId,
       location: this.store.location,
+      ...(intro !== undefined ? { intro } : {}),
     });
 
     if (this.restoredEnding !== undefined) {

@@ -12,6 +12,7 @@
  */
 import type { ServerMessage } from "@shared/wire/server-message.js";
 import type { UiProjection } from "@shared/wire/ui-projection.js";
+import type { SessionIntro } from "@core/runtime/runtime-output.js";
 import type { StageCueWire, StageVisualState } from "../stage/stage-types.js";
 
 export type FrontendMode =
@@ -49,6 +50,11 @@ export interface RuntimePlayableEventWire {
 export interface ViewModelState {
   mode: FrontendMode;
   sessionId?: string;
+  /**
+   * 本局引子（序章卡素材）：开场等待时铺底展示；投影恢复同样携带。
+   * absent = 本局没有引子（长线模式/续玩局），等待态维持纯加载指示。
+   */
+  sessionIntro?: SessionIntro;
   currentLine?: RuntimePlayableEventWire;
   /** Rendered by the UI from the RuntimeOutput wire interaction. */
   currentInteraction?: unknown;
@@ -151,6 +157,7 @@ type RuntimeOutputWire = Extract<
 export class GameViewModel {
   private mode: FrontendMode = "BOOTSTRAP";
   private sessionId: string | undefined;
+  private sessionIntro: SessionIntro | undefined;
   private currentLine: RuntimePlayableEventWire | undefined;
   private currentInteraction: unknown;
   private currentPreview: { previewId: string; text: string } | undefined;
@@ -182,6 +189,9 @@ export class GameViewModel {
   /** Full-state restore after a reconnect (§9.1). */
   applyProjection(projection: UiProjection): void {
     this.sessionId = projection.sessionId;
+    // 投影是权威画面：新局的快照不带旧局的引子，整体赋值（含 undefined）
+    // 把换局后的残留一并清掉。
+    this.sessionIntro = projection.sessionIntro;
     this.currentLine = projection.currentLine;
     this.currentInteraction = projection.currentInteraction;
     this.currentPreview = projection.currentPreview;
@@ -208,6 +218,7 @@ export class GameViewModel {
       projectionSeq: this.projectionSeq,
     };
     if (this.sessionId !== undefined) state.sessionId = this.sessionId;
+    if (this.sessionIntro !== undefined) state.sessionIntro = this.sessionIntro;
     if (this.currentLine !== undefined) state.currentLine = this.currentLine;
     if (this.currentInteraction !== undefined) state.currentInteraction = this.currentInteraction;
     if (this.currentPreview !== undefined) state.currentPreview = this.currentPreview;
@@ -238,6 +249,7 @@ export class GameViewModel {
     switch (output.type) {
       case "session_started":
         this.sessionId = output.sessionId;
+        if (output.intro !== undefined) this.sessionIntro = output.intro;
         break;
       case "playback_ready":
         this.mode = "PLAYING";

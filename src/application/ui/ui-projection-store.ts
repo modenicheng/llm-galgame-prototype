@@ -73,11 +73,15 @@ export class UiProjectionStoreImpl implements UiProjectionStore {
         // into the fresh session's snapshot.
         if (next.sessionId !== undefined && next.sessionId !== output.sessionId) {
           this.projection = this.freshProjection(output.sessionId);
+          if (output.intro !== undefined) this.projection.sessionIntro = output.intro;
           for (const listener of this.listeners) listener(this.projection);
           return;
         }
         next.sessionId = output.sessionId;
         next.phase = "running";
+        // 引子随本局 session_started 落进投影（重连恢复用）；fresh 换局
+        // 路径已在上面重建。同 id 重发（续玩局重挂）不带 intro 时保持原值。
+        if (output.intro !== undefined) next.sessionIntro = output.intro;
         break;
       case "playback_ready":
         next.currentLine = output.event;
