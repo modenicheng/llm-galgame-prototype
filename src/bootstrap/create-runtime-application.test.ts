@@ -196,9 +196,14 @@ describe("createRuntimeApplication", () => {
     expect(typeof app.game.dispatch).toBe("function");
     // The Game exposes the metrics collector the CLI prints from.
     expect(app.game.getMetrics()).toBeDefined();
-    // C2 registry 端口：显式 legacy 模式缺省（F1 落 characters.yaml 前不切换）。
-    expect(app.characterRegistry.mode).toBe("legacy");
-    expect(app.characterRegistry.registry).toBeUndefined();
+    // M1 registry 端口：无世界启动 = 静态 fallback 世界 roster（characters.yaml
+    // 由 M1 落盘；玩家契约 playerId=linche，苏遥为 NPC）。
+    expect(app.characterRegistry.mode).toBe("roster");
+    const roster = app.characterRegistry.registry?.roster;
+    expect(roster).toBeDefined();
+    expect(roster!.playerId).toBe("linche");
+    expect(app.characterRegistry.registry?.require("linche").control).toBe("player");
+    expect(app.characterRegistry.registry?.require("suyao").control).toBe("npc");
   });
 
   it("accepts an explicit configPath and reloads the config from disk", async () => {
@@ -530,6 +535,294 @@ function dashscopeConfig(): AppConfig {
     expect(existsSync(path.join(sessionDir, "sess-flush", "events.jsonl"))).toBe(false);
 
     await rm(sessionDir, { recursive: true, force: true });
+  });
+
+  // -------------------------------------------------------------------
+  // M1 角色名册接线：生成世界 roster、入口覆盖、派生卡
+  // -------------------------------------------------------------------
+
+  /** 写一个 M1 格式的生成世界（canon 带 control 元信息）+ story_line。 */
+  async function seedGeneratedWorld(gamesRoot: string, gameId: string): Promise<void> {
+    const worldDir = path.join(gamesRoot, gameId, "world");
+    await mkdir(worldDir, { recursive: true });
+    await mkdir(path.join(worldDir, "prompts"), { recursive: true });
+    await writeFile(path.join(worldDir, "prompts", "story_line.txt"), "生成世界主线。", "utf8");
+    await writeFile(
+      path.join(worldDir, "canon.json"),
+      JSON.stringify(
+        {
+          revision: 0,
+          worldSetting: "深夜旧书店。",
+          characters: [
+            {
+              id: "player_one",
+              name: "读者",
+              description: "玩家控制角色：深夜来访的读者。",
+              control: "player",
+              initialLabel: "读者",
+            },
+            {
+              id: "guest_01",
+              name: "访客",
+              description: "无立绘无声音的动态角色。",
+              control: "npc",
+              initialLabel: "神秘女子",
+            },
+          ],
+          promotedFacts: [],
+          exceptions: [],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  }
+
+  it("M1：生成世界（继续游戏入口）从当前游戏 canon 构建 roster，不掺入 fallback cast", async () => {
+    const config = makeTestConfig({
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+    const root = await mkdtemp(path.join(tmpdir(), "galgame-m1-world-"));
+    try {
+      const gamesRoot = path.join(root, "games");
+      await seedGeneratedWorld(gamesRoot, "game_m1");
+      const app = await createRuntimeApplication({
+        config,
+        sessionDir: root,
+        gamesRoot,
+        gameId: "game_m1",
+        sessionId: "s-m1-1",
+      });
+      const registry = app.characterRegistry.registry;
+      expect(app.characterRegistry.mode).toBe("roster");
+      expect(registry).toBeDefined();
+      // roster 来自当前游戏 canon：动态无素材角色完整存在。
+      expect(registry!.require("guest_01").control).toBe("npc");
+      expect(registry!.roster.playerId).toBe("player_one");
+      // fallback cast 不掺入生成世界（独立身份命名空间）。
+      expect(registry!.get("linche")).toBeUndefined();
+      expect(registry!.get("suyao")).toBeUndefined();
+
+      // 人物卡为派生产物：world/prompts/characters.txt 被（重）生成为
+      // 携带 canon roster revision 的派生卡，并进入运行时 prompt。
+      const card = await readFile(
+        path.join(gamesRoot, "game_m1", "world", "prompts", "characters.txt"),
+        "utf8",
+      );
+      expect(card).toContain("# derived-from: world/canon.json@");
+      expect(card).toContain("【访客】(guest_01)");
+
+      // 继续游戏（第二次启动同一世界）：同一 roster（同 revision/playerId）。
+      const again = await createRuntimeApplication({
+        config,
+        sessionDir: root,
+        gamesRoot,
+        gameId: "game_m1",
+        sessionId: "s-m1-2",
+      });
+      expect(again.characterRegistry.registry?.roster.revision).toBe(registry!.roster.revision);
+      expect(again.characterRegistry.registry?.roster.playerId).toBe("player_one");
+
+      // 重开（restart）与回溯（retrace）都发生在同一 gameId 世界内：
+      // registry 是世界级单例，restart 原地重建会话不换 roster。
+      const restarted = await app.restart();
+      expect(restarted.characterRegistry).toBe(app.characterRegistry);
+      expect(restarted.characterRegistry.registry?.roster.revision).toBe(registry!.roster.revision);
+      await restarted.shutdown();
+      await again.shutdown();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("M1：缺人物卡的生成世界在启动时由 canon 再生（身份不依赖卡）", async () => {
+    const config = makeTestConfig({
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+    const root = await mkdtemp(path.join(tmpdir(), "galgame-m1-card-"));
+    try {
+      const gamesRoot = path.join(root, "games");
+      await seedGeneratedWorld(gamesRoot, "game_m1_card");
+      // 世界目录不写 characters.txt（模拟缺卡/被删）。
+      const cardPath = path.join(gamesRoot, "game_m1_card", "world", "prompts", "characters.txt");
+      await writeFile(
+        cardPath,
+        "# derived-from: world/canon.json@v2-stale0000stale0000\n\n【手改】(fake)\n",
+        "utf8",
+      );
+      const app = await createRuntimeApplication({
+        config,
+        sessionDir: root,
+        gamesRoot,
+        gameId: "game_m1_card",
+        sessionId: "s-m1-card",
+      });
+      const card = await readFile(cardPath, "utf8");
+      expect(card).not.toContain("手改");
+      expect(card).toContain("【访客】(guest_01)");
+      expect(app.characterRegistry.registry?.require("guest_01")).toBeDefined();
+      await app.shutdown();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("M1：旧世界（canon 无 control 元信息）保持 legacy 兼容模式，不猜测玩家", async () => {
+    const config = makeTestConfig({
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+    const root = await mkdtemp(path.join(tmpdir(), "galgame-m1-legacy-"));
+    try {
+      const gamesRoot = path.join(root, "games");
+      const worldDir = path.join(gamesRoot, "game_pre_m1", "world");
+      await mkdir(path.join(worldDir, "prompts"), { recursive: true });
+      await writeFile(path.join(worldDir, "prompts", "story_line.txt"), "旧世界主线。", "utf8");
+      await writeFile(
+        path.join(worldDir, "canon.json"),
+        JSON.stringify(
+          {
+            revision: 3,
+            worldSetting: "旧世界。",
+            characters: [
+              { id: "a_1", name: "甲", description: "主角视角。" },
+              { id: "b_1", name: "乙", description: "配角。" },
+            ],
+            promotedFacts: [],
+            exceptions: [],
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      const app = await createRuntimeApplication({
+        config,
+        sessionDir: root,
+        gamesRoot,
+        gameId: "game_pre_m1",
+        sessionId: "s-legacy",
+      });
+      // 旧世界 = 兼容边界：身份仍走资产目录 legacy 注册表，不猜 control。
+      expect(app.characterRegistry.mode).toBe("legacy");
+      expect(app.characterRegistry.registry).toBeUndefined();
+      await app.shutdown();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("M1：v2 世界 canon 内容损坏（重复 ID）在装配期大声失败——registry 先于任何演员装配", async () => {
+    const config = makeTestConfig({
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+    const root = await mkdtemp(path.join(tmpdir(), "galgame-m1-bad-"));
+    try {
+      const gamesRoot = path.join(root, "games");
+      const worldDir = path.join(gamesRoot, "game_bad", "world");
+      await mkdir(path.join(worldDir, "prompts"), { recursive: true });
+      await writeFile(path.join(worldDir, "prompts", "story_line.txt"), "坏世界。", "utf8");
+      await writeFile(
+        path.join(worldDir, "canon.json"),
+        JSON.stringify(
+          {
+            revision: 0,
+            worldSetting: "坏世界。",
+            characters: [
+              { id: "dup_1", name: "甲", description: "x", control: "player", initialLabel: "甲" },
+              { id: "dup_1", name: "乙", description: "x", control: "npc", initialLabel: "乙" },
+            ],
+            promotedFacts: [],
+            exceptions: [],
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      await expect(
+        createRuntimeApplication({
+          config,
+          sessionDir: root,
+          gamesRoot,
+          gameId: "game_bad",
+          sessionId: "s-bad",
+        }),
+      ).rejects.toThrow(/duplicate_character_id/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("M1：回溯（retrace）入口——同一世界内重开周目，registry 身份不变", async () => {
+    const config = makeTestConfig({
+      characters: { suyao: { name: "苏遥", voice_profile: "suyao_main" } },
+    });
+    const root = await mkdtemp(path.join(tmpdir(), "galgame-m1-retrace-"));
+    try {
+      const gamesRoot = path.join(root, "games");
+      await seedGeneratedWorld(gamesRoot, "game_m1_bt");
+      // 开局：旁白 + input 交互（停驻在决策点，供回溯）。
+      generatorState.opening = {
+        events: [],
+        groups: [
+          { prelude: [], main: { type: "narration", text: "深夜的书店。" } },
+          {
+            prelude: [],
+            main: {
+              type: "interaction",
+              interaction: { prompt: "说什么？", mode: "input", inputPlaceholder: "..." },
+            },
+          },
+        ],
+        state_patch: undefined,
+        segmentEnd: undefined,
+      };
+      const app = await createRuntimeApplication({
+        config,
+        sessionDir: root,
+        gamesRoot,
+        gameId: "game_m1_bt",
+        sessionId: "s-bt-1",
+      });
+      const registryBefore = app.characterRegistry.registry!;
+      const revisionBefore = registryBefore.roster.revision;
+
+      const controller = new MemoryController();
+      controller.attach(app.game);
+      const run1 = app.game.run().catch((error: unknown) => error);
+      await controller.advanceUntilInteractionOrEnd();
+
+      // 决策点落盘：读取 decisions.jsonl 的首个决策 id（宿主回溯通道同源）。
+      const decisionsRaw = await readFile(
+        path.join(gamesRoot, "game_m1_bt", "graph", "decisions.jsonl"),
+        "utf8",
+      );
+      const decisionId = (JSON.parse(decisionsRaw.trim().split("\n")[0]!) as { id: string }).id;
+
+      // 回溯入口（local-web handleRetrace 同路径）：retrace 命令 → run 退出
+      // → prepareRetrace → 重新 run（同 app、同世界）。
+      app.game.dispatch({ type: "retrace", decisionId });
+      const result1 = await run1;
+      expect(String(result1)).toContain("回溯");
+      await app.game.prepareRetrace(decisionId);
+      const controller2 = new MemoryController();
+      controller2.attach(app.game);
+      const run2 = app.game.run().catch((error: unknown) => error);
+      await controller2.advanceUntilInteractionOrEnd();
+
+      // 回溯后：registry 仍是当前游戏 canon 构建的同一 roster（身份不随
+      // 周目重开而重建或掺入 fallback cast）。
+      expect(app.characterRegistry.mode).toBe("roster");
+      expect(app.characterRegistry.registry).toBe(registryBefore);
+      expect(app.characterRegistry.registry!.roster.revision).toBe(revisionBefore);
+      expect(app.characterRegistry.registry!.require("guest_01").control).toBe("npc");
+
+      await app.shutdown();
+      await run2;
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   // -------------------------------------------------------------------

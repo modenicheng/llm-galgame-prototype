@@ -33,8 +33,8 @@ function makeFakeClient(opts?: { content?: string }): OpenAI {
 const VALID_JSON = JSON.stringify({
   worldSetting: "平行世界的学园都市，超能力与日常交织。",
   characters: [
-    { id: "su_yao", name: "苏遥", description: "转学生，随身带着旧终端。", spriteBinding: "suyao" },
-    { id: "lin_che", name: "林澈", description: "主人公，好奇心旺盛。" },
+    { id: "su_yao", name: "苏遥", description: "转学生，随身带着旧终端。", control: "npc", spriteBinding: "suyao" },
+    { id: "lin_che", name: "林澈", description: "主人公（玩家视角），好奇心旺盛。", control: "player" },
   ],
   outline: [
     { id: "ol_act_1", purpose: "转学生登场，旧终端首次异动", kind: "act", status: "planned", location: "教室" },
@@ -60,6 +60,9 @@ describe("OutlineWriterAdapter", () => {
     expect(draft.worldSetting).toContain("学园都市");
     expect(draft.characters).toHaveLength(2);
     expect(draft.characters[0]!.spriteBinding).toBe("suyao");
+    // M1：玩家契约随 draft 显式携带（恰好一名 player）。
+    expect(draft.characters[0]!.control).toBe("npc");
+    expect(draft.characters[1]!.control).toBe("player");
     expect(draft.outline.map((n) => n.kind)).toEqual(["act", "act", "ending", "ending"]);
     expect(draft.outline.every((n) => n.status === "planned")).toBe(true);
   });
@@ -86,12 +89,45 @@ describe("OutlineWriterAdapter", () => {
     // 空剧情：同 schema 拒绝
     const emptyActs = JSON.stringify({
       worldSetting: "设定。",
-      characters: [{ id: "a", name: "A", description: "角色描述。" }],
+      characters: [{ id: "a", name: "A", description: "角色描述。", control: "player" }],
       outline: [{ id: "ol_end_x", purpose: "唯一节点", kind: "ending", status: "planned" }],
     });
     await expect(
       makeAdapter(emptyActs).writeOutline({ userText: "任意描述" }),
     ).rejects.toThrow("outline 输出解析失败");
+  });
+
+  it("M1 玩家契约：缺 control / 零玩家 / 多玩家都被 schema 拒绝", async () => {
+    // 缺 control 字段
+    const noControl = JSON.parse(VALID_JSON);
+    delete noControl.characters[0].control;
+    await expect(
+      makeAdapter(JSON.stringify(noControl)).writeOutline({ userText: "任意描述" }),
+    ).rejects.toThrow("outline 输出解析失败");
+
+    // 零玩家：没有 control=player 的角色
+    const zeroPlayers = JSON.parse(VALID_JSON);
+    zeroPlayers.characters[1].control = "npc";
+    await expect(
+      makeAdapter(JSON.stringify(zeroPlayers)).writeOutline({ userText: "任意描述" }),
+    ).rejects.toThrow("outline 输出解析失败");
+
+    // 多玩家
+    const twoPlayers = JSON.parse(VALID_JSON);
+    twoPlayers.characters[0].control = "player";
+    await expect(
+      makeAdapter(JSON.stringify(twoPlayers)).writeOutline({ userText: "任意描述" }),
+    ).rejects.toThrow("outline 输出解析失败");
+  });
+
+  it("M1 玩家契约：initialLabel 可选透传（初始名牌，缺省回落 name）", async () => {
+    const anonymous = JSON.parse(VALID_JSON);
+    anonymous.characters[0].initialLabel = "神秘女子";
+    const draft = await makeAdapter(JSON.stringify(anonymous)).writeOutline({
+      userText: "任意描述",
+    });
+    expect(draft.characters[0]!.initialLabel).toBe("神秘女子");
+    expect(draft.characters[1]!.initialLabel).toBeUndefined();
   });
 });
 

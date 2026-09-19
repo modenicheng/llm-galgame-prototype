@@ -22,6 +22,10 @@ const CanonCharacterSchema: z.ZodType<CanonCharacter> = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string(),
+  // M1 权威元信息：新格式写入必带；旧 canon 宽容读取（control 缺省 =
+  // pre-M1 世界，由 roster 侧显式判定，不在此猜测）。
+  control: z.exactOptional(z.enum(["player", "npc"])),
+  initialLabel: z.exactOptional(z.string().min(1)),
   spriteBinding: z.exactOptional(z.string().min(1)),
 });
 

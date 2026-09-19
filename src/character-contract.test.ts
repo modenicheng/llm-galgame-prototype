@@ -4,14 +4,16 @@
  * 运行共享向量（src/test-support/character-contract-cases.ts，两侧工作树
  * 字节一致）外加 main 分支特有向量（世界生成的无素材动态角色）。红绿
  * 纪律：R01/R02/R03 断言期望行为，当前应当失败（红灯即规格，C2+ 转绿）；
- * R09 解析对照固定当前缺陷行为（待消除，非未来兼容规范）。
+ * R09 解析对照固定当前缺陷行为（待消除，非未来兼容规范）＋main 动态
+ * 世界向量（M1 已转绿：无素材角色经 canon→roster→registry 形成完整身份）。
  *
  * 覆盖计划需求：R01（改名后上下文仍携带 female_A）、R02（音色跨标签
  * 稳定）、R03（renderTemplate 字面单遍，模块由 C6 落地）、R09（冒号
  * 全半角解析分歧，待消除）＋main 动态世界向量（无素材角色须经现入口
  * 形成完整 registry）。向量全部走真实公开 API：parseDslLine →
  * compileEventGroups → serializeStoryContext / AudioDescriptorFactory.build /
- * WorldGenerator.generate + loadAssetCatalog + toCharacterRegistry。
+ * WorldGenerator.generate + loadAssetCatalog + rosterFromCanonCharacters +
+ * createCharacterRegistry。
  */
 import { describe, it, expect } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -47,7 +49,9 @@ import type { PerformanceCompiler } from "./application/audio/performance-compil
 import { WorldGenerator } from "./application/world/world-generator.js";
 import type { OutlineWriterPort, WorldDraft } from "./application/outline/outline-writer.js";
 import { loadAssetCatalog } from "./application/assets/asset-catalog-loader.js";
-import { toCharacterRegistry } from "./core/assets/catalog.js";
+import { CanonStore } from "./adapters/storage/canon-store.js";
+import { rosterFromCanonCharacters } from "./application/characters/world-roster.js";
+import { createCharacterRegistry } from "./core/characters/registry.js";
 
 // ---------------------------------------------------------------------------
 // R01 helpers — drive the real parse → compile pipeline for one dialogue line
@@ -280,12 +284,12 @@ describe("character identity contract — main dynamic-world vector", () => {
     try {
       // 无素材动态角色：无立绘绑定（spriteBinding 缺省）、无音频画像
       // （voice 缺省）——计划约束：角色可以无立绘、无音色，但身份不得
-      // 因此丢失。
+      // 因此丢失。M1 起生成世界必须显式玩家（lin_che 为 player）。
       const draft: WorldDraft = {
         worldSetting: "契约向量临时世界。",
         characters: [
-          { id: "su_yao", name: "苏遥", description: "转学生。", spriteBinding: "suyao" },
-          { id: "lin_che", name: "林澈", description: "主人公，好奇心旺盛。" },
+          { id: "su_yao", name: "苏遥", description: "转学生。", control: "npc", spriteBinding: "suyao" },
+          { id: "lin_che", name: "林澈", description: "主人公，好奇心旺盛。", control: "player" },
         ],
         outline: [
           { id: "ol_act_1", purpose: "相遇", kind: "act", status: "planned" },
@@ -301,24 +305,30 @@ describe("character identity contract — main dynamic-world vector", () => {
       }).generate({ userText: "契约向量临时世界" });
 
       // 生成的游戏确实携带该角色（world/canon.json 脚手架，绿灯部分）：
-      const canon = JSON.parse(
+      const canonRaw = JSON.parse(
         await readFile(path.join(root, gameId, "world", "canon.json"), "utf8"),
       ) as { characters: Array<{ id: string }> };
-      expect(canon.characters.some((character) => character.id === "lin_che")).toBe(true);
+      expect(canonRaw.characters.some((character) => character.id === "lin_che")).toBe(true);
 
-      // 运行时入口现状（缺陷定位）：registry 只来自全局素材目录
-      // （config.assets.catalog 默认 assets/resources.yaml，与 bootstrap
-      // 同一加载器）；世界生成结果从不回流进 registry。
+      // M1 运行时入口：registry 由当前游戏 canon 构建（roster 模式），
+      // 素材目录只提供资源绑定校验——与 bootstrap 同一装配路径。
       const catalogPath = fileURLToPath(new URL("../assets/resources.yaml", import.meta.url));
-      const registry = toCharacterRegistry(await loadAssetCatalog(catalogPath));
+      const assets = await loadAssetCatalog(catalogPath);
+      const canon = await new CanonStore(root, gameId).load();
+      const roster = rosterFromCanonCharacters({
+        scopeId: `world:${gameId}`,
+        characters: canon.characters,
+        assets,
+      });
+      const registry = createCharacterRegistry(roster, assets);
 
-      // 缺陷（红灯）：无素材动态角色在运行时 registry 中不存在——模型按
-      // 角色卡写行头后 characterId 退化为自由文本，再被 reconcile 的
-      // 已知角色过滤挡在 StoryState 之外，身份与状态双丢。
-      const byId = registry.resolveById("lin_che");
+      // 断言语义（M1 转绿）：无素材动态角色在运行时 registry 中完整存在，
+      // 模型按角色卡行头写出的 ID 能解析回同一身份；缺资源不丢身份。
+      const byId = registry.get("lin_che");
       expect(byId).toBeDefined();
-      expect(byId!.characterId).toBe("lin_che");
-      expect(registry.resolveByScriptName("林澈")).toBe(byId);
+      expect(byId!.id).toBe("lin_che");
+      expect(registry.require("lin_che").control).toBe("player");
+      expect(registry.get("su_yao")!.control).toBe("npc");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

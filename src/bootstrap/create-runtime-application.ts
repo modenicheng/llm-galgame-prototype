@@ -65,7 +65,14 @@ import type {
   RuntimeApplicationOptions,
 } from "../application/runtime-application.js";
 import { loadAssetCatalog } from "../application/assets/asset-catalog-loader.js";
-import type { CharacterRegistryProvider } from "../core/characters/registry.js";
+import { createCharacterRegistry, type CharacterRegistryProvider } from "../core/characters/registry.js";
+import type { CharacterRoster } from "../core/characters/types.js";
+import { loadCharacterPackRoster } from "../adapters/static/character-pack-loader.js";
+import {
+  isRosterCapableCanon,
+  rosterFromCanonCharacters,
+} from "../application/characters/world-roster.js";
+import { ensureDerivedCharacterCard } from "../application/world/world-generator.js";
 import { NarrativeDirectorService } from "../application/narrative/narrative-director-service.js";
 import { JsonNarrativeMemoryStore } from "../adapters/storage/json-narrative-memory-store.js";
 import { NarrativeConsolidatorAdapter } from "../adapters/llm/narrative-consolidator-adapter.js";
@@ -203,6 +210,36 @@ function buildAudioStack(
     },
   });
   return { catalog, planner, ttsTasks, taskStatusListeners };
+}
+
+/**
+ * M1（§3.2/§6.1）：角色 → 音色 profile 的绑定由 roster 给出（按 ID join），
+ * config.characters 只保留 author 兼容视图。同 ID 出现在两侧且 profile
+ * 不同 = 意图不明的同键覆盖，直接报错（禁止 last-wins）；roster 侧新增
+ * 绑定补入；其余 config 键原样保留（兼容边界 C4/V1 收口）。
+ */
+function mergeRosterVoiceBindings(
+  authorCharacters: Record<string, { name: string; voice_profile: string }>,
+  roster: CharacterRoster | undefined,
+): Record<string, { name: string; voice_profile: string }> {
+  if (roster === undefined) return authorCharacters;
+  const merged: Record<string, { name: string; voice_profile: string }> = {
+    ...authorCharacters,
+  };
+  for (const character of roster.characters) {
+    if (character.voiceProfileId === undefined) continue;
+    const existing = Object.hasOwn(merged, character.id) ? merged[character.id] : undefined;
+    if (existing !== undefined) {
+      if (existing.voice_profile !== character.voiceProfileId) {
+        throw new Error(
+          `角色音色绑定冲突（${character.id}）：config.characters 指向 ${existing.voice_profile}，roster 指向 ${character.voiceProfileId}——意图不明的同键覆盖，禁止 last-wins`,
+        );
+      }
+      continue;
+    }
+    merged[character.id] = { name: character.name, voice_profile: character.voiceProfileId };
+  }
+  return merged;
 }
 
 /**
@@ -349,25 +386,60 @@ export async function createRuntimeApplication(
     options.config ?? (await loadConfig(options.configPath ?? "config.yaml"));
   const authorConfig = await loadAuthorConfig("prompts/author.yaml");
   const gamesRoot = options.gamesRoot ?? DEFAULT_GAMES_ROOT;
-  const perGamePromptsDir =
-    options.gameId !== undefined
-      ? path.join(gamesRoot, options.gameId, WORLD_PROMPTS_DIR)
-      : undefined;
-  const { bundle, instructions } = await loadPrompts("prompts", perGamePromptsDir);
+  // M1：registry 从「当前游戏」构建——先加载 canon（缺省空 canon），再决定
+  // roster 来源；派生人物卡在 loadPrompts 之前校验/再生。registry 的构建
+  // 先于 generator/actor/state/director/audio 的任何装配（禁止先建全局
+  // registry 再覆盖人物文本）。
+  const gameId = options.gameId ?? `game_${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  const canonStore = new CanonStore(gamesRoot, gameId);
+  const canonSnapshot = await canonStore.load();
   const voices = await loadVoices(options.voicesPath ?? "voices.yaml");
   const apiKey = loadApiKey(config);
   // Asset catalog (docs §57–§60): resource bindings for the model prompt
   // (model catalog) and the runtime (character registry + resolver).
   const assetCatalog = await loadAssetCatalog(config.assets.catalog);
 
-  // C2 registry 端口：legacy 模式为显式缺省——身份今天仍由资产目录注册表
-  // （兼容边界）提供，运行时行为不变；roster 模式等 M1 的
-  // characters.yaml 加载器（application/characters/character-roster-loader）
-  // 落地后再切换。
-  const characterRegistry: CharacterRegistryProvider = {
-    mode: "legacy",
-    registry: undefined,
-  };
+  // M1 registry 端口（R07/R08）：
+  // - 生成世界（canon 携带 control 权威元信息）→ 从当前游戏 canon 构建
+  //   roster；派生人物卡按 canon revision 校验/再生。
+  // - 旧世界（pre-M1 canon，无 control）→ 显式 legacy 兼容模式（身份仍走
+  //   资产目录注册表），不猜测玩家、不掺入 fallback cast。
+  // - 无世界/空 canon 启动 → main 静态 fallback 世界 roster（characters.yaml
+  //   内容包；玩家契约 playerId=linche，苏遥为 NPC）。
+  let characterRegistry: CharacterRegistryProvider;
+  if (options.gameId !== undefined && isRosterCapableCanon(canonSnapshot)) {
+    const roster = rosterFromCanonCharacters({
+      scopeId: `world:${options.gameId}`,
+      characters: canonSnapshot.characters,
+      assets: assetCatalog,
+    });
+    characterRegistry = { mode: "roster", registry: createCharacterRegistry(roster, assetCatalog) };
+    await ensureDerivedCharacterCard({
+      gamesRoot,
+      gameId: options.gameId,
+      canon: canonSnapshot,
+      assets: assetCatalog,
+    });
+  } else if (
+    options.gameId !== undefined &&
+    canonSnapshot.characters.length > 0
+  ) {
+    characterRegistry = { mode: "legacy", registry: undefined };
+  } else {
+    const fallbackRoster = await loadCharacterPackRoster(
+      options.charactersPath ?? "characters.yaml",
+    );
+    characterRegistry = {
+      mode: "roster",
+      registry: createCharacterRegistry(fallbackRoster, assetCatalog),
+    };
+  }
+
+  const perGamePromptsDir =
+    options.gameId !== undefined
+      ? path.join(gamesRoot, options.gameId, WORLD_PROMPTS_DIR)
+      : undefined;
+  const { bundle, instructions } = await loadPrompts("prompts", perGamePromptsDir);
 
   const status = new RuntimeStatus();
   const metrics = new Metrics();
@@ -385,8 +457,7 @@ export async function createRuntimeApplication(
   // v2 剧情图（§9）：gameId 是世界的身份，在运行时生命周期内固定；周目
   // （run）才是重开/回溯的单位。图存储与协调器跨 restart 共享。宿主可传
   // options.gameId 固定世界（「继续游戏」指向同一目录）；缺省每次启动
-  // 生成新世界。
-  const gameId = options.gameId ?? `game_${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  // 生成新世界。（gameId 已在 registry 装配前落定——M1。）
   // 工厂侧 provider 判别与模型档（disabled → mock）——buildAudioStack 与
   // buildVoiceViews 共用同一推导（单一真源）。
   const synthesisProvider = config.media.audio.synthesis?.provider;
@@ -395,11 +466,19 @@ export async function createRuntimeApplication(
       ? synthesisProvider
       : "mock";
   const modelProfile = config.media.audio.synthesis?.model_profile ?? "cosyvoice_v3_flash";
-  // V2（角色音频特征设计 §4.1）：编剧画像 → 动态角色注入视图。
+  // V2（角色音频特征设计 §4.1）：编剧画像 → 动态角色注入视图。M1：音频
+  // 绑定基座 = config.characters ⊕ roster 的 voiceProfileId（按 ID join，
+  // 同键不同 profile 的意图不明覆盖直接报错，禁止 last-wins）。
   const voiceViews = await buildVoiceViews({
     gamesRoot,
     gameId,
-    config,
+    config: {
+      ...config,
+      characters: mergeRosterVoiceBindings(
+        config.characters,
+        characterRegistry.registry?.roster,
+      ),
+    },
     voices,
     provider: factoryProvider,
     modelProfile,
@@ -427,8 +506,8 @@ export async function createRuntimeApplication(
     };
   }
   // M3.6：canon 存储（跨周目世界真相）。缺省新世界 = 空 canon（读宽容），
-  // 晋升管线周目完结/弃局后 fire-and-forget。
-  const canonStore = new CanonStore(gamesRoot, gameId);
+  // 晋升管线周目完结/弃局后 fire-and-forget。（canonStore 已在 M1 registry
+  // 装配时创建并加载，此处复用同一实例。）
   // M4.1 ④：汇流判定员的持有与装配移入导演；协调器只接收实例（调度机制
   // 零改动）。confluence.enabled 门控不变（测试/CI 零网络）。
   const confluenceEnabled =

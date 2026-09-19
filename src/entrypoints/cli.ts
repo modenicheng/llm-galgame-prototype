@@ -12,6 +12,7 @@ import { resolveExplicitGameId } from "../hosts/local-web/last-game.js";
 import { WorldGenerator } from "../application/world/world-generator.js";
 import { OutlineWriterAdapter } from "../adapters/llm/outline-writer-adapter.js";
 import { loadApiKey } from "../config.js";
+import { loadAssetCatalog } from "../application/assets/asset-catalog-loader.js";
 
 function parseArgs(argv: string[]): {
   configPath: string;
@@ -55,9 +56,13 @@ async function main(): Promise<void> {
   // local-web 的「继续游戏」通道）。都缺 → 开新世界。
   let gameId = resolveExplicitGameId(game, process.env);
   // M3.3 直通开玩：--new-world "<描述>" → 编剧生成世界 → 立即在该世界开局。
+  // M1：创建前校验需要素材目录（spriteBinding 引用）与 author 角色表。
   if (gameId === undefined && newWorld !== undefined) {
+    const worldAssets = await loadAssetCatalog(config.assets.catalog);
     const worldService = new WorldGenerator({
       writer: new OutlineWriterAdapter({ apiKey: loadApiKey(config), api: config.api }),
+      assets: worldAssets,
+      authorCharacterIds: Object.keys(worldAssets.characters),
     });
     const generated = await worldService.generate({ userText: newWorld });
     console.log(`已生成新世界：${generated.gameId}`);
