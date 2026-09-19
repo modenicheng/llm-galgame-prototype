@@ -101,8 +101,10 @@
   `cache-key`，播放水位参数（startup_buffer / low_watermark / target_buffer）。
   缓存键含 model/采样率，换模型族自然失效。
 - **播放**：`web/src/audio/`——AudioCoordinator（共享 AudioContext + AudioWorklet）、
-  AudioTimeline（顺序排队 / skip / 低水位驱动）、pcm-decoder（worklet 按
-  descriptor 采样率重采样）。
+  AudioTimeline（顺序排队 / skip；缓冲只做状态上报）、pcm-decoder（worklet 按
+  descriptor 采样率重采样）。合成调度为到达驱动（2026-09-19）：active descriptor
+  一到达即查缓存/合成，不再受播放水位门控——旧水位门会被 stop() 后残留的
+  timeline 计数挡住整波新行，拖慢每波首句出声；分支确认即全量入队。
 - **缓存**：IndexedDB（`audio-db` + cache reader/writer/cleaner，容量上限与清理）。
 - **玩家音频设置**（2026-09-19）：语音/BGM 音量双通道分离，与静音、字速一起
   收进控制条「设置」浮层（`web/src/ui/settings-menu.ts`）；偏好经 localStorage
