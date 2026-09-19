@@ -1052,12 +1052,17 @@ export type V2TailRepairRequester = (
 ) => Promise<string | null>;
 
 export interface CompileSegmentV2WithRepairResult extends CompileSegmentV2Result {
-  /** 是否真的发起过一次尾部修复（一次为限，第二次失败即终止）。 */
-  repairAttempted: boolean;
+  /** 修复请求方是否被调用过（含「请求后放弃」——与「从未请求」分开）。 */
+  repairRequested: boolean;
+  /** 修复内容是否被采纳进第二次编译（本段唯一一次修复机会已消耗）。 */
+  repairApplied: boolean;
 }
 
 /**
  * 段级编译 + 至多一次未提交尾部协议修复。
+ *
+ * 行号坐标：committedThroughLine 是 1 基绝对行号（含 lineOffset）；尾部
+ * 切片与重编译偏移先归一化，offset 不双计（C5）。
  *
  * 修复只重写**未提交尾部**（最后一个已提交组冲刷行之后的全部原文，含
  * 其中尚未冲刷的 pending cue 行）：已提交前组保持不动、不重复、不回放；
@@ -1071,26 +1076,31 @@ export async function compileSegmentV2WithRepair(
 ): Promise<CompileSegmentV2WithRepairResult> {
   const capability = dslTaskCapability(options.task);
   const first = compileSegmentV2(options);
-  if (first.ok) return { ...first, repairAttempted: false };
+  if (first.ok) return { ...first, repairRequested: false, repairApplied: false };
 
-  // 未提交尾部 = 已提交前缀冲刷行（1 基，同一过滤行序列）之后的全部行。
-  const rawTailStart = first.committedThroughLine ?? 0;
+  // 归一化：committedThroughLine 是 1 基**绝对**行号（含 lineOffset）。
+  // 尾部切片基于无偏移的 rawLines 下标，重编译的 lineOffset 与修复方收到
+  // 的 startLine 都先归一化回绝对坐标——三处共用同一个换算，offset 绝不
+  // 双计（C5 修复：首个真实调用方接入前钉死）。
+  const lineOffset = options.lineOffset ?? 0;
+  const committedAbsolute = first.committedThroughLine ?? 0;
+  const tailIndex = Math.max(0, committedAbsolute - lineOffset);
   const rawLines = splitV2RawLines(options.text);
-  const tailText = rawLines.slice(rawTailStart).join("\n");
+  const tailText = rawLines.slice(tailIndex).join("\n");
   const instruction = formatV2RepairInstruction(capability, first.diagnostics, options.expectedNonce);
   const repairedTail = await requestRepair(first.diagnostics, {
     text: tailText,
-    startLine: rawTailStart + (options.lineOffset ?? 0) + 1,
+    startLine: tailIndex + lineOffset + 1,
     instruction,
   });
   if (repairedTail === null) {
-    return { ...first, repairAttempted: false };
+    return { ...first, repairRequested: true, repairApplied: false };
   }
 
   const repaired = compileSegmentV2({
     ...options,
     text: repairedTail,
-    lineOffset: rawTailStart + (options.lineOffset ?? 0),
+    lineOffset: tailIndex + lineOffset,
     attempt: "attempt:1",
     // 在已提交前缀的预测状态上继续——前缀不重放、不重复。
     visualState: first.visualState,
@@ -1101,7 +1111,8 @@ export async function compileSegmentV2WithRepair(
     ...repaired,
     groups: [...first.groups, ...repaired.groups],
     assetDiagnostics: [...first.assetDiagnostics, ...repaired.assetDiagnostics],
-    repairAttempted: true,
+    repairRequested: true,
+    repairApplied: true,
   };
 }
 

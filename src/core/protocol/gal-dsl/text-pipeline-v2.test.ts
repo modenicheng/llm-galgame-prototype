@@ -251,7 +251,8 @@ describe("compileSegmentV2WithRepair — 一次未提交尾部修复", () => {
 
     expect(repairCalls).toBe(1);
     expect(result.ok).toBe(true);
-    expect(result.repairAttempted).toBe(true);
+    expect(result.repairRequested).toBe(true);
+    expect(result.repairApplied).toBe(true);
     // 尾部 = 未提交部分（不含已提交前缀第一行）。
     expect(seenTail).not.toContain("第一句");
     expect(seenTail).toContain("look=laugh");
@@ -299,7 +300,8 @@ describe("compileSegmentV2WithRepair — 一次未提交尾部修复", () => {
 
     expect(repairCalls).toBe(1); // 只修一次
     expect(result.ok).toBe(false);
-    expect(result.repairAttempted).toBe(true);
+    expect(result.repairRequested).toBe(true);
+    expect(result.repairApplied).toBe(true);
     expect(result.diagnostics[0]!.code).toBe("UNKNOWN_LOOK");
     // 可播放前缀只有原前缀（修复尾部零提交）——无重复、无半组。
     expect(result.groups).toHaveLength(1);
@@ -311,14 +313,17 @@ describe("compileSegmentV2WithRepair — 一次未提交尾部修复", () => {
     expect(JSON.stringify(committedLabels.labels)).toBe(labelsSnapshot);
   });
 
-  it("修复方放弃（null）：维持首次失败结果，repairAttempted=false", async () => {
+  it("修复方放弃（null）：维持首次失败结果；requested=true 与 applied=false 分开（C5）", async () => {
     const result = await compileSegmentV2WithRepair(makeOptions(), () => Promise.resolve(null));
     expect(result.ok).toBe(false);
-    expect(result.repairAttempted).toBe(false);
+    // 「请求过但被拒绝」≠「从未请求」：两个语义分开，调用方才能可靠地
+    // 实施“一段至多一次修复”。
+    expect(result.repairRequested).toBe(true);
+    expect(result.repairApplied).toBe(false);
     expect(result.diagnostics).toHaveLength(1);
   });
 
-  it("首次即成功：不发起修复", async () => {
+  it("首次即成功：不发起修复（requested=false / applied=false）", async () => {
     let calls = 0;
     const result = await compileSegmentV2WithRepair(
       { ...makeOptions(), text: ["@n 一句旁白。", "@end 81ab buffer"].join("\n") },
@@ -329,7 +334,61 @@ describe("compileSegmentV2WithRepair — 一次未提交尾部修复", () => {
     );
     expect(calls).toBe(0);
     expect(result.ok).toBe(true);
-    expect(result.repairAttempted).toBe(false);
+    expect(result.repairRequested).toBe(false);
+    expect(result.repairApplied).toBe(false);
+  });
+
+  it("lineOffset>0：尾部切片不多跳行，startLine=绝对行，修复编译行号不双计（C5）", async () => {
+    // 前缀 1 行已提交；坏 look 在（无偏移坐标的）第 2 行，lineOffset=10
+    // → 绝对第 12 行。旧实现把含 offset 的 committedThroughLine 同时当
+    // 切片下标与再加一次 offset 的行号基准：切片跳过头、行号双计。
+    const text = [
+      "@say female_A 前缀（已提交）。",
+      "@ch female_A show look=laugh",
+      "@say female_A 修复后台词。",
+      "@end 81ab buffer",
+    ].join("\n");
+    let seenTail = "";
+    let seenStartLine = 0;
+    const result = await compileSegmentV2WithRepair(
+      { ...makeOptions(), text, lineOffset: 10 },
+      (_diagnostics, tail) => {
+        seenTail = tail.text;
+        seenStartLine = tail.startLine;
+        return Promise.resolve(
+          ["@ch female_A show look=smile", "@say female_A 修复后台词。", "@end 81ab buffer"].join("\n"),
+        );
+      },
+    );
+    // 尾部 = 坏行起的未提交部分（不多跳、不含已提交前缀）。
+    expect(seenTail).toContain("look=laugh");
+    expect(seenTail).not.toContain("前缀");
+    expect(seenStartLine).toBe(12); // offset 10 + 无偏移第 2 行
+    expect(result.ok).toBe(true);
+    expect(result.repairRequested).toBe(true);
+    expect(result.repairApplied).toBe(true);
+  });
+
+  it("lineOffset>0 二次失败：诊断按绝对行号报（offset 不双计）", async () => {
+    const text = [
+      "@say female_A 前缀（已提交）。",
+      "@ch female_A show look=laugh",
+      "@say female_A 第二句。",
+      "@end 81ab buffer",
+    ].join("\n");
+    const result = await compileSegmentV2WithRepair(
+      { ...makeOptions(), text, lineOffset: 10 },
+      () =>
+        Promise.resolve(
+          ["@ch female_A show look=laugh", "@say female_A 修复后仍坏。", "@end 81ab buffer"].join("\n"),
+        ),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.repairRequested).toBe(true);
+    expect(result.repairApplied).toBe(true);
+    // 修复尾部的坏 look 行是尾部第 1 行 → 绝对第 12 行（不是 22/23 等双计值）。
+    expect(result.diagnostics[0]!.code).toBe("UNKNOWN_LOOK");
+    expect(result.diagnostics[0]!.line).toBe(12);
   });
 
   it("缺哨兵（截断段）：组已提交，尾部为空，修复只补收束", async () => {
