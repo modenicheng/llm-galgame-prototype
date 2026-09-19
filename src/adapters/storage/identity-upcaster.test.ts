@@ -261,11 +261,16 @@ describe("noLegacyEventMigration / buildSnapshotIdentityEnvelope", () => {
     });
   });
 
-  it("信封由 roster + 名牌构造（浅拷贝，不共享可变引用）", () => {
+  it("信封由 roster + 名牌构造（浅拷贝，不共享可变引用）；协议版本显式注入（fixity 钉）", () => {
     const labels = { female_A: "化名·甲" };
-    const envelope = buildSnapshotIdentityEnvelope(ROSTER, labels);
+    // 终审 protocol-version fixity（campus 84a68ee finding 1 同款）：
+    // dslProtocolVersion 由调用方显式注入（落盘时会话实际版本 1|2），
+    // 不再恒写格式常量——翻旋钮后存档版本字段不失真。
+    const envelope = buildSnapshotIdentityEnvelope(ROSTER, labels, 1);
     expect(envelope.identitySchemaVersion).toBe(SNAPSHOT_IDENTITY_SCHEMA_VERSION);
-    expect(envelope.dslProtocolVersion).toBe(SNAPSHOT_DSL_PROTOCOL_VERSION);
+    expect(envelope.dslProtocolVersion).toBe(1);
+    const envelope2 = buildSnapshotIdentityEnvelope(ROSTER, labels, SNAPSHOT_DSL_PROTOCOL_VERSION);
+    expect(envelope2.dslProtocolVersion).toBe(2);
     expect(envelope.roster.scopeId).toBe("test-world");
     expect(envelope.characterLabels).toEqual({ female_A: "化名·甲" });
     expect(envelope.characterLabels).not.toBe(labels);

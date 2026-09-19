@@ -17,6 +17,7 @@ import {
   SnapshotUpcastError,
   SnapshotVersionGateError,
   upcastSnapshotV3ToV4,
+  SnapshotUpcastContext,
 } from "./snapshot-upcast.js";
 import { StateSnapshotSchema } from "./types.js";
 
@@ -62,7 +63,7 @@ const MAPPING: LegacyIdentityMapping = {
   ],
 };
 
-const CONTEXT = {
+const CONTEXT: SnapshotUpcastContext = {
   roster: ROSTER,
   dslProtocolVersion: 1,
   legacyMapping: MAPPING,

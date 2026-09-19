@@ -273,6 +273,15 @@ main 的持久化是**剧情图快照**（校园是 state.v2.json 信封——�
   `rosterRevision` 引用、`characterLabels`（危险键 preprocess 拒绝）、
   `cast`）。共享 roster blob 按 revision 落盘（`world/rosters/`，
   幂等不覆写）；快照/边只引用 `{scopeId, revision}`，不重复人设。
+  `dslProtocolVersion` 记录**会话实际协议版本**（落盘时 live config
+  生效值，非格式常量；campus 84a68ee 终审 protocol-version fixity 的
+  main 等价面——写入侧由 `game-graph-restore.test.ts` 双向钉死：
+  knob=2/knob=1 会话各写 2/1）。域外值（非 1|2）= 契约损坏，读取拒绝。
+- **跨旋钮恢复诊断**：恢复路径（`startRestoredSegment`）把存档身份块
+  的协议版本与当前配置生效值对照，不一致**响亮 warn**（点名存档/当前
+  两侧版本）；生成路由仍按**当前配置**继续，不按存档版本重路由
+  （跨旋钮续玩如遇协议不匹配由既有修复续写兜底）。v3 旧快照升级的
+  身份块按当前配置落章，对照天然一致、无假漂移噪音。
 - **版本闸门**：v4 直过；**v3 走显式升级适配器**（纯函数
   `src/core/graph/snapshot-upcast.ts`）；**v1/v2 读取即拒**
   （`SnapshotVersionGateError`，不虚称兼容）；未来版本（>4）显式拒绝。

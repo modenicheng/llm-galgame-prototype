@@ -28,6 +28,7 @@ import {
   GeneratorPortFacade,
 } from "./adapters/llm/openai-compatible-generator.js";
 import { RuntimeStatus } from "./runtime/status.js";
+import { BranchManager } from "./runtime/branch-manager.js";
 import { makeTestConfig, makeTestPorts, MemoryController } from "./test-helpers.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { AssetCatalog } from "./core/assets/types.js";
@@ -694,6 +695,81 @@ describe("v2 runtime decode — knob=2 session end-to-end", () => {
     );
     expect(actual).toBe(V1_FIXTURE_JSON);
     expect(harness.calls.filter((call) => call.kind === "repair")).toHaveLength(0);
+  });
+
+  it("终审 finding 6（campus 84a68ee，main 侧同缺陷）：重试臂不吞失败尝试的幽灵改名", async () => {
+    const harness = makeGame(
+      {
+        lines(taskType, nonce) {
+          if (taskType === "branch_prefetch") {
+            // 重试生成一次干净的分支（改名 重试甲名 + 哨兵收束）。
+            return [
+              "@name female_A set 重试甲名",
+              "@say female_A 重试第一句。",
+              "@say female_A 重试第二句。",
+              `@end ${nonce} buffer`,
+            ];
+          }
+          return ["@say female_A 天亮了。", `@end ${nonce} ending`, "@ending TE 尾声"];
+        },
+        repair() {
+          return "";
+        },
+      },
+      v2Config(),
+    );
+
+    // 适配 main：adoptSelectedBranch 在 InteractionDriver（M4.5 拆分），
+    // 不在 Game 上——经私有字段取驱动后直驱重试臂。
+    const game = harness.game as unknown as {
+      interactionDriver: {
+        adoptSelectedBranch: (
+          selected: { id: string; text: string },
+          choice: { type: "choice"; prompt: string; options: Array<{ id: string; text: string }> },
+          turn: number,
+          branchManager: BranchManager,
+          prefetchContext: never[],
+        ) => Promise<{ preview: Array<{ text?: string }> }>;
+      };
+      branchCharacterStates: Map<string, { labels: Record<string, string> }>;
+      branchTailStates: Map<string, unknown>;
+      characterState: { labels: Record<string, string> };
+    };
+    // 场景还原：v2fwd 泵在断流前已把失败尝试的半程预测逐组写进分支副本
+    // （改名 幽灵甲）——玩家从未见过这些事件（候选失败、前缀不播出）。
+    game.branchCharacterStates.set("opt_ghost", { labels: { female_A: "幽灵甲" } });
+    game.branchTailStates.set("opt_ghost", { characters: {} });
+
+    // 重试臂入口：从未 startPrefetch 的 manager 上取回/直播臂都抛错
+    // （"No active prefetch group"）→ adoptSelectedBranch 落入 catch 重试。
+    const preview = await game.interactionDriver.adoptSelectedBranch(
+      { id: "opt_ghost", text: "跟上去" },
+      {
+        type: "choice",
+        prompt: "往哪边走？",
+        options: [
+          { id: "opt_ghost", text: "跟上去" },
+          { id: "opt_other", text: "留在原地" },
+        ],
+      },
+      1,
+      new BranchManager(),
+      [],
+    );
+
+    // 重试请求的身份从主机状态重新播种：幽灵改名不渗入 characterState。
+    const retryRequest = harness.requests.prefetches.at(-1);
+    expect(retryRequest).toBeDefined();
+    expect(retryRequest?.option.id).toBe("opt_ghost");
+    expect(retryRequest?.identity.characterState.labels.female_A).not.toBe("幽灵甲");
+    // 重试组编译同样从主机状态播种：物化事件不带幽灵 displayLabel。
+    expect(preview.preview.some((event) => JSON.stringify(event).includes("幽灵甲"))).toBe(false);
+    // 转正的是重试结果（重试甲名）：主机状态被重试折叠改写，失败尝试
+    // 的幽灵条目已在 catch 顶部丢弃，选择收尾后分支表整体清空
+    // （promote/clear 生命周期；main 无 campus 的 branchStageWarnings 表）。
+    expect(game.characterState.labels.female_A).toBe("重试甲名");
+    expect(game.branchCharacterStates.size).toBe(0);
+    expect(game.branchTailStates.size).toBe(0);
   });
 });
 

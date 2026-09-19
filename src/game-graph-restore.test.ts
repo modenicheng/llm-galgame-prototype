@@ -867,3 +867,197 @@ describe("M3 回溯身份状态隔离（v4 快照身份块）", () => {
 // ---------------------------------------------------------------------------
 // Input preview cancellation
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Ruling 15 / campus 84a68ee finding 1 —— protocol-version fixity（main 的
+// 图快照面）：图快照 v4 的身份块写**会话实际**协议版本（非格式常量），
+// 跨旋钮重启恢复时对照当前配置响亮诊断（路由按当前配置，不按存档重路由）。
+// ---------------------------------------------------------------------------
+
+describe("Ruling 15 终审 fixity — 图快照 v4 携带会话实际协议版本 + 跨旋钮恢复诊断", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(path.join(tmpdir(), "galgame-fixity-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  /** 同一游戏目录上开 store + 协调器；id 工厂跨重启共享（防撞号）。 */
+  function makeGraphFactory(gameId: string) {
+    let n = 0;
+    const newId = (prefix: string) => `${prefix}f${++n}`;
+    return () => {
+      const store = new GameGraphStore(tempDir, gameId);
+      return { store, graph: new RunGraphCoordinator(store, new FakeClock(), newId) };
+    };
+  }
+
+  /** 两段 choice 的生成器：第一段收在 choice，续写段收在 ending。 */
+  function twoStageGenerator() {
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
+        narrationEvent("开场叙事。"),
+        {
+          type: "choice",
+          prompt: "第一次选择：",
+          options: [{ id: "a", text: "救她" }, { id: "b", text: "离开" }],
+        },
+      ]),
+    );
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation", [
+        narrationEvent("第一次选择后的叙事。"),
+        {
+          type: "choice",
+          prompt: "第二次选择：",
+          options: [{ id: "c", text: "追上去" }, { id: "d", text: "留下" }],
+        },
+      ]),
+    );
+    return generator;
+  }
+
+  /** 推进到第二个决策点后「崩溃」在游标上（M1.4 场景形状）。 */
+  async function runToCursor(
+    gameId: string,
+    config: ReturnType<typeof makeGameConfig>,
+  ): Promise<void> {
+    const make = makeGraphFactory(gameId);
+    const { graph } = make();
+    const generator = twoStageGenerator();
+    let opens = 0;
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        opens += 1;
+        if (opens === 1) {
+          const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+          controller.select(output.interactionId, first.id);
+        }
+      },
+    });
+    const game = new Game(
+      config, generator, makeMockStatus(), makeMockMedia(), undefined,
+      { ...makeTestPorts({ graph }), sessionId: `${gameId}-run1` },
+    );
+    controller.attach(game);
+    const run = game.run();
+    await vi.waitFor(() => expect(opens).toBe(2));
+    game.dispatch({ type: "shutdown" });
+    await expect(run).rejects.toThrow("运行时已收到关闭指令");
+  }
+
+  /** 读游标决策节点的快照身份块。 */
+  async function cursorIdentity(
+    store: GameGraphStore,
+  ): Promise<{ dslProtocolVersion: number; rosterScopeId: string }> {
+    const cursor = await store.loadCursor();
+    expect(cursor).not.toBeNull();
+    const raw = await readFile(
+      path.join(store.location, "graph/snapshots", `${cursor!.position}.json`),
+      "utf8",
+    );
+    const snapshot = JSON.parse(raw) as {
+      identity: { dslProtocolVersion: number; rosterScopeId: string };
+    };
+    return snapshot.identity;
+  }
+
+  it("写入侧钉死：knob=2 与 knob=1 会话的快照身份块各写会话实际版本（非格式常量）", async () => {
+    await runToCursor("game_write_v2", makeGameConfig({ dsl: { protocol_version: 2 } }));
+    await runToCursor("game_write_v1", makeGameConfig({ dsl: { protocol_version: 1 } }));
+
+    const v2Identity = await cursorIdentity(new GameGraphStore(tempDir, "game_write_v2"));
+    expect(v2Identity.dslProtocolVersion).toBe(2);
+    const v1Identity = await cursorIdentity(new GameGraphStore(tempDir, "game_write_v1"));
+    expect(v1Identity.dslProtocolVersion).toBe(1);
+    // registry 缺席（窄测试）记 "legacy"——身份块如实记录，不伪造 roster。
+    expect(v1Identity.rosterScopeId).toBe("legacy");
+  });
+
+  it("跨旋钮恢复：v2 存档重启进 knob=1 → 恢复成功 + 漂移诊断点名两侧版本；同旋钮恢复无噪音", async () => {
+    // Game 1：knob=2 推进到游标（快照身份块已带 v2——上一直测钉死）。
+    await runToCursor("game_cross", makeGameConfig({ dsl: { protocol_version: 2 } }));
+
+    // Game 2：同一存档目录，config 显式翻回 v1（Ruling 15 回滚开关）。
+    const make = makeGraphFactory("game_cross");
+    const diagnostics: Array<{ level: string; message: string }> = [];
+    const generator = makeMockGenerator();
+    (generator.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation2", [
+        narrationEvent("恢复后的叙事。"),
+        endEvent("end_cross_knob", "恢复了。"),
+      ]),
+    );
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        controller.select(output.interactionId, first.id);
+      },
+    });
+    const game2 = new Game(
+      makeGameConfig({ dsl: { protocol_version: 1 } }), generator, makeMockStatus(),
+      makeMockMedia(), undefined,
+      {
+        ...makeTestPorts({
+          graph: make().graph,
+          diagnostics: {
+            info: (_scope, message) => diagnostics.push({ level: "info", message }),
+            warn: (_scope, message) => diagnostics.push({ level: "warn", message }),
+          },
+        }),
+        sessionId: "game_cross-run2",
+      },
+    );
+    controller.attach(game2);
+    await expect(game2.run()).resolves.toBeUndefined();
+
+    // 恢复成功并推进到自然结局；生成路由按当前配置（v1 续写走冻结路径）。
+    expect(controller.ended()).toBe(true);
+    const drift = diagnostics.find((entry) => entry.message.includes("DSL 协议版本漂移"));
+    expect(drift).toBeDefined();
+    expect(drift?.level).toBe("warn");
+    expect(drift?.message).toContain("v2");
+    expect(drift?.message).toContain("v1");
+    expect(drift?.message).toContain("当前配置");
+
+    // 对照组：同旋钮（v2 → v2）干净恢复不产生漂移诊断（无噪音）。
+    await runToCursor("game_clean", makeGameConfig({ dsl: { protocol_version: 2 } }));
+    const cleanMake = makeGraphFactory("game_clean");
+    const cleanDiagnostics: Array<{ level: string; message: string }> = [];
+    const cleanGen = makeMockGenerator();
+    (cleanGen.generateContinuation as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("continuation3", [
+        narrationEvent("同旋钮恢复后的叙事。"),
+        endEvent("end_clean", "同旋钮收束。"),
+      ]),
+    );
+    const cleanController = new MemoryController({
+      onInteractionOpened: (output) => {
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        cleanController.select(output.interactionId, first.id);
+      },
+    });
+    const game3 = new Game(
+      makeGameConfig({ dsl: { protocol_version: 2 } }), cleanGen, makeMockStatus(),
+      makeMockMedia(), undefined,
+      {
+        ...makeTestPorts({
+          graph: cleanMake().graph,
+          diagnostics: {
+            info: (_scope, message) => cleanDiagnostics.push({ level: "info", message }),
+            warn: (_scope, message) => cleanDiagnostics.push({ level: "warn", message }),
+          },
+        }),
+        sessionId: "game_clean-run2",
+      },
+    );
+    cleanController.attach(game3);
+    await expect(game3.run()).resolves.toBeUndefined();
+    expect(cleanController.ended()).toBe(true);
+    expect(cleanDiagnostics.some((entry) => entry.message.includes("DSL 协议版本漂移"))).toBe(false);
+  });
+});

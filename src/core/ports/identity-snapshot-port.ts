@@ -21,11 +21,21 @@ import type { LegacyIdentityMapping } from "../characters/legacy-identity.js";
 export const SNAPSHOT_IDENTITY_SCHEMA_VERSION = 2;
 
 /**
- * 快照随存的 DSL 协议版本上界（C7 wire 协议 v2）。注意：main 的会话协议
- * 版本由 config `dsl.protocol_version` 决定（1|2），快照记录的是**写入时**
- * 的值；读取端允许旧值并按当前协议继续（漂移只报告）。
+ * 快照随存的 DSL 协议版本（C7 wire 协议 v2 的格式当前值参照）。
+ * 注意：信封/身份块的 `dslProtocolVersion` 字段记录的是**会话实际协议
+ * 版本**（落盘时 live config `dsl.protocol_version` 的生效值，类型
+ * `SnapshotDslProtocolVersion`），不再恒写本常量——跨旋钮重启恢复时
+ * 存档版本可对照当前配置诊断漂移（campus 84a68ee 终审 finding 1 同款
+ * fixity，main 的等价物是图快照 v4 的 SnapshotIdentityState）。
  */
 export const SNAPSHOT_DSL_PROTOCOL_VERSION = 2;
+
+/**
+ * 身份块 `dslProtocolVersion` 字段的类型：DSL 协议旋钮（config
+ * `dsl.protocol_version`）的当前取值域。该字段记录**会话实际协议版本**
+ * （落盘时 live config 的生效值），不是格式常量。
+ */
+export type SnapshotDslProtocolVersion = 1 | 2;
 
 /**
  * 可恢复的 roster 定义/内容快照：快照落盘时随存完整 `CharacterDefinition`
@@ -57,7 +67,13 @@ export function rosterSnapshotOf(roster: CharacterRoster): SnapshotRosterSnapsho
  */
 export interface SnapshotIdentityEnvelope {
   identitySchemaVersion: typeof SNAPSHOT_IDENTITY_SCHEMA_VERSION;
-  dslProtocolVersion: number;
+  /**
+   * 落盘时该会话实际的 DSL 协议版本（config `dsl.protocol_version` 的
+   * 生效值，`1 | 2`）。v3 旧图快照升级没有存档版本——升级身份块按当前
+   * 配置版本落章并在迁移报告注明。恢复时与当前配置对照：不一致 → Game
+   * 恢复路径响亮诊断（路由仍按当前配置，不按存档版本重路由）。
+   */
+  dslProtocolVersion: SnapshotDslProtocolVersion;
   roster: SnapshotRosterSnapshot;
   /** 角色 ID → 当前名牌（v3 旧快照升级后为空——旧格式没有名牌状态）。 */
   characterLabels: Readonly<Record<CharacterId, string>>;
@@ -114,12 +130,14 @@ export interface SessionMigrationReport {
  * M3 图存储侧身份上下文（宿主装配一次，store 与协调器共用）：
  * - `roster`：共享不可变 roster blob 的写入源 + v3→v4 升级的解析权威
  *   （legacy 兼容世界缺省 undefined——无 roster 即无 blob，也不做升级）；
- * - `dslProtocolVersion`：升级目标身份块的协议版本（当前 config 值）；
+ * - `dslProtocolVersion`：升级目标身份块的协议版本（当前 config 值；
+ *   v3 旧快照没有存档版本，按当前会话配置落章——与校园 F3/84a68ee 对
+ *   v1 旧快照的决策一致，恢复对照天然一致、不产生假漂移诊断）；
  * - `legacyMapping`：旧 scriptName/visualState 键 → 稳定 ID 的显式登记，
  *   scopeId 必须与 roster 一致（upcaster 强校验，杜绝跨世界同名兜底）。
  */
 export interface GraphIdentityContext {
   roster: () => CharacterRoster | undefined;
-  dslProtocolVersion: () => number;
+  dslProtocolVersion: () => SnapshotDslProtocolVersion;
   legacyMapping?: LegacyIdentityMapping;
 }

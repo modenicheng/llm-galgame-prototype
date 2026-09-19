@@ -147,6 +147,15 @@ export async function adoptSelectedBranch(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     host.status.setJob("selected-branch-retry", "已选分支重试", "running");
+    // 终审（campus 84a68ee finding 6，main 侧同缺陷）：v2fwd 后预取泵
+    // 逐组即时落表（branchCharacterStates/branchTailStates），失败分支
+    // 的半程预测（改名/舞台折叠）已经写进分支副本。这些事件玩家从未
+    // 见过（候选失败，前缀不播出、不 append）——预测副本随失败尝试
+    // 一并丢弃（与未选/取消同生命周期），重试从主状态重新播种：既不
+    // 让幽灵改名渗进重试请求的 characterState（generationIdentity 读
+    // 同表），也不渗进重试组编译的 displayLabel 快照。
+    host.branchTailStates.delete(selected.id);
+    host.branchCharacterStates.delete(selected.id);
     const retryBrief = host.makeBriefing(turn + 1);
     const handle = host.generator.generateBranchPrefetch({
       identity: host.generationIdentity(selected.id),
@@ -165,10 +174,10 @@ export async function adoptSelectedBranch(
       groups,
       host.tailVisualState,
       turn,
-      // 重试路径（port 自 campus a1b7aac）：预取失败时分支副本尚未落表
-      //（泵在失败前不写表），从主状态重新播种；折叠结果回表，随统一的
-      // promote/clear 生命周期。
-      host.branchCharacterStates.get(selected.id) ?? host.characterState,
+      // 重试路径（port 自 campus a1b7aac + 84a68ee 修复）：失败尝试的
+      // 预测副本已在 catch 顶部丢弃（其事件不播出，预测不转正）——从
+      // 主状态重新播种；折叠结果回表，随统一的 promote/clear 生命周期。
+      host.characterState,
     );
     host.branchTailStates.set(selected.id, result.tailState);
     host.branchCharacterStates.set(selected.id, result.tailLabels);
