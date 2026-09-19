@@ -8,6 +8,7 @@ import type { MonitorModel } from "./monitor-model.js";
 import { el } from "../ui/dom.js";
 
 const KIND_LABELS: Record<string, string> = {
+  memory_agent: "记忆提取",
   recap: "前情压缩",
   consolidation: "记忆整理",
   plot_plan: "剧情规划",

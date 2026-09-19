@@ -28,6 +28,7 @@ import { RuntimeStatus } from "../status.js";
 import { MonitorHub } from "../application/monitor/monitor-hub.js";
 import type { DslStreamObserver } from "../core/ports/dsl-stream-observer.js";
 import {
+  instrumentMemoryAgent,
   instrumentMemoryConsolidator,
   instrumentPlotPlanner,
   instrumentRecapSummarizer,
@@ -392,22 +393,25 @@ export async function createRuntimeApplication(
     // 提交事件提取人物状态 / canon / 线程推进，merge-only 写入 StoryState。
     // 仅 event 模式装配（长线模式由 NarrativeDirector 负责）；失败在
     // Game 内隔离，只跳过本批。模型参数可经 agents.memory 独立覆盖
-    // （换模型 / max 推理强度 / 独立密钥）。
+    // （换模型 / max 推理强度 / 独立密钥）。生命周期上报监控「异步上下文」。
     const memoryAgent =
       config.narrative.mode === "event"
-        ? new MemoryAgentAdapter({
-            apiKey: agentApiKey(config.api, config.agents?.memory, apiKey),
-            api: resolveAgentApi(config.api, config.agents?.memory),
-            ...(config.agents?.memory?.thinking !== undefined
-              ? { thinking: config.agents.memory.thinking }
-              : {}),
-            ...(config.agents?.memory?.max_tokens !== undefined
-              ? { maxTokens: config.agents.memory.max_tokens }
-              : {}),
-            diagnostics,
-            metrics,
-            ...(recorder !== null ? { contextRecorder: recorder } : {}),
-          })
+        ? instrumentMemoryAgent(
+            new MemoryAgentAdapter({
+              apiKey: agentApiKey(config.api, config.agents?.memory, apiKey),
+              api: resolveAgentApi(config.api, config.agents?.memory),
+              ...(config.agents?.memory?.thinking !== undefined
+                ? { thinking: config.agents.memory.thinking }
+                : {}),
+              ...(config.agents?.memory?.max_tokens !== undefined
+                ? { maxTokens: config.agents.memory.max_tokens }
+                : {}),
+              diagnostics,
+              metrics,
+              ...(recorder !== null ? { contextRecorder: recorder } : {}),
+            }),
+            monitor,
+          )
         : undefined;
 
     return new Game(config, new GeneratorPortFacade(generator), status, planner, metrics, {

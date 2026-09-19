@@ -5,7 +5,7 @@
  * Collects three event streams and one polled frame:
  * - writer LLM: taps StoryGenerator via DslStreamObserver (raw deltas,
  *   per-line parse results, committed groups, attempt outcomes);
- * - background context LLMs: recap / consolidation / plot-plan tasks,
+ * - background context LLMs: memory-agent / recap / longform tasks,
  *   instrumented at the port boundary (lifecycle + final output — these
  *   calls do not stream);
  * - diagnostics: every DiagnosticSink info/warn fan-out;
@@ -412,7 +412,7 @@ export class MonitorHub {
   };
 
   // -------------------------------------------------------------------------
-  // Background context LLM tasks (recap / consolidation / plot planner)
+  // Background context LLM tasks (memory agent / recap / longform)
   // -------------------------------------------------------------------------
 
   contextStart(kind: MonitorContextTaskKind, detail: string): string {

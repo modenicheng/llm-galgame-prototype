@@ -7,6 +7,9 @@
  * inner port's contract exactly: same resolution values, same rejections.
  */
 import type { RecapSummarizerPort } from "../../core/ports/recap-summarizer-port.js";
+import type {
+  SessionMemoryAgentPort,
+} from "../../core/ports/session-memory-agent-port.js";
 import type { StoredEvent } from "../../schema.js";
 import type { MemoryConsolidatorPort } from "../narrative/memory-consolidator.js";
 import type { PlotPlannerPort } from "../narrative/plot-planner.js";
@@ -114,6 +117,39 @@ export function instrumentPlotPlanner(
               2,
             ),
           });
+          return proposal;
+        },
+        (error: unknown) => {
+          monitor.contextEnd(id, { state: "failed", error: errorMessage(error) });
+          throw error;
+        },
+      );
+    },
+  };
+}
+
+/**
+ * Event 模式记忆代理（每轮末尾的状态提取）——异步面板上最高频的后台
+ * LLM。端口契约：null = 本批无可提取内容或提取失败（解析跳过的原文
+ * 摘录走 diagnostics → 「日志」tab），装饰器只如实标注不做二次推断。
+ */
+export function instrumentMemoryAgent(
+  inner: SessionMemoryAgentPort,
+  monitor: MonitorHub,
+): SessionMemoryAgentPort {
+  return {
+    derive: (events, state) => {
+      // 与适配器的首道短路一致：空批次不会发请求，不留面板噪声。
+      if (events.length === 0) return inner.derive(events, state);
+      const id = monitor.contextStart("memory_agent", eventRangeDetail(events));
+      return inner.derive(events, state).then(
+        (proposal) => {
+          monitor.contextEnd(
+            id,
+            proposal !== null
+              ? { state: "done", output: JSON.stringify(proposal, null, 2) }
+              : { state: "done", output: "（本批无产出：无增量或提取失败，详见日志）" },
+          );
           return proposal;
         },
         (error: unknown) => {

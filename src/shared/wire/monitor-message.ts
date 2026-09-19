@@ -115,10 +115,14 @@ export interface MonitorWriterTaskWithText extends Omit<MonitorWriterTask, "atte
 }
 
 // ---------------------------------------------------------------------------
-// Background context-management LLM tasks (recap / consolidation / planner)
+// Background context-management LLM tasks (memory agent / recap / longform)
 // ---------------------------------------------------------------------------
 
-export type MonitorContextTaskKind = "recap" | "consolidation" | "plot_plan";
+export type MonitorContextTaskKind =
+  | "memory_agent"
+  | "recap"
+  | "consolidation"
+  | "plot_plan";
 export type MonitorContextTaskState = "running" | "done" | "fallback" | "failed";
 
 export interface MonitorContextTask {
