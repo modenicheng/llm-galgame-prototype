@@ -85,8 +85,14 @@ const characterLabelsRecord = z.preprocess(
 export const SnapshotIdentityStateSchema = z.object({
   /** 身份契约版本（identity-snapshot-port；与校园 F3 对齐）。 */
   identitySchemaVersion: z.literal(SNAPSHOT_IDENTITY_SCHEMA_VERSION),
-  /** 写入时的 DSL 协议版本（C7 wire；读取端允许旧值，漂移只报告）。 */
-  dslProtocolVersion: z.number().int().min(1),
+  /**
+   * 写入时的会话实际 DSL 协议版本（C7 wire；campus 84a68ee 终审
+   * protocol-version fixity：记录落盘时 live config 生效值，非格式常量）。
+   * 只接受 1|2（域外值 = 契约损坏，拒绝解析——不改写存档会话的协议版本）；
+   * 跨旋钮漂移由 Game 恢复路径对照当前配置响亮诊断（路由按当前配置，
+   * 不按存档重路由）。
+   */
+  dslProtocolVersion: z.union([z.literal(1), z.literal(2)]),
   /** roster 作用域引用（内容包/世界 id；legacy 兼容会话为 "legacy"）。 */
   rosterScopeId: z.string().min(1),
   /** roster revision 引用（blob 文件名/身份契约指纹）。 */

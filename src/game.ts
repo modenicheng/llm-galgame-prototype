@@ -566,6 +566,22 @@ export class Game implements InteractionHost {
     });
     this.branchCharacterStates.clear();
     this.branchTailStates.clear();
+    // 终审 protocol-version fixity（campus 84a68ee finding 1 的 main 等价
+    // 面）：存档会话的 DSL 协议版本与当前配置不一致时**响亮诊断**（点名
+    // 两侧版本）——生成路由仍按当前配置继续（不按存档版本重路由；跨旋钮
+    // 续玩如遇协议不匹配由既有修复续写兜底）。v3 旧图快照升级的身份块按
+    // 当前配置落章，恢复对照天然一致、不触发本诊断（无假漂移噪音）。
+    const snapshotProtocolVersion = entry.identity.dslProtocolVersion;
+    const currentVersion = this.effectiveDslProtocolVersion();
+    if (snapshotProtocolVersion !== currentVersion) {
+      this.diagnostics.warn(
+        "Storage",
+        `DSL 协议版本漂移：存档会话为 v${snapshotProtocolVersion}，当前配置为 v${currentVersion}——` +
+          "生成路由按当前配置继续（不按存档版本重路由）；该存档当年按 v" +
+          `${snapshotProtocolVersion} 协议生成，跨旋钮续玩如遇协议不匹配走修复续写兜底，` +
+          "如需存档原语义请把 dsl.protocol_version 调回存档版本",
+      );
+    }
     // M3：迁移报告（仅在旧数据有异常发现时携带）→ 诊断通道透出，可数可诊断。
     if (restore.migration !== undefined) {
       const eventReport = restore.migration.events;
@@ -1735,6 +1751,8 @@ export class Game implements InteractionHost {
    * M3：快照身份块。registry 缺席（窄测试/legacy 兼容世界）时 scope/revision
    * 显式记 "legacy"（与 legacyGenerationIdentity 同一标记），labels/cast
    * 取该会话的实际值——快照永远如实记录「这局用什么身份契约在演」。
+   * dslProtocolVersion 写会话实际版本（config 生效值，非格式常量——
+   * campus 84a68ee 终审 protocol-version fixity 的 main 等价物）。
    */
   private momentIdentity(): SnapshotIdentityState {
     const registry = this.characterRegistry;
@@ -1748,7 +1766,7 @@ export class Game implements InteractionHost {
       const ids = this.registry.entries().map((entry) => entry.characterId);
       return {
         identitySchemaVersion: SNAPSHOT_IDENTITY_SCHEMA_VERSION,
-        dslProtocolVersion: this.config.dsl?.protocol_version ?? 1,
+        dslProtocolVersion: this.effectiveDslProtocolVersion(),
         rosterScopeId: "legacy",
         rosterRevision: "legacy",
         characterLabels: labels,
@@ -1758,7 +1776,7 @@ export class Game implements InteractionHost {
     const cast = this.rosterDefaultCast(registry);
     return {
       identitySchemaVersion: SNAPSHOT_IDENTITY_SCHEMA_VERSION,
-      dslProtocolVersion: this.config.dsl?.protocol_version ?? 1,
+      dslProtocolVersion: this.effectiveDslProtocolVersion(),
       rosterScopeId: registry.roster.scopeId,
       rosterRevision: registry.roster.revision,
       characterLabels: labels,
@@ -1899,15 +1917,26 @@ export class Game implements InteractionHost {
         ? this.branchCharacterStates.get(branchOptionId)
         : undefined;
     return {
-      // 生产 config 必经 loadConfig（zod 缺省 2，Ruling 15）；直连构造
-      // 且缺 dsl 块的对象（窄测试）兜底 1，不改它们的会话语义。
-      protocolVersion: this.config.dsl?.protocol_version ?? 1,
+      // 会话生效协议版本（loadConfig zod 缺省 2；直连窄测试 ?? 1 兜底）：
+      // 与快照身份块、恢复漂移诊断同源（effectiveDslProtocolVersion）。
+      protocolVersion: this.effectiveDslProtocolVersion(),
       rosterRevision: registry.roster.revision,
       // 场景参与者 = 本局 roster 全体（含电话/画外角色；不从立绘推导）。
       // 场景计划接入（后续波次）后改由场景计划给出。
       cast: this.rosterDefaultCast(registry),
       characterState: cloneCharacterRuntimeState(base ?? this.characterState),
     };
+  }
+
+  /**
+   * 本会话生效的 DSL 协议版本（生成身份、快照身份块、恢复漂移诊断的
+   * 同一真源，campus 84a68ee effectiveDslProtocolVersion 同款）：生产
+   * config 必经 loadConfig（zod 缺省 2，Ruling 15）；直连构造且缺 dsl
+   * 块的对象（窄测试）兜底 1，不改它们的会话语义。
+   */
+  /** @internal 交互驱动接缝（M4.5）。 */
+  effectiveDslProtocolVersion(): 1 | 2 {
+    return this.config.dsl?.protocol_version ?? 1;
   }
 
   /** 选中分支的预测名牌副本转正（未选/取消分支的副本随 clear 丢弃）。 */

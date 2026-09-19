@@ -36,11 +36,11 @@ import { createLegacyIdentityResolver } from "../../core/characters/legacy-ident
 import type {
   EventMigrationDiagnostics,
   LegacyEventUpcastCategory,
+  SnapshotDslProtocolVersion,
   SnapshotIdentityEnvelope,
   SnapshotRosterSnapshot,
 } from "../../core/ports/identity-snapshot-port.js";
 import {
-  SNAPSHOT_DSL_PROTOCOL_VERSION,
   SNAPSHOT_IDENTITY_SCHEMA_VERSION,
 } from "../../core/ports/identity-snapshot-port.js";
 import type { StoredEvent } from "../../schema.js";
@@ -269,10 +269,18 @@ export function legacyEventContentSummary(events: readonly StoredEvent[]): strin
 // 信封构造
 // ---------------------------------------------------------------------------
 
-/** 由当前 roster 快照 + 名牌状态构造新格式身份信封（纯函数，浅拷贝）。 */
+/**
+ * 由当前 roster 快照 + 名牌状态构造新格式身份信封（纯函数，浅拷贝）。
+ * `dslProtocolVersion` 必须显式给出（campus 84a68ee 终审 protocol-version
+ * fixity：信封记录**会话实际协议版本**，调用方注入落盘时 live config 的
+ * 生效值——不恒写格式常量，杜绝「翻旋钮后存档版本字段失真」）。main 的
+ * 图快照路径不走本函数（SnapshotIdentityState 由 Game 的 momentIdentity
+ * 直接写会话实际版本）；本函数保留两分支可移植的信封形状构造。
+ */
 export function buildSnapshotIdentityEnvelope(
   roster: SnapshotRosterSnapshot,
   characterLabels: Readonly<Record<CharacterId, string>>,
+  dslProtocolVersion: SnapshotDslProtocolVersion,
 ): SnapshotIdentityEnvelope {
   const labels: Record<CharacterId, string> = {};
   for (const key of Object.keys(characterLabels)) {
@@ -282,7 +290,7 @@ export function buildSnapshotIdentityEnvelope(
   }
   return {
     identitySchemaVersion: SNAPSHOT_IDENTITY_SCHEMA_VERSION,
-    dslProtocolVersion: SNAPSHOT_DSL_PROTOCOL_VERSION,
+    dslProtocolVersion,
     roster,
     characterLabels: labels,
   };

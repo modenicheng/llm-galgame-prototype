@@ -18,7 +18,10 @@ import { z } from "zod";
 import type { CharacterId } from "../characters/types.js";
 import type { LegacyIdentityMapping } from "../characters/legacy-identity.js";
 import { createLegacyIdentityResolver } from "../characters/legacy-identity.js";
-import type { SnapshotRosterSnapshot } from "../ports/identity-snapshot-port.js";
+import type {
+  SnapshotDslProtocolVersion,
+  SnapshotRosterSnapshot,
+} from "../ports/identity-snapshot-port.js";
 import { SNAPSHOT_IDENTITY_SCHEMA_VERSION } from "../ports/identity-snapshot-port.js";
 import { MemoryDigestSchema } from "./types.js";
 import { SNAPSHOT_VERSION } from "./types.js";
@@ -88,8 +91,11 @@ const V3StateSnapshotSchema = z.object({
 export interface SnapshotUpcastContext {
   /** 当前作用域 roster 快照（升级目标身份块 + 键解析权威）。 */
   roster: SnapshotRosterSnapshot;
-  /** 当前 DSL 协议版本（升级目标身份块的 dslProtocolVersion）。 */
-  dslProtocolVersion: number;
+  /**
+   * 升级目标身份块的 DSL 协议版本 = 当前会话配置生效值（1|2）。v3 旧
+   * 快照没有存档版本记录，按当前配置落章（campus 84a68ee 决策一致）。
+   */
+  dslProtocolVersion: SnapshotDslProtocolVersion;
   /** 显式登记的旧身份映射（scopeId 必须与 roster 一致）。 */
   legacyMapping?: LegacyIdentityMapping;
 }
@@ -100,7 +106,7 @@ export interface SnapshotUpcastContext {
  */
 export function buildSnapshotIdentityState(input: {
   roster: SnapshotRosterSnapshot;
-  dslProtocolVersion: number;
+  dslProtocolVersion: SnapshotDslProtocolVersion;
   characterLabels?: Record<CharacterId, string>;
 }): SnapshotIdentityState {
   return {

@@ -569,7 +569,7 @@ describe("RunGraphCoordinator confluence (M2.2)", () => {
     const { coordinator, store, judge } = harness;
     try {
       await coordinator.startRootRun();
-      const proto1 = { dslProtocolVersion: 1, rosterRevision: "rev-b" };
+      const proto1 = { dslProtocolVersion: 1 as const, rosterRevision: "rev-b" };
       await coordinator.openDecision({ modelSceneId: SCENE_A, form: makeForm(), moment: makeMoment("state-P1", SCENE_A, { identity: proto1 }) });
       await coordinator.beginEdge({ kind: "option", text: "A" });
       await coordinator.appendEdgeEvents([makeStoredEvent(4)]);
@@ -581,7 +581,7 @@ describe("RunGraphCoordinator confluence (M2.2)", () => {
       const { coordinator: c2 } = await harness.reopen();
       const resume = await c2.restoreOrCreateRun({ restart: true });
       if (resume.kind !== "fresh") throw new Error(`expected fresh, got ${resume.kind}`);
-      const proto2 = { dslProtocolVersion: 2, rosterRevision: "rev-b" };
+      const proto2 = { dslProtocolVersion: 2 as const, rosterRevision: "rev-b" };
       await c2.openDecision({ modelSceneId: SCENE_A, form: makeForm(), moment: makeMoment("state-P1-run2", SCENE_A, { identity: proto2 }) });
       await c2.beginEdge({ kind: "option", text: "A" });
       await c2.appendEdgeEvents([makeStoredEvent(6)]);
