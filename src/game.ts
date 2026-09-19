@@ -3755,10 +3755,10 @@ export class Game {
   }
 
   private async saveCurrentStateSnapshot(): Promise<void> {
-    // 在飞的记忆提取落定后再写快照：state 与水位成对入盘。
-    if (this.memoryInFlight !== null) {
-      await this.memoryInFlight;
-    }
+    // 注意：这里不得 await memoryInFlight。apply 与水位推进在提取循环里
+    // 是同一段同步代码，任意时刻快照的 (state, watermark) 必然成对一致；
+    // 而在飞提取是 5~40s 的 LLM 调用，等它会阻塞 run loop 在每次交互
+    // 提交后的推进（成对收尾只在 flush() 关停路径等）。
     await this.store.saveSnapshot({
       state: this.storyState,
       visualState: this.renderedVisualState,

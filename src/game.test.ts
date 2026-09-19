@@ -16,6 +16,7 @@ import {
   makeTestPorts,
   MemoryController,
 } from "./test-helpers.js";
+import { DEFAULT_NARRATIVE_CONFIG } from "./config.js";
 import { NodeJsonlSessionStore } from "./adapters/storage/node-jsonl-session-store.js";
 import { SessionIdGenerator } from "./adapters/platform/session-id-generator.js";
 import type { StoryGeneratorPort } from "./core/ports/story-generator-port.js";
@@ -1365,6 +1366,80 @@ describe("JSONL store initialization", () => {
     expect(controller.ended()).toBe(true);
     expect(controller.count("interaction_opened")).toBe(1);
     expect(generator.generateContinuation).toHaveBeenCalledTimes(2);
+  });
+
+  it("event 模式：交互提交后的推进不被在飞记忆提取阻塞（快照不等 memoryInFlight）", async () => {
+    // 2026-09-19 真机排查（会话 2026-09-19T09-48-34-806Z）：saveCurrentStateSnapshot
+    // 曾 await memoryInFlight，玩家提交选择后要等 5~40s 的记忆 LLM 链整条
+    // 排空才播下一行，即使分支预取早已就绪。提取循环里 apply(state) 与
+    // watermark 推进是同段同步代码，任意时刻快照的 (state, watermark)
+    // 必然成对一致——快照无需等待（成对收尾只在 flush() 关停路径等）。
+    const sessionsDir = path.join(tempDir, "sessions-mem-block");
+    const config = makeGameConfig({
+      game: { sessions_dir: sessionsDir },
+      narrative: { ...DEFAULT_NARRATIVE_CONFIG, mode: "event" },
+    });
+    const status = makeMockStatus();
+    const media = makeMockMedia();
+
+    const generator = makeMockGenerator();
+    (generator.generateOpening as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("opening", [
+        narrationEvent("开场旁白。"),
+        {
+          type: "choice",
+          prompt: "怎么选？",
+          options: [
+            { id: "a", text: "选项A" },
+            { id: "b", text: "选项B" },
+          ],
+        },
+      ]),
+    );
+    (generator.generateBranchPrefetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      handleFromDrafts("branch", [narrationEvent("分支内容。")]),
+    );
+    // 续写 #1 以 buffer 收尾（真机会话同款形态）：run loop 迭代末尾会走
+    // saveCurrentStateSnapshot——正是被记忆提取阻塞的位置。#2 才收结局。
+    (generator.generateContinuation as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("选择后续写。")]),
+      )
+      .mockImplementationOnce(() =>
+        handleFromDrafts("continuation", [narrationEvent("结局前一句。"), endEvent("end_1", "Fin.")]),
+      );
+
+    // 记忆代理：derive 永远挂起，模拟 thinking max 的长 LLM 调用。
+    let deriveCalls = 0;
+    const gate = Promise.withResolvers<null>();
+    const memoryAgent = {
+      derive: () => {
+        deriveCalls += 1;
+        return gate.promise;
+      },
+    };
+
+    const game = new Game(config, generator, status, media, undefined, {
+      ...makeTestPorts(),
+      memoryAgent,
+    });
+    const controller = new MemoryController({
+      onInteractionOpened: (output) => {
+        const first = (output.interaction as { options?: Array<{ id: string }> }).options?.[0]!;
+        controller.select(output.interactionId, first.id);
+      },
+    });
+    controller.attach(game);
+    // 记忆提取全程挂起，整局必须照常演完：修复前 run loop 卡在交互提交
+    // 后的快照等待上，run() 永不返回（测试超时失败）。
+    await expect(game.run()).resolves.toBeUndefined();
+    expect(controller.ended()).toBe(true);
+    // 开场 + 分支 + 选择后续写 + 结局前一句 = 4 段旁白。
+    expect(controller.countPlayback("narration")).toBe(4);
+    expect(controller.count("interaction_opened")).toBe(1);
+    expect(deriveCalls).toBeGreaterThanOrEqual(1);
+    // 释放挂起的提取，让后台队列在测试收尾前排空（避免悬挂 promise）。
+    gate.resolve(null);
   });
 });
 
