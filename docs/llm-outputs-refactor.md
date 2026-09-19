@@ -12,6 +12,17 @@
 > §1–§2（JSONL 时代基线与差异，该协议已于 2026-08-09 全量移除）、§84–§85（旧会话兼容与旧目录树）、
 > §88–§97（迁移顺序，均已落地）、§108–§109（迁移纪律与第一阶段闭环，已完成）、
 > §114–§118（实施日志 → changelog.md）、附录 A（实施状态 → status.md）。
+>
+> **v1 legacy 冻结（2026-09-19，V1）**：本文描述的 DSL 台词行头语法
+> （`<角色名>[<外观>|<位置>](<名牌>): <正文>`，含 §5–§19 全部示例）是
+> **v1 legacy 协议**——解析器已冻结（`src/core/protocol/gal-dsl/legacy-line-parser.ts`），
+> 只服务显式 protocolVersion 1 的请求/存档，不再演进。现行规范见
+> `docs/character-identity-and-dsl-v2.md`（v2 `@say/@n/@name/@ch` 语法、
+> 身份真源链、图快照 v4、发布旋钮 `dsl.protocol_version`，当前默认 1）。
+> 另：§58 示例中的 `resources.yaml` `characters:` 段已移除（角色绑定在
+> 根目录 `characters.yaml`/canon，携带旧段即显式报错）；不带 `@` 的裸词
+> 指令已完全废弃（命中即 `RETIRED_ALIAS`）。本文正文按历史原样保留，
+> 不再随现行协议更新。
 
 ## 0. 文档目的
 
