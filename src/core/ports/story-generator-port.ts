@@ -13,7 +13,10 @@ import type {
   InteractionEvent,
   StoryContextEvent,
 } from "../../schema.js";
-import type { EventGroupDraft } from "../protocol/gal-dsl/types.js";
+import type {
+  AnyStreamedGroup,
+  EventGroupDraft,
+} from "../protocol/gal-dsl/types.js";
 import type { GenerationEnvelope, StoryState } from "../../story/types.js";
 import type { VisualState } from "../presentation/types.js";
 import type { CastContext, CharacterRuntimeState } from "../characters/types.js";
@@ -121,8 +124,11 @@ export interface InputBridgeRequest {
 export interface GenerationHandle {
   /** Stable identifier of this generation task. */
   id: string;
-  /** Committed DSL event groups as they arrive (docs §36). */
-  events: AsyncIterable<EventGroupDraft>;
+  /**
+   * Committed DSL event groups as they arrive (docs §36). v1 会话为
+   * EventGroupDraft；v2 会话为 CompiledEventGroupV2（AnyStreamedGroup）。
+   */
+  events: AsyncIterable<AnyStreamedGroup>;
   /** Resolves with the full envelope; rejects when the task fails/aborts. */
   done: Promise<GenerationEnvelope>;
   /** Ask the provider to stop producing further events. */
@@ -140,7 +146,7 @@ export interface StoryGeneratorPort {
 /** Shape of the underlying promise-based provider a handle wraps. */
 export type GenerationRunner = (
   signal: AbortSignal,
-  onGroup: (group: EventGroupDraft) => void,
+  onGroup: (group: AnyStreamedGroup) => void,
 ) => Promise<GenerationEnvelope>;
 
 /**
@@ -153,7 +159,7 @@ export function createGenerationHandle(
   run: GenerationRunner,
 ): GenerationHandle {
   const controller = new AbortController();
-  const queue = new AsyncEventQueue<EventGroupDraft>();
+  const queue = new AsyncEventQueue<AnyStreamedGroup>();
 
   const done = run(controller.signal, (group) => queue.push(group)).finally(() =>
     queue.close(),
