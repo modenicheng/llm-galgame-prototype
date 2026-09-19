@@ -288,34 +288,40 @@ export class InteractionDriver {
       this.host.branchCharacterStates.delete(selected.id);
       const message = error instanceof Error ? error.message : String(error);
       this.host.status.setJob("selected-branch-retry", "已选分支重试", "running");
-      const retryBrief = this.host.makeBriefing(turn + 1);
-      const handle = this.host.generator.generateBranchPrefetch({
-        identity: this.host.generationIdentity(selected.id),
-        turn: turn + 1,
-        state: this.host.storyState,
-        history: prefetchContext,
-        choice,
-        option: selected,
-        ...(retryBrief !== undefined && retryBrief !== "" ? { briefing: retryBrief } : {}),
-        tailVisualState: this.host.tailVisualState,
-      });
-      await handle.done;
-      const groups: AnyStreamedGroup[] = [];
-      for await (const group of handle.events) groups.push(group);
-      const result = this.host.materializeDslGroups(
-        groups,
-        this.host.tailVisualState,
-        turn,
-        // 重试路径（port 自 campus a1b7aac + 84a68ee 修复）：失败尝试的
-        // 预测副本已在 catch 顶部丢弃（其事件不播出，预测不转正）——从
-        // 主状态重新播种；折叠结果回表，随统一的 promote/clear 生命周期。
-        this.host.characterState,
-      );
-      this.host.branchTailStates.set(selected.id, result.tailState);
-      this.host.branchCharacterStates.set(selected.id, result.tailLabels);
-      preview = result.events;
-      this.host.media.registerCandidate(selected.id, preview);
-      this.host.status.removeJob("selected-branch-retry");
+      try {
+        const retryBrief = this.host.makeBriefing(turn + 1);
+        const handle = this.host.generator.generateBranchPrefetch({
+          identity: this.host.generationIdentity(selected.id),
+          turn: turn + 1,
+          state: this.host.storyState,
+          history: prefetchContext,
+          choice,
+          option: selected,
+          ...(retryBrief !== undefined && retryBrief !== "" ? { briefing: retryBrief } : {}),
+          tailVisualState: this.host.tailVisualState,
+        });
+        await handle.done;
+        const groups: AnyStreamedGroup[] = [];
+        for await (const group of handle.events) groups.push(group);
+        const result = this.host.materializeDslGroups(
+          groups,
+          this.host.tailVisualState,
+          turn,
+          // 重试路径（port 自 campus a1b7aac + 84a68ee 修复）：失败尝试的
+          // 预测副本已在 catch 顶部丢弃（其事件不播出，预测不转正）——从
+          // 主状态重新播种；折叠结果回表，随统一的 promote/clear 生命周期。
+          this.host.characterState,
+        );
+        this.host.branchTailStates.set(selected.id, result.tailState);
+        this.host.branchCharacterStates.set(selected.id, result.tailLabels);
+        preview = result.events;
+        this.host.media.registerCandidate(selected.id, preview);
+      } finally {
+        // 重试本身也可能失败（异常上抛）——状态任务必须随之解除（port
+        // 自 campus 84a68ee：成功路径之外的 removeJob 会让重试双重失败时
+        // 状态视图悬挂 running 任务）。
+        this.host.status.removeJob("selected-branch-retry");
+      }
     }
 
     // The selected branch's tail visual state becomes the new predictive

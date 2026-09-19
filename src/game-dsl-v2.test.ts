@@ -771,6 +771,79 @@ describe("v2 runtime decode — knob=2 session end-to-end", () => {
     expect(game.branchCharacterStates.size).toBe(0);
     expect(game.branchTailStates.size).toBe(0);
   });
+
+  it("终审 finding 1（campus a1b7aac 的 try/finally，main 侧复核）：重试生成自身失败——selected-branch-retry 任务随异常解除", async () => {
+    const harness = makeGame(
+      {
+        lines(taskType) {
+          if (taskType === "branch_prefetch") {
+            // 重试生成在 API 层直接失败：client.create 拒绝 →
+            // attemptDslStreamV2 原样上抛 → handle.done 拒绝（重试臂
+            // await handle.done 处炸开——终审场景：重试双重失败）。
+            throw new Error("API 599 重试生成失败");
+          }
+          return ["@say female_A 天亮了。"];
+        },
+        repair() {
+          return "";
+        },
+      },
+      v2Config(),
+    );
+
+    // 与 finding 6 同入口：经私有字段直驱重试臂。
+    const game = harness.game as unknown as {
+      interactionDriver: {
+        adoptSelectedBranch: (
+          selected: { id: string; text: string },
+          choice: { type: "choice"; prompt: string; options: Array<{ id: string; text: string }> },
+          turn: number,
+          branchManager: BranchManager,
+          prefetchContext: never[],
+        ) => Promise<{ preview: Array<{ text?: string }> }>;
+      };
+      branchCharacterStates: Map<string, { labels: Record<string, string> }>;
+      branchTailStates: Map<string, unknown>;
+    };
+    game.branchCharacterStates.set("opt_retry", { labels: { female_A: "幽灵甲" } });
+    game.branchTailStates.set("opt_retry", { characters: {} });
+
+    // 观测任务生命周期：setJob(running) 必须发生过（证明确实进了重试臂，
+    // 断言不空转），且拒绝落定后任务不在状态视图里。
+    const observedStates: Array<string | undefined> = [];
+    harness.game.status.subscribe((snapshot) => {
+      observedStates.push(snapshot.jobs["selected-branch-retry"]?.state);
+    });
+
+    // 从未 startPrefetch 的 manager：取回/直播臂抛错 → 落入 catch 重试臂，
+    // 重试生成又失败 → adoptSelectedBranch 以原始错误上抛。
+    await expect(
+      game.interactionDriver.adoptSelectedBranch(
+        { id: "opt_retry", text: "跟上去" },
+        {
+          type: "choice",
+          prompt: "往哪边走？",
+          options: [
+            { id: "opt_retry", text: "跟上去" },
+            { id: "opt_other", text: "留在原地" },
+          ],
+        },
+        1,
+        new BranchManager(),
+        [],
+      ),
+    ).rejects.toThrow("重试生成失败");
+
+    // 重试请求确实发出（区别于取回臂自身的错误）。
+    expect(harness.requests.prefetches.at(-1)?.option.id).toBe("opt_retry");
+    // setJob 在 try 前执行：running 状态被观测到。
+    expect(observedStates).toContain("running");
+    // 终审断言：重试双重失败后，状态任务必须随 finally 解除——
+    // 不得在状态视图悬挂 running（去掉 try/finally 即红）。
+    expect(
+      "selected-branch-retry" in harness.game.status.snapshot().jobs,
+    ).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

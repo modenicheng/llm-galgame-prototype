@@ -475,4 +475,3 @@ describe("WorldGenerator — 派生人物卡（M1）", () => {
     expect(loaded.bundle.characters).toContain("控制：玩家");
   });
 });
-
