@@ -1338,8 +1338,24 @@ describe("DSL v2 mode generation", () => {
     })();
 
     // 组 1 在流仍暂停（组 2 未闭合、哨兵未到、段未结束）时已到达消费者。
-    while (arrived.length < 1) {
+    // Deadline：逐组转发若被回归破坏，这里按断言失败退出，不无限自旋
+    // 挂死整个测试运行（fail by assertion, not hang；campus 9de9bc4）。
+    const spinDeadline = Date.now() + 5_000;
+    while (arrived.length < 1 && Date.now() < spinDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    if (arrived.length < 1) {
+      // 放行暂停的流并限时收尾（失败路径不再等它推进），随后断言失败。
+      releaseStream();
+      await Promise.race([
+        Promise.all([handle.done, consumer]),
+        new Promise((resolve) => setTimeout(resolve, 1_000)),
+      ]);
+      expect(
+        arrived.length,
+        "stream-as-you-play parity regression: group 1 never arrived while the stream was paused (5s deadline)",
+      ).toBeGreaterThanOrEqual(1);
+      return;
     }
     expect(paused).toBe(true);
     expect(arrived).toHaveLength(1);
