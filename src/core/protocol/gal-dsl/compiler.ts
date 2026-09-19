@@ -895,6 +895,46 @@ function walkV2Lines(
   return { ok: true, lines, lineNumbers };
 }
 
+/**
+ * 批式 compileSegmentV2 与流式 createV2SegmentGate 共用的诊断构造单源
+ * （campus 9de9bc4 review hardening 的 main 移植）：两入口的修复指令
+ * 必须逐字同文，等价性测试钉 message 相等。诊断的 task/attempt 出处由
+ * 各入口的 failure() 统一补齐，这里只产出任务无关部分。
+ */
+type TaskScopedDiagnostic = Omit<DslDiagnosticV2, "task" | "attempt">;
+
+/** §4.3 第 4 步：指令不在任务能力卡内（legalValues = 能力卡命令表）。 */
+function commandNotAllowedDiagnostic(
+  command: string,
+  task: BaseDslTaskType,
+  capability: DslTaskCapability,
+  line: number,
+): TaskScopedDiagnostic {
+  return {
+    code: "COMMAND_NOT_ALLOWED_FOR_TASK",
+    message: `指令 ${command} 不属于 ${task} 任务允许的命令集。`,
+    line,
+    legalValues: capability.commands as readonly string[],
+  };
+}
+
+/**
+ * 哨兵缺失（finish 判定 incomplete）。行号公式两入口同一：
+ * 已提交组数 + 1 + lineOffset（批式 flushLines.length ≡ 门式 groups.length）。
+ */
+function sentinelMissingDiagnostic(
+  expectedNonce: string,
+  capability: DslTaskCapability,
+  committedGroups: number,
+  lineOffset: number,
+): TaskScopedDiagnostic {
+  return {
+    code: "SENTINEL_MISSING",
+    message: `本段缺少结束哨兵 @end ${expectedNonce} ${capability.endReasons.join("|")}（输出可能在末尾被截断或漏写）。`,
+    line: committedGroups + 1 + lineOffset,
+  };
+}
+
 /** 单遍段级编译（无修复轮；修复编排见 compileSegmentV2WithRepair）。 */
 export function compileSegmentV2(options: CompileSegmentV2Options): CompileSegmentV2Result {
   const capability = dslTaskCapability(options.task);
@@ -931,12 +971,7 @@ export function compileSegmentV2(options: CompileSegmentV2Options): CompileSegme
     const command = commandOfDslLineV2(line);
     if (!capabilityAllowsCommand(capability, command)) {
       return failure(
-        {
-          code: "COMMAND_NOT_ALLOWED_FOR_TASK",
-          message: `指令 ${command} 不属于 ${options.task} 任务允许的命令集。`,
-          line: walk.lineNumbers[i]!,
-          legalValues: capability.commands as readonly string[],
-        },
+        commandNotAllowedDiagnostic(command, options.task, capability, walk.lineNumbers[i]!),
         { failureLine: walk.lineNumbers[i]! },
       );
     }
@@ -1009,11 +1044,7 @@ export function compileSegmentV2(options: CompileSegmentV2Options): CompileSegme
 
   if (parsed.status.kind !== "complete") {
     return failure(
-      {
-        code: "SENTINEL_MISSING",
-        message: `本段缺少结束哨兵 @end ${options.expectedNonce} ${capability.endReasons.join("|")}（输出可能在末尾被截断或漏写）。`,
-        line: flushLines.length + 1 + lineOffset,
-      },
+      sentinelMissingDiagnostic(options.expectedNonce, capability, flushLines.length, lineOffset),
       {
         groups,
         visualState: visual,
@@ -1257,15 +1288,10 @@ export function createV2SegmentGate(options: V2SegmentGateOptions): V2SegmentGat
       });
     }
 
-    // 任务能力校验（能力卡单源；与批式同码同文同合法值表）。
+    // 任务能力校验（能力卡单源；与批式共用 commandNotAllowedDiagnostic）。
     const command = commandOfDslLineV2(parsed);
     if (!capabilityAllowsCommand(capability, command)) {
-      return failure({
-        code: "COMMAND_NOT_ALLOWED_FOR_TASK",
-        message: `指令 ${command} 不属于 ${options.task} 任务允许的命令集。`,
-        line: lineNo,
-        legalValues: capability.commands as readonly string[],
-      });
+      return failure(commandNotAllowedDiagnostic(command, options.task, capability, lineNo));
     }
 
     let emitted: EventGroupDraftV2[];
@@ -1330,14 +1356,13 @@ export function createV2SegmentGate(options: V2SegmentGateOptions): V2SegmentGat
     if (finished !== undefined) return finished;
     const status = parser.finish().status;
     if (status.kind !== "complete") {
-      // 行号公式与批式一致（已提交组数 + 1 + lineOffset）。
+      // 行号公式与批式一致（已提交组数 + 1 + lineOffset，共用
+      // sentinelMissingDiagnostic 单源）。
       sealed = true;
       finished = {
         ok: false,
         diagnostic: {
-          code: "SENTINEL_MISSING",
-          message: `本段缺少结束哨兵 @end ${options.expectedNonce} ${capability.endReasons.join("|")}（输出可能在末尾被截断或漏写）。`,
-          line: groups.length + 1 + lineOffset,
+          ...sentinelMissingDiagnostic(options.expectedNonce, capability, groups.length, lineOffset),
           task: options.task,
           attempt,
         },

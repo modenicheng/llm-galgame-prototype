@@ -736,8 +736,13 @@ describe("createV2SegmentGate — 增量提交与批式入口等价（ok 路径�
     expect(JSON.stringify(gate.characterState)).toBe(JSON.stringify(batch.characterState));
     expect(JSON.stringify(gate.assetDiagnostics)).toBe(JSON.stringify(batch.assetDiagnostics));
     expect(finished.status).toEqual(batch.status);
-    // 组源戳与批式同约定（attemptId=attempt、lineIndex=0 基绝对行号）。
-    expect(commits[0]!.group.source).toEqual(batch.groups[0]!.source);
+    // 组源戳与批式同约定（attemptId=attempt、lineIndex=0 基绝对行号），
+    // 且每个提交（不只第 1 个）都带源戳。
+    for (let i = 0; i < commits.length; i += 1) {
+      expect(commits[i]!.group.source, `commit[${i}] source`).toEqual(
+        batch.groups[i]!.source,
+      );
+    }
   });
 
   it("组一闭合即提交：舞台行不提交，主事件行冲刷前奏成组（含提交后状态）", () => {
@@ -822,9 +827,11 @@ describe("createV2SegmentGate — 首个失败即停（修复边界 = 已提交�
   });
 
   it("能力违规按首次遭遇浮出：input_bridge 喂 @say → COMMAND_NOT_ALLOWED_FOR_TASK", () => {
-    const gate = createV2SegmentGate(
-      segmentOptions({ task: "input_bridge", cast: { allowedSpeakerIds: [], sceneParticipantIds: [] } }),
-    );
+    const taskOptions = {
+      task: "input_bridge" as const,
+      cast: { allowedSpeakerIds: [], sceneParticipantIds: [] },
+    };
+    const gate = createV2SegmentGate(segmentOptions(taskOptions));
     expect(gate.pushLine("@n 过渡。").ok).toBe(true);
     const fed = gate.pushLine("@say female_A 台词");
     expect(fed.ok).toBe(false);
@@ -832,6 +839,15 @@ describe("createV2SegmentGate — 首个失败即停（修复边界 = 已提交�
     expect(fed.diagnostic.code).toBe("COMMAND_NOT_ALLOWED_FOR_TASK");
     expect(fed.diagnostic.line).toBe(2);
     expect(fed.diagnostic.legalValues).toContain("@n");
+    // message 与批式逐字相等（共用 commandNotAllowedDiagnostic 单源——
+    // 修复指令是同一句话，等价性由测试钉死）。
+    const batch = compileSegmentV2({
+      ...segmentOptions(taskOptions),
+      text: "@n 过渡。\n@say female_A 台词",
+    });
+    expect(batch.ok).toBe(false);
+    expect(fed.diagnostic.message).toBe(batch.diagnostics[0]!.message);
+    expect(fed.diagnostic.legalValues).toEqual(batch.diagnostics[0]!.legalValues);
     expect(gate.committedThroughLine).toBe(1);
   });
 
@@ -847,16 +863,22 @@ describe("createV2SegmentGate — 首个失败即停（修复边界 = 已提交�
   });
 
   it("finish() 缺哨兵 → SENTINEL_MISSING（已提交组保持，边界不动）", () => {
+    const text = ["@n 一句。", "@say female_A 二句。", "@se door_slam"].join("\n");
     const gate = createV2SegmentGate(segmentOptions());
-    for (const line of ["@n 一句。", "@say female_A 二句。", "@se door_slam"]) {
+    for (const line of text.split("\n")) {
       expect(gate.pushLine(line).ok).toBe(true);
     }
     const finished = gate.finish();
     expect(finished.ok).toBe(false);
     if (finished.ok) return;
     expect(finished.diagnostic.code).toBe("SENTINEL_MISSING");
-    // 行号公式与批式一致（已提交组数 + 1 + lineOffset）。
+    // 行号公式与批式一致（已提交组数 + 1 + lineOffset）；message 与批式
+    // 逐字相等（共用 sentinelMissingDiagnostic 单源）。
     expect(finished.diagnostic.line).toBe(3);
+    const batch = compileSegmentV2({ ...segmentOptions(), text });
+    expect(batch.ok).toBe(false);
+    expect(finished.diagnostic.message).toBe(batch.diagnostics[0]!.message);
+    expect(finished.diagnostic.line).toBe(batch.diagnostics[0]!.line);
     expect(gate.committedThroughLine).toBe(2);
     expect(gate.committedGroups).toHaveLength(2);
     // finish 幂等：重复调用返回同一判定。
