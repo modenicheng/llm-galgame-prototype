@@ -4,6 +4,8 @@
 不经云端、不需要任何 TTS API key。语音管线的其余部分（预取、缓存、播放、
 跳行取消）与 DashScope 模式完全一致；云端音色的创建与绑定见
 [TTS-音色配置指南](agents/TTS-音色配置指南.md)。
+接入消费视角（OAI 协议客户端/第三方服务对接本服务，或本仓库接入另一个
+OAI 协议服务）见 [tts-server-integration.md](tts-server-integration.md)。
 
 引擎实现与本仓库的关系：
 
