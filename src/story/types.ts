@@ -32,7 +32,7 @@ import {
   CharacterLabelSchema,
 } from "../core/characters/types.js";
 import type {
-  EventGroupDraft,
+  AnyStreamedGroup,
   SegmentEndStatus,
 } from "../core/protocol/gal-dsl/types.js";
 
@@ -146,8 +146,12 @@ export type GeneratedEvent =
 export interface GenerationEnvelope {
   /** Ordered narrative events for this segment. */
   events: GeneratedEvent[];
-  /** DSL mode: fully committed groups, in order (docs §36). */
-  groups?: EventGroupDraft[];
+  /**
+   * DSL mode: fully committed groups, in order (docs §36). v1 会话是
+   * EventGroupDraft（解析级草稿）；v2 会话是 CompiledEventGroupV2
+   * （compileSegmentV2 语义编译后的组，见 AnyStreamedGroup）。
+   */
+  groups?: AnyStreamedGroup[];
   /** DSL mode: segment end status (docs §44–§51). */
   segmentEnd?: SegmentEndStatus;
 }

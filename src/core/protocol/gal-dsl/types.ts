@@ -244,6 +244,23 @@ export interface EventGroupDraftV2 {
 
 export type AnyEventGroupDraft = EventGroupDraft | EventGroupDraftV2;
 
+/**
+ * 流式组缝（main-v2-adapter v2 接线，port 自 campus a1b7aac）：生成器
+ * handle/信封携带的组——v1 会话是冻结的解析级草稿（EventGroupDraft，
+ * Game 侧 compileEventGroup 编译），v2 会话是 compileSegmentV2 语义编译
+ * 后的已提交组（CompiledEventGroupV2，Game 侧只应用：cue 归约 + labelOps
+ * 折叠 + displayLabel 快照）。
+ *
+ * 判别式契约（campus v2decode review Minor 钉死）：运行时判别 =
+ * `"labelOps" in group`——`labelOps` 是 CompiledEventGroupV2 的专属必填
+ * 字段，EventGroupDraft 及其 prelude/main 形状**永远不得**新增同名成员；
+ * 同理 CompiledMainEventV2 的对白变体只携带 `displayLabel`（不携带 v1
+ * 草稿对白的 `speaker`）。不加显式版本 tag 的原因：会破坏全部存量
+ * EventGroupDraft 字面量（v1 冻结面）。新增会与判别式冲突的字段时，
+ * 必须同步改为显式 tag 并全量迁移。
+ */
+export type AnyStreamedGroup = EventGroupDraft | CompiledEventGroupV2;
+
 // ---------------------------------------------------------------------------
 // Segment end sentinel (docs §44–§51)
 // ---------------------------------------------------------------------------

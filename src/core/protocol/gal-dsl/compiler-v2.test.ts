@@ -25,6 +25,7 @@ import type { VisualState } from "../../presentation/types.js";
 import {
   compileEventGroupV2,
   compileSegmentV2,
+  createV2SegmentGate,
 } from "./compiler.js";
 import type { EventGroupDraftV2 } from "./types.js";
 
@@ -687,5 +688,223 @@ describe("compileEventGroupV2 — 单组入口", () => {
     expect(result.ok).toBe(false);
     expect(JSON.stringify(inputLabels.labels)).toBe("{}");
     expect(input.characters).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createV2SegmentGate — 增量式段门（Ruling 16：per-group gated forwarding）
+//
+// 与 compileSegmentV2 同一内部件（parseDslV2Line / DslSegmentParserV2 /
+// compileEventGroupV2），差别只在喂入粒度：逐行喂入、组一闭合即编译提交。
+// 语义差异（有意，Ruling 16 授权）：错误按**首次遭遇顺序**浮出——批式入口
+// 先全段 walk + 能力巡检再分组编译，流式入口逐行推进；首个失败即停，已提交
+// 组（含其预测状态）就是修复边界。
+// ---------------------------------------------------------------------------
+
+describe("createV2SegmentGate — 增量提交与批式入口等价（ok 路径）", () => {
+  const TEXT = [
+    "@n 走廊的灯亮着。",
+    "@bg basement",
+    "@say female_A 你来了。",
+    "@name female_A set 神秘学姐",
+    "@say female_A 跟我来。",
+    "@se door_slam",
+    "@say female_A 快一点。",
+    "@end 81ab ending",
+  ].join("\n");
+
+  it("逐行喂入与 compileSegmentV2 产出逐字段一致（组/状态/边界/软诊断/哨兵）", () => {
+    const options = segmentOptions();
+    const batch = compileSegmentV2({ ...options, text: TEXT });
+    expect(batch.ok).toBe(true);
+
+    const gate = createV2SegmentGate(options);
+    const commits = [];
+    for (const line of TEXT.split("\n")) {
+      const fed = gate.pushLine(line);
+      if (!fed.ok) throw new Error(`parity feed failed unexpectedly: ${fed.diagnostic.code}`);
+      commits.push(...fed.commits);
+    }
+    const finished = gate.finish();
+    expect(finished.ok).toBe(true);
+    if (!finished.ok) return;
+
+    expect(commits).toHaveLength(batch.groups.length);
+    expect(JSON.stringify(commits.map((c) => c.group))).toBe(JSON.stringify(batch.groups));
+    expect(gate.committedThroughLine).toBe(batch.committedThroughLine);
+    expect(JSON.stringify(gate.visualState)).toBe(JSON.stringify(batch.visualState));
+    expect(JSON.stringify(gate.characterState)).toBe(JSON.stringify(batch.characterState));
+    expect(JSON.stringify(gate.assetDiagnostics)).toBe(JSON.stringify(batch.assetDiagnostics));
+    expect(finished.status).toEqual(batch.status);
+    // 组源戳与批式同约定（attemptId=attempt、lineIndex=0 基绝对行号）。
+    expect(commits[0]!.group.source).toEqual(batch.groups[0]!.source);
+  });
+
+  it("组一闭合即提交：舞台行不提交，主事件行冲刷前奏成组（含提交后状态）", () => {
+    const gate = createV2SegmentGate(segmentOptions());
+    const first = gate.pushLine("@n 走廊的灯亮着。");
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.commits).toHaveLength(1);
+    expect(first.commits[0]!.group.main).toEqual({ type: "narration", text: "走廊的灯亮着。" });
+    expect(first.commits[0]!.committedThroughLine).toBe(1);
+    expect(gate.committedThroughLine).toBe(1);
+
+    const pending = gate.pushLine("@bg basement");
+    expect(pending.ok).toBe(true);
+    if (!pending.ok) return;
+    expect(pending.commits).toHaveLength(0);
+
+    const second = gate.pushLine("@say female_A 你来了。");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.commits).toHaveLength(1);
+    expect(second.commits[0]!.group.prelude).toEqual([
+      { type: "background", assetId: "basement" },
+    ]);
+    expect(second.commits[0]!.committedThroughLine).toBe(3);
+    // 提交携带该组提交后的预测状态（下一组从此继续）。@say 画外对白合法：
+    // 不自动登台——female_A 仍不在舞台上（§4.2）。
+    expect(second.commits[0]!.visualState.characters["female_A"]).toBeUndefined();
+    expect(second.commits[0]!.visualState.background).toBe("basement");
+    expect(gate.committedThroughLine).toBe(3);
+  });
+
+  it("预测状态隔离：输入 visualState/characterState 永不被原地污染", () => {
+    const visual = createInitialVisualState();
+    const labels = createCharacterRuntimeState();
+    const visualSnapshot = JSON.stringify(visual);
+    const labelsSnapshot = JSON.stringify(labels.labels);
+    const gate = createV2SegmentGate(
+      segmentOptions({ visualState: visual, characterState: labels }),
+    );
+    for (const line of ["@n 一句。", "@name female_A set 夜巡者", "@say female_A 二句。", "@end 81ab buffer"]) {
+      expect(gate.pushLine(line).ok).toBe(true);
+    }
+    expect(JSON.stringify(visual)).toBe(visualSnapshot);
+    expect(JSON.stringify(labels.labels)).toBe(labelsSnapshot);
+    expect(gate.characterState.labels["female_A"]).toBe("夜巡者");
+  });
+});
+
+describe("createV2SegmentGate — 首个失败即停（修复边界 = 已提交前缀）", () => {
+  it("中段语义失败：前缀组保持提交，诊断与批式同码同行；门封口", () => {
+    const text = [
+      "@say female_A 第一句（先提交）。",
+      "@ch female_A show look=laugh",
+      "@name female_A set 夜巡者",
+      "@say female_A 第二句（不该提交）。",
+      "@end 81ab buffer",
+    ].join("\n");
+    const batch = compileSegmentV2({ ...segmentOptions(), text: text });
+    expect(batch.ok).toBe(false);
+    expect(batch.diagnostics[0]!.code).toBe("UNKNOWN_LOOK");
+
+    const gate = createV2SegmentGate(segmentOptions());
+    const lines = text.split("\n");
+    let failure = null;
+    for (const line of lines) {
+      const fed = gate.pushLine(line);
+      if (!fed.ok) {
+        failure = fed.diagnostic;
+        break;
+      }
+    }
+    expect(failure).not.toBeNull();
+    // 诊断与批式逐字段一致（码/行号/任务/attempt）。
+    expect(failure).toEqual(batch.diagnostics[0]);
+    // 修复边界 = 已提交前缀（第 1 行冲刷的组）；坏组任何产物不落地。
+    expect(gate.committedThroughLine).toBe(1);
+    expect(gate.committedGroups).toHaveLength(1);
+    expect(gate.characterState.labels["female_A"]).toBeUndefined();
+    // 失败后门封口：继续喂入是编程错误。
+    expect(() => gate.pushLine("@end 81ab buffer")).toThrow(/already failed|已失败/);
+  });
+
+  it("能力违规按首次遭遇浮出：input_bridge 喂 @say → COMMAND_NOT_ALLOWED_FOR_TASK", () => {
+    const gate = createV2SegmentGate(
+      segmentOptions({ task: "input_bridge", cast: { allowedSpeakerIds: [], sceneParticipantIds: [] } }),
+    );
+    expect(gate.pushLine("@n 过渡。").ok).toBe(true);
+    const fed = gate.pushLine("@say female_A 台词");
+    expect(fed.ok).toBe(false);
+    if (fed.ok) return;
+    expect(fed.diagnostic.code).toBe("COMMAND_NOT_ALLOWED_FOR_TASK");
+    expect(fed.diagnostic.line).toBe(2);
+    expect(fed.diagnostic.legalValues).toContain("@n");
+    expect(gate.committedThroughLine).toBe(1);
+  });
+
+  it("结构性坏行（v1 语法）→ 解析诊断；行号为绝对 1 基", () => {
+    const gate = createV2SegmentGate(segmentOptions());
+    expect(gate.pushLine("@n 一句。").ok).toBe(true);
+    const fed = gate.pushLine("许晚晴: 你不该来这里。");
+    expect(fed.ok).toBe(false);
+    if (fed.ok) return;
+    expect(fed.diagnostic.code).toBe("UNKNOWN_COMMAND");
+    expect(fed.diagnostic.line).toBe(2);
+    expect(fed.diagnostic.task).toBe("continuation");
+  });
+
+  it("finish() 缺哨兵 → SENTINEL_MISSING（已提交组保持，边界不动）", () => {
+    const gate = createV2SegmentGate(segmentOptions());
+    for (const line of ["@n 一句。", "@say female_A 二句。", "@se door_slam"]) {
+      expect(gate.pushLine(line).ok).toBe(true);
+    }
+    const finished = gate.finish();
+    expect(finished.ok).toBe(false);
+    if (finished.ok) return;
+    expect(finished.diagnostic.code).toBe("SENTINEL_MISSING");
+    // 行号公式与批式一致（已提交组数 + 1 + lineOffset）。
+    expect(finished.diagnostic.line).toBe(3);
+    expect(gate.committedThroughLine).toBe(2);
+    expect(gate.committedGroups).toHaveLength(2);
+    // finish 幂等：重复调用返回同一判定。
+    expect(gate.finish().ok).toBe(false);
+  });
+});
+
+describe("createV2SegmentGate — 修复轮续接（lineOffset + 已提交前缀状态）", () => {
+  it("pushText 去围栏切行；诊断行号换算到绝对坐标（offset 不双计）", () => {
+    const gate = createV2SegmentGate(segmentOptions());
+    for (const line of ["@say female_A 第一句。", "@ch female_A show look=laugh"]) {
+      expect(gate.pushLine(line).ok).toBe(true);
+    }
+    const failed = gate.pushLine("@say female_A 第二句。");
+    expect(failed.ok).toBe(false);
+
+    // 修复轮：从已提交前缀的预测状态继续（boundary=1），带围栏的补写文本。
+    const repairGate = createV2SegmentGate(
+      segmentOptions({
+        visualState: gate.visualState,
+        characterState: gate.characterState,
+        lineOffset: gate.committedThroughLine,
+        attempt: "attempt:1",
+      }),
+    );
+    const repaired = repairGate.pushText(
+      ["```", "@ch female_A show look=smile", "@say female_A 修复后的台词。", "@end 81ab buffer", "```"].join("\n"),
+    );
+    expect(repaired.ok).toBe(true);
+    if (!repaired.ok) return;
+    expect(repaired.commits).toHaveLength(1);
+    // 修复轮组源行号 = 绝对坐标（boundary 1 + 组内第 2 行 → lineIndex 2）。
+    expect(repaired.commits[0]!.group.source).toMatchObject({ attemptId: "attempt:1", lineIndex: 2 });
+    const finished = repairGate.finish();
+    expect(finished.ok).toBe(true);
+    if (!finished.ok) return;
+    expect(finished.status).toEqual({ kind: "complete", nonce: "81ab", reason: "buffer" });
+  });
+
+  it("修复轮再失败：返回诊断，已提交的修复轮前缀仍可读取", () => {
+    const repairGate = createV2SegmentGate(segmentOptions({ lineOffset: 1, attempt: "attempt:1" }));
+    expect(repairGate.pushLine("@n 修复轮第一句。").ok).toBe(true);
+    const failed = repairGate.pushLine("@say nobody 台词");
+    expect(failed.ok).toBe(false);
+    if (failed.ok) return;
+    expect(failed.diagnostic.code).toBe("UNKNOWN_CHARACTER_ID");
+    expect(failed.diagnostic.line).toBe(3); // 绝对：offset 1 + 修复轮第 2 行
+    expect(failed.diagnostic.attempt).toBe("attempt:1");
+    expect(repairGate.committedThroughLine).toBe(2); // 绝对：offset 1 + 第 1 行
   });
 });

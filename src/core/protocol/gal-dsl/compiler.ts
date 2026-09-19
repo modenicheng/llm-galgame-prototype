@@ -1130,3 +1130,242 @@ export function compileDslSegmentTextV2(
     assetDiagnostics: result.assetDiagnostics,
   };
 }
+
+// ---------------------------------------------------------------------------
+// 增量式段门（Ruling 16：per-group gated forwarding）
+//
+// 与 compileSegmentV2 共用同一批内部件（parseDslV2Line / DslSegmentParserV2 /
+// compileEventGroupV2 / 能力卡单源），差别只在喂入粒度：逐行喂入、组一闭合
+// 即编译提交——调用方（生成器 v2 路径）据此把每个组在它自己通过校验的瞬间
+// 转发给运行时，恢复 v1 的边流边播延迟，同时保住 C4 的组级原子性与
+// 「已提交组永不重写」的修复边界语义。compileSegmentV2 的批式契约不变
+// （C4 测试继续钉批式入口）；两者在 ok 路径上逐字段等价（见
+// compiler-v2.test.ts 等价性测试）。
+//
+// 与批式入口的唯一有意语义差（Ruling 16 授权）：错误按**首次遭遇顺序**浮出
+// ——批式先全段 walk + 全段能力巡检再分组编译；本门逐行推进，首个失败即封
+// 口。因此中段结构/能力错误不再重置提交边界为 0：已提交（可能已转发播出）
+// 的前缀就是修复边界，尾部修复只重写它之后的原文。
+// ---------------------------------------------------------------------------
+
+/** 段门选项 = 段级编译选项去掉整段文本。 */
+export type V2SegmentGateOptions = Omit<CompileSegmentV2Options, "text">;
+
+/** 一次组提交：编译组 + 提交边界 + 提交后预测状态 + 本组软诊断。 */
+export interface V2GateCommit {
+  group: CompiledEventGroupV2;
+  /** 1 基绝对行号：冲刷（闭合）本组的规范行 = 本提交之后的已提交边界。 */
+  committedThroughLine: number;
+  /** 本组提交后的预测状态（新对象，与门内状态同源）。 */
+  visualState: VisualState;
+  characterState: CharacterRuntimeState;
+  /** 本组编译期软诊断（未知素材/冗余 cue）；失败组的软诊断随组丢弃（原子性）。 */
+  assetDiagnostics: AssetDiagnostic[];
+}
+
+/** 一次喂入的结果：本轮新提交的组，或首个失败的结构化诊断（门随即封口）。 */
+export type V2GateFeed =
+  | { ok: true; commits: V2GateCommit[] }
+  | { ok: false; diagnostic: DslDiagnosticV2 };
+
+/** finish() 的判定：哨兵完整 → 状态；否则 SENTINEL_MISSING（已提交组保持）。 */
+export type V2GateFinish =
+  | { ok: true; status: SegmentEndStatus }
+  | { ok: false; diagnostic: DslDiagnosticV2 };
+
+export interface V2SegmentGate {
+  /**
+   * 喂入一行规范文本（trim 后、非空、非围栏——与 splitV2RawLines 同规则）。
+   * 组一闭合（主事件行到达）即编译提交，提交随返回值即时可见。任何失败
+   * （解析/能力/哨兵状态机/组语义）都让门封口：之后的 pushLine 是编程错误。
+   */
+  pushLine(raw: string): V2GateFeed;
+  /** 喂入一段文本（去围栏、切行后逐行喂入）；首个失败即停并原样返回。 */
+  pushText(text: string): V2GateFeed;
+  /**
+   * 哨兵收束检查（幂等）：complete → 状态原样奉还；incomplete →
+   * SENTINEL_MISSING 诊断（已提交组与边界保持不动，作为修复轮的续接点）。
+   */
+  finish(): V2GateFinish;
+  /** 已提交组（提交顺序；封口后不再增长）。 */
+  readonly committedGroups: readonly CompiledEventGroupV2[];
+  /** 最后一个已提交组的冲刷行（1 基绝对）；无提交时 0。修复尾部 = 此行之后。 */
+  readonly committedThroughLine: number;
+  /** 当前预测状态（最后一次成功提交之后；无提交 = 输入状态的克隆）。 */
+  readonly visualState: VisualState;
+  readonly characterState: CharacterRuntimeState;
+  /** 全部已提交组的软诊断（按提交顺序拼接）。 */
+  readonly assetDiagnostics: readonly AssetDiagnostic[];
+}
+
+/**
+ * 创建增量式 v2 段门。行号坐标：诊断与 committedThroughLine 都是含
+ * lineOffset 的 1 基绝对行号；组源戳 lineIndex 是 0 基绝对行号——与
+ * compileSegmentV2 同约定（见 CompileSegmentV2Result.committedThroughLine）。
+ */
+export function createV2SegmentGate(options: V2SegmentGateOptions): V2SegmentGate {
+  const capability = dslTaskCapability(options.task);
+  const attempt = options.attempt ?? "attempt:0";
+  const lineOffset = options.lineOffset ?? 0;
+  const parser = new DslSegmentParserV2({
+    expectedNonce: options.expectedNonce,
+    allowedReasons: capability.endReasons,
+  });
+
+  let visual = cloneVisualState(options.visualState);
+  let labels = cloneCharacterState(options.characterState);
+  const groups: CompiledEventGroupV2[] = [];
+  const assetDiagnostics: AssetDiagnostic[] = [];
+  let committedThroughLine = 0;
+  let consumed = 0;
+  let sealed = false;
+  let finished: V2GateFinish | undefined;
+
+  /** 失败即封口；诊断统一补任务/attempt 出处（与批式 failure() 同形）。 */
+  const failure = (
+    diagnostic: Omit<DslDiagnosticV2, "task" | "attempt">,
+  ): V2GateFeed => {
+    sealed = true;
+    return {
+      ok: false,
+      diagnostic: { ...diagnostic, task: options.task, attempt },
+    };
+  };
+
+  const pushLine = (raw: string): V2GateFeed => {
+    if (sealed) {
+      throw new Error(
+        "createV2SegmentGate: gate already failed — 已失败的段门不得继续喂入（首个失败即修复边界）。",
+      );
+    }
+    consumed += 1;
+    const lineNo = consumed + lineOffset; // 1 基绝对
+    const rel = consumed - 1; // 0 基本门相对（批式 walk 戳同基，offset 另加）
+
+    let parsed: DslLineV2;
+    try {
+      parsed = parseDslV2Line(raw);
+    } catch (error) {
+      if (!(error instanceof DslProtocolError)) throw error;
+      return failure({
+        code: error.code,
+        message: error.message,
+        line: lineNo,
+        ...(error.detail?.legalValues !== undefined
+          ? { legalValues: error.detail.legalValues }
+          : {}),
+      });
+    }
+
+    // 任务能力校验（能力卡单源；与批式同码同文同合法值表）。
+    const command = commandOfDslLineV2(parsed);
+    if (!capabilityAllowsCommand(capability, command)) {
+      return failure({
+        code: "COMMAND_NOT_ALLOWED_FOR_TASK",
+        message: `指令 ${command} 不属于 ${options.task} 任务允许的命令集。`,
+        line: lineNo,
+        legalValues: capability.commands as readonly string[],
+      });
+    }
+
+    let emitted: EventGroupDraftV2[];
+    try {
+      emitted = parser.pushLine(
+        parsed.lineIndex === undefined ? { ...parsed, lineIndex: rel } : parsed,
+      );
+    } catch (error) {
+      if (!(error instanceof DslProtocolError)) throw error;
+      return failure({ code: error.code, message: error.message, line: lineNo });
+    }
+
+    const lineCommits: V2GateCommit[] = [];
+    for (const draft of emitted) {
+      draft.source = { attemptId: attempt, lineIndex: rel + lineOffset };
+      const compiled = compileEventGroupV2(draft, {
+        registry: options.registry,
+        cast: options.cast,
+        reduce: options.reduce,
+        visualState: visual,
+        characterState: labels,
+        ...(options.catalog !== undefined ? { catalog: options.catalog } : {}),
+        task: options.task,
+        attempt,
+        lineOffset,
+      });
+      if (!compiled.ok) {
+        // 组级原子性：坏组任何产物（cue/名牌/主事件/软诊断）都不落地，
+        // 已提交前缀与其预测状态保持——修复尾部 = committedThroughLine 之后。
+        // 诊断已由 diagnosticFromError 带任务/attempt/绝对行号，原样奉还。
+        sealed = true;
+        return { ok: false, diagnostic: compiled.diagnostic };
+      }
+      assetDiagnostics.push(...compiled.assetDiagnostics);
+      groups.push(compiled.group);
+      visual = compiled.visualState;
+      labels = compiled.characterState;
+      committedThroughLine = lineNo;
+      const commit: V2GateCommit = {
+        group: compiled.group,
+        committedThroughLine,
+        visualState: visual,
+        characterState: labels,
+        assetDiagnostics: compiled.assetDiagnostics,
+      };
+      lineCommits.push(commit);
+    }
+    return { ok: true, commits: lineCommits };
+  };
+
+  const pushText = (text: string): V2GateFeed => {
+    const all: V2GateCommit[] = [];
+    for (const line of splitV2RawLines(text)) {
+      const fed = pushLine(line);
+      if (!fed.ok) return fed;
+      all.push(...fed.commits);
+    }
+    return { ok: true, commits: all };
+  };
+
+  const finish = (): V2GateFinish => {
+    if (finished !== undefined) return finished;
+    const status = parser.finish().status;
+    if (status.kind !== "complete") {
+      // 行号公式与批式一致（已提交组数 + 1 + lineOffset）。
+      sealed = true;
+      finished = {
+        ok: false,
+        diagnostic: {
+          code: "SENTINEL_MISSING",
+          message: `本段缺少结束哨兵 @end ${options.expectedNonce} ${capability.endReasons.join("|")}（输出可能在末尾被截断或漏写）。`,
+          line: groups.length + 1 + lineOffset,
+          task: options.task,
+          attempt,
+        },
+      };
+      return finished;
+    }
+    finished = { ok: true, status };
+    return finished;
+  };
+
+  return {
+    pushLine,
+    pushText,
+    finish,
+    get committedGroups() {
+      return groups;
+    },
+    get committedThroughLine() {
+      return committedThroughLine;
+    },
+    get visualState() {
+      return visual;
+    },
+    get characterState() {
+      return labels;
+    },
+    get assetDiagnostics() {
+      return assetDiagnostics;
+    },
+  };
+}

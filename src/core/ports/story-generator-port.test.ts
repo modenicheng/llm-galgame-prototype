@@ -8,7 +8,7 @@ import {
   createGenerationHandle,
   type StoryGeneratorPort,
 } from "./story-generator-port.js";
-import type { EventGroupDraft } from "../protocol/gal-dsl/types.js";
+import type { AnyStreamedGroup, EventGroupDraft } from "../protocol/gal-dsl/types.js";
 import {
   GeneratorPortFacade,
   type StoryGenerator,
@@ -29,7 +29,7 @@ describe("createGenerationHandle", () => {
       return { events: [], state_patch: {}, groups: [narrationGroup("one"), narrationGroup("two")] };
     });
 
-    const seen: EventGroupDraft[] = [];
+    const seen: AnyStreamedGroup[] = [];
     for await (const event of handle.events) seen.push(event);
 
     expect(seen.map((e) => (e as { main: { text: string } }).main.text)).toEqual(["one", "two"]);
@@ -45,7 +45,7 @@ describe("createGenerationHandle", () => {
       return { events: [], state_patch: {} };
     });
 
-    const seen: EventGroupDraft[] = [];
+    const seen: AnyStreamedGroup[] = [];
     for await (const event of handle.events) seen.push(event);
 
     expect(seen.map((e) => (e as { main: { text: string } }).main.text)).toEqual(["late"]);
@@ -57,7 +57,7 @@ describe("createGenerationHandle", () => {
       state_patch: {},
     }));
 
-    const seen: EventGroupDraft[] = [];
+    const seen: AnyStreamedGroup[] = [];
     for await (const event of handle.events) seen.push(event);
     expect(seen).toEqual([]);
     await expect(handle.done).resolves.toBeDefined();
