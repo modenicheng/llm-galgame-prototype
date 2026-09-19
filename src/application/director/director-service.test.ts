@@ -342,6 +342,43 @@ describe("DirectorService — voice 指导与调色板", () => {
     }
   });
 
+  it("M2 边界钉（R18）：voice 键目前宽松——显示名键可通过 parse，但工厂按稳定 ID 探测永不命中", async () => {
+    // C7 只收紧了工厂侧（AudioDescriptorFactory 按稳定 characterId 查询
+    // voiceDirectionFor）；parseVoiceDirections 仍接受任意键——显示名
+    // 「苏遥」照常入库。该键对工厂是死数据：bootstrap 的探针是
+    // directive.voice[characterId]，characterId=suyao 永远取不到「苏遥」
+    // 键（不猜、不映射）。M2 将在导演侧收紧键校验（拒绝非 roster ID）；
+    // 在此之前本测试钉住现状——不得静默加宽（让工厂开始按显示名寻址）
+    // 或提前「修好」（丢弃非 ID 键）此边界，那都是 M2 的决定。
+    const runner = makeVoiceRunner({
+      sceneGoal: "夜谈",
+      defenseBeats: [],
+      endingPressure: false,
+      voice: {
+        苏遥: { volume: "whisper", note: "显示名键（M2 前宽松放行）" },
+        suyao: { volume: "loud" },
+      },
+    });
+    const service = new DirectorService({
+      runner: runner as unknown as AgentRunnerPort,
+      store,
+    });
+    const directive = await service.refreshDirective({
+      sceneId: "天台",
+      scenePurpose: "夜谈",
+      recentSummary: "",
+    });
+    const voice = directive.voice!;
+    // 宽松 parse 现状：两个键都原样保留（M2 收紧前）。
+    expect(voice["苏遥"]).toEqual({ volume: "whisper", note: "显示名键（M2 前宽松放行）" });
+    expect(voice.suyao).toEqual({ volume: "loud" });
+    // 工厂探针语义（bootstrap：voiceDirectionHub.for = directive.voice[id]）：
+    // 按稳定 characterId 查询——只命中 ID 键，显示名键不可达。
+    const probe = (characterId: string) => voice[characterId];
+    expect(probe("suyao")).toEqual({ volume: "loud" });
+    expect(probe("suyao")).not.toBe(voice["苏遥"]);
+  });
+
   it("renders the palette section for cast members with palette data", async () => {
     const runner = makeVoiceRunner({ sceneGoal: "x", defenseBeats: [], endingPressure: false });
     const service = new DirectorService({

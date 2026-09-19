@@ -47,6 +47,7 @@ import type { VoiceDirectionTarget } from "../application/audio/performance-comp
 import {
   DASHSCOPE_VOICE_FALLBACK_ENV,
   audioRosterFromViews,
+  buildSpeakerPalette,
   mergeVoiceDesignViews,
   type VoiceDesignViews,
 } from "../application/audio/voice-design-views.js";
@@ -241,30 +242,6 @@ async function buildVoiceViews(input: {
     dashscopeModelProfile: input.modelProfile,
     fallbackVoiceId: (process.env[DASHSCOPE_VOICE_FALLBACK_ENV] ?? "").trim(),
   });
-}
-
-/**
- * 导演音频调色板查询（角色音频特征设计 §3.2）：author semantic ⊕ 设计
- * 画像，Set 去重保序（注入角色的合成 profile 已含 design 交付，并集去重
- * 后与混合场景共用一条路径）。
- */
-function buildSpeakerPalette(
-  views: VoiceDesignViews,
-): (characterId: string) => SpeakerVoicePalette | undefined {
-  return (characterId) => {
-    const entry = views.characters[characterId];
-    const profile =
-      entry !== undefined ? views.voices.profiles[entry.voice_profile] : undefined;
-    const design = views.designs[characterId];
-    const allowedDelivery = [
-      ...new Set([...(profile?.semantic.allowed_delivery ?? []), ...(design?.delivery ?? [])]),
-    ];
-    const forbiddenDelivery = [
-      ...new Set([...(profile?.semantic.forbidden_delivery ?? []), ...(design?.avoid ?? [])]),
-    ];
-    if (allowedDelivery.length === 0 && forbiddenDelivery.length === 0) return undefined;
-    return { allowedDelivery, forbiddenDelivery };
-  };
 }
 
 /**
