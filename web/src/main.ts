@@ -59,6 +59,13 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   const appRoot = root ?? document.getElementById("app");
   if (appRoot === null) return;
 
+  // 玩家端交互禁制：CSS 侧禁选择/图片拖拽（见 styles.css 的 .gal-player
+  // 注释）。dragstart preventDefault 是 Firefox 兜底——它不支持
+  // -webkit-user-drag，事件在冒泡到根节点时取消即可跨浏览器生效。
+  // /monitor 路由不进 boot()，操作员面板的复制能力不受影响。
+  document.body.classList.add("gal-player");
+  appRoot.addEventListener("dragstart", (event) => event.preventDefault());
+
   const refs: AppDomRefs = buildAppDom(appRoot);
   const manifest = await fetchAssetManifest();
   const assetResolver = new BrowserAssetResolver(manifest);

@@ -74,6 +74,24 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* 玩家端交互禁制（.gal-player 由 main.ts boot 时挂上）：禁文本选择与
+   图片拖拽；输入框/文本域恢复可选（打字与草稿编辑需要）。/monitor 路由
+   不进 boot()，操作员面板的复制能力不受影响。 */
+body.gal-player {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body.gal-player input,
+body.gal-player textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+body.gal-player img {
+  -webkit-user-drag: none;
+}
+
 #app {
   position: relative;
   isolation: isolate;
