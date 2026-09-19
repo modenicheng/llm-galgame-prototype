@@ -103,7 +103,8 @@ profiles:
       local:
         model: local-qwen3-tts
         voice: xiayiming
-        voice_revision: 1
+        # 2026-09-19 参考音更换（内置音色→真人音源），bump 失效旧缓存
+        voice_revision: 2
 
   hanche_main:
     semantic:
