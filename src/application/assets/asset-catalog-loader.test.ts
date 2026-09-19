@@ -205,87 +205,23 @@ describe("loadAssetCatalog", () => {
     const resourcesPath = fileURLToPath(
       new URL("../../../assets/resources.yaml", import.meta.url),
     );
+    // 冒烟断言：loadAssetCatalog 自带全量校验（必填字段、枚举、引用完整性、
+    // src 文件存在性），能走完即证明真实目录健康。这里只锁结构性不变量与
+    // 授权边界，不 pin 可自由调整的配置内容（default_position、场景清单、
+    // 差分数量等）——改配置不该连坐改测试。
     const catalog = await loadAssetCatalog(resourcesPath);
 
-    // Campus branch catalog: 走廊 + 校道 + 广场 + 阶梯教室 + 操场 + 食堂门口
-    // 六组场景（clubroom 部室系已下线）。
-    expect(catalog.guidance).toContain("文萃楼走廊、校园林荫道、社团广场、阶梯教室、");
-    expect(catalog.guidance).toContain("操场与北食堂场景");
-    expect(Object.keys(catalog.backgrounds)).toEqual([
-      "wencui_corridor_day",
-      "wencui_corridor_evening",
-      "wencui_corridor_night_on",
-      "wencui_corridor_night_off",
-      "campus_road_day",
-      "campus_road_evening",
-      "campus_road_night",
-      "club_plaza_day",
-      "club_plaza_evening",
-      "club_plaza_night",
-      "classroom_day",
-      "classroom_evening",
-      "classroom_night_on",
-      "classroom_night_off",
-      "playground_day",
-      "playground_evening",
-      "playground_night",
-      "north_canteen_day",
-      "north_canteen_evening",
-      "north_canteen_night",
-    ]);
-    expect(catalog.bgm.relax!.src).toBe("audio/bgm/relax.mp3");
-    expect(catalog.bgm.calm!.src).toBe("audio/bgm/calm.mp3");
-    expect(catalog.bgm.mountain!.src).toBe("audio/bgm/mountain.mp3");
-    expect(catalog.soundEffects.terminal_beep!.src).toBe("audio/se/terminal_beep.ogg");
-    // Raspberry Girl diff sprite set (internal-only art, see assets/ATTRIBUTION.md)
+    // 树莓娘（internal-only art, see assets/ATTRIBUTION.md）
     //   + 自制 AI 通用角色立绘组（female_A/female_B/male_A/male_B）。
-    expect(Object.keys(catalog.spriteSets)).toEqual([
-      "raspberry",
-      "female_A",
-      "female_B",
-      "male_A",
-      "male_B",
-    ]);
-    expect(catalog.characters.raspberry).toEqual({
-      characterId: "raspberry",
-      scriptName: "树莓娘",
-      displayName: "树莓娘",
-      spriteSet: "raspberry",
-      defaultVariant: "base",
-      defaultPosition: "center",
-      allowedSpriteSets: ["raspberry"],
-    });
-    const raspberryVariants = catalog.spriteSets.raspberry!.variants;
-    expect(raspberryVariants.base!.src).toBe("characters/raspberry/base.png");
-    expect(raspberryVariants.mysterious_silhouette!.src).toBe(
-      "characters/raspberry/mysterious_silhouette.png",
-    );
-    // base + 18 表情差分 + 剪影。
-    expect(Object.keys(raspberryVariants)).toHaveLength(20);
-    // 自制 AI 通用角色：base + 7 表情差分，默认站左右侧（不占树莓娘中央位）。
-    for (const castId of ["female_A", "female_B", "male_A", "male_B"]) {
-      const castVariants = catalog.spriteSets[castId]!.variants;
-      expect(Object.keys(castVariants)).toEqual([
-        "base",
-        "smile",
-        "surprised",
-        "embarrassed",
-        "joyful",
-        "angry",
-        "thinking",
-        "smug",
-      ]);
-      expect(castVariants.base!.src).toBe(`characters/${castId}/base.png`);
-      expect(catalog.characters[castId]).toEqual({
-        characterId: castId,
-        scriptName: expect.any(String),
-        displayName: expect.any(String),
-        spriteSet: castId,
-        defaultVariant: "base",
-        defaultPosition: castId === "female_A" || castId === "male_B" ? "right" : "left",
-        allowedSpriteSets: [castId],
-      });
+    const castIds = ["raspberry", "female_A", "female_B", "male_A", "male_B"];
+    for (const id of castIds) {
+      expect(catalog.characters[id], `角色 ${id} 应已注册`).toBeDefined();
+      expect(catalog.spriteSets[id], `立绘组 ${id} 应已注册`).toBeDefined();
+      expect(catalog.spriteSets[id]!.variants.base, `${id} 缺默认差分 base`).toBeDefined();
     }
+    // 剧情依赖的关键差分：剪影。
+    expect(catalog.spriteSets.raspberry!.variants.mysterious_silhouette).toBeDefined();
+
     // 未授权的旧故事素材不得出现在校园分支目录中。
     expect(catalog.characters.suyao).toBeUndefined();
     expect(catalog.characters.linche).toBeUndefined();

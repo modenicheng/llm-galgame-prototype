@@ -488,7 +488,7 @@ characters:
     display_name: 树莓娘
     sprite_set: raspberry
     default_variant: base
-    default_position: center
+    default_position: left
 
   # 群像配角：script_name 即戏剧名（模型在台词行头最自然写出的名字），
   # 不要再改回"女生A/同学甲"式的抽象代号——模型会改用显示名写行头，
