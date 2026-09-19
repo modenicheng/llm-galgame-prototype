@@ -85,6 +85,7 @@ function emptyState(): NarrativeMemoryState {
     recentEpisodeIds: [],
     beliefs: [],
     facts: [],
+    consolidationFailedIntervals: [],
   };
 }
 
@@ -166,6 +167,38 @@ describe("MemoryConsolidator", () => {
   beforeEach(() => {
     diag = new RecordingDiagnostics();
   });
+
+    /** Minimal hand-rolled CharacterRegistry（只覆盖身份视图读取的面）。 */
+    function makeRegistry(
+      characters: Array<{ id: string; name: string; initialLabel?: string }>,
+    ): CharacterRegistry {
+      const definitions = characters.map((c) => ({
+        id: c.id,
+        name: c.name,
+        control: "npc" as const,
+        initialLabel: c.initialLabel ?? c.name,
+        persona: `persona of ${c.id}`,
+      }));
+      const byId = new Map(definitions.map((d) => [d.id, d] as const));
+      return {
+        roster: {
+          schemaVersion: 2,
+          scopeId: "test-scope",
+          revision: "v2-testrev",
+          playerId: "player",
+          characters: definitions,
+        },
+        get: (id: string) => byId.get(id),
+        require: (id: string) => {
+          const found = byId.get(id);
+          if (found === undefined) {
+            throw new Error(`角色 ${id} 未注册`);
+          }
+          return found;
+        },
+      };
+    }
+
 
   function makeConsolidator(
     port: MemoryConsolidatorPort | undefined,
@@ -294,37 +327,6 @@ describe("MemoryConsolidator", () => {
   // 测试以注入 registry 的方式驱动 identity 模式。
   // -----------------------------------------------------------------------
   describe("consolidate — §6.2 identity validation", () => {
-    /** Minimal hand-rolled CharacterRegistry（只覆盖身份视图读取的面）。 */
-    function makeRegistry(
-      characters: Array<{ id: string; name: string; initialLabel?: string }>,
-    ): CharacterRegistry {
-      const definitions = characters.map((c) => ({
-        id: c.id,
-        name: c.name,
-        control: "npc" as const,
-        initialLabel: c.initialLabel ?? c.name,
-        persona: `persona of ${c.id}`,
-      }));
-      const byId = new Map(definitions.map((d) => [d.id, d] as const));
-      return {
-        roster: {
-          schemaVersion: 2,
-          scopeId: "test-scope",
-          revision: "v2-testrev",
-          playerId: "player",
-          characters: definitions,
-        },
-        get: (id: string) => byId.get(id),
-        require: (id: string) => {
-          const found = byId.get(id);
-          if (found === undefined) {
-            throw new Error(`角色 ${id} 未注册`);
-          }
-          return found;
-        },
-      };
-    }
-
     /** 含同名双胞胎的注册表（twin_ayaka/twin_aoi 都叫「绫香」）。 */
     const REGISTRY = makeRegistry([
       { id: "player", name: "玩家" },
@@ -1310,6 +1312,334 @@ describe("MemoryConsolidator", () => {
       );
       expect(over.findings).toHaveLength(5);
       expect(over.rejected.map((r) => r.rule)).toContain("FINDING_BATCH_EXCEEDED");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // §6.2 M2 — fact/belief reference authority, batch evidence range, belief
+  // knowledge chain（同一 C8 身份视图上扩展；请求候选与引用权威同源）。
+  // -----------------------------------------------------------------------
+  describe("consolidate — §6.2 M2 fact/belief references & knowledge chain", () => {
+    /** 带电话角色 guest_01 的注册表（无立绘 NPC——身份只看 ID/证据）。 */
+    const M2_REGISTRY = makeRegistry([
+      { id: "player", name: "玩家" },
+      { id: "suyao", name: "苏遥" },
+      { id: "linche", name: "林澈" },
+      { id: "guest_01", name: "来电者", initialLabel: "？？？" },
+    ]);
+
+    function memoryWithSeed(): NarrativeMemoryState {
+      const memory = emptyState();
+      memory.facts.push(
+        {
+          id: "fact_1_1",
+          content: "终端只对苏遥的指纹反应",
+          evidenceEventSeqs: [1],
+          checkpoint: 2,
+          superseded: false,
+          importance: "major",
+        },
+        {
+          id: "fact_1_2",
+          content: "已被修订的旧说法",
+          evidenceEventSeqs: [1],
+          checkpoint: 1,
+          superseded: true,
+        },
+      );
+      memory.beliefs.push(
+        {
+          id: "belief_1_1",
+          characterId: "suyao",
+          content: "苏遥相信终端是坏的",
+          status: "active",
+          createdAtCheckpoint: 1,
+          origin: "believe",
+        },
+        {
+          id: "belief_1_2",
+          characterId: "linche",
+          content: "林澈相信终端无害",
+          status: "active",
+          createdAtCheckpoint: 1,
+          origin: "believe",
+        },
+      );
+      return memory;
+    }
+
+    it("carries relevantFacts/relevantBeliefs on the request with same-source citable authorities", async () => {
+      const port = { consolidate: vi.fn().mockResolvedValue(makeResult()) };
+      const consolidator = new MemoryConsolidator({
+        port,
+        config: makeConfig(),
+        registry: M2_REGISTRY,
+        diagnostics: diag,
+      });
+
+      await consolidator.consolidate(
+        [makeDialogueEvent(5, "suyao", "第五句。")],
+        memoryWithSeed(),
+        "clubroom",
+        ["suyao"],
+      );
+
+      const request = port.consolidate.mock.calls[0]![0] as ConsolidationRequest;
+      // 请求实际携带引用 ID（模型不需要猜库里的 ID）。
+      expect(request.relevantFacts!.map((f) => f.id)).toEqual(["fact_1_1"]);
+      expect(request.relevantBeliefs!.map((b) => b.id)).toEqual(["belief_1_1"]);
+      // 引用权威与候选同源：linche 不在场景名单/证据 → belief_1_2 不可引。
+      const view = request.identity!;
+      expect(view.citableFactIds).toEqual(new Set(["fact_1_1"]));
+      expect(view.citableBeliefIds).toEqual(new Set(["belief_1_1"]));
+      // 批区间拒绝批前 seq：[5,5]。
+      expect(view.evidenceBatchSeqRange).toEqual({ min: 5, max: 5 });
+    });
+
+    it("SUCCESS: amend referencing a provided visible fact + correct targeting the same character's belief", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: makeEpisodeOp({ characters: ["suyao"], locations: [] }),
+            factOps: [
+              { type: "amend", id: "fact_1_1", content: "修订后的说法", evidenceEventSeqs: [5] },
+            ],
+            beliefOps: [
+              {
+                type: "correct",
+                characterId: "suyao",
+                content: "终端是好的",
+                evidenceEventSeqs: [5],
+                replacesBeliefId: "belief_1_1",
+              },
+            ],
+          }),
+        ),
+      };
+      const consolidator = new MemoryConsolidator({
+        port,
+        config: makeConfig(),
+        registry: M2_REGISTRY,
+        diagnostics: diag,
+      });
+
+      const outcome = await consolidator.consolidate(
+        [makeDialogueEvent(5, "suyao", "第五句。")],
+        memoryWithSeed(),
+        "",
+        ["suyao"],
+      );
+
+      expect(outcome.factOps).toHaveLength(1);
+      expect(outcome.beliefOps).toHaveLength(1);
+      expect(outcome.identityIssues).toEqual([]);
+      expect(outcome.rejected).toEqual([]);
+    });
+
+    it("REJECT matrix: unknown fact id / foreign belief / display-name characterId / pre-batch evidence seq", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: makeEpisodeOp({ characters: [], locations: [] }),
+            factOps: [
+              // 未知 fact ID（不在请求候选内）。
+              { type: "amend", id: "fact_9_9", content: "幽灵", evidenceEventSeqs: [5] },
+              // 批前（截断前）事件 seq：已在前批整理过。
+              { type: "establish", content: "跨批证据", evidenceEventSeqs: [4] },
+            ],
+            beliefOps: [
+              // 另一角色的 belief（linche 的 belief_1_2 由 suyao 纠正）。
+              {
+                type: "correct",
+                characterId: "suyao",
+                content: "越权",
+                evidenceEventSeqs: [5],
+                replacesBeliefId: "belief_1_2",
+              },
+              // 显示名误填。
+              { type: "learn", characterId: "苏遥", content: "显示名", evidenceEventSeqs: [5] },
+              // 未参与且未被告知：linche 不在证据也不在场景名单。
+              { type: "learn", characterId: "linche", content: "没在场", evidenceEventSeqs: [5] },
+            ],
+          }),
+        ),
+      };
+      const consolidator = new MemoryConsolidator({
+        port,
+        config: makeConfig(),
+        registry: M2_REGISTRY,
+        diagnostics: diag,
+      });
+
+      const outcome = await consolidator.consolidate(
+        [makeDialogueEvent(5, "suyao", "第五句。")],
+        memoryWithSeed(),
+        "",
+        ["suyao"],
+      );
+
+      expect(outcome.factOps).toEqual([]);
+      expect(outcome.beliefOps).toEqual([]);
+      // 每条违规独立成条（code/path/value），不掩盖后续错误。
+      expect(
+        outcome.identityIssues!.map((i) => [i.code, i.path, i.value]),
+      ).toEqual([
+        ["INVALID_REFERENCE", "factOps[0].id", "fact_9_9"],
+        ["EVIDENCE_OUT_OF_RANGE", "factOps[1].evidenceEventSeqs[0]", "4"],
+        // belief_1_2 不在可引用集（linche 不在场）→ INVALID_REFERENCE；
+        // 同角色约束在规则层（BELIEF_CORRECT_FOREIGN_TARGET）。
+        ["INVALID_REFERENCE", "beliefOps[0].replacesBeliefId", "belief_1_2"],
+        ["UNKNOWN_CHARACTER_ID", "beliefOps[1].characterId", "苏遥"],
+        ["KNOWLEDGE_NOT_SUPPORTED", "beliefOps[2].characterId", "linche"],
+      ]);
+      // 规则层拒绝也在（foreign target）。
+      expect(
+        outcome.rejected.some((r) => r.rule === "BELIEF_CORRECT_FOREIGN_TARGET"),
+      ).toBe(true);
+    });
+
+    it("knowledge chain: 画外/电话角色（guest_01）凭台词证据可被登记认知", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: makeEpisodeOp({ characters: ["suyao", "guest_01"], locations: [] }),
+            beliefOps: [
+              {
+                type: "learn",
+                characterId: "guest_01",
+                content: "电话那头听到了计划",
+                evidenceEventSeqs: [5],
+              },
+            ],
+          }),
+        ),
+      };
+      const consolidator = new MemoryConsolidator({
+        port,
+        config: makeConfig(),
+        registry: M2_REGISTRY,
+        diagnostics: diag,
+      });
+
+      const outcome = await consolidator.consolidate(
+        [
+          makeDialogueEvent(5, "guest_01", "（电话里）我都知道了。"),
+          makeDialogueEvent(6, "suyao", "谁在听？！"),
+        ],
+        memoryWithSeed(),
+        "",
+        ["suyao"],
+      );
+
+      expect(outcome.beliefOps).toHaveLength(1);
+      expect(outcome.identityIssues).toEqual([]);
+    });
+
+    it("knowledge chain: 空证据集（纯旁白 + 空场景名单）严格为空——任何 learn 都拒", async () => {
+      const port = {
+        consolidate: vi.fn().mockResolvedValue(
+          makeResult({
+            episode: makeEpisodeOp({ characters: [], locations: [] }),
+            beliefOps: [
+              { type: "learn", characterId: "suyao", content: "仅因 roster 存在", evidenceEventSeqs: [5] },
+            ],
+          }),
+        ),
+      };
+      const consolidator = new MemoryConsolidator({
+        port,
+        config: makeConfig(),
+        registry: M2_REGISTRY,
+        diagnostics: diag,
+      });
+
+      const outcome = await consolidator.consolidate(
+        [makeEvent(5)],
+        memoryWithSeed(),
+        "",
+        [],
+      );
+
+      expect(outcome.beliefOps).toEqual([]);
+      expect(outcome.identityIssues).toEqual([
+        { code: "KNOWLEDGE_NOT_SUPPORTED", path: "beliefOps[0].characterId", value: "suyao" },
+      ]);
+    });
+
+    it("over budget: request candidates shrink AND the citable scope shrinks with them", async () => {
+      const memory = memoryWithSeed();
+      // 4 条更新的 major facts、brief_max=3：候选只保最新 3 条。
+      for (let i = 0; i < 4; i += 1) {
+        memory.facts.push({
+          id: `fact_2_${i}`,
+          content: `补充事实 ${i}`,
+          evidenceEventSeqs: [1],
+          checkpoint: 10 + i,
+          superseded: false,
+          importance: "major",
+        });
+      }
+      const port = { consolidate: vi.fn().mockResolvedValue(makeResult()) };
+      const consolidator = new MemoryConsolidator({
+        port,
+        config: makeConfig({ facts: { brief_max: 3 } }),
+        registry: M2_REGISTRY,
+        diagnostics: diag,
+      });
+
+      await consolidator.consolidate(
+        [makeDialogueEvent(5, "suyao", "第五句。")],
+        memory,
+        "",
+        ["suyao"],
+      );
+
+      const request = port.consolidate.mock.calls[0]![0] as ConsolidationRequest;
+      expect(request.relevantFacts).toHaveLength(3);
+      expect(request.identity!.citableFactIds!.size).toBe(3);
+      // 超出预算被收缩掉的 fact_1_1 不再可引用。
+      expect(request.identity!.citableFactIds!.has("fact_1_1")).toBe(false);
+    });
+
+    it("forwards priorIssues to the port request (§6.2 定向修复通道)", async () => {
+      const port = { consolidate: vi.fn().mockResolvedValue(makeResult()) };
+      const consolidator = new MemoryConsolidator({
+        port,
+        config: makeConfig(),
+        registry: M2_REGISTRY,
+        diagnostics: diag,
+      });
+      const issues = [
+        { code: "INVALID_REFERENCE" as const, path: "factOps[0].id", value: "fact_9_9" },
+      ];
+
+      await consolidator.consolidate(
+        [makeDialogueEvent(5, "suyao", "第五句。")],
+        memoryWithSeed(),
+        "",
+        ["suyao"],
+        { priorIssues: issues },
+      );
+
+      const request = port.consolidate.mock.calls[0]![0] as ConsolidationRequest;
+      expect(request.priorIssues).toEqual(issues);
+    });
+
+    it("legacy (no registry): request still carries relevantFacts for rendering, no identity enforcement", async () => {
+      const port = { consolidate: vi.fn().mockResolvedValue(makeResult()) };
+      const consolidator = makeConsolidator(port);
+
+      await consolidator.consolidate(
+        [makeEvent(5)],
+        memoryWithSeed(),
+        "",
+        ["suyao"],
+      );
+
+      const request = port.consolidate.mock.calls[0]![0] as ConsolidationRequest;
+      expect(request.relevantFacts!.map((f) => f.id)).toEqual(["fact_1_1"]);
+      expect(request.relevantBeliefs!.map((b) => b.id)).toEqual(["belief_1_1"]);
+      expect(request.identity).toBeUndefined();
     });
   });
 });

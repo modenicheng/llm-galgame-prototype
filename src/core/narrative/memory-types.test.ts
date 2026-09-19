@@ -143,6 +143,7 @@ const validMemoryState: NarrativeMemoryState = {
   recentEpisodeIds: ["ep-6", "ep-5"],
   beliefs: [],
   facts: [],
+  consolidationFailedIntervals: [],
 };
 
 const validThreadOp: ThreadOp = {

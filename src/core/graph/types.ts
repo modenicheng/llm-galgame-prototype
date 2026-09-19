@@ -11,6 +11,7 @@ import { z } from "zod";
 import { StoryStateSchema } from "../../story/types.js";
 import {
   BeliefStateSchema,
+  ConsolidationFailedIntervalSchema,
   FactRecordSchema,
   PlotThreadSchema,
   SetupPayoffSchema,
@@ -73,6 +74,10 @@ export const MemoryDigestSchema = z.object({
   // 会话工作缓存的可用性。
   facts: z.array(FactRecordSchema),
   beliefs: z.array(BeliefStateSchema),
+  // §6.2 M2（追加字段，可选读取兼容旧快照，快照版本不翻）：失败整理
+  // 区间随摘要入盘——恢复后成功水位仍不越过缺口，已降级区间不再重试。
+  // 旧快照缺省 = 无失败区间（pre-M2 会话没有降级语义）。
+  consolidationFailedIntervals: z.array(ConsolidationFailedIntervalSchema).optional(),
 });
 export type MemoryDigest = z.infer<typeof MemoryDigestSchema>;
 

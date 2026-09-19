@@ -48,7 +48,8 @@ describe("NarrativeDirectorService consolidation", () => {
           importance: "normal",
         },
         threadOps: [],
-        setupOps: [],
+        setupOps: [],
+
         factOps: [],
         beliefOps: [],
         findings: [],
@@ -93,7 +94,8 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "normal",
           },
           threadOps: [{ type: "touch", id: "t1", progress: "new summary" }],
-          setupOps: [],
+          setupOps: [],
+
           factOps: [],
           beliefOps: [],
           findings: [],
@@ -134,7 +136,8 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "normal",
           },
           threadOps: [{ type: "advance", id: "t1" }],
-          setupOps: [],
+          setupOps: [],
+
           factOps: [],
           beliefOps: [],
           findings: [],
@@ -168,7 +171,8 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "major",
           },
           threadOps: [{ type: "resolve", id: "t1" }],
-          setupOps: [],
+          setupOps: [],
+
           factOps: [],
           beliefOps: [],
           findings: [],
@@ -202,7 +206,8 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "normal",
           },
           threadOps: [{ type: "abandon", id: "t1" }],
-          setupOps: [],
+          setupOps: [],
+
           factOps: [],
           beliefOps: [],
           findings: [],
@@ -241,7 +246,8 @@ describe("NarrativeDirectorService consolidation", () => {
               progress: "A new mystery emerges",
             },
           ],
-          setupOps: [],
+          setupOps: [],
+
           factOps: [],
           beliefOps: [],
           findings: [],
@@ -288,7 +294,8 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "normal",
           },
           threadOps: [],
-          setupOps: [
+          setupOps: [
+
             { type: "seed", id: "s1" },
             { type: "reinforce", id: "s2" },
             { type: "payoff", id: "s3" },
@@ -331,7 +338,8 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "major",
           },
           threadOps: [],
-          setupOps: [],
+          setupOps: [],
+
           factOps: [],
           beliefOps: [],
           findings: [],
@@ -379,7 +387,8 @@ describe("NarrativeDirectorService consolidation", () => {
             { type: "resolve", id: "t1" }, // invalid: already resolved
             { type: "touch", id: "ghost" }, // invalid: does not exist
           ],
-          setupOps: [
+          setupOps: [
+
             { type: "seed", id: "ghost-s" }, // invalid: does not exist
           ],
           factOps: [],
@@ -427,7 +436,8 @@ describe("NarrativeDirectorService consolidation", () => {
             { type: "advance", id: "t-valid" }, // valid
             { type: "touch", id: "ghost" }, // invalid - rejected
           ],
-          setupOps: [
+          setupOps: [
+
             { type: "seed", id: "s-valid" }, // valid
             { type: "payoff", id: "ghost-s" }, // invalid - rejected
           ],
@@ -468,7 +478,8 @@ describe("NarrativeDirectorService consolidation", () => {
             importance: "normal",
           },
           threadOps: [],
-          setupOps: [],
+          setupOps: [],
+
           factOps: [],
           beliefOps: [],
           findings: [],
@@ -531,7 +542,8 @@ describe("NarrativeDirectorService consolidation", () => {
           importance: "normal",
         },
         threadOps: [],
-        setupOps: [],
+        setupOps: [],
+
         factOps: [],
         beliefOps: [],
         findings: [],
@@ -586,7 +598,8 @@ describe("NarrativeDirectorService consolidation", () => {
           importance: "normal",
         },
         threadOps: [],
-        setupOps: [],
+        setupOps: [],
+
         factOps: [],
         beliefOps: [],
         findings: [],
@@ -625,6 +638,283 @@ describe("NarrativeDirectorService consolidation", () => {
   });
 
 
+
+  // -----------------------------------------------------------------------
+  // §6.2 M2 — 身份被拒批次：整批不提交、定向修复一次、失败区间降级、
+  // 成功水位不越过缺口（R18）。修复 main 的 ROOT CAUSE #1：身份被拒批次
+  // 不能推进 consolidatedThroughEventSeq。
+  // -----------------------------------------------------------------------
+  describe("consolidatePending — §6.2 M2 identity-rejected batches", () => {
+    /** 带稳定 ID 的最小注册表（player/suyao/linche）。 */
+    function makeRegistry(): import("../../core/characters/types.js").CharacterRegistry {
+      const definitions = [
+        { id: "player", name: "玩家", control: "npc" as const, initialLabel: "你", persona: "p" },
+        { id: "suyao", name: "苏遥", control: "npc" as const, initialLabel: "苏遥", persona: "p" },
+        { id: "linche", name: "林澈", control: "npc" as const, initialLabel: "林澈", persona: "p" },
+      ];
+      const byId = new Map(definitions.map((d) => [d.id, d] as const));
+      return {
+        roster: {
+          schemaVersion: 2,
+          scopeId: "test-scope",
+          revision: "v2-testrev",
+          playerId: "player",
+          characters: definitions,
+        },
+        get: (id: string) => byId.get(id),
+        require: (id: string) => {
+          const found = byId.get(id);
+          if (found === undefined) throw new Error(`角色 ${id} 未注册`);
+          return found;
+        },
+      };
+    }
+
+    function validResult(): ConsolidationResult {
+      return {
+        episode: {
+          summary: "合法摘要",
+          characters: ["suyao"],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+        threadOps: [],
+        setupOps: [],
+        factOps: [],
+        beliefOps: [],
+        findings: [],
+      };
+    }
+
+    /** 显示名误填的非法结果（identity 模式 → identityIssues 非空）。 */
+    function identityRejectedResult(): ConsolidationResult {
+      return {
+        ...validResult(),
+        episode: { ...validResult().episode, characters: ["苏遥"] },
+      };
+    }
+
+    function makeIdentityEvent(seq: number): StoredEvent {
+      return {
+        seq,
+        turn: 1,
+        timestamp: new Date().toISOString(),
+        source: "model",
+        type: "dialogue",
+        speaker: "suyao",
+        characterId: "suyao",
+        text: `台词 ${seq}`,
+      } as unknown as StoredEvent;
+    }
+
+    it("identity-rejected batch: whole batch not committed, watermark stops, exactly 2 attempts, interval degraded", async () => {
+      const store = new FakeStore(emptyState());
+      const consolidateFn = vi.fn().mockResolvedValue(identityRejectedResult());
+      const diag = new RecordingDiagnostics();
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: { consolidate: consolidateFn },
+        plan: makePlan(),
+        registry: makeRegistry(),
+        diagnostics: diag,
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeIdentityEvent(1)]);
+      const result = await svc.consolidatePending();
+
+      // 整批不提交：无应用、无 episode、水位/revision 不动。
+      expect(result.applied).toBe(0);
+      expect(store.appendEpisodesCalls).toHaveLength(0);
+      let brief = svc.getMemoryProjection({ turn: 1, eventSeq: 1, location: "", characters: [] });
+      expect(brief.revision).toBe(0);
+      expect(brief.consolidatedThroughEventSeq).toBe(0);
+
+      // 恰好 2 次尝试：初始 + 1 次定向修复（修复请求携带上一次 issues）。
+      expect(consolidateFn).toHaveBeenCalledTimes(2);
+      const repairRequest = consolidateFn.mock.calls[1]![0] as ConsolidationRequest;
+      expect(repairRequest.priorIssues).toEqual([
+        { code: "UNKNOWN_CHARACTER_ID", path: "episode.characters[0]", value: "苏遥" },
+      ]);
+
+      // 失败区间入 state（attempts=2，degraded）并持久化。
+      const saved = store.saveStateCalls[store.saveStateCalls.length - 1]!;
+      expect(saved.consolidationFailedIntervals).toEqual([
+        { fromSeq: 1, toSeq: 1, attempts: 2, status: "degraded" },
+      ]);
+      // 明确降级诊断（不无限重试）。
+      expect(diag.warns.some((w) => w.message.includes("降级"))).toBe(true);
+
+      // 本批事件已消耗：再次 consolidatePending 无事可做（不再重试）。
+      const again = await svc.consolidatePending();
+      expect(again.applied).toBe(0);
+      expect(consolidateFn).toHaveBeenCalledTimes(2);
+    });
+
+    it("targeted repair succeeds: outcome applied, watermark advances, no interval recorded", async () => {
+      const store = new FakeStore(emptyState());
+      const consolidateFn = vi
+        .fn()
+        .mockResolvedValueOnce(identityRejectedResult())
+        .mockResolvedValueOnce(validResult());
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: { consolidate: consolidateFn },
+        plan: makePlan(),
+        registry: makeRegistry(),
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeIdentityEvent(1)]);
+      const result = await svc.consolidatePending();
+
+      expect(result.applied).toBeGreaterThanOrEqual(1);
+      const saved = store.saveStateCalls[store.saveStateCalls.length - 1]!;
+      expect(saved.consolidatedThroughEventSeq).toBe(1);
+      expect(saved.consolidationFailedIntervals).toEqual([]);
+      expect(store.appendEpisodesCalls).toHaveLength(1);
+    });
+
+    it("gap-blocking: later batches are processed but the success watermark never crosses the unresolved gap", async () => {
+      const store = new FakeStore(emptyState());
+      const consolidateFn = vi
+        .fn()
+        .mockResolvedValueOnce(identityRejectedResult()) // 批 1（seq 1）降级
+        .mockResolvedValueOnce(identityRejectedResult()) // 定向修复失败
+        .mockResolvedValueOnce(validResult()); // 批 2（seq 2）成功
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: { consolidate: consolidateFn },
+        plan: makePlan(),
+        registry: makeRegistry(),
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeIdentityEvent(1)]);
+      await svc.consolidatePending();
+
+      // 后续批次照常处理（播放继续）。
+      svc.observeCommitted([makeIdentityEvent(2)]);
+      const result2 = await svc.consolidatePending();
+      expect(result2.applied).toBeGreaterThanOrEqual(1);
+      expect(store.appendEpisodesCalls).toHaveLength(1);
+
+      // 成功水位没有越过未解决缺口（seq 1 未成功提取）。
+      const saved = store.saveStateCalls[store.saveStateCalls.length - 1]!;
+      expect(saved.consolidatedThroughEventSeq).toBe(0);
+      expect(saved.consolidationFailedIntervals).toEqual([
+        { fromSeq: 1, toSeq: 1, attempts: 2, status: "degraded" },
+      ]);
+      // 后续批次成功 → revision 推进（工作照做），但水位停在缺口前。
+      expect(saved.revision).toBe(1);
+    });
+
+    it("replay re-feed of a degraded interval is filtered out (attempt cursor ≠ success watermark)", async () => {
+      const store = new FakeStore(emptyState());
+      const consolidateFn = vi.fn().mockResolvedValue(identityRejectedResult());
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: { consolidate: consolidateFn },
+        plan: makePlan(),
+        registry: makeRegistry(),
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeIdentityEvent(1)]);
+      await svc.consolidatePending();
+
+      // 恢复重放把水位之下的旧事件再喂一遍：降级区间（seq 1）不得回队。
+      svc.observeCommitted([makeIdentityEvent(1), makeIdentityEvent(2)]);
+      await svc.consolidatePending();
+      // 只有 seq 2 的新批次（+其定向修复）——seq 1 不再尝试。
+      const attempted = consolidateFn.mock.calls.map(
+        (call) => (call[0] as ConsolidationRequest).events.map((e) => e.seq).join(","),
+      );
+      expect(attempted.filter((seqs) => seqs === "1")).toHaveLength(2); // 初始+修复
+      expect(attempted.filter((seqs) => seqs === "2")).toHaveLength(2); // 新批+修复
+      expect(consolidateFn).toHaveBeenCalledTimes(4);
+    });
+
+    it("restart restores degraded intervals from the store: no retry of the gap, watermark still blocked", async () => {
+      const store = new FakeStore(emptyState());
+      const consolidateFn = vi.fn().mockResolvedValue(identityRejectedResult());
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: { consolidate: consolidateFn },
+        plan: makePlan(),
+        registry: makeRegistry(),
+      });
+      await svc.initialize();
+      svc.observeCommitted([makeIdentityEvent(1)]);
+      await svc.consolidatePending();
+      expect(consolidateFn).toHaveBeenCalledTimes(2);
+
+      // “重启”：同一 store 上的新服务恢复降级区间。
+      const consolidateFn2 = vi.fn().mockResolvedValue(validResult());
+      const svc2 = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: { consolidate: consolidateFn2 },
+        plan: makePlan(),
+        registry: makeRegistry(),
+      });
+      await svc2.initialize();
+
+      // 重放 seq 1（降级区间）：不重试；seq 2 正常整理（合法结果 → 1 次）。
+      svc2.observeCommitted([makeIdentityEvent(1), makeIdentityEvent(2)]);
+      await svc2.consolidatePending();
+      const attempted2 = consolidateFn2.mock.calls.map(
+        (call) => (call[0] as ConsolidationRequest).events.map((e) => e.seq).join(","),
+      );
+      expect(attempted2).toEqual(["2"]); // 只有新批次，seq 1 不再尝试
+
+      const saved = store.saveStateCalls[store.saveStateCalls.length - 1]!;
+      // 缺口仍在：水位不越过 seq 1。
+      expect(saved.consolidatedThroughEventSeq).toBe(0);
+      expect(saved.consolidationFailedIntervals).toEqual([
+        { fromSeq: 1, toSeq: 1, attempts: 2, status: "degraded" },
+      ]);
+    });
+
+    it("legal empty proposal (accepted no-op) advances the watermark", async () => {
+      const store = new FakeStore(emptyState());
+      const empty: ConsolidationResult = {
+        ...validResult(),
+        episode: {
+          summary: "纯旁白的过场。",
+          characters: [],
+          locations: [],
+          threads: [],
+          setups: [],
+          importance: "normal",
+        },
+      };
+      const consolidateFn = vi.fn().mockResolvedValue(empty);
+      const svc = new NarrativeDirectorService({
+        config: makeConfig(),
+        store,
+        consolidator: { consolidate: consolidateFn },
+        plan: makePlan(),
+        registry: makeRegistry(),
+      });
+      await svc.initialize();
+
+      svc.observeCommitted([makeIdentityEvent(1)]);
+      await svc.consolidatePending();
+
+      const saved = store.saveStateCalls[store.saveStateCalls.length - 1]!;
+      expect(saved.consolidatedThroughEventSeq).toBe(1);
+      expect(saved.consolidationFailedIntervals).toEqual([]);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // flush — normal shutdown drain (audit P1-7)
   // -----------------------------------------------------------------------
@@ -641,7 +931,8 @@ describe("NarrativeDirectorService consolidation", () => {
           importance: "normal",
         },
         threadOps: [],
-        setupOps: [],
+        setupOps: [],
+
         factOps: [],
         beliefOps: [],
         findings: [],
@@ -713,7 +1004,8 @@ describe("NarrativeDirectorService consolidation", () => {
                   importance: "normal",
                 },
                 threadOps: [],
-                setupOps: [],
+                setupOps: [],
+
                 factOps: [],
                 beliefOps: [],
                 findings: [],

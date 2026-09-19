@@ -37,6 +37,7 @@ function digestWithFacts(facts: FactRecord[]): MemoryDigest {
     anchors: [],
     beliefs: [],
     facts,
+    consolidationFailedIntervals: [],
   };
 }
 

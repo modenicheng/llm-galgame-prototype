@@ -104,6 +104,11 @@ export interface EpisodeMemory {
 
 export interface NarrativeMemoryState {
   revision: number;
+  /**
+   * 连续成功整理水位（§6.2 M2）：只覆盖已成功提交的连续事件前沿——
+   * 不越过未解决缺口（见 consolidationFailedIntervals）。读取/尝试游标
+   * 与它分离：max(本水位, max(失败区间 toSeq))。
+   */
   consolidatedThroughEventSeq: number;
   checkpointCount: number;
   threads: Record<string, PlotThread>;
@@ -114,6 +119,24 @@ export interface NarrativeMemoryState {
   beliefs: BeliefState[];
   /** 既定事实内存投影（§5.3，MA-B）：含 superseded 历史。 */
   facts: FactRecord[];
+  /**
+   * §6.2 M2 失败整理区间：定向修复（初始 + 1 次）耗尽后降级的批次区间。
+   * 降级区间不再重试；后续批次照常处理，但成功水位不得越过缺口。随
+   * state 快照与图快照 memory digest 一起入盘（重启不重试已降级区间）。
+   */
+  consolidationFailedIntervals: ConsolidationFailedInterval[];
+}
+
+/**
+ * §6.2 M2 失败整理区间。attempts = 已消耗的尝试次数（初始 + 1 次定向
+ * 修复 = 2）；status 当前只有 "degraded"（记录时即降级——区间内的事件
+ * 不再重试，成功水位停在缺口前）。
+ */
+export interface ConsolidationFailedInterval {
+  fromSeq: number;
+  toSeq: number;
+  attempts: number;
+  status: "degraded";
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +325,14 @@ export const FactRecordSchema: z.ZodType<FactRecord> = z.object({
   importance: z.exactOptional(z.enum(["major", "minor"])),
 });
 
+export const ConsolidationFailedIntervalSchema: z.ZodType<ConsolidationFailedInterval> =
+  z.object({
+    fromSeq: z.number().int().positive(),
+    toSeq: z.number().int().positive(),
+    attempts: z.number().int().positive(),
+    status: z.literal("degraded"),
+  });
+
 export const NarrativeMemoryStateSchema: z.ZodType<NarrativeMemoryState> =
   z.object({
     revision: z.number().int().nonnegative(),
@@ -314,6 +345,10 @@ export const NarrativeMemoryStateSchema: z.ZodType<NarrativeMemoryState> =
     // MA-B：旧持久化状态缺段时降级为空（工作缓存可丢弃）。
     beliefs: z.array(BeliefStateSchema).default([]),
     facts: z.array(FactRecordSchema).default([]),
+    // §6.2 M2：旧持久化状态缺段时降级为空（无失败区间 = 全部成功整理）。
+    consolidationFailedIntervals: z
+      .array(ConsolidationFailedIntervalSchema)
+      .default([]),
   });
 
 const LessonTagSchema = z.enum([

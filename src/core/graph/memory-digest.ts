@@ -20,10 +20,13 @@ export const EMPTY_MEMORY_DIGEST: MemoryDigest = {
   anchors: [],
   facts: [],
   beliefs: [],
+  consolidationFailedIntervals: [],
 };
 
 /** 嵌入决策节点入口/末态快照前的摘要化（丢弃缓存态字段）。
- * MA-B（v2）：facts/beliefs 全文嵌入（决议 D6）——恢复不得依赖 canon。 */
+ * MA-B（v2）：facts/beliefs 全文嵌入（决议 D6）——恢复不得依赖 canon。
+ * §6.2 M2：失败整理区间随摘要入盘——恢复后成功水位仍不越过缺口，
+ * 已降级区间不再重试。 */
 export function memoryDigestFromState(state: NarrativeMemoryState): MemoryDigest {
   return {
     revision: state.revision,
@@ -34,6 +37,9 @@ export function memoryDigestFromState(state: NarrativeMemoryState): MemoryDigest
     anchors: Object.values(state.anchors),
     facts: state.facts.map((fact) => ({ ...fact })),
     beliefs: state.beliefs.map((belief) => ({ ...belief })),
+    consolidationFailedIntervals: state.consolidationFailedIntervals.map(
+      (interval) => ({ ...interval }),
+    ),
   };
 }
 
@@ -49,5 +55,9 @@ export function memoryStateFromDigest(digest: MemoryDigest): NarrativeMemoryStat
     recentEpisodeIds: [],
     facts: digest.facts.map((fact) => ({ ...fact })),
     beliefs: digest.beliefs.map((belief) => ({ ...belief })),
+    // 旧快照 digest 缺省（pre-M2）= 无失败区间。
+    consolidationFailedIntervals:
+      digest.consolidationFailedIntervals?.map((interval) => ({ ...interval })) ??
+      [],
   };
 }

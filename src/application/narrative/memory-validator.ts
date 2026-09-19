@@ -27,6 +27,7 @@ import type {
   FactRecord,
   BeliefState,
 } from "../../core/narrative/memory-types.js";
+import { retrieveFacts } from "./fact-retriever.js";
 import type {
   ThreadOp,
   SetupOp,
@@ -458,6 +459,15 @@ export function validateBeliefOp(
     if (target.status !== "active") {
       return fail("BELIEF_CORRECT_INACTIVE", `belief ${op.replacesBeliefId} 已不是 active 状态`);
     }
+    // §6.2 M2（R16）：correct 必须指向同一角色可修订的 belief——角色只能
+    // 纠正自己的认知，不能替别人改信念。规则层校验，双模式（legacy/
+    // identity）都生效。
+    if (target.characterId !== op.characterId) {
+      return fail(
+        "BELIEF_CORRECT_FOREIGN_TARGET",
+        `被纠正的 belief ${op.replacesBeliefId} 属于角色 ${target.characterId}，不能由 ${op.characterId} 纠正`,
+      );
+    }
     return null;
   }
   return null;
@@ -744,6 +754,26 @@ export interface MemoryIdentityView {
    * 不是“空集合”，不校验地点标签）。
    */
   canonicalLocations: ReadonlySet<string> | undefined;
+  /**
+   * M2 §6.2：fact amend 引用权威——与请求渲染给模型的 relevantFacts 候选
+   * 同源（同一份选择）。undefined = legacy 无权威；空集合严格为空：任何
+   * amend 引用都会被拒（INVALID_REFERENCE），不退化为“库里所有 fact 可引”。
+   * 超预算收缩时候选与可引用范围一起缩（§6.2）。
+   */
+  citableFactIds: ReadonlySet<string> | undefined;
+  /**
+   * M2 §6.2：belief correct 引用权威——与请求渲染的 relevantBeliefs 候选
+   * 同源。undefined = legacy；空集合严格为空。correct 还须指向同一角色的
+   * belief（规则层 BELIEF_CORRECT_FOREIGN_TARGET）。
+   */
+  citableBeliefIds: ReadonlySet<string> | undefined;
+  /**
+   * M2 §6.2：fact/belief 证据事件的**本批**区间 [fromSeq, toSeq]（setup 的
+   * evidenceEventIds 仍用 evidenceSeqRange 的已提交语义）。批前已整理过的
+   * seq（截断前事件）与超批 seq 都是 EVIDENCE_OUT_OF_RANGE。undefined =
+   * legacy 无权威。
+   */
+  evidenceBatchSeqRange: { min: number; max: number } | undefined;
 }
 
 /** §6.2 accepted 构造子：合法提案（含合法空提案 = no-op）。 */
@@ -897,8 +927,11 @@ export function formatIdentityIssues(
  * - 证据区间 = [1, 本批最后已提交 seq]；
  * - 地点权威：场景地点非空才有（空字符串 = 无权威，不是“空集合”）。
  *
- * M2 扩展点：main 的 fact/belief 引用集与 belief 获知来源在同一视图上
- * 扩展（KNOWLEDGE_NOT_SUPPORTED 复用），不改变本函数与校验函数契约。
+ * M2 扩展（同一视图上，不改既有字段语义）：
+ * - citableFactIds/citableBeliefIds：fact/belief 引用权威，由调用方随
+ *   relevantFacts/relevantBeliefs 候选同源传入（selectCitableReferences）；
+ * - evidenceBatchSeqRange = [本批首个 seq, 本批最后 seq]：fact/belief 的
+ *   证据必须在批内——批前已整理过的 seq 一律 EVIDENCE_OUT_OF_RANGE。
  */
 export function buildMemoryIdentityView(input: {
   events: readonly StoredEvent[];
@@ -907,6 +940,10 @@ export function buildMemoryIdentityView(input: {
   stateLocation: string;
   /** 预先算好的记忆证据投影（同一批 events + registry）；缺席则现算。 */
   evidence?: readonly ProjectedEvent[];
+  /** M2：fact amend 引用权威（与请求渲染的候选同源）。 */
+  citableFactIds?: ReadonlySet<string>;
+  /** M2：belief correct 引用权威（与请求渲染的候选同源）。 */
+  citableBeliefIds?: ReadonlySet<string>;
 }): MemoryIdentityView {
   const { registry } = input;
   const evidence =
@@ -937,9 +974,13 @@ export function buildMemoryIdentityView(input: {
   }
 
   let maxSeq = 0;
+  let minSeq = Number.POSITIVE_INFINITY;
   for (const event of input.events) {
     if (event.seq > maxSeq) {
       maxSeq = event.seq;
+    }
+    if (event.seq < minSeq) {
+      minSeq = event.seq;
     }
   }
 
@@ -954,5 +995,189 @@ export function buildMemoryIdentityView(input: {
     evidenceSeqRange: { min: 1, max: maxSeq },
     canonicalLocations:
       input.stateLocation !== "" ? new Set([input.stateLocation]) : undefined,
+    citableFactIds: input.citableFactIds,
+    citableBeliefIds: input.citableBeliefIds,
+    evidenceBatchSeqRange:
+      Number.isFinite(minSeq) && maxSeq > 0
+        ? { min: minSeq, max: maxSeq }
+        : undefined,
   };
+}
+
+// ---------------------------------------------------------------------------
+// §6.2 M2 — fact/belief reference authority and the belief knowledge chain.
+// Same C8 identity-view family (extended, not forked): the request-side
+// candidate selection and the validation authority share ONE list, so over-
+// budget shrinking reduces the rendered candidates AND the citable scope
+// together; belief learning is judged by evidence-scene participation and the
+// explicit scene-cast inform sources, never by global roster existence (R27).
+// ---------------------------------------------------------------------------
+
+/** Consolidator request may carry at most this many citable beliefs (§6.2). */
+export const MAX_CITABLE_BELIEFS_PER_REQUEST = 12;
+
+/** selectCitableReferences output: candidates ride the request; ids are the
+ * validation authority. Same list — they shrink together. */
+export interface CitableReferences {
+  relevantFacts: FactRecord[];
+  relevantBeliefs: BeliefState[];
+  citableFactIds: ReadonlySet<string>;
+  citableBeliefIds: ReadonlySet<string>;
+}
+
+/**
+ * M2 §6.2：一次选择，两处消费——relevantFacts/relevantBeliefs 渲染进请求
+ * （模型看得见的引用 ID，绝不要求猜库里的 ID），citable*Ids 进身份视图
+ * （amend/correct 的引用权威）。超预算收缩两者一起缩。
+ *
+ * - facts：retrieveFacts 同一政策（在场角色 ∩ scope ∪ 地点匹配 ∪ major，
+ *   仅未 superseded，checkpoint 倒序，上限 factMax = facts.brief_max）；
+ * - beliefs：场景名单（identity 模式可传 allowedCharacterIds 收紧为
+ *   证据 ∪ 场景名单）角色的 active belief，createdAtCheckpoint 倒序，
+ *   上限 beliefMax（缺省 MAX_CITABLE_BELIEFS_PER_REQUEST）。
+ */
+export function selectCitableReferences(input: {
+  facts: readonly FactRecord[];
+  beliefs: readonly BeliefState[];
+  /** 场景名单（请求 stateCharacters）。 */
+  characters: readonly string[];
+  location: string;
+  /** fact 候选上限（config.narrative.facts.brief_max）。 */
+  factMax: number;
+  /** belief 候选上限；缺省 MAX_CITABLE_BELIEFS_PER_REQUEST。 */
+  beliefMax?: number;
+  /**
+   * identity 模式的 belief 归属权威（证据登场 ∪ 场景在场）；缺席 = legacy，
+   * 只按场景名单过滤。R27：全集 roster 绝不作为归属权威传入。
+   */
+  allowedCharacterIds?: ReadonlySet<CharacterId>;
+}): CitableReferences {
+  const relevantFacts = retrieveFacts(input.facts, {
+    characters: input.characters,
+    location: input.location,
+    max: input.factMax,
+  });
+  const ownerScope =
+    input.allowedCharacterIds !== undefined
+      ? input.allowedCharacterIds
+      : new Set<CharacterId>(input.characters);
+  const beliefMax = input.beliefMax ?? MAX_CITABLE_BELIEFS_PER_REQUEST;
+  const relevantBeliefs = input.beliefs
+    .filter(
+      (belief) =>
+        belief.status === "active" && ownerScope.has(belief.characterId),
+    )
+    .sort(
+      (a, b) =>
+        b.createdAtCheckpoint - a.createdAtCheckpoint ||
+        b.id.localeCompare(a.id),
+    )
+    .slice(0, beliefMax);
+  return {
+    relevantFacts,
+    relevantBeliefs,
+    citableFactIds: new Set(relevantFacts.map((fact) => fact.id)),
+    citableBeliefIds: new Set(relevantBeliefs.map((belief) => belief.id)),
+  };
+}
+
+/**
+ * M2 §6.2：fact op 的身份/引用校验。
+ * - amend.id 必须落在可引用事实集内（请求渲染的候选）——未知/超出收缩
+ *   范围/已 superseded 的事实 ID 都是 INVALID_REFERENCE；
+ * - evidenceEventSeqs 必须落在本批区间内：批前已整理过的 seq（截断前
+ *   事件）与超批 seq 都是 EVIDENCE_OUT_OF_RANGE。
+ * 视图缺席（legacy）不校验身份维度（规则层校验仍在 consolidator 内跑）。
+ */
+export function validateFactIdentity(
+  op: FactOp,
+  view: MemoryIdentityView,
+  basePath: string,
+): IdentityValidationIssue[] {
+  const issues: IdentityValidationIssue[] = [];
+  if (
+    op.type === "amend" &&
+    op.id !== undefined &&
+    view.citableFactIds !== undefined &&
+    !view.citableFactIds.has(op.id)
+  ) {
+    issues.push({
+      code: "INVALID_REFERENCE",
+      path: `${basePath}.id`,
+      value: op.id,
+    });
+  }
+  const range = view.evidenceBatchSeqRange;
+  if (range !== undefined) {
+    op.evidenceEventSeqs.forEach((seq, index) => {
+      if (!Number.isInteger(seq) || seq < range.min || seq > range.max) {
+        issues.push({
+          code: "EVIDENCE_OUT_OF_RANGE",
+          path: `${basePath}.evidenceEventSeqs[${index}]`,
+          value: String(seq),
+        });
+      }
+    });
+  }
+  return issues;
+}
+
+/**
+ * M2 §6.2（R16/R27）：belief op 的身份/知情/引用校验。
+ * - characterId 不是注册表稳定 ID（含显示名误填）→ UNKNOWN_CHARACTER_ID；
+ * - 已注册但既无证据登场也不在场景名单（未参与且未被告知）→
+ *   KNOWLEDGE_NOT_SUPPORTED。获知依据 = 证据场景参与 ∪ 场景在场（画外/
+ *   电话角色以其台词证据获知；隐藏立绘既不自动禁止也不自动证明——只看
+ *   参与/在场，不看立绘）。绝不因 roster 全局存在而放行（R27）。
+ * - correct.replacesBeliefId 必须落在可引用 belief 集内（同角色约束在
+ *   规则层 BELIEF_CORRECT_FOREIGN_TARGET）；
+ * - evidenceEventSeqs 必须在本批区间内。
+ */
+export function validateBeliefIdentity(
+  op: BeliefOp,
+  view: MemoryIdentityView,
+  basePath: string,
+): IdentityValidationIssue[] {
+  const issues: IdentityValidationIssue[] = [];
+  if (!view.knownCharacterIds.has(op.characterId)) {
+    issues.push({
+      code: "UNKNOWN_CHARACTER_ID",
+      path: `${basePath}.characterId`,
+      value: op.characterId,
+    });
+  } else if (
+    !view.allowedCharacterIds.has(op.characterId) &&
+    !view.evidenceCharacterIds.has(op.characterId)
+  ) {
+    issues.push({
+      code: "KNOWLEDGE_NOT_SUPPORTED",
+      path: `${basePath}.characterId`,
+      value: op.characterId,
+    });
+  }
+  if (
+    op.type === "correct" &&
+    op.replacesBeliefId !== undefined &&
+    view.citableBeliefIds !== undefined &&
+    !view.citableBeliefIds.has(op.replacesBeliefId)
+  ) {
+    issues.push({
+      code: "INVALID_REFERENCE",
+      path: `${basePath}.replacesBeliefId`,
+      value: op.replacesBeliefId,
+    });
+  }
+  const range = view.evidenceBatchSeqRange;
+  if (range !== undefined) {
+    op.evidenceEventSeqs.forEach((seq, index) => {
+      if (!Number.isInteger(seq) || seq < range.min || seq > range.max) {
+        issues.push({
+          code: "EVIDENCE_OUT_OF_RANGE",
+          path: `${basePath}.evidenceEventSeqs[${index}]`,
+          value: String(seq),
+        });
+      }
+    });
+  }
+  return issues;
 }

@@ -55,6 +55,7 @@ function makeMemoryState(): NarrativeMemoryState {
         superseded: true,
       },
     ],
+      consolidationFailedIntervals: [],
   };
 }
 
@@ -100,5 +101,29 @@ describe("digest v2 (MA-B/D6)", () => {
     const state = memoryStateFromDigest(memoryDigestFromState(makeMemoryState()));
     expect(state.facts.map((f) => f.id)).toEqual(["fact_1_1", "fact_1_2"]);
     expect(state.beliefs).toHaveLength(1);
+  });
+});
+
+describe("digest §6.2 M2 — 失败整理区间随快照恢复", () => {
+  it("embeds degraded intervals into the digest and rebuilds them on restore", () => {
+    const state = makeMemoryState();
+    state.consolidatedThroughEventSeq = 0; // 水位停在缺口前
+    state.consolidationFailedIntervals = [
+      { fromSeq: 1, toSeq: 3, attempts: 2, status: "degraded" },
+    ];
+    const digest = memoryDigestFromState(state);
+    expect(MemoryDigestSchema.parse(digest).consolidationFailedIntervals).toEqual([
+      { fromSeq: 1, toSeq: 3, attempts: 2, status: "degraded" },
+    ]);
+    const rebuilt = memoryStateFromDigest(digest);
+    expect(rebuilt.consolidationFailedIntervals).toEqual([
+      { fromSeq: 1, toSeq: 3, attempts: 2, status: "degraded" },
+    ]);
+  });
+
+  it("a legacy digest without the field restores to no failed intervals", () => {
+    const legacy = memoryDigestFromState(makeMemoryState());
+    delete (legacy as Partial<MemoryDigest>).consolidationFailedIntervals;
+    expect(memoryStateFromDigest(legacy).consolidationFailedIntervals).toEqual([]);
   });
 });
