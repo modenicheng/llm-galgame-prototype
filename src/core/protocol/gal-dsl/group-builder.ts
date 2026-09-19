@@ -2,7 +2,10 @@ import {
   DslProtocolError,
   type DslInteractionDraft,
   type DslLine,
+  type DslLineV2,
   type EventGroupDraft,
+  type EventGroupDraftV2,
+  type V2StageOp,
 } from "./types.js";
 import { InteractionBuilder } from "./interaction-builder.js";
 import type { StageCue } from "../../presentation/types.js";
@@ -193,5 +196,189 @@ export class EventGroupBuilder {
             : {}),
         };
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// v2 组构造（C4，计划 §4.3 分组）
+// ---------------------------------------------------------------------------
+
+/**
+ * Assembles EventGroupDraftV2 from DslLineV2 lines. 分组规则与 v1 相同
+ * （§36–§39，§43）：舞台/身份操作累积进 pendingOps，直到一个主事件
+ * （@say / @n / 完整表单 / @beat）把它们冲刷成一组；打开中的表单吞掉
+ * 一切操作行。差异只在 prelude 的元素类型——v2 保留**源顺序意图**
+ * （V2StageOp），具体 StageCue 翻译、默认值初始化与语义校验都在
+ * compiler（§4.2 状态表需要 registry + 双状态域）。
+ */
+export class EventGroupBuilderV2 {
+  private pendingOps: V2StageOp[] = [];
+  private interaction: InteractionBuilder | null = null;
+
+  hasOpenInteraction(): boolean {
+    return this.interaction?.isOpen() === true;
+  }
+
+  push(line: DslLineV2): EventGroupDraftV2[] {
+    switch (line.kind) {
+      case "background":
+      case "bgm":
+      case "sound_effect":
+      case "ch_show":
+      case "ch_set":
+      case "ch_hide":
+      case "ch_exit":
+      case "ch_reset":
+        // DslLineV2 的这些变体与 V2StageOp 逐字段同形（含可选 lineIndex
+        // 盖章）：原样按源顺序入列，交给 compiler 按序归约。
+        this.pendingOps.push(line);
+        return [];
+
+      case "name_set":
+        // 行类型是 name_*，组前奏操作类型是 label_*（身份域命名）。
+        this.pendingOps.push({
+          kind: "label_set",
+          characterId: line.characterId,
+          label: line.label,
+          ...(line.lineIndex !== undefined ? { lineIndex: line.lineIndex } : {}),
+        });
+        return [];
+
+      case "name_reset":
+        this.pendingOps.push({
+          kind: "label_reset",
+          characterId: line.characterId,
+          ...(line.lineIndex !== undefined ? { lineIndex: line.lineIndex } : {}),
+        });
+        return [];
+
+      case "say":
+        this.assertNoOpenForm();
+        return this.flush({
+          type: "dialogue",
+          characterId: line.characterId,
+          text: line.text,
+          ...(line.lineIndex !== undefined ? { lineIndex: line.lineIndex } : {}),
+        });
+
+      case "narration":
+        this.assertNoOpenForm();
+        return this.flush({
+          type: "narration",
+          text: line.text,
+          ...(line.lineIndex !== undefined ? { lineIndex: line.lineIndex } : {}),
+        });
+
+      case "form_start":
+        if (this.interaction !== null) {
+          throw new DslProtocolError(
+            "FORM_ALREADY_OPEN",
+            "前一个交互表单还没有关闭，不能开新表单。",
+            {
+              expected: "表单以 @/? 结束后才能开始下一个 @?",
+              fix: "先写 @/? 关闭当前表单，再开新表单",
+            },
+          );
+        }
+        {
+          // 先验证再挂载（与 v1 同因）：start() 抛 EMPTY_FORM_PROMPT 时半开
+          // builder 残留会让下一个 form_start 误判 FORM_ALREADY_OPEN。
+          const interaction = new InteractionBuilder();
+          interaction.start(line.prompt);
+          this.interaction = interaction;
+        }
+        return [];
+
+      case "form_option":
+        this.ensureInteraction().addOption(line.text);
+        return [];
+
+      case "form_input":
+        this.ensureInteraction().setInput(line.placeholder);
+        return [];
+
+      case "form_end": {
+        const draft = this.ensureInteraction().finish();
+        return this.flush({
+          type: "interaction",
+          interaction: draft,
+          ...(line.lineIndex !== undefined ? { lineIndex: line.lineIndex } : {}),
+        });
+      }
+
+      case "beat":
+        this.assertNoOpenForm();
+        return this.flush({ type: "beat", ...(line.lineIndex !== undefined ? { lineIndex: line.lineIndex } : {}) });
+
+      case "segment_end":
+        throw new DslProtocolError(
+          "UNKNOWN_LINE",
+          "segment_end must be handled by the segment validator, not the group builder.",
+        );
+
+      case "ending_epilogue":
+        throw new DslProtocolError(
+          "UNKNOWN_LINE",
+          "ending_epilogue must be handled by the segment validator, not the group builder.",
+        );
+
+      default: {
+        // 穷尽性守卫：新增 DslLineV2 变体时这里编译期报错、运行期响亮失败，
+        // 不会再出现“漏 case 静默返回 undefined”。
+        const exhausted: never = line;
+        throw new DslProtocolError(
+          "UNKNOWN_LINE",
+          `未处理的 v2 行类型：${String((exhausted as { kind?: string }).kind)}。`,
+        );
+      }
+    }
+  }
+
+  finish(): { pendingOps: V2StageOp[]; openInteraction: DslInteractionDraft | null } {
+    let openInteraction: DslInteractionDraft | null = null;
+    if (this.interaction !== null) {
+      try {
+        openInteraction = this.interaction.finish();
+      } catch (error) {
+        if (error instanceof DslProtocolError) {
+          // 截断表单不可推导：调用方丢弃（与 v1 §38/§102 相同）。
+          openInteraction = null;
+        } else {
+          throw error;
+        }
+      }
+    }
+    const ops = this.pendingOps;
+    this.interaction = null;
+    this.pendingOps = [];
+    return { pendingOps: ops, openInteraction };
+  }
+
+  private ensureInteraction(): InteractionBuilder {
+    if (this.interaction === null) {
+      return new InteractionBuilder();
+    }
+    return this.interaction;
+  }
+
+  private assertNoOpenForm(): void {
+    if (this.interaction !== null) {
+      throw new DslProtocolError(
+        "CONTENT_INSIDE_OPEN_FORM",
+        "交互表单还开着，中间不能插入台词、旁白或 beat。",
+        {
+          expected: "@? 之后只能跟 @+ 选项行 / @= 输入行，最后以 @/? 结束",
+          cause: "表单行（@?/@+/=@）和正文行混在了一起",
+          fix: "先写 @/? 关闭表单，再把台词或旁白另起一行写在表单之后",
+        },
+      );
+    }
+  }
+
+  private flush(main: EventGroupDraftV2["main"]): EventGroupDraftV2[] {
+    const group: EventGroupDraftV2 = { prelude: this.pendingOps, main };
+    this.pendingOps = [];
+    this.interaction = null;
+    return [group];
   }
 }
