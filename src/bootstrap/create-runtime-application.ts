@@ -451,6 +451,8 @@ export async function createRuntimeApplication(
     authorConfig,
     metrics,
     assetCatalog,
+    // C5：身份投影真源——writer 历史由此走身份稳定事件 JSON（§5.1）。
+    characterRegistry.registry,
   );
 
   const provider = selectTtsProvider(config, voices);
@@ -564,6 +566,9 @@ export async function createRuntimeApplication(
         apiKey,
         api: config.api,
         config: config.narrative,
+        ...(characterRegistry.registry !== undefined
+          ? { registry: characterRegistry.registry }
+          : {}),
         diagnostics,
       });
       const service = new NarrativeDirectorService({
@@ -583,6 +588,9 @@ export async function createRuntimeApplication(
       ids: new SessionIdGenerator(),
       sessionId,
       diagnostics,
+      ...(characterRegistry.registry !== undefined
+        ? { characterRegistry: characterRegistry.registry }
+        : {}),
       runMode,
       ...(narrativeDirector ? { narrativeDirector } : {}),
       director,

@@ -32,7 +32,9 @@ import {
   VOLUME_VALUES,
   type VoiceDirectionTarget,
 } from "../audio/performance-compiler.js";
-import { serializeStoryContext } from "../../story/context-builder.js";
+// C5：导演观察窗沿用冻结的 legacy 渲染（受控身份视图的投影接入归后续
+// 任务；本文件不在 C5 文件清单内）。
+import { serializeStoryContextLegacy } from "../../story/context-builder.js";
 
 /** 表单模式（与 InteractionPolicy/InteractionFormSnapshot 同口径）。 */
 export type FormMode = "choice" | "input" | "hybrid";
@@ -460,7 +462,7 @@ export class DirectorService {
         continue;
       }
       if (events.length === 0) continue;
-      chunks.push(serializeStoryContext(events));
+      chunks.push(serializeStoryContextLegacy(events));
     }
     return chunks.length === 0 ? "（该场景暂无已实现剧情）" : chunks.join("\n");
   }

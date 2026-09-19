@@ -39,6 +39,14 @@ import {
 } from "./core/presentation/defaults.js";
 import { createVisualStateReducer } from "./core/presentation/reducer.js";
 import { serializeStoryContext } from "./story/context-builder.js";
+import {
+  buildCharacterRoster,
+  createCharacterRegistry,
+} from "./core/characters/registry.js";
+import type {
+  CharacterRegistry as RosterRegistry,
+} from "./core/characters/types.js";
+import type { AssetCatalog } from "./core/assets/types.js";
 import type { StoryContextEvent } from "./schema.js";
 import {
   AudioDescriptorFactory,
@@ -51,7 +59,6 @@ import type { OutlineWriterPort, WorldDraft } from "./application/outline/outlin
 import { loadAssetCatalog } from "./application/assets/asset-catalog-loader.js";
 import { CanonStore } from "./adapters/storage/canon-store.js";
 import { rosterFromCanonCharacters } from "./application/characters/world-roster.js";
-import { createCharacterRegistry } from "./core/characters/registry.js";
 
 // ---------------------------------------------------------------------------
 // R01 helpers — drive the real parse → compile pipeline for one dialogue line
@@ -79,6 +86,46 @@ function registryWith(entry: CharacterRegistryEntry): CharacterRegistry {
       return [entry];
     },
   };
+}
+
+/**
+ * C2 roster registry for the R01 vector（C5 形状适配：serializeStoryContext
+ * 改为显式携带 registry 的身份稳定投影；断言语义不变——序列化结果仍须
+ * 包含稳定内部 id female_A）。
+ */
+function contractRosterRegistry(): RosterRegistry {
+  const assets: AssetCatalog = {
+    guidance: "",
+    backgrounds: {},
+    bgm: {},
+    soundEffects: {},
+    spriteSets: {},
+    characters: {},
+  };
+  return createCharacterRegistry(
+    buildCharacterRoster({
+      schemaVersion: 2,
+      scopeId: "r01-contract",
+      playerId: "player_one",
+      characters: [
+        {
+          id: "player_one",
+          name: "玩家",
+          control: "player",
+          initialLabel: "你",
+          persona: "玩家本人（契约向量）。",
+        },
+        {
+          id: RENAME_IDENTITY_CASE.characterId,
+          name: RENAME_IDENTITY_CASE.scriptName,
+          control: "npc",
+          initialLabel: RENAME_IDENTITY_CASE.scriptName,
+          persona: "契约向量角色。",
+        },
+      ],
+    }),
+    assets,
+  );
 }
 
 /** Parse + compile one dialogue header line the way the runtime pipeline does. */
@@ -203,7 +250,10 @@ describe("character identity contract — shared vectors (C1)", () => {
     // 缺陷（红灯）：serializeStoryContext 只输出 event.speaker（显示名
     // 「神秘女子」），稳定 characterId 丢失——下一请求里模型无从得知
     // 神秘女子 = female_A，只能凭显示名写行头，身份链就此断裂。
-    const serialized = serializeStoryContext([storedDialogue(renamed, 1)]);
+    const serialized = serializeStoryContext(
+      [storedDialogue(renamed, 1)],
+      contractRosterRegistry(),
+    );
     expect(serialized).toContain(RENAME_IDENTITY_CASE.characterId);
   });
 

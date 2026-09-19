@@ -9,10 +9,16 @@
 import type { AuthorConfig } from "../config.js";
 import type { ModelAssetCatalog } from "../core/assets/types.js";
 import type { VisualState } from "../core/presentation/types.js";
+import type { CharacterRegistry } from "../core/characters/types.js";
+import type { GenerationIdentity } from "../core/ports/story-generator-port.js";
 import type { PromptBundle } from "../prompts.js";
 import type { StoryContextEvent } from "../schema.js";
 import { summarizeState } from "./state.js";
 import type { StoryState } from "./types.js";
+import {
+  projectWriterHistory,
+  renderProjectedEvents,
+} from "./event-projection.js";
 
 // ---------------------------------------------------------------------------
 // ContextInput
@@ -25,6 +31,11 @@ export interface ContextInput {
   state: StoryState;
   /** Sliding window of recent events, ordered oldest first. */
   recentEvents: StoryContextEvent[];
+  /**
+   * C2 角色注册表：在场时历史走身份稳定事件 JSON（§5.1）。缺席 = 兼容
+   * 路径（窄测试直连 writer），使用冻结的 legacy 渲染。
+   */
+  registry?: CharacterRegistry;
   /** Optional author-enforced constraints. */
   authorConfig?: AuthorConfig;
   /** Per-turn narrative director brief (rendered as a director note). */
@@ -109,10 +120,13 @@ function buildAuthorConfigSection(config: AuthorConfig): string {
 // ---------------------------------------------------------------------------
 
 /**
- * One plain-text line per history event (docs §69). Interaction / choice /
- * end events are skipped: they are machine prompts, not narrative content.
+ * One plain-text line per history event (docs §69) — LEGACY 兼容渲染
+ * （C5 冻结）：只服务无 registry 的兼容边界（窄测试夹具）。运行时 writer
+ * 历史一律走 `serializeStoryContext`（身份稳定的事件 JSON，§5.1）——
+ * legacy 路径的 `名牌: 台词` 形态可被误解析为新角色，不得回流进生产
+ * prompt。Interaction / choice / end events are skipped.
  */
-export function serializeStoryContext(events: StoryContextEvent[]): string {
+export function serializeStoryContextLegacy(events: StoryContextEvent[]): string {
   const lines: string[] = [];
   for (const event of events) {
     switch (event.type) {
@@ -138,6 +152,19 @@ export function serializeStoryContext(events: StoryContextEvent[]): string {
     }
   }
   return lines.join("\n");
+}
+
+/**
+ * C5 §5.1：writer/prefetch/recovery 的历史投影——`projectWriterHistory`
+ * 的身份稳定事件 JSON（JSONL）。对白行携带稳定 characterId 与发射时刻
+ * 名牌，杜绝 `神秘女子: 台词` 这类可被误解析为新角色的行头格式；未提交
+ * 预取事件用 attempt 引用（与已提交 event:<seq> 分开标记）。
+ */
+export function serializeStoryContext(
+  events: StoryContextEvent[],
+  registry: CharacterRegistry,
+): string {
+  return renderProjectedEvents(projectWriterHistory(events, registry));
 }
 
 /**
@@ -247,6 +274,37 @@ export interface DslContextInput extends ContextInput {
   tailVisualState?: VisualState;
   /** Model-facing asset catalog (logical ids only, docs §59). */
   modelAssetCatalog?: ModelAssetCatalog;
+  /**
+   * C5 §5.1 身份上下文：协议版本 / roster revision / cast / 名牌状态。
+   * 缺席 = 兼容路径（无 registry 的窄测试夹具；运行时请求一律携带）。
+   */
+  identity?: GenerationIdentity;
+}
+
+/**
+ * C5 §3.4：本段 cast 段落——允许发声 cast 与场景参与者分列，绝不从
+ * 「当前可见立绘」推导。空 allowedSpeakerIds 就是本段不能输出 NPC 台词。
+ */
+export function renderCastSection(identity: GenerationIdentity): string {
+  const label = (id: string): string => {
+    const own = identity.characterState.labels[id];
+    return Object.hasOwn(identity.characterState.labels, id) && own !== undefined
+      ? `${id}（当前名牌：${own}）`
+      : id;
+  };
+  const lines: string[] = [];
+  const allowed = identity.cast.allowedSpeakerIds;
+  lines.push(
+    allowed.length > 0
+      ? `允许发声（本段 NPC 台词仅限这些角色 ID）：${allowed.map(label).join("、")}`
+      : "允许发声：本段没有可发声 NPC——不要输出任何角色台词，只写旁白。",
+  );
+  lines.push(
+    `场景参与者（含电话/画外角色，不等于台上可见）：${identity.cast.sceneParticipantIds
+      .map(label)
+      .join("、")}`,
+  );
+  return lines.join("\n");
 }
 
 /**
@@ -268,7 +326,9 @@ export function buildDslUserPrompt(
   sections.push("===== 剧情历史 =====");
   sections.push(
     input.recentEvents.length > 0
-      ? serializeStoryContext(input.recentEvents)
+      ? input.registry !== undefined
+        ? serializeStoryContext(input.recentEvents, input.registry)
+        : serializeStoryContextLegacy(input.recentEvents)
       : "（当前没有历史事件。）",
   );
 
@@ -286,13 +346,31 @@ export function buildDslUserPrompt(
 
   if (input.tailVisualState) {
     sections.push("===== 当前舞台状态 =====");
-    sections.push(serializeVisualContext(input.tailVisualState, input.modelAssetCatalog?.characters));
+    // §3.4：视觉段按 visible 真值列舞台状态——在场名单（不在场清单）由
+    // cast 段单独给出，不从素材目录推导。无 identity 的兼容路径保持旧
+    // 素材目录推导（字节不变）。
+    sections.push(
+      serializeVisualContext(
+        input.tailVisualState,
+        input.identity === undefined ? input.modelAssetCatalog?.characters : undefined,
+      ),
+    );
+  }
+
+  if (input.identity !== undefined) {
+    sections.push("===== 本段 cast =====");
+    sections.push(renderCastSection(input.identity));
   }
 
   sections.push(`任务类型：${input.taskType}`);
   sections.push(`当前回合：${turn}`);
   sections.push(`本次续写目标行数：${input.targetLines}`);
   sections.push(`生成段 nonce：${input.generationNonce}`);
+  if (input.identity !== undefined) {
+    // 身份版本与协议版本进任务头（易变区尾部，不打散稳定前缀）。
+    sections.push(`DSL 协议版本：${input.identity.protocolVersion}`);
+    sections.push(`身份版本（roster revision）：${input.identity.rosterRevision}`);
+  }
 
   if (extraInstructions) {
     sections.push(extraInstructions);

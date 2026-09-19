@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import {
+  legacyGenerationIdentity,
   createGenerationHandle,
   type StoryGeneratorPort,
 } from "./story-generator-port.js";
@@ -165,6 +166,10 @@ describe("GeneratorPortFacade", () => {
     const facade = new GeneratorPortFacade(inner as unknown as StoryGenerator);
     const briefing = "剪报文本";
     facade.generateContinuation({
+      identity: legacyGenerationIdentity({
+        allowedSpeakerIds: ["npc_a"],
+        sceneParticipantIds: ["player_one", "npc_a"],
+      }),
       turn: 2,
       state: makeState(),
       history: [],
@@ -181,6 +186,10 @@ describe("GeneratorPortFacade", () => {
       }),
     );
     const bridge = facade.generateInputBridge({
+      identity: legacyGenerationIdentity({
+        allowedSpeakerIds: ["npc_a"],
+        sceneParticipantIds: ["player_one", "npc_a"],
+      }),
       turn: 3,
       state: makeState(),
       interaction: makeInteraction(),

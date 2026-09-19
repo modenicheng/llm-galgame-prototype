@@ -98,6 +98,16 @@ import { isPlayableEvent } from "./schema.js";
 import { InteractionPolicy } from "./story/interaction-policy.js";
 import type { InteractionMode, InputSpec } from "./story/types.js";
 import { reconcileStoryState } from "./story/reconcile.js";
+import type {
+  CharacterRegistry as CoreCharacterRegistry,
+  CharacterRuntimeState,
+} from "./core/characters/types.js";
+import { createCharacterRuntimeState } from "./core/characters/types.js";
+import { cloneCharacterRuntimeState } from "./story/event-projection.js";
+import {
+  legacyGenerationIdentity,
+  type GenerationIdentity,
+} from "./core/ports/story-generator-port.js";
 import { createInitialState } from "./story/state.js";
 import type { SceneDirectorPort } from "./application/director/director-service.js";
 import { buildActorBriefing } from "./application/director/actor-briefing.js";
@@ -131,6 +141,12 @@ export interface GamePorts {
    * 开 retrace 新周目（无档则开新 root 周目）。
    */
   runMode?: "resume" | "restart";
+  /**
+   * C2 角色注册表（身份投影真源，C5 起经 bootstrap 注入）。缺席 = legacy
+   * 兼容会话（窄测试直连 Game）：身份字段走 legacy 视图，历史投影退回
+   * 冻结的 legacy 渲染。
+   */
+  characterRegistry?: CoreCharacterRegistry;
 }
 
 /** §8.4: keep only the most recent formally-opened interaction modes. */
@@ -244,6 +260,21 @@ export class Game implements InteractionHost {
   /** Per-branch tail state (docs §56): keyed by option id. */
   /** @internal 交互驱动接缝（M4.5）。 */
   readonly branchTailStates = new Map<string, VisualState>();
+  /**
+   * C5 §5.1：每预取分支的名牌状态副本（绑定 registry revision）。预测性
+   * 改名只落在副本上；取消、未选、修复失败的分支副本随分支一并丢弃，
+   * 绝不回写主状态。回溯（retrace）恢复重放时同理不携带预测副本。
+   */
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly branchCharacterStates = new Map<string, CharacterRuntimeState>();
+  /**
+   * C5 §5.1：本局名牌运行时状态（v1 期间无持久改名来源，保持空——投影
+   * 的名牌快照来自事件自身；v2 语义编译接入后由 label 操作更新）。
+   */
+  private characterState: CharacterRuntimeState = createCharacterRuntimeState();
+  /** C2 角色注册表；缺席 = legacy 兼容会话。 */
+  /** @internal 交互驱动接缝（M4.5）。 */
+  readonly characterRegistry: CoreCharacterRegistry | undefined;
   /** Input-bridge prefetch controllers, keyed by interaction id. */
   /** @internal 交互驱动接缝（M4.5）。 */
   readonly bridgeControllers = new Map<string, AbortController>();
@@ -284,6 +315,7 @@ export class Game implements InteractionHost {
     this.storyState = createInitialState();
     this.catalog = catalog;
     this.registry = catalog ? toCharacterRegistry(catalog) : EMPTY_CHARACTER_REGISTRY;
+    this.characterRegistry = ports.characterRegistry;
     this.defaults = createDefaultsFromRegistry(this.registry);
     this.reduce = createVisualStateReducer(this.defaults);
     this.status.subscribe((snapshot) => {
@@ -703,6 +735,7 @@ export class Game implements InteractionHost {
       const genHandle =
         kind === "opening"
           ? this.generator.generateOpening({
+              identity: this.generationIdentity(),
               turn,
               state: this.storyState,
               signal: controller.signal,
@@ -710,6 +743,7 @@ export class Game implements InteractionHost {
               tailVisualState: this.tailVisualState,
             })
           : this.generator.generateContinuation({
+              identity: this.generationIdentity(),
               turn,
               state: this.storyState,
               history,
@@ -1601,6 +1635,56 @@ export class Game implements InteractionHost {
         : {}),
       ...(directive !== undefined ? { directive } : {}),
     });
+  }
+
+  /**
+   * C5 §5.1：本请求的身份上下文——所有生成请求显式携带
+   * {protocolVersion, rosterRevision, cast, characterState}。registry 缺席
+   * （legacy 兼容会话/窄测试）走 legacy 视图（revision="legacy"，cast 取
+   * v1 素材目录注册表），不静默伪造 roster revision。
+   *
+   * `branchOptionId` 非空 = 预取分支请求：characterState 取该分支的预测
+   * 副本（绑定本局 roster revision；未选/取消/修复失败即丢弃）。
+   */
+  /** @internal 交互驱动接缝（M4.5）。 */
+  generationIdentity(branchOptionId?: string): GenerationIdentity {
+    const registry = this.characterRegistry;
+    if (registry === undefined) {
+      const ids = this.registry.entries().map((entry) => entry.characterId);
+      return legacyGenerationIdentity({
+        allowedSpeakerIds: ids,
+        sceneParticipantIds: ids,
+      });
+    }
+    const npcIds = registry.roster.characters
+      .filter((definition) => definition.control === "npc")
+      .map((definition) => definition.id);
+    const base =
+      branchOptionId !== undefined
+        ? this.branchCharacterStates.get(branchOptionId)
+        : undefined;
+    return {
+      // 窄测试 config 可缺 dsl 块（zod 缺省 1）；直连构造的对象兜底 1。
+      protocolVersion: this.config.dsl?.protocol_version ?? 1,
+      rosterRevision: registry.roster.revision,
+      // 场景参与者 = 本局 roster 全体（含电话/画外角色；不从立绘推导）。
+      // 场景计划接入（后续波次）后改由场景计划给出。
+      cast: {
+        allowedSpeakerIds: npcIds,
+        sceneParticipantIds: registry.roster.characters.map((definition) => definition.id),
+      },
+      characterState: cloneCharacterRuntimeState(base ?? this.characterState),
+    };
+  }
+
+  /** 选中分支的预测名牌副本转正（未选/取消分支的副本随 clear 丢弃）。 */
+  /** @internal 交互驱动接缝（M4.5）。 */
+  promoteBranchCharacterState(optionId: string): void {
+    const branchLabels = this.branchCharacterStates.get(optionId);
+    if (branchLabels !== undefined) {
+      this.characterState = branchLabels;
+    }
+    this.branchCharacterStates.clear();
   }
 
   /**

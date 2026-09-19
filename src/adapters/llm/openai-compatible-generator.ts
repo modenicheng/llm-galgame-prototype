@@ -5,9 +5,12 @@ import {
   buildDslUserPrompt,
   buildSystemContext,
   serializeStoryContext,
+  serializeStoryContextLegacy,
   type ContextInput,
   type DslContextInput,
 } from "../../story/context-builder.js";
+import type { CharacterRegistry } from "../../core/characters/types.js";
+import type { GenerationIdentity } from "../../core/ports/story-generator-port.js";
 import { toModelCatalog } from "../../core/assets/catalog.js";
 import type { AssetCatalog, ModelAssetCatalog } from "../../core/assets/types.js";
 import type { VisualState } from "../../core/presentation/types.js";
@@ -106,6 +109,12 @@ export interface GenerationStreamOptions {
    * in the user prompt (docs narrative-director §Task-10).
    */
   briefing?: string;
+  /**
+   * C5 §5.1 身份上下文（协议版本 / roster revision / cast / 名牌状态）。
+   * 端口门面（GeneratorPortFacade）从请求透传；直连调用（窄测试）缺省
+   * 走 legacy 渲染。
+   */
+  identity?: GenerationIdentity;
 }
 
 /**
@@ -195,6 +204,11 @@ export class StoryGenerator {
   /** Registered speaker names (script names + character ids) — gates the
    * full-width-colon dialogue normalization in the DSL line parser. */
   private readonly knownSpeakers: ReadonlySet<string> | undefined;
+  /**
+   * C2 角色注册表（身份投影真源，C5 起由 bootstrap 注入）。缺席 = 兼容
+   * 路径（窄测试直连）：历史走冻结的 legacy 渲染，无 cast/身份版本段。
+   */
+  private readonly characterRegistry: CharacterRegistry | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -204,6 +218,7 @@ export class StoryGenerator {
     private readonly authorConfig?: AuthorConfig,
     private readonly metrics?: Metrics,
     catalog?: AssetCatalog,
+    characterRegistry?: CharacterRegistry,
   ) {
     this.client = new OpenAI({
       apiKey,
@@ -216,6 +231,7 @@ export class StoryGenerator {
       this.makeCtx(null as unknown as StoryState, []),
     );
     this.modelCatalog = catalog ? toModelCatalog(catalog) : undefined;
+    this.characterRegistry = characterRegistry;
     if (catalog !== undefined) {
       const speakers = new Set<string>();
       for (const [characterId, binding] of Object.entries(catalog.characters)) {
@@ -236,6 +252,9 @@ export class StoryGenerator {
       prompts: this.prompts,
       state,
       recentEvents,
+      ...(this.characterRegistry !== undefined
+        ? { registry: this.characterRegistry }
+        : {}),
     };
     if (this.authorConfig) {
       ctx.authorConfig = this.authorConfig;
@@ -266,7 +285,20 @@ export class StoryGenerator {
     if (this.modelCatalog) {
       ctx.modelAssetCatalog = this.modelCatalog;
     }
+    if (options?.identity) {
+      ctx.identity = options.identity;
+    }
     return ctx;
+  }
+
+  /**
+   * C5：历史序列化——有 registry 走身份稳定事件 JSON（§5.1），无 registry
+   * （窄测试直连）走冻结的 legacy 渲染。
+   */
+  private serializeHistory(events: StoryContextEvent[]): string {
+    return this.characterRegistry !== undefined
+      ? serializeStoryContext(events, this.characterRegistry)
+      : serializeStoryContextLegacy(events);
   }
 
   generateOpening(
@@ -403,7 +435,7 @@ export class StoryGenerator {
     let extra = fill(this.instructions.continuation, {
       nonce,
       target_lines: String(this.config.text_buffer.target_lines),
-      prefetched: serializeStoryContext(prefetchedEvents),
+      prefetched: this.serializeHistory(prefetchedEvents),
     });
     return this.requestDslEnvelope(
       "continuation",
@@ -1081,6 +1113,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
     return createGenerationHandle(`opening:${request.turn}`, (signal, onGroup) =>
       this.inner.generateOpening(request.turn, request.state, signal, {
         onGroup,
+        identity: request.identity,
         ...(request.briefing !== undefined && request.briefing !== "" ? { briefing: request.briefing } : {}),
         ...(request.tailVisualState
           ? { tailVisualState: request.tailVisualState }
@@ -1099,6 +1132,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         signal,
         {
           onGroup,
+          identity: request.identity,
           ...(request.briefing !== undefined && request.briefing !== "" ? { briefing: request.briefing } : {}),
           ...(request.tailVisualState
             ? { tailVisualState: request.tailVisualState }
@@ -1122,6 +1156,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         signal,
         {
           onGroup,
+          identity: request.identity,
           ...(request.briefing !== undefined && request.briefing !== "" ? { briefing: request.briefing } : {}),
           ...(request.tailVisualState
             ? { tailVisualState: request.tailVisualState }
@@ -1142,6 +1177,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
         signal,
         {
           onGroup,
+          identity: request.identity,
           ...(request.briefing !== undefined && request.briefing !== "" ? { briefing: request.briefing } : {}),
           ...(request.tailVisualState
             ? { tailVisualState: request.tailVisualState }
@@ -1162,6 +1198,7 @@ export class GeneratorPortFacade implements StoryGeneratorPort {
           signal,
           {
             onGroup,
+            identity: request.identity,
             ...(request.briefing !== undefined && request.briefing !== "" ? { briefing: request.briefing } : {}),
             ...(request.tailVisualState
               ? { tailVisualState: request.tailVisualState }
