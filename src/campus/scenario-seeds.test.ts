@@ -150,4 +150,43 @@ describe("scenarioSeedToInitialState", () => {
     expect(state.canon.scenario_seed).toBe(seed.id);
     expect(state.open_threads[0]?.summary).toBe(seed.title);
   });
+
+  it("folds author-only seed fields into canon as model-only channels", () => {
+    const state = scenarioSeedToInitialState({
+      id: "wired-seed",
+      title: "接线种子",
+      seed: "你和树莓娘在文萃楼走廊核对一张便签上的三处资料入口。",
+      tags: ["文萃楼走廊"],
+      context: "情境借自公开课评社区的个人经历，均为虚构。",
+      concerns: ["不把主观评价包装成客观排名", "保留追问空间"],
+      boundaries: ["不虚构具体机构或教师"],
+      angles: ["知道内容和找得到内容的差别", "把适合谁说具体"],
+      keywords: ["课件", "资料共享"],
+    });
+
+    expect(StoryStateSchema.parse(state)).toBeDefined();
+    expect(state.canon.scenario_context).toBe("情境借自公开课评社区的个人经历，均为虚构。");
+    expect(state.canon.scenario_concerns).toBe("不把主观评价包装成客观排名；保留追问空间");
+    expect(state.canon.scenario_boundaries).toBe("不虚构具体机构或教师");
+    expect(state.canon.scenario_angles).toBe("知道内容和找得到内容的差别；把适合谁说具体");
+    // keywords 是目录检索词，不进模型通道。
+    expect(state.canon.scenario_keywords).toBeUndefined();
+    expect(state.canon).not.toHaveProperty("keywords");
+  });
+
+  it("omits the author-only canon keys when the seed does not provide them", () => {
+    const state = scenarioSeedToInitialState({
+      id: "bare-seed",
+      title: "裸种子",
+      seed: "你和树莓娘在社团广场守着一个暂时没人来的招新摊位。",
+      tags: [],
+    });
+
+    expect(StoryStateSchema.parse(state)).toBeDefined();
+    expect(state.canon.scenario_seed).toBe("bare-seed");
+    expect(state.canon.scenario_context).toBeUndefined();
+    expect(state.canon.scenario_concerns).toBeUndefined();
+    expect(state.canon.scenario_boundaries).toBeUndefined();
+    expect(state.canon.scenario_angles).toBeUndefined();
+  });
 });

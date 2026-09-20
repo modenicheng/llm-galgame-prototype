@@ -133,6 +133,12 @@ export function selectScenarioSeed(
  * 把种子写成初始故事状态：种子全文进入场景目标（Purpose，开场生成会
  * 读到），种子 id/标题进入 canon（本局可追溯），标题作为初始线索线程。
  * 只写"起点"，不写路线、轮数或结局。
+ *
+ * 作者侧描述字段（context/concerns/boundaries/angles）折进 canon：canon
+ * 只进提示词、不上序章卡，是"模型可见、玩家不可见"的既有通道。这些键
+ * 会话开始定一次、之后不变，不破坏提示词前缀稳定。keywords 是目录检索
+ * 词，对写作无用，不接。能否改键名受快照恢复与记忆代理 merge 约束——
+ * scenario_seed/title/tags 已有跨局存活的先例。
  */
 export function scenarioSeedToInitialState(seed: ScenarioSeed): StoryState {
   return createInitialState({
@@ -145,6 +151,18 @@ export function scenarioSeedToInitialState(seed: ScenarioSeed): StoryState {
       scenario_seed: seed.id,
       scenario_title: seed.title,
       ...(seed.tags.length > 0 ? { scenario_tags: seed.tags.join("、") } : {}),
+      ...(seed.context !== undefined && seed.context !== ""
+        ? { scenario_context: seed.context }
+        : {}),
+      ...(seed.concerns !== undefined && seed.concerns.length > 0
+        ? { scenario_concerns: seed.concerns.join("；") }
+        : {}),
+      ...(seed.boundaries !== undefined && seed.boundaries.length > 0
+        ? { scenario_boundaries: seed.boundaries.join("；") }
+        : {}),
+      ...(seed.angles !== undefined && seed.angles.length > 0
+        ? { scenario_angles: seed.angles.join("；") }
+        : {}),
     },
     open_threads: [
       { id: "seed-situation", summary: seed.title, status: "new", last_touched_turn: 0 },
