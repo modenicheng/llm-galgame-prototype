@@ -11,7 +11,7 @@
     `D:\tools\qwentts.cpp\mybuild.cmd`；models/（Q8_0 talker+codec，2.3G）、
     voices/（五音色 .spk/.rvq/.txt）都在该目录下。
   - 启动：仓库 `tts-server\start-qwentts.cmd`（默认指向上述目录，
-    `QWENTTS_HOME` 可覆盖）；服务 127.0.0.1:9766，`--max-batch 4`。
+    `QWENTTS_HOME` 可覆盖）；服务 0.0.0.0:9766（本机走 127.0.0.1 亦可，`--max-batch 4`）。
   - 注意：**注册表在进程内存**，重启引擎后必须重跑注册
     （start-qwentts.cmd 已包含）。
 - **引擎 B（回退）：Python，仓库 `tts-server/`**

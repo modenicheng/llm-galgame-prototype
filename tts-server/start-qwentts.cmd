@@ -10,6 +10,6 @@ if not exist "%QWENTTS_HOME%\build\tts-server.exe" (
 start "qwentts-server" /D "%QWENTTS_HOME%" build\tts-server.exe ^
     --model models/qwen-talker-1.7b-base-Q8_0.gguf ^
     --codec models/qwen-tokenizer-12hz-Q8_0.gguf ^
-    --alias local-qwen3-tts --host 127.0.0.1 --port 9766 --lang auto --max-batch 4
+    --alias local-qwen3-tts --host 0.0.0.0 --port 9766 --lang auto --max-batch 4
 python "%~dp0tools\register_qwentts_voices.py" --voices-dir "%QWENTTS_HOME%\voices"
-echo qwentts.cpp engine ready on http://127.0.0.1:9766
+echo qwentts.cpp engine ready on 0.0.0.0:9766 (LAN accessible)
