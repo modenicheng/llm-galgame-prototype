@@ -72,6 +72,7 @@ backgrounds:
       文萃楼高层走廊，左侧是整面落地窗（能看到对面教学楼与楼下过道），
       窗下有白色暖气片，地面光洁，右侧依次是房间门。白天阳光充足。
       适合白天的值班、带路讲解、走廊偶遇场景。
+      物理位置：东校区，从北食堂经过林荫道可以到达
 
   wencui_corridor_evening:
     src: backgrounds/wencui_corridor_evening.jpg
@@ -99,6 +100,7 @@ backgrounds:
       校园林荫道外景，左侧是教学楼与齐腰绿篱，右侧是茂密树丛，
       梧桐树夹道，路面洒满斑驳树影。白天明亮。
       适合路上同行、赶路、骑车路过的过场。
+      物理位置：北校区，连接北食堂和文萃楼
 
   campus_road_evening:
     src: backgrounds/campus_road_evening.jpg
@@ -118,6 +120,7 @@ backgrounds:
       学生社团文化广场：橙色外墙的社团用房、白色天桥与伞状顶棚，
       前面是开阔的石板广场。白天晴朗。
       网协办公室所在地。部分同学会到这里来修电脑
+      物理位置：北食堂正对面，北理桥下（北理桥连接南北校区，两边分别是北食堂和操场）
 
   club_plaza_evening:
     src: backgrounds/club_plaza_evening.jpg
@@ -141,6 +144,7 @@ backgrounds:
       左侧两扇大窗配灰色窗帘，天花板嵌有长条照明灯。
       白天窗光明亮，顶灯全开。
       适合上课、讲座、社团例会等场面。
+      物理位置：文萃楼内（东校区）
 
   classroom_evening:
     src: backgrounds/classroom_evening.jpg
@@ -170,6 +174,7 @@ backgrounds:
       学校操场：红色塑胶跑道环绕着铺有修剪条纹的绿茵足球场，
       远处是带顶棚的观众看台和白墙教学楼，场上立着足球门。白天晴朗。
       适合体育课、晨跑锻炼、操场边散步聊天的场面。
+      物理位置：南校区。从北校区过去需要过马路。
 
   playground_evening:
     src: backgrounds/playground_evening.jpg
@@ -193,20 +198,21 @@ backgrounds:
       食堂共三层：一层传统餐盘打饭，二层是水饺、面、粉和自助，
       三层为风味小吃窗口，同学们口头常以"北1、北2、北3"相称。
       适合饭点约饭、约在北1打饭或北2吃面、路口偶遇的场面。
+      物理位置；在北校区，在它的南面是社团文化广场，东面是林荫道和文萃
 
   north_canteen_evening:
     src: backgrounds/north_canteen_evening.jpg
     description: |
       同一北食堂门口，西边天空橙红晚霞，砖楼被夕阳染成暖色，
       门前单车排依旧密集。
-      适合晚饭时分、下课后约在北2吃水饺、晚自习前买夜宵的场景。
+      适合晚饭时分、下课后约在北二吃水饺（或者粉）、下了晚课在一楼吃夜宵的场景。
 
   north_canteen_night:
     src: backgrounds/north_canteen_night.jpg
     description: |
       同一北食堂门口，夜色深蓝，食堂窗户透出暖黄的灯光，
       路灯在路面亮起光斑，单车排成安静的黑影。
-      适合下晚课去北3吃风味小吃、夜谈散场的场面。
+      适合下晚课去一楼吃夜宵、夜谈散场的场面。
 
 # BGM 播放默认（秒；可选项，缺省 = 整曲循环、无淡入淡出）。
 # 每曲在 bgm.<id>.playback 里覆盖同名字段，字段：
