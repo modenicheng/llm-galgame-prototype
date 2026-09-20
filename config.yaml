@@ -3,7 +3,9 @@ app:
 
 local_web:
   host: 127.0.0.1
-  port: 0
+  # 固定端口：origin 稳定后玩家设置(localStorage)与 IndexedDB 音频缓存可跨局复用；
+  # 被占时会 EADDRINUSE 明确失败而非静默换端口。
+  port: 6688
   open_browser: true
   controller_limit: 1
 
@@ -26,7 +28,7 @@ agents:
     # api_key_env: OPENAI_API_KEY
     thinking:
       type: enabled
-      effort: max
+      effort: high
     max_tokens: 8192
   recap:
     # 前情梗概压缩器：保持关闭思考；细节化后预算放宽（默认 900）。
@@ -41,7 +43,7 @@ generation:
   # 2026-09-18 实测：不开思考时错误率 35%（开 low 档显著更低）——
   # 刻意保持关闭作为找 bug 的对照配置，修完再评估是否长期开启。
   thinking:
-    type: disabled
+    type: enabled
   repair_attempts: 4
   # 同一段连续修复链上限：链耗尽后续写转入末段收束提示（L2），
   # 仍连续失败再启用强制收束保险丝（L3）。0 = 不设上限（旧行为）。
@@ -95,15 +97,15 @@ media:
 
     planner:
       candidate_prefetch_lines: 1
-      max_active_future_lines: 4
+      max_active_future_lines: 3
 
     playback:
       # 每句角色音频开播前的固定延迟，用于同步视觉与听觉（0 = 不延迟）。
       # 若发现配音比字幕快/慢，可在此微调。
       voice_delay_ms: 0
       # 开播前固定延迟：给语音合成开头留自然停顿，避免听感突兀（语音为预合成）
-      startup_buffer_ms: 350
-      critical_watermark_ms: 500
+      startup_buffer_ms: 250
+      critical_watermark_ms: 300
       low_watermark_ms: 2500
       target_buffer_ms: 6500
 
@@ -113,7 +115,8 @@ media:
       # 树莓娘 paimeng 克隆 + 四配角内置音色克隆，详见 tts-server/README）。
       provider: local
       # 4 与 tts-server 的浪批量一致：单请求并发占满一个 batch 才不吃亏
-      max_concurrency: 4
+      # 为另一个树莓娘虚拟主播提供tts服务，因此需要让一路推理出来
+      max_concurrency: 3
       model_profile: local_qwen3_base
       api_key_env: DASHSCOPE_API_KEY
       format: pcm_s16le

@@ -1,62 +1,50 @@
-# audio-dsp.yaml — 音频动态处理参数（语音 gate/压缩/限幅、BGM 链、闪避）。
-#
-# 所有权约定：本文件由程序写回（/monitor 音频面板「保存」→ POST
-# /api/config/audio-dsp），保存后本注释会被程序格式覆盖——参数含义与调参
-# 建议见 docs/audio-dsp.md。允许手改；坏字段在下次加载/保存时回落默认值。
-# config.yaml 不承载这些参数，两条文件互不写入。
 version: 1
-
-# 语音链：TTS PCM 在 AudioWorklet 内依次过 gate → 压缩 → 限幅。
 voice:
   enabled: true
   gate:
-    enabled: true       # 静音段闭门（range_db 衰减），句内停顿靠 hold 防抖
-    threshold_db: -55   # 低于该电平视为静音
+    threshold_db: -65
     attack_ms: 5
     hold_ms: 150
     release_ms: 250
-    range_db: -70       # 闭门衰减下限（dB，≤0）：0 = 不衰减，-80 ≈ 完全静音
-  compressor:
+    range_db: -70
     enabled: true
-    threshold_db: -26
+  compressor:
+    threshold_db: -23.5
     ratio: 2.5
     attack_ms: 8
     release_ms: 150
     knee_db: 6
-    makeup_db: 0
+    makeup_db: 4
+    enabled: true
   limiter:
-    enabled: true       # 输出天花板，防 TTS 瞬态炸音
     ceiling_db: -1.5
     release_ms: 80
-
-# BGM 链：默认全关（音乐成品一般已母带处理；需要时再开）。
+    enabled: true
 bgm:
-  enabled: true         # 关掉 = BGM 完全旁路动态处理（闪避仍可用）
+  enabled: true
   gate:
-    enabled: false      # 音乐开门没有意义，保持关闭
     threshold_db: -55
     attack_ms: 5
     hold_ms: 150
     release_ms: 250
     range_db: -70
-  compressor:
     enabled: false
-    threshold_db: -20
+  compressor:
+    threshold_db: -19.5
     ratio: 2
     attack_ms: 20
     release_ms: 300
     knee_db: 6
     makeup_db: 0
+    enabled: true
   limiter:
-    enabled: false
-    ceiling_db: -1.5
-    release_ms: 100
-
-# 闪避：语音链输出电平高于阈值时，把 BGM duckGain 压低 depth_db。
+    ceiling_db: -4.4
+    release_ms: 70
+    enabled: true
 ducking:
-  enabled: true
   threshold_db: -42
-  depth_db: -12
+  depth_db: -5.5
   attack_ms: 150
   hold_ms: 350
   release_ms: 900
+  enabled: true
