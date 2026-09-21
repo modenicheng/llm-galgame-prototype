@@ -2,7 +2,7 @@
 
 > 通用部署指南（两引擎、构建、音色制作、排障）在仓库
 > [`docs/local-tts.md`](../docs/local-tts.md)；本文件只记**这台机器**的
-> 实际路径、端口、实测数字与样本位置，不入库。
+> 实际路径、端口与实测数字（2026-09-19 起随库收编；样本与权重仍在库外）。
 
 ## 当前部署（2026-09-18 迁移至稳定位置）
 
@@ -39,7 +39,8 @@ recompile 上限）详见 docs/local-tts.md 引擎 B 一节与 fastpath.py 头�
 - Python 后端：同套测试通过；tts-server 日志大量 canceled=True 证明取消链
   （downloader→route→provider reader.cancel→server 句间丢弃）真实触发。
 - 测试工具：`tools/story_test.py`（playwright，需先起游戏
-  `npx tsx src/entrypoints/web.ts config.tts-story.yaml`）。
+  `pnpm exec tsx src/entrypoints/web.ts config.tts-story.yaml`；
+  `config.tts-story.yaml` 是本机档、未入库，自 `config.yaml` 复制改造）。
 
 ## 待人耳验收样本
 
@@ -55,8 +56,10 @@ recompile 上限）详见 docs/local-tts.md 引擎 B 一节与 fastpath.py 头�
 - 引擎 A：`qwen-codec --model <codec> --talker <talker> -i ref.wav` →
   `.spk/.rvq` + 手写 `.txt` 转写 → `register_qwentts_voices.py` 注册。
 - 引擎 B：`PAIMENG_REF_WAV=<参考音> python tools/build_voices.py`
-  （四配角参考音由 CustomVoice 内置音色合成，脚本内含人设台词与语气指令；
-  需先 `CUSTOM_VOICE_DIR`/`TTS_MODEL_DIR` 指向本地权重或留 HF id 自动下载）。
+  （四配角参考音 2026-09-19/20 已换真人音源，`voices.yaml` 四档
+  `voice_revision: 2`；脚本内的 CustomVoice 内置音色合成是旧参考音来源，
+  仅作备用——需先 `CUSTOM_VOICE_DIR`/`TTS_MODEL_DIR` 指向本地权重或留 HF id
+  自动下载）。
 
 ### 2026-09-19 勘误：ggml submodule 勿盲升级
 - 本机部署（D:	ools\qwentts.cpp）钉在 ggml **3f88e6f**，`--max-batch 4`

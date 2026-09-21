@@ -17,9 +17,10 @@
 
 接入前提（ applies to 两引擎）：
 
-- **无鉴权、无 TLS**，只绑 `127.0.0.1`。给其他机器用 = 内网 + 反向代理或改
-  `--host`，鉴权自己加（服务没有）；音色参考音频与 latent 属内容资产，
-  不出机器、不进 git。
+- **无鉴权、无 TLS**。仓库启动脚本 `start-qwentts.cmd` 现绑 `0.0.0.0`——开放
+  内网，供局域网内另一台虚拟主播取流（本机客户端仍走 `127.0.0.1`）；暴露面
+  = 整个内网，跨不可信网络要自己加鉴权/反代（服务没有），仅本机使用可改回
+  `--host 127.0.0.1`。音色参考音频与 latent 属内容资产，不出机器、不进 git。
 - 引擎 A 的 CORS 放开（GET/POST/DELETE/OPTIONS + Content-Type），浏览器页面可直连。
 - 启动：引擎 A 用仓库 `tts-server\start-qwentts.cmd`（起服务 + 注册音色一步到位）；
   引擎 B 见 docs/local-tts.md 引擎 B 一节。
@@ -62,7 +63,9 @@
 自己拉起引擎时要补这一步**，否则所有请求 400 unknown voice。
 
 连接层参数（消费方容量/超时规划）：读超时 60s、写超时 120s、请求体上限 32MB、
-`TCP_NODELAY` 开（小块即发）；同端口故意不允许双实例（第二个 EADDRINUSE）。
+`TCP_NODELAY` 开（小块即发）。注意 Windows 下同端口重复绑定**不报错**：双实例
+会静默共存、互相抢端口（`netstat -ano` 出现两条 9766 LISTEN 即实锤），处置见
+docs/local-tts.md 排障表。
 
 ## 3. 消费端典型接法
 
@@ -140,7 +143,8 @@ while (true) {
 
 - **批宽 4**（`--max-batch`）：≤4 路并发共享批处理、吞吐最优（本机四路吞吐
   RTF ~0.13–0.20，流式首包 ~530ms）；更高并发排队。游戏侧
-  `synthesis.max_concurrency: 4` 与之对齐。
+  `synthesis.max_concurrency: 3`——有意低于批宽，让一路给局域网内另一台
+  虚拟主播取流。
 - 24 kHz 固定输出；speed / rate / 音量 / 音高 / 逐请求指令均不支持。
 - 单 GPU 单实例；模型常驻显存（~2.4 GB Q8）。
 
@@ -149,8 +153,8 @@ while (true) {
 游戏本体就是本服务最完整的消费端参考，四处：
 
 1. **配置** `config.yaml` → `media.audio.synthesis`：`provider: local`、
-   `max_concurrency: 4`（对齐批宽）、`format: pcm_s16le`、`sample_rate: 24000`
-   （启动校验拦截）。
+   `max_concurrency: 3`（低于批宽：给局域网另一台虚拟主播让一路推理）、
+   `format: pcm_s16le`、`sample_rate: 24000`（启动校验拦截）。
 2. **音色绑定** `voices.yaml` → `providers.local`：
    `{model: local-qwen3-tts, voice: <引擎音色名>, voice_revision: N}`，
    再由 `characters.<key>.voice_profile` 绑到角色。`voice_revision` 在重建音色后

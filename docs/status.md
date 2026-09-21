@@ -1,6 +1,6 @@
 # 实施进度对照（status）
 
-> 快照日期：**2026-09-18**，对照 `feat/campus-ops-raspberry` 分支代码。本文是唯一的进度权威文档；
+> 快照日期：**2026-09-21**，对照 `feat/campus-ops-raspberry` 分支代码（HEAD `ef07db3`）。本文是唯一的进度权威文档；
 > 设计规范见 `docs/llm-outputs-refactor.md`，变更记录见 `docs/changelog.md`。
 > 后续开发完成/变更条目时请同步更新本文。
 
@@ -17,6 +17,8 @@
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
 | `docs/agents/TTS-音色配置指南.md` | 音色创建与绑定操作指南 |
 | `docs/local-tts.md` | 本地 TTS 引擎部署指南（qwentts.cpp / Python tts-server，provider: local） |
+| `docs/tts-server-integration.md` | 本地 TTS 的 OpenAI 协议接入指南（消费方视角） |
+| `docs/audio-dsp.md` | 语音/BGM 动态处理（DSP）管线与 `audio-dsp.yaml` 调参 |
 | `DESIGN.md` | 已归档（model-jsonl 时代旧架构，仅历史参考） |
 
 ## 已完成
@@ -28,7 +30,8 @@
 - **演出状态**：`src/core/presentation/`——KEEP/SET/RESET、first-touch 初始化、
   hide/show/exit、`bgm stop`、站位互斥、未知角色 no-op（§11–§19、§52–§56）。
 - **@end 哨兵与截断恢复**：nonce 校验、INCOMPLETE_SEGMENT、已发布前缀保留、
-  recovery 续写（§45–§51）。
+  recovery 续写（§45–§51）。`tail_narration` 台词尾缀旁白检测——仅监控
+  计数、不改写文本（7cf90ad）。
 - **低水位续写**：`reconcileTextBuffer` + `start_threshold_lines`（2026-08-11），
   `@end buffer` 作为正常段边界（§73–§76）。
 - **StoryStateReconciler**：`src/story/reconcile.ts` 确定性投影，主 DSL 的
@@ -43,7 +46,7 @@
   `max_interactions`（L3 运行时保险丝：endingRequired + 模型连续不结束时合成
   结局兜底，默认 10）；交互进度注入 prompt、进入 L1 时种子线程 new → ready。
   修复链上限 `generation.max_consecutive_repairs`（默认 2）：耗尽转 L2，仍失败
-  才升 L3。长回合护栏 `max_events_between_interactions`（默认 24）：自上次交互
+  才升 L3。长回合护栏 `max_events_between_interactions`（默认 10）：自上次交互
   的文本事件超限后附"尽快交互"提示。+ `restart_session` 命令（应用级重建）。
   恢复时从 events.jsonl 重建交互计数与收束级别。
 - **会话记忆代理**（2026-09-18，落地 09-17 记忆审计定稿）：event 模式专属的
@@ -53,7 +56,9 @@
   ≤8 条），merge-only 写入 StoryState——summarizeState 的既有槽位零管道
   改造注入。单飞 + `memoryWatermark` 水位随快照成对持久化；失败只跳过
   本批，绝不杀 run loop。种子 purpose 生命周期：首个交互提交后转中性
-  锚点（不再以现在时常驻）。
+  锚点（不再以现在时常驻）。2026-09-19/20 加固：独立模型参数（thinking
+  high，c945000）；Canon 展示键=值形态，防照抄成非法 JSON 丢整批（2809393）；
+  快照不再等待在飞提取——交互后 15~20s 阻塞根治（260dab1）。
 
 ### 长线剧情（NarrativeDirector，spec 见 superpowers）
 - 第 1+2 步「记忆过去」：committed events → episodes / threads / setups / anchors，
@@ -73,6 +78,10 @@
 - **BgmController**：真实 `<audio>` 循环播放（含 autoplay 手势解锁）；
   **SoundEffectController**：一次性音效播放。
 - **UiProjection.visualState**：重连恢复完整视觉状态（§107）。
+- **序章卡**（2026-09-19，9bd690b）：开场生成期的过场——本局叙事种子经
+  `session_started.intro` 进投影，模糊压暗卡展示；开场全文与后续行进回看。
+- **结尾页返回主界面 + 主界面过往记录**（2026-09-20，6a77141）：结局页
+  一键回主界面开新局，主界面可浏览过往会话记录。
 
 ### 音频（TTS V2/V3 管线）
 - **合成 provider 四选一**（`media.audio.synthesis.provider`）：`local`（本机
@@ -85,7 +94,7 @@
     `LOCAL_TTS_DIALECT=tts-server` 切 Python 引擎（9765，保留作 fallback），
     `LOCAL_TTS_BASE_URL` 覆盖地址。音色在 `voices.yaml` `providers.local.voice`
     （键 = `tts-server/voices/registry.json`），五音色单模型（树莓娘 paimeng
-    克隆 + 四配角内置音色克隆）、固定 24 kHz 流式 PCM、句子级浪批处理与取消；
+    克隆 + 四配角真人音源参考克隆）、固定 24 kHz 流式 PCM、句子级浪批处理与取消；
     克隆路径不支持 rate/pitch/volume/seed/instructions（对齐 qwen3-tts-vc
     语义）。客户端 abort → 主动 `reader.cancel` → 服务端浪级剔除。
     服务部署/构建/音色重建见 `tts-server/README.md`。
@@ -105,6 +114,12 @@
   descriptor 采样率重采样）。合成调度为到达驱动（2026-09-19）：active descriptor
   一到达即查缓存/合成，不再受播放水位门控——旧水位门会被 stop() 后残留的
   timeline 计数挡住整波新行，拖慢每波首句出声；分支确认即全量入队。
+- **语音/BGM 动态处理（DSP）**（2026-09-20）：`web/src/audio/dynamics-worklet.js`
+  语音 gate/压缩/限幅 + BGM 链 + 语音驱动闪避；参数单一来源
+  `src/shared/wire/audio-dsp.ts`（zod），落盘 `audio-dsp.yaml` 程序写回、
+  手改 fail-open；/monitor「音频」操作台编辑保存并热更玩家页，链路与调参
+  见 `docs/audio-dsp.md`（657ee65、1e15736、435563e；真机全静音 P0 修复
+  62aaf41；实测档位 ef07db3）。
 - **缓存**：IndexedDB（`audio-db` + cache reader/writer/cleaner，容量上限与清理）。
 - **玩家音频设置**（2026-09-19）：语音/BGM 音量双通道分离，与静音、字速一起
   收进控制条「设置」浮层（`web/src/ui/settings-menu.ts`）；偏好经 localStorage
@@ -140,9 +155,9 @@
   淡入淡出 + 裁切窗口循环。自动 ducking 仍无。
 - **CLI 音频**：`media.audio.enabled=false` 默认纯文本（CLI 不接 TTS 播放）。
 - **存档槽位/任意进度存读**：仍为路线图项（现为整会话目录级管理）。
-- **记忆代理监控接线**：memory agent 的 LLM 调用已计入
-  `metrics.requests.memory_agent`，但监控 context 面板尚未给它独立
-  task kind（wire `MonitorContextTaskKind` 待扩 "memory"）。
+- ~~记忆代理监控接线~~：已于 2026-09-20 关闭——`MonitorContextTaskKind`
+  新增 `memory_agent`，`instrumentMemoryAgent` 生命周期装饰器接入 context
+  面板与落盘（82895f0）。
 
 ## 近期提交锚点
 
@@ -154,6 +169,17 @@
 - `b2010be` 修复续写动态预算 + 丢弃重试 + sliceId 监控原位替换
 - `c8cb600` RuntimeBeatEvent 进播放队列——beat 组舞台 cue 在播放位生效
 - `ee94050` monitor 面板布局重构——列/行分割器 + 日志页几何跟随渲染
+- `c945000` 记忆代理独立模型参数 + recap 细节化防重复
+- `e1205ac`/`e12fc93` 玩家端音频设置菜单 + 回看面板
+- `9bd690b` 序章卡——开场生成期展示本局叙事种子
+- `657ee65`/`1e15736`/`435563e`/`62aaf41` 音频 DSP 链三连 + /monitor 音频操作台 + 全静音 P0 修复
+- `fd42e2c` opening 模板补 `@bgm` 强制（整局静音根治）
+- `260dab1` 快照不再等待在飞记忆提取
+- `2809393` Canon 键=值形态对齐提示词 JSON
+- `82895f0` 记忆提取接入监控异步上下文面板
+- `6a77141` 结尾页返回主界面 + 主界面过往记录
+- `a3c024d`/`2b29784` 种子作者侧字段折进 canon + 表单默认 hybrid 带 `@=`
+- `0959fcf`/`ef07db3` qwentts 绑 0.0.0.0 开放内网 + 真机档位固化（thinking high、并发 3）
 
 ## 校园技术社团值班分支（campus-ops-raspberry，2026-09-08）
 
@@ -161,14 +187,17 @@
 
 - **开放叙事**：每局从 `prompts/campus-ops.yaml` 的一条叙事种子开始；
   种子为严格 schema（禁止 `required_rounds`/`success_path` 等流程字段），
-  只提供起点情境。选择策略为 sessionId 确定性轮换，
+  提供起点情境 + 作者侧引导（context/concerns/boundaries/angles，折进
+  canon——模型可见、玩家不可见；2026-09-20 目录按新字段重构，a3c024d）。
+  选择策略为 sessionId 确定性轮换，
   `CAMPUS_SCENARIO_SEED_ID` 可显式指定（`src/campus/scenario-seeds.ts`）。
 - **通用最小接口**：`GamePorts.initialStoryState`（组合根可预置初始故事
   状态；恢复路径不受影响，longform 缺省行为不变）。
 - **角色适配**：`prompts/characters.txt` 分层（BITNP 已核对事实 / 本分支
   演绎）；世界规则、事实边界写入 `story_line.txt`/`guideline.txt`/
   `author.yaml`；结局只依据本局 committed facts。
-- **资源策略**：背景使用 clubroom/wencui_corridor/campus_road/club_plaza；
+- **资源策略**：背景使用文萃楼走廊/校园林荫道/社团广场/阶梯教室/操场/
+  北食堂（昼夜多时段；clubroom 系已注释下线）；
   树莓娘为基于负责人提供的官方分层原稿加工的差分立绘（base + 18 表情差分 +
   剪影，2026-09-15 接入，仅限内部流通）；另有 4 个自制 AI 通用配角立绘
   （female_A/female_B/male_A/male_B，各 base + smile/surprised/embarrassed，
@@ -176,6 +205,9 @@
   `docs/superpowers/notes/campus-ops-source-audit.md`）。
 - **本地语音**：`synthesis.provider: local`（tts-server 本机推理，无需 TTS
   key；服务未启动时合成失败降级纯文本，不阻塞运行）。
+- **opening 模板补 `@bgm` 强制**（fd42e2c）：开局漏 BGM 致整局静音的根治。
+- **表单默认 hybrid 带 `@=` 输入行**（2b29784）：玩家随时可用自己的话
+  行动；收束期表单同规。
 - **现场文档**：`docs/campus-ops-event-runbook.md`（一人操作/重开/指定种子）。
 - **展位 UI 重开闭环（Task 6，2026-09-14）**：结束页与控制条"重开"均发送
   `restart_session`，宿主原地重建新会话（新 ID → 种子轮换），ws rebase 对

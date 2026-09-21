@@ -51,15 +51,15 @@ TTS PCM 流 ──► pcm-playback worklet ──► dynamics worklet(voice, mon
 | voice.gate | threshold_db / attack_ms / hold_ms / release_ms / range_db | −55 / 5 / 150 / 250 / −70 | 低于阈值的段落衰减到 range_db；hold 防句内停顿抖动 |
 | voice.compressor | threshold_db / ratio / attack_ms / release_ms / knee_db / makeup_db | −26 / 2.5 / 8 / 150 / 6 / 0 | 软膝压缩；默认近透明 |
 | voice.limiter | ceiling_db / release_ms | −1.5 / 80 | 输出天花板（固定 0.5ms 快 attack），防 TTS 瞬态炸音 |
-| bgm | enabled + compressor/limiter | 链开、两级处理关 | 成品音乐一般已母带处理；gate 对音乐无意义 |
+| bgm | enabled + gate/compressor/limiter（逐级 enabled） | 链开；gate/压缩/限幅默认全关 | 成品音乐一般已母带处理，三级默认不动；gate 开关面板未暴露，压缩/限幅按需开 |
 | ducking | threshold_db / depth_db / attack_ms / hold_ms / release_ms | −42 / −12 / 150 / 350 / 900 | 语音电平高于阈值 → BGM 压低 depth_db |
 
 ## 持久化：audio-dsp.yaml
 
 - 位置：仓库根（与 config.yaml 同目录），随 `web.ts` 入口按 configPath 目录解析。
 - **所有权**：程序写回（`POST /api/config/audio-dsp`，`AudioDspStore` 原子写：
-  tmp + rename）。首次保存前可以不存在；仓库内提交的种子文件带注释，首次保存
-  后注释会被程序格式覆盖——参数含义以本文档为准。
+  tmp + rename）。首次保存前可以不存在；写回会剥离全部注释（库内现有
+  `audio-dsp.yaml` 已是写回后的裸键值形态）——参数含义以本文档为准。
 - 手改允许：坏字段回落默认、越界 clamp（见上）；config.yaml 与本文件互不写入。
 - 加载纪律：缺文件 → 默认值（info）；坏文件 → 默认值 + warn（fail-open）。与
   config.yaml 的 fail-fast 不同——本文件可被程序写回，不值得为它 brick 启动。

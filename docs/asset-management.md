@@ -229,16 +229,16 @@ AI 引擎设备 `CUTOUT_DEVICE=cpu|dml`；DML（DirectML）约 7× 提速但会�
 
 ```yaml
 guidance: |
-  当前素材覆盖校园社团部室与走廊场景……
-  树莓娘已有正式差分立绘：`base` 为默认形态，另有 18 个表情/情绪差分和 1 张剪影。
-  按台词情绪用 `ch raspberry:<变体>` 切换表情……
+  当前素材覆盖文萃楼走廊、校园林荫道、社团广场、阶梯教室、操场与北食堂场景……
+  按台词情绪用 `ch raspberry:<变体>` 切换表情，悬念/身份未揭示场面可用剪影。
 
 backgrounds:
-  clubroom_day:
-    src: backgrounds/clubroom_day.jpg
+  club_plaza_day:
+    src: backgrounds/club_plaza_day.jpg
     description: |
-      校园社团活动室/教室，有黑板、书架、长桌……白天窗光明亮。
-      适合技术分享、值班接待与设备排查的主场景。
+      学生社团文化广场：橙色外墙的社团用房、白色天桥与伞状顶棚，
+      前面是开阔的石板广场。白天晴朗。
+      网协办公室所在地。部分同学会到这里来修电脑……
 
 bgm:
   relax:
@@ -273,7 +273,7 @@ characters:
     display_name: 树莓娘
     sprite_set: raspberry
     default_variant: base
-    default_position: center
+    default_position: left
 ```
 
 ---
@@ -355,14 +355,14 @@ const assetCatalog = await loadAssetCatalog(config.assets.catalog); // 默认 as
 
 ```
 <guidance 原文>
-背景：clubroom_day — 校园社团活动室/教室……
+背景：club_plaza_day — 学生社团文化广场……
 BGM：relax — 大调；氛围温暖静谧……
 音效：terminal_beep — 电子设备发出的短促提示音……
 立绘组 raspberry：树莓娘正式差分立绘……
   base — 默认形态
   gentle_smile — 温和微笑，日常交谈默认表情
 角色：
-- raspberry（脚本名：树莓娘，默认显示名：树莓娘，立绘组：raspberry，默认立绘：base，默认位置：center，可用立绘组：raspberry）
+- raspberry（脚本名：树莓娘，默认显示名：树莓娘，立绘组：raspberry，默认立绘：base，默认位置：left，可用立绘组：raspberry）
 ```
 
 System prompt 侧由 `prompts/dsl-protocol.txt` 定义协议本体（指令语法 + 素材选择原则），与 user prompt 的素材表配合：协议说"用素材表中的逻辑 ID"，素材表由 `resources.yaml` 实时投影。

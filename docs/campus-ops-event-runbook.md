@@ -22,7 +22,8 @@
    文件不齐会在加载时报错。
 2. `.env` 中配置 `OPENAI_API_KEY`（本地 TTS 不需要任何 API key）。
 3. 启动本地语音服务（有 NVIDIA GPU 的机器）：运行 `tts-server\start-qwentts.cmd`，
-   等控制台出现 `tts-server (C++) ready on http://127.0.0.1:9766 - voices registered`。
+   等控制台出现 `qwentts.cpp engine ready on 0.0.0.0:9766 (LAN accessible)`
+   （服务绑 0.0.0.0 供局域网取流，本机游戏照常走 127.0.0.1）。
    没有独显或不想开语音可跳过——游戏照常运行，台词以纯文本推进。
 4. `pnpm install && pnpm dev`，浏览器自动打开本地页面。
 5. 首局即自动从一条叙事种子开始（开场会点明"此刻在处理什么事"）。
@@ -32,7 +33,7 @@
 每局种子由新会话 ID 确定性轮换；如需指定：
 
 ```bash
-CAMPUS_SCENARIO_SEED_ID=projector-on-but-blank pnpm dev
+CAMPUS_SCENARIO_SEED_ID=what-to-eat pnpm dev
 ```
 
 种子目录见 `prompts/campus-ops.yaml`（`id` 即此处使用的标识）。
@@ -95,7 +96,7 @@ CAMPUS_SCENARIO_SEED_ID=projector-on-but-blank pnpm dev
 | 现象 | 处理 |
 |---|---|
 | 生成卡住 / 报错横幅 | 点击控制条"重开"开始新一局（若正卡在生成中，最多等当前段超时约 60 秒后重开生效）；连续失败时检查网络与 API key。 |
-| 没有语音 / 页面无声 | 看 tts-server 窗口是否出现 "ready on ... 9766 - voices registered"；没启动就补启（下一句起自动恢复）。仍无声时确认 `config.yaml` 的 `synthesis.provider: local` 未被改动。 |
+| 没有语音 / 页面无声 | 看 tts-server 窗口是否出现 "ready on ... 9766"；没启动就补启（下一句起自动恢复）。仍无声时确认 `config.yaml` 的 `synthesis.provider: local` 未被改动。 |
 | 开场不在校园场景 | 点控制条会话角标复制会话 ID，反馈给开发；确认运行的是本分支（`narrative.mode: event`）。 |
 | 内容越界（权限/隐私异常） | 复制会话 ID 并截图（报错横幅自带 ID）；边界规则已写入提示词，出现持续越界需回修。 |
 

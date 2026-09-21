@@ -20,12 +20,15 @@ TTS 音色创建与绑定见 [docs/agents/TTS-音色配置指南.md](./docs/agen
 本分支是一个独立的展位体验：以网络开拓者协会看板娘**树莓娘**为核心，
 围绕校园技术社团的值班日常展开**开放叙事**——
 
-- 每局从一条**叙事种子**开始（`prompts/campus-ops.yaml`），种子只提供起点
-  情境，不规定路线、轮数或结局；运行时按会话 ID 确定性轮换种子，
-  `CAMPUS_SCENARIO_SEED_ID` 可显式指定。
-- 不限制互动次数（`narrative.mode: event` + `max_interactions: 0`），
-  简单事件可以很快结束，复杂事件可以多轮展开；结局由模型依据本局
-  已确认的事实自然生成（`@end` 仅为引擎终止标记）。
+- 每局从一条**叙事种子**开始（`prompts/campus-ops.yaml`），种子提供起点
+  情境与作者侧引导（context/concerns/boundaries/angles，折进 canon——模型
+  可见、玩家不可见），不规定路线、轮数或结局；运行时按会话 ID 确定性轮换
+  种子，`CAMPUS_SCENARIO_SEED_ID` 可显式指定。
+- 互动带三级收束护栏（`narrative.mode: event`）：3 次交互软提示收束 →
+  6 次强提示并停分支预取 → 8 次运行时保险丝强制收束（`wrapup_interactions`
+  / `closing_push_interactions` / `max_interactions`）。简单事件可以很快
+  结束，复杂事件可以多轮展开；结局由模型依据本局已确认的事实自然生成
+  （`@end` 仅为引擎终止标记）。
 - 本地语音：树莓娘（paimeng 克隆）与四配角共五音色由本机 GPU 推理服务合成
   （`synthesis.provider: local`，不需要任何 TTS API key，启动方式见下文
   「TTS 语音」）；BITNP 官方素材未经授权不接入。
@@ -108,7 +111,8 @@ tts-server 未启动时游戏照常运行：每句合成重试耗尽后该句降
 
 ## 验证媒体调度
 
-默认只运行文本模式。若需观察音频提前量、批量补充和分支取消逻辑，将 `config.yaml` 改为：
+默认走本地语音（`synthesis.provider: local`）。无 GPU 环境或需观察音频提前量、
+批量补充和分支取消逻辑时，将 `config.yaml` 改为：
 
 ```yaml
 media:

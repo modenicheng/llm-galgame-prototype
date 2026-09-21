@@ -40,8 +40,8 @@ generation:
   max_tokens: 2048
   # 写手思考链（DeepSeek 顶层 thinking + reasoning_effort）。
   # 开启时：temperature 被服务端忽略；reasoning token 计入 max_completion_tokens。
-  # 2026-09-18 实测：不开思考时错误率 35%（开 low 档显著更低）——
-  # 刻意保持关闭作为找 bug 的对照配置，修完再评估是否长期开启。
+  # 2026-09-18 实测：不开思考时错误率 35%（开 low 档显著更低）。
+  # 2026-09-20 起真机档位固化为 enabled（找 bug 时临时切 disabled 作对照）。
   thinking:
     type: enabled
   repair_attempts: 4
@@ -112,10 +112,10 @@ media:
     synthesis:
       # V2 权威开关：web 模式从这里读取 provider（dashscope / local / mock / disabled）。
       # local = 本机 tts-server（tts-server/，Qwen3-TTS-12Hz-1.7B-Base，
-      # 树莓娘 paimeng 克隆 + 四配角内置音色克隆，详见 tts-server/README）。
+      # 树莓娘 paimeng 克隆 + 四配角真人音源克隆，详见 tts-server/README）。
       provider: local
-      # 4 与 tts-server 的浪批量一致：单请求并发占满一个 batch 才不吃亏
-      # 为另一个树莓娘虚拟主播提供tts服务，因此需要让一路推理出来
+      # 批宽 4，让一路给局域网内另一台树莓娘虚拟主播取流（2026-09-20 起）；
+      # 调回 4 前先确认另一实例已下线
       max_concurrency: 3
       model_profile: local_qwen3_base
       api_key_env: DASHSCOPE_API_KEY
@@ -135,7 +135,7 @@ media:
       candidate_ttl_hours: 1
 
 # 角色 → 逻辑音色配置映射（V2）
-# 校园分支：树莓娘（paimeng 克隆）+ 四配角（内置音色克隆）走本地
+# 校园分支：树莓娘（paimeng 克隆）+ 四配角（真人音源克隆）走本地
 # tts-server；键名任意（工厂按 name 匹配说话人显示名）。
 characters:
   raspberry:

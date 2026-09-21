@@ -122,7 +122,7 @@ curl -X POST http://127.0.0.1:9766/v1/audio/speech -H "Content-Type: application
 
 消费级笔记本 GPU（8GB，50 系，Q8_0）实测参考：单句 RTF ≈ 0.3（约 3 倍实时），
 流式首包 ≈ 0.5s，四路并发吞吐 RTF ≈ 0.1，无预热。本机部署的实测数字与
-样本位置见 `tts-server/README.md`（本地文件，不入库）。
+样本位置见 `tts-server/README.md`（本机实况档，已随库收编）。
 
 ## 引擎 B：Python tts-server（回退）
 

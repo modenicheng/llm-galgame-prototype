@@ -13,8 +13,10 @@ monitor dashboard: http://127.0.0.1:<port>/monitor?token=<local-session-token>
 ```
 
 浏览器打开该 URL 即可（与游戏页同一个 Local Session Token，§8.3）。监控页
-是只读的：连多少个标签页都不影响游戏，也不占用 `/ws/runtime` 的单
-controller 名额。游戏页不需要开着——不开局时监控页显示空缓冲与空闲状态。
+对游戏运行只读：连多少个标签页都不影响游戏，也不占用 `/ws/runtime` 的单
+controller 名额；唯一的写路径是音频 DSP 参数（见 [docs/audio-dsp.md](audio-dsp.md)，
+REST 写盘 + 热更玩家页，不触碰游戏会话）。游戏页不需要开着——不开局时监控页
+显示空缓冲与空闲状态。
 
 ## 排版
 
@@ -24,7 +26,8 @@ controller 名额。游戏页不需要开着——不开局时监控页显示空
   `行数/目标` + 待播句数 + 待播事件数）、生成三态（⟳ 请求中实时首字等待
   / ▶ 生成中显示已确认首字延迟 / ✓ 空闲保留上次首字与耗时，✕ 表示上次
   请求失败）、分级收束（L0–L3 + 交互进度）、token 用量（↑输入 ↓输出
-  ·缓存命中率 ·请求次数）、事件总数。图标为 Lucide SVG（web/public/icons，
+  ·缓存命中率 ·请求次数）、事件总数、落盘记录链接（→ `/monitor/records/`）。
+  图标为 Lucide SVG（web/public/icons，
   ISC 许可），经 CSS mask 染色。
 - **左侧最大块**：编剧 LLM。全部开场/续写/分支预取/输入回应/过场桥接
   按时间合并为一份连续 DSL 文档，不再逐段切换；文档以**生成片**为单位
@@ -47,12 +50,13 @@ controller 名额。游戏页不需要开着——不开局时监控页显示空
     是一条窄手风琴头（状态/任务类型/生成 #/请求 #/字数/时间），展开后
     按请求列出消息（user/assistant），每段一行
     `[来源] 标签 · N 字`（文件蓝/运行时紫/收束指令橙/修复红/模型前缀
-    绿），点击展开 verbatim 文本。默认跟随最新 attempt（审计「当前输
+    绿），点击展开 verbatim 文本；每个 attempt 附「落盘↗」链接，直达
+    `/monitor/records/` 的原始输出。默认跟随最新 attempt（审计「当前输
     入」），手动选择后钉住；strip-continue 续写请求作为同 attempt 的
     第二个请求展示。
-  - **异步上下文**：异步上下文管理 LLM（campus 线 = 前情压缩 recap；
-    longform 线另有记忆整理/剧情规划）。每次调用一条：输入批次（事件
-    seq 区间）、状态（运行中/完成/已回退/失败）、最终输出文本。
+  - **异步上下文**：异步上下文管理 LLM（campus 线 = 前情压缩 recap +
+    记忆提取；longform 线另有记忆整理/剧情规划）。每次调用一条：输入
+    批次（事件 seq 区间）、状态（运行中/完成/已回退/失败）、最终输出文本。
 - **右下 tabs**：
   - **剧情图**：本局的运行图——开局节点 → 每个正式交互一个节点（选项全
     列出、已选项高亮、边标注玩家选择/输入、当前等待节点脉冲）→ 结局节
@@ -66,6 +70,9 @@ controller 名额。游戏页不需要开着——不开局时监控页显示空
   - **事件**：已提交事件时间线（seq/kind/文本）。高频台词/旁白使用安静的
     普通行；交互和玩家行为使用琥珀色结构提示；结局使用绿色终止面。
   - **日志**：DiagnosticSink 广播（info/warn，scope 过滤在页内）。
+  - **音频**：DSP 操作台——语音/BGM/闪避参数编辑与「保存」（落盘
+    `audio-dsp.yaml`、热更玩家页）+ 实时电平/gate/GR 仪表；参数与链路
+    详见 [docs/audio-dsp.md](audio-dsp.md)。
 
 ## 架构
 
@@ -154,6 +161,7 @@ started_at, ended_at, duration_ms, outcome(done|failed|retried|cancelled),
 | 落盘器 | `src/adapters/storage/llm-stream-recorder.ts` |
 | 后台代理审计端口 | `src/core/ports/context-llm-recorder-port.ts` |
 | 记录只读路由 | `src/hosts/local-web/monitor-records.ts` |
+| 音频操作台 | `web/src/monitor/audio-panel.ts`、`src/hosts/local-web/audio-dsp-route.ts` |
 | 诊断广播 | `src/adapters/platform/broadcast-diagnostic-sink.ts` |
 | WS 通道 | `src/hosts/local-web/monitor-websocket.ts` |
 | 前端 | `web/src/monitor/*`（boot 于 `main.ts` 的 `/monitor` 路由分支） |
