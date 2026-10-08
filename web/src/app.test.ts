@@ -6,7 +6,8 @@
  */
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { GameApp, DEFAULT_PUBLIC_WEB_CONFIG } from "./app.js";
+import { GameApp } from "./app.js";
+import { DEFAULT_PUBLIC_WEB_CONFIG } from "@shared/wire/public-web-config.js";
 import { AudioDb } from "./storage/audio-db.js";
 import { AudioCacheWriter } from "./storage/audio-cache-writer.js";
 import { resetDb } from "./storage/test-utils.js";

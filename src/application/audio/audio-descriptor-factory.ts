@@ -29,7 +29,7 @@ import type {
   VoiceDirectionTarget,
 } from "./performance-compiler.js";
 import type { CharacterVoiceDesign } from "../outline/outline-writer.js";
-import { ttsLog } from "./tts-log.js";
+import { ttsLog } from "../../shared/tts-log.js";
 
 export interface AudioDescriptorFactoryOptions {
   characters: Record<string, { name: string; voice_profile: string }>;

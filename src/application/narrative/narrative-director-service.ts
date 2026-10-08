@@ -529,9 +529,9 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
     // the same episode id (revision did not advance) so appendEpisodes
     // stays idempotent (load() dedupes by id).
     //
-    // The apply/persist/swap section runs inside the memory-write mutex
-    // (Task 8): the callback re-reads the chain-latest this.memory so a
-    // concurrent replan's anchor progression is never overwritten (and
+    // The apply/persist/swap section runs inside the memory-write mutex:
+    // the callback re-reads the chain-latest this.memory so a concurrent
+    // anchor progression is never overwritten (and
     // vice versa). The LLM call above stays outside the chain — only the
     // write section is serialized.
     const rejected = [...outcome.rejected];
@@ -701,7 +701,7 @@ export class NarrativeDirectorService implements NarrativeDirectorPort {
 
   /**
    * Debug-log rejected ops to the store; failures are warn-only and never
-   * part of the memory commit (shared by consolidatePending and replan).
+   * part of the memory commit.
    * MA-A：被拒 op 同时喂教训库（§7.2 来源 2，同规则 ≥ 阈值自动晋升），
    * 新晋升/累加的 lessons 同通道落盘（失败仅告警，不回滚内存）。
    */

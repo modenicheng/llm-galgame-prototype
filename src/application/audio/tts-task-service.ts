@@ -15,7 +15,7 @@ import type {
 } from "../../core/ports/tts-provider-port.js";
 import type { AudioCatalogService } from "./audio-catalog-service.js";
 import type { InternalAudioRecipe } from "./internal-audio-recipe.js";
-import { ttsLog } from "./tts-log.js";
+import { ttsLog } from "../../shared/tts-log.js";
 
 /** Short stable id for log context (task ids are UUIDs). */
 function shortId(id: string): string {

@@ -27,8 +27,7 @@ import {
   type SegmentEndStatus,
 } from "../../core/protocol/gal-dsl/types.js";
 import type { InstructionSet, PromptBundle } from "../../prompts.js";
-import type { LLMRequestCounts } from "../../runtime/metrics.js";
-import { Metrics } from "../../runtime/metrics.js";
+import type { LLMRequestCounts, Metrics } from "../../runtime/metrics.js";
 import type {
   ChoiceEvent,
   ChoiceOption,

@@ -5,7 +5,7 @@
  */
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PUBLIC_WEB_CONFIG } from "./app.js";
+import { DEFAULT_PUBLIC_WEB_CONFIG } from "@shared/wire/public-web-config.js";
 
 class FakeAudioContext {
   static last: FakeAudioContext | null = null;

@@ -36,7 +36,7 @@ import type {
   TtsSynthesisRequest,
   TtsStreamSession,
 } from "../../core/ports/tts-provider-port.js";
-import { ttsLog } from "../../application/audio/tts-log.js";
+import { ttsLog } from "../../shared/tts-log.js";
 import { deferred } from "./deferred.js";
 import { TtsProviderError } from "./tts-provider-error.js";
 

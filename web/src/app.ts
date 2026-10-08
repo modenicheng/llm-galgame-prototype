@@ -15,6 +15,7 @@
  */
 import type { AudioDescriptor, AudioPriority } from "@shared/wire/audio-descriptor.js";
 import type { PublicWebConfig } from "@shared/wire/public-web-config.js";
+import { DEFAULT_PUBLIC_WEB_CONFIG } from "@shared/wire/public-web-config.js";
 import type { ServerMessage } from "@shared/wire/server-message.js";
 import { AudioCoordinator, type AudioCoordinatorEvents, type PlaybackMode } from "./audio/audio-coordinator.js";
 import { AudioDownloader } from "./audio/audio-downloader.js";
@@ -27,32 +28,6 @@ import { AudioDb } from "./storage/audio-db.js";
 import { AudioCacheWriter, type CacheWriteOptions } from "./storage/audio-cache-writer.js";
 import { AudioCacheReader } from "./storage/audio-cache-reader.js";
 import { AudioCacheCleaner, type CleanerOptions } from "./storage/audio-cache-cleaner.js";
-
-/** §10.3 + §11.4 + §17.5 fallback values, used when GET /api/config is absent. */
-export const DEFAULT_PUBLIC_WEB_CONFIG: PublicWebConfig = {
-  audio: {
-    playback: {
-      startup_buffer_ms: 350,
-      critical_watermark_ms: 500,
-      low_watermark_ms: 2500,
-      target_buffer_ms: 6500,
-      voice_delay_ms: 0,
-    },
-    cache: {
-      write_batch_bytes: 262144,
-      write_flush_interval_ms: 300,
-    },
-    format: {
-      encoding: "pcm_s16le",
-      sampleRate: 22050,
-      channels: 1,
-      bitDepth: 16,
-    },
-  },
-  game: {
-    show_line_ids: false,
-  },
-};
 
 /** §17.5 cache cleaner defaults (not part of the public config). */
 const CLEANER_DEFAULTS: CleanerOptions = {

@@ -11,7 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { TtsTaskService } from "../../application/audio/tts-task-service.js";
 import { TtsTaskError } from "../../application/audio/tts-task-service.js";
 import type { AudioCatalogService } from "../../application/audio/audio-catalog-service.js";
-import { ttsLog } from "../../application/audio/tts-log.js";
+import { ttsLog } from "../../shared/tts-log.js";
 import { AudioFetchRequestSchema } from "../../shared/wire/schemas.js";
 import type { AudioFetchRequest } from "../../shared/wire/client-message.js";
 import type { TtsStreamSession } from "../../core/ports/tts-provider-port.js";

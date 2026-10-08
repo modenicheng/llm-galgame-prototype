@@ -29,7 +29,7 @@ import type {
 } from "../../core/ports/tts-provider-port.js";
 import { deferred } from "./deferred.js";
 import { TtsProviderError } from "./tts-provider-error.js";
-import { ttsLog } from "../../application/audio/tts-log.js";
+import { ttsLog } from "../../shared/tts-log.js";
 
 export { TtsProviderError };
 

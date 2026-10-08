@@ -1,41 +1,23 @@
-export type JobState = "queued" | "running" | "ready" | "failed" | "cancelled";
+/**
+ * RuntimeStatus — the mutable status hub. Pure data shapes live in
+ * `core/runtime/status-types.ts` (core must not depend on this module);
+ * they are re-exported here for the runtime's consumers.
+ */
+export type {
+  BranchStatus,
+  JobState,
+  JobStatus,
+  MediaStatus,
+  RuntimeStatusSnapshot,
+} from "../core/runtime/status-types.js";
 
-export interface JobStatus {
-  label: string;
-  state: JobState;
-  error: string | null;
-}
-
-export interface BranchStatus {
-  label: string;
-  state: JobState;
-  eventCount: number;
-  dialogueCount: number;
-  error: string | null;
-}
-
-export interface MediaStatus {
-  enabled: boolean;
-  provider: string;
-  currentLineId: string | null;
-  readyAhead: number;
-  queued: number;
-  generating: number;
-  targetAhead: number;
-  refillThreshold: number;
-  branchReady: number;
-  note: string;
-}
-
-export interface RuntimeStatusSnapshot {
-  phase: string;
-  message: string;
-  bufferedEvents: number;
-  bufferedDialogueLines: number;
-  jobs: Record<string, JobStatus>;
-  branches: Record<string, BranchStatus>;
-  media: MediaStatus;
-}
+import type {
+  BranchStatus,
+  JobState,
+  JobStatus,
+  MediaStatus,
+  RuntimeStatusSnapshot,
+} from "../core/runtime/status-types.js";
 
 type Listener = (snapshot: RuntimeStatusSnapshot) => void;
 
