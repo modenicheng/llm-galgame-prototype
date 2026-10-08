@@ -4,14 +4,13 @@
 > 原 87KB 单文件已按职能拆分：
 >
 > - 进度对照（已完成 / 未完成，与代码同步）：`docs/status.md`
-> - 实施日志（原 §114–§118 摘编）：`docs/changelog.md`
 > - 长线剧情系统：`docs/superpowers/specs/2026-08-09-narrative-director-design.md`
 > - 浏览器资源管线：`docs/superpowers/specs/2026-08-08-asset-pipeline-browser-design.md`
 >
 > 为保持源码注释中的 § 引用有效，保留章节**沿用原编号**；已删除章节的编号留空：
 > §1–§2（JSONL 时代基线与差异，该协议已于 2026-08-09 全量移除）、§84–§85（旧会话兼容与旧目录树）、
 > §88–§97（迁移顺序，均已落地）、§108–§109（迁移纪律与第一阶段闭环，已完成）、
-> §114–§118（实施日志 → changelog.md）、附录 A（实施状态 → status.md）。
+> §114–§118（实施日志，工作历史已移除）、附录 A（实施状态 → status.md）。
 
 ## 0. 文档目的
 

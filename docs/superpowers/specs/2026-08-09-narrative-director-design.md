@@ -249,8 +249,7 @@ src/adapters/static/story-plan-loader.ts
 第 3 步（PlotPlanner / DirectorPlan）于 2026-08-11 批准并实现，提交
 14e3d8a..3618dd6（Task 1–9）。本步在"记忆过去"之上增加"规划未来"：
 模型在每个 checkpoint 周期生成未来 horizon 内的导演计划，随 brief 注入
-Writer 上下文。实现细节与偏差见 `docs/changelog.md`（原 llm-outputs-refactor
-§117 摘编）；
+Writer 上下文。
 三条约束（§1）在本步全部落实：计划只进 director-plan.json + 锚点状态、
 consolidator 输入不含计划、锚点推进走内存写互斥。
 

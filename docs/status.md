@@ -1,7 +1,7 @@
 # 实施进度对照（status）
 
-> 快照日期：**2026-09-17**，对照 `main` 分支代码。本文是唯一的进度权威文档；
-> 设计规范见 `docs/llm-outputs-refactor.md`，变更记录见 `docs/changelog.md`。
+> 快照日期：**2026-10-09**，对照 `main` 分支代码。本文是唯一的进度权威文档，
+> 设计规范见 `docs/llm-outputs-refactor.md`。
 > 后续开发完成/变更条目时请同步更新本文。
 
 ## 文档地图
@@ -11,8 +11,7 @@
 | `README.md` | 运行方式、TTS 配置入口 |
 | `docs/llm-outputs-refactor.md` | DSL 协议与运行时架构的规范设计（§ 编号被源码注释引用） |
 | `docs/status.md`（本文） | 进度对照：已完成 / 简化 / 未完成 |
-| `docs/changelog.md` | 实施日志摘编（按日期） |
-| `docs/superpowers/specs/*` | NarrativeDirector、浏览器资源管线的专项设计 |
+| `docs/superpowers/specs/*` | 已落地/待实施子系统的专项设计（状态见各文头） |
 | `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md` | 长期记忆强化与复核体系（facts/beliefs/lessons/audit）下一阶段设计，待实施 |
 | `docs/superpowers/specs/2026-09-16-character-voice-design.md` | 角色音频特征设计（编剧画像/导演指导三层模型），待实施 |
 | `docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md` | **v2 剧情图架构（已全量落地）**：回溯/存档/多周目三合一、编剧-导演-演员三角色、破坏性重构授权 |
@@ -20,7 +19,6 @@
 | `.hygiene.config.json` / `.hygiene-baseline.json` | 仓库卫生自检校准值（阈值 / 豁免 / 标记基线），供用户级 `repo-hygiene` skill（`~/.agents/skills/repo-hygiene/`，不随仓库走）的机械检查脚本读取 |
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
 | `docs/agents/TTS-音色配置指南.md` | 音色创建与绑定操作指南 |
-| `DESIGN.md` | 已归档（model-jsonl 时代旧架构，仅历史参考） |
 
 ## 已完成
 
