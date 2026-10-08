@@ -13,8 +13,19 @@ function fail(msg) {
 }
 
 const app = await createRuntimeApplication({ configPath: "config.yaml" });
-// Force mock TTS (config.yaml synthesis.provider=mock already); disable browser open.
-const config = { ...app.config, local_web: { ...app.config.local_web, open_browser: false } };
+// Force mock TTS (config.yaml may ship provider=disabled for text-only runs);
+// disable browser open.
+const config = {
+  ...app.config,
+  local_web: { ...app.config.local_web, open_browser: false },
+  media: {
+    ...app.config.media,
+    audio: {
+      ...app.config.media.audio,
+      synthesis: { ...app.config.media.audio.synthesis, provider: "mock" },
+    },
+  },
+};
 const host = new LocalWebHost({ config, app, dev: false, logger: (l) => console.log("[host]", l) });
 const { url } = await host.start();
 const port = new URL(url).port;
