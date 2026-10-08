@@ -50,9 +50,12 @@ import { GenerationScheduler } from "./runtime/generation-scheduler.js";
 import { Metrics } from "./runtime/metrics.js";
 import type { MetricsSnapshot } from "./runtime/metrics.js";
 import { PlaybackBuffer } from "./runtime/playback-buffer.js";
-import { compileEventGroup } from "./core/protocol/gal-dsl/compiler.js";
+import {
+  compileDslGroup,
+  materializeDslGroups,
+  type DslGroupCompilerDeps,
+} from "./runtime/dsl-group-compiler.js";
 import type {
-  AssetDiagnostic,
   DslInteractionDraft,
   EventGroupDraft,
   SegmentEndStatus,
@@ -218,6 +221,8 @@ export class Game implements InteractionHost {
   private readonly commands = new AsyncEventQueue<RuntimeCommand>();
   /** M4.5：交互驱动（choice/input/hybrid + 两阶段提交 + 分支/桥接预取）。 */
   private readonly interactionDriver: InteractionDriver;
+  /** DSL 组编译依赖（实现见 runtime/dsl-group-compiler.ts）。 */
+  private readonly dslCompiler: DslGroupCompilerDeps;
   private readonly deferredCommands: RuntimeCommand[] = [];
 
   // ------------------------------------------------------------------
@@ -286,6 +291,16 @@ export class Game implements InteractionHost {
     this.registry = catalog ? toCharacterRegistry(catalog) : EMPTY_CHARACTER_REGISTRY;
     this.defaults = createDefaultsFromRegistry(this.registry);
     this.reduce = createVisualStateReducer(this.defaults);
+    this.dslCompiler = {
+      registry: this.registry,
+      reduce: this.reduce,
+      defaultsFor: this.defaults.defaultFor.bind(this.defaults),
+      ...(catalog !== undefined ? { catalog } : {}),
+      metrics: this.metrics,
+      diagnostics: this.diagnostics,
+      nextLineId: () => this.nextLineId(),
+      buildRuntimeInteraction: (draft, turn) => this.interactionDriver.buildRuntimeInteraction(draft, turn),
+    };
     this.status.subscribe((snapshot) => {
       this.emit({ type: "status_changed", status: snapshot });
     });
@@ -1109,8 +1124,9 @@ export class Game implements InteractionHost {
   }
 
   /**
-   * Assign stable line_ids to an interaction's bridge narration and buffer
-   * it. Bridge events never enter the formal event log.
+   * Compile one streamed DSL group against a base visual state: assign the
+   * line_id, surface asset diagnostics, and return the playable/interaction
+   * outcome with the advanced tail state (implementation: dsl-group-compiler).
    */
   compileGroup(
     draft: EventGroupDraft,
@@ -1122,45 +1138,7 @@ export class Game implements InteractionHost {
     cues: StageCue[];
     tailState: VisualState;
   } {
-    const diagnostics: AssetDiagnostic[] = [];
-    const compiled = compileEventGroup(draft, {
-      registry: this.registry,
-      tailState: baseState,
-      reduce: this.reduce,
-      defaultsFor: this.defaults.defaultFor.bind(this.defaults),
-      ...(this.catalog !== undefined ? { catalog: this.catalog, diagnostics } : {}),
-    });
-    for (const diagnostic of diagnostics) {
-      this.metrics.recordAssetDiagnostic(diagnostic.code);
-      console.warn(`[assets] ${diagnostic.code}: ${diagnostic.id}`);
-    }
-    const main = compiled.group.main;
-    if (main.type === "dialogue") {
-      const event: RuntimeDialogueEvent = {
-        type: "dialogue",
-        characterId: main.characterId,
-        speaker: main.speaker,
-        text: main.text,
-        line_id: this.nextLineId(),
-        ...(compiled.group.prelude.length > 0 ? { stage: compiled.group.prelude } : {}),
-      };
-      return { playable: event, interaction: null, cues: compiled.group.prelude, tailState: compiled.tailState };
-    }
-    if (main.type === "narration") {
-      const event: RuntimeNarrationEvent = {
-        type: "narration",
-        text: main.text,
-        line_id: this.nextLineId(),
-        ...(compiled.group.prelude.length > 0 ? { stage: compiled.group.prelude } : {}),
-      };
-      return { playable: event, interaction: null, cues: compiled.group.prelude, tailState: compiled.tailState };
-    }
-    if (main.type === "interaction") {
-      const interaction = this.interactionDriver.buildRuntimeInteraction(main.interaction, turn);
-      return { playable: null, interaction, cues: compiled.group.prelude, tailState: compiled.tailState };
-    }
-    // beat — pure stage node, no main event.
-    return { playable: null, interaction: null, cues: compiled.group.prelude, tailState: compiled.tailState };
+    return compileDslGroup(this.dslCompiler, draft, baseState, turn);
   }
 
   /**
@@ -1431,46 +1409,9 @@ export class Game implements InteractionHost {
     baseState: VisualState,
     turn: number,
   ): { events: RuntimePlayableEvent[]; tailState: VisualState } {
-    let state = baseState;
-    const events: RuntimePlayableEvent[] = [];
-    for (const draft of groups) {
-      const { playable, tailState } = this.compileGroup(draft, state, turn);
-      state = tailState;
-      if (playable !== null) {
-        events.push(playable);
-      } else {
-        this.diagnostics.warn(
-          "DSL",
-          `片段跳过不可播放的组：${draft.main.type}`,
-        );
-      }
-    }
-    return { events, tailState: state };
+    return materializeDslGroups(this.dslCompiler, groups, baseState, turn);
   }
 
-  /**
-   * Two-phase free-text input commit, driven by commands and a streaming
-   * InputResponseSession.
-   *
-   * - `interaction_opened` (input mode) → await `preview_input`
-   * - preview opens and the response generation streams into the session
-   * - `input_preview_opened` → await `confirm_input` / `cancel_input`
-   * - cancel → `input_preview_canceled`, reopen the same interaction; the
-   *   bridge survives for the next preview
-   * - confirm → `input_committed`; returns the committed prefix
-   *   (player line → bridge → arrived response) plus a live stream when the
-   *   response is still generating (promotion, no second request)
-   *
-   * When `initialText` is provided (e.g. from a hybrid interaction) the
-   * editor step is skipped and the flow goes directly to preview.
-   */
-  /**
-   * Start one input response generation that streams events into the
-   * session. Returns the settled promise and the abort controller.
-   */
-  /**
-   * Stage one response event, measuring the confirm → first-line window.
-   */
   async record(event: StoredEvent): Promise<"recorded" | "fast_forwarded"> {
     this.events.push(event);
     // M5.3 同选项快进：玩家解决事件先与图对账——若与游标节点既有出边
