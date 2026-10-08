@@ -8,8 +8,11 @@ TypeScript + Node.js 实现的 LLM GalGame 预研项目，支持：
 - 自由输入采用两阶段确认：第一次 Enter 立即启动 NPC 回应生成并逐行流式到达，第二次 Enter 直接播放玩家台词 → 场景过渡旁白 → NPC 回应，无需等待加载。
 - 互动节点支持三种表单：`choice` 仅预设选项、`hybrid` 选项 + 自由输入、`input` 仅自由输入。表单模式由 DSL 语法推导（`?` 开头 + `+` 选项 / `=` 输入），模型不输出 mode；输入确认后的 1-2 条场景过渡旁白（`input_bridge`）由运行时作为独立预取任务生成，不再是 interaction 事件的字段。
 - 所有可播放文本拥有会话内稳定且跨会话不冲突的 `line_id`。
-- 可配置媒体提前量、低水位阈值、批量大小和分支媒体预取量。
-- 可选 `mock` 音频提供器，用于验证异步媒体调度，不生成真实音频。
+- 音频管线：合成意图规划（按行提前合成）+ 播放水位调度（startup_buffer /
+  low_watermark / target_buffer）+ IndexedDB 缓存；参数见 `config.yaml`
+  `media.audio` 段。
+- v2 剧情图：回溯/存档/多周目三合一（图面板「剧情图」入口），跨周目
+  canon 晋升与结算统计。
 
 设计规范与架构见 [docs/llm-outputs-refactor.md](./docs/llm-outputs-refactor.md)，
 当前进度见 [docs/status.md](./docs/status.md)，路线图见 [TODO.md](./TODO.md)。
@@ -49,16 +52,3 @@ npm run dev -- --debug-runtime
 详见指南的「本地合成（provider: local）」章节。
 
 不配置 TTS 时，把 `synthesis.provider` 改为 `disabled` 即可纯文本运行（CLI 同理）。
-
-## 验证媒体调度
-
-默认只运行文本模式。若需观察音频提前量、批量补充和分支取消逻辑，将 `config.yaml` 改为：
-
-```yaml
-media:
-  audio:
-    enabled: true
-    provider: mock
-```
-
-程序会在 `assets/audio/` 写入按 `line_id` 命名的调度演示 JSON，不包含真实音频。

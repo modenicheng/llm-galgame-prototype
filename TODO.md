@@ -33,25 +33,25 @@
 
 ## 1. 长期记忆系统 —— LLM 编剧的上下文管理（核心）
 
-- 现状：NarrativeDirector 第 1–3 步已上线（记忆过去 + 规划未来，
-  threads/setups/anchors + 导演计划），但粒度是**单会话/单周目**。
+- 现状：**Phase A/B 已落地（2026-09-17）**——threads/setups/anchors/episodes
+  之上补齐 facts / beliefs / lessons / 异步审计 + 终局报告；记忆随 v2 图快照
+  digest 持久化，恢复不依赖会话文件；跨周目真相由 canon 晋升承载。
 - 方向：
   - 伏笔回收（setup → payoff）的可靠性与时机控制、草蛇灰线的长跨度铺垫。
   - **不能吞设定**：静态设定（世界观/人物 canon）与动态叙事事实分层管理，
     任何上下文压缩/摘要不得丢失设定。
   - **决策结果一致**：同一记忆状态下，编剧决策（走向/回收/揭示）应可复现。
   - 跨会话、跨周目的记忆分层。
-- 参考方向：设定库（canon，只增不改）与叙事记忆（可演化）双库；检索增强
-  （spec 第 4 步预留位：belief / embedding / SQLite）；一致性校验/冲突检测；
-  记忆压缩的分层摘要。
-- **已立项（2026-09-06）**：facts / beliefs / lessons / 异步审计的最小闭环与
-  实施分期，见
-  `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md`
-  （来源：`docs/novel-skill/` 可复用条目分析）。
+- 参考方向：检索增强（spec 第 4 步预留位：embedding / SQLite）；一致性校验/
+  冲突检测；记忆压缩的分层摘要。
+- **设计规范**：`docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md`
+  （已落地；来源：`docs/novel-skill/` 可复用条目分析）。
 
 ## 2. 语音合成优化
 
-- 现状：DashScope CosyVoice + PCM 流式 + IndexedDB 缓存 + 播放水位调度已跑通。
+- 现状：DashScope CosyVoice + 本机 Qwen3-TTS（provider: local）双通道、
+  PCM 流式 + IndexedDB 缓存 + 播放水位调度已跑通；角色音频特征 V1/V2
+  已落地（导演逐场景声音指导 + 编剧音频画像），V3（身份合成）待实施。
 - 方向：
   - 质量：情感/韵律与剧情情绪、角色状态联动。
   - 延迟：首包时间、缓冲水位参数、合成并发与预取策略。

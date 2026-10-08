@@ -714,7 +714,7 @@ VisualState**，重连不重放（瞬态语义），GameViewModel 不得丢弃
 # 68. 主模型 Prompt 结构
 
 `prompts/dsl-protocol.txt` 为稳定 System Prompt（完整 DSL 规范）；
-`prompts/instructions.yaml` 只保存任务模板（opening / active_refill / branch_prefetch /
+`prompts/instructions.yaml` 只保存任务模板（opening / continuation / branch_prefetch /
 input_bridge / input_response / recovery / ending）。
 
 ---
@@ -880,9 +880,10 @@ generation_id / ending_id 全部由 Runtime 生成，模型一个都不生成。
 
 # 83. Model Protocol 与 Session Protocol 分离
 
-Gal DSL 是模型传输协议；`sessions/<sessionId>/events.jsonl` 是程序持久化协议。
-Session JSONL 继续使用（可追加 / 可恢复 / 可调试 / 结构稳定），需要变的只是
-存储 schema 支持 characterId、stage/presentation、interaction 新 Runtime ID。
+Gal DSL 是模型传输协议；v2 图存储是程序持久化协议——回放数据在
+`games/<gameId>/graph/payloads/<edgeId>.jsonl`（StoredEvent 逐行），运行时
+状态真源在决策入口快照（布局见 game-graph spec §9）。`sessions/<sessionId>/`
+仅存可丢弃的叙事记忆工作缓存（恢复永不读它）。
 
 ---
 
@@ -892,42 +893,67 @@ Session JSONL 继续使用（可追加 / 可恢复 / 可调试 / 结构稳定）
 src/
 ├─ core/
 │  ├─ protocol/gal-dsl/     # stream-decoder / line-parser / interaction-builder /
-│  │                        # group-builder / segment-validator / compiler / text-pipeline
-│  ├─ presentation/         # types / defaults / reducer（VisualState 纯计算）
+│  │                        # group-builder / segment-validator / compiler / closing-repair /
+│  │                        # text-pipeline
+│  ├─ presentation/         # types / defaults / reducer / equals（VisualState 纯计算）
 │  ├─ assets/               # catalog（Runtime/Model 双投影类型）
-│  ├─ narrative/            # memory-types / memory-operation / narrative-brief / director-plan
+│  ├─ graph/                # types / ids / memory-digest（v2 图契约，冻结）
+│  ├─ outline/              # types（大纲状态机，冻结）
+│  ├─ narrative/            # memory-types / memory-operation / memory-projection / setup-directive
 │  ├─ interaction/          # input-bridge 缓冲 / input-session
-│  ├─ runtime/              # RuntimeCommand / RuntimeOutput / async-event-queue
+│  ├─ runtime/              # RuntimeCommand / RuntimeOutput / async-event-queue / status
 │  └─ ports/                # StoryGenerator / NarrativeDirector / NarrativeMemoryStore /
-│                           # SessionStore / TtsProvider / MediaPlanner / Clock / IdGenerator …
+│                           # RunGraph / GraphStore / OutlineStore / CanonStore / ConfluenceJudge /
+│                           # AgentRunner / StatsStore / ReviewStore / TtsProvider / MediaPlanner /
+│                           # Clock / IdGenerator …
 ├─ story/                   # context-builder / interaction-policy / reconcile / state / types
 ├─ application/
 │  ├─ assets/               # asset-catalog-loader / asset-manifest
 │  ├─ audio/                # audio-intent-planner / performance-compiler / tts-task-service /
-│  │                        # audio-catalog-service / audio-descriptor-factory / cache-key
+│  │                        # audio-catalog-service / audio-descriptor-factory / cache-key /
+│  │                        # voice-design-views / voice-direction-hub / tts-log
 │  ├─ narrative/            # narrative-director-service / memory-consolidator / memory-validator /
-│  │                        # plot-planner / setup-scheduler / episode-retriever / context-builder
+│  │                        # setup-scheduler / episode-retriever / fact-retriever / lesson-service /
+│  │                        # ending-report / context-builder
+│  ├─ director/             # director-service / actor-briefing（剪报防火墙）
+│  ├─ graph/                # run-graph-coordinator / graph-view（视图模型）
+│  ├─ outline/              # outline-writer（编剧）
+│  ├─ canon/                # canon-promoter（跨周目晋升）
+│  ├─ world/                # world-generator（世界创建管线）
 │  └─ ui/                   # ui-projection-store
 ├─ adapters/
-│  ├─ llm/                  # openai-compatible-generator（DSL 流式）/
-│  │                        # narrative-consolidator-adapter / plot-planner-adapter
-│  ├─ tts/                  # dashscope-cosyvoice-provider / mock
-│  ├─ storage/              # node-jsonl-session-store / json-narrative-memory-store
-│  └─ static/               # story-plan-loader
-├─ runtime/                 # playback-buffer（展平事件）
-└─ apps/cli/                # terminal-ui / cli-controller
+│  ├─ llm/                  # openai-compatible-generator（DSL 流式）/ agent-runner-adapter /
+│  │                        # outline-writer-adapter / narrative-consolidator-adapter /
+│  │                        # confluence-judge-adapter / canon-adjudicator-adapter / review-adapter
+│  ├─ tts/                  # dashscope-cosyvoice-provider / local-qwen3-tts-provider / mock /
+│  │                        # tts-provider-error / deferred（共享）
+│  ├─ storage/              # game-graph-store / outline-store / canon-store / stats-store /
+│  │                        # review-store / voice-design-store / json-narrative-memory-store
+│  ├─ static/               # story-plan-loader
+│  └─ platform/             # 宿主平台适配
+├─ runtime/                 # interaction-driver / segment-types / branch-manager / generation-scheduler /
+│                           # prefetch / playback-buffer（展平事件）/ metrics / status
+├─ interaction/             # input-engine
+├─ hosts/local-web/         # HTTP host / ws / origin-guard / last-game
+├─ apps/cli/                # terminal-ui / cli-controller
+├─ bootstrap/               # create-runtime-application（组合根）
+├─ config/                  # voices / public-web-config builder
+├─ shared/wire/             # 浏览器安全 wire 类型
+├─ entrypoints/             # cli.ts / web.ts
+└─ game.ts / config.ts / schema.ts / prompts.ts（根：运行循环与全局装配契约）
 
 web/src/
+├─ app.ts / main.ts         # 组合根 / 启动与控制区
 ├─ stage/                   # stage-renderer / browser-asset-resolver / asset-manifest-client /
 │                           # bgm-controller / sound-effect-controller / stage-types
 ├─ audio/                   # audio-coordinator / audio-timeline / pcm-decoder / pcm-worklet
 ├─ storage/                 # audio-db（IndexedDB）/ audio-cache-reader|writer|cleaner
 ├─ runtime/                 # runtime-client / game-view-model（纯 ServerMessage projection）
-└─ ui/                      # interaction-panel / dialogue-box / stage 布局等
+└─ ui/                      # interaction-panel / graph-panel / dialogue-box / stage 布局等
 ```
 
-依赖方向：`apps → adapters → application → core`；core 不导入 Node / OpenAI / CLI
-（`core/architecture.test.ts` 静态扫描保证）。
+依赖方向：`entrypoints/hosts/apps → bootstrap → adapters → application → core`；
+core 不导入 Node / OpenAI / CLI（`core/architecture.test.ts` 静态扫描保证）。
 
 ---
 
@@ -948,9 +974,9 @@ interaction:
   options: { min_count: 2, max_count: 5 }
   input: { max_length: 500, max_consecutive_pure_input: 1 }
 
-narrative:                 # 长线剧情系统（见 narrative-director spec）
-  mode: longform | event   # event 时 director 完全旁路
-  threads / setups / consolidation / brief / plan / story_plan_path
+narrative:                 # 记忆子层与汇流（见 narrative-director / memory-audit spec）
+  threads / setups / lessons / facts / beliefs / consolidation / brief /
+  confluence / story_plan_path   # longform 是唯一路径（mode 键已删除）
 ```
 
 ---
