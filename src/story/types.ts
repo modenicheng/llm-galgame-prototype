@@ -215,9 +215,9 @@ export interface BranchCandidate {
 // ---------------------------------------------------------------------------
 
 /**
- * Restricted performance intent the LLM may attach to a playable line
- * (V2 §14.3). Optional and bounded; invalid values are dropped by the
- * schema while the line body survives (§14.5). Mirrors the identical
+ * Restricted performance intent the LLM may attach to a playable line.
+ * Optional and bounded; invalid values are dropped by the schema while the
+ * line body survives. Mirrors the identical
  * interface in src/application/audio/performance-compiler.ts — keep the
  * two shapes in sync (the compiler maps intent → provider parameters).
  */
@@ -276,7 +276,7 @@ export const DialogueDraftEventSchema = z.object({
   speaker: z.string().min(1),
   text: z.string().min(1),
   portrait: PortraitSchema.nullish(),
-  // §14.5: an invalid performance is DROPPED (catch → undefined) while the
+  // an invalid performance is DROPPED (catch → undefined) while the
   // line body survives. `as never` satisfies zod 4's catch-typing without
   // changing the runtime fallback value.
   performance: LinePerformanceSchema.catch(undefined as never).optional(),

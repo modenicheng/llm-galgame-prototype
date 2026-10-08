@@ -181,7 +181,7 @@ function clampPause(value: unknown): number {
 }
 
 /**
- * Filter delivery tag candidates against the character profile (§14.1): a
+ * Filter delivery tag candidates against the character profile palette: a
  * tag survives only when it is explicitly allowed (an empty / absent allowed
  * list means "no restriction") and never forbidden. Unknown tags and
  * duplicates are dropped so identical inputs stay identical.
@@ -303,7 +303,7 @@ function buildFixedEmotionInstruction(perf: LinePerformance | undefined): string
  * Total compiler: never throws. Any malformed input (null, non-object,
  * out-of-range enums, non-numeric pauses) degrades to identity parameters;
  * on an exception the character's base description is kept as the default
- * tone (§14.5). The mapping is deterministic — identical inputs produce
+ * tone. The mapping is deterministic — identical inputs produce
  * identical output, which is what makes the result cacheKey-safe.
  */
 export class PerformanceCompilerImpl implements PerformanceCompiler {
@@ -317,7 +317,7 @@ export class PerformanceCompilerImpl implements PerformanceCompiler {
       const baseline =
         input.baseline !== null && typeof input.baseline === "object" ? input.baseline : undefined;
       // 合并优先级：导演指导 > 演员逐行意图 > 画像基线（角色音频特征设计
-      // §3.3）；delivery 候选里导演标签前置，仍受同一调色板过滤（§14.1）。
+      // §3.3）；delivery 候选里导演标签前置，仍受同一调色板过滤。
       const deliveryCandidates =
         direction?.delivery !== undefined
           ? [direction.delivery, ...(validPerf?.delivery ?? [])]
@@ -347,7 +347,7 @@ export class PerformanceCompilerImpl implements PerformanceCompiler {
       if (instruction !== undefined) result.instruction = instruction;
       return result;
     } catch {
-      // §14.5: 编译失败时回退角色默认语气。
+      // 编译失败时回退角色默认语气（编译器永不抛出）。
       const base = typeof input?.baseDescription === "string" ? input.baseDescription.trim() : "";
       const result: CompiledPerformance = { ...IDENTITY_PARAMS };
       if (base.length > 0) result.instruction = base;

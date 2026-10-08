@@ -2,7 +2,8 @@
 
 > 日期：2026-09-16。状态：**V1（导演层）/V2（编剧层）已落地（2026-09-16，feat/voice-design）；V3（身份合成）待实施，默认关。**
 > 关联：`docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md`（三角色模型）、
-> `docs/llm-outputs-refactor.md` §14（性能编译器）、§67（TTS 查音色）、§7.6（provider 装配）。
+> `docs/llm-outputs-refactor.md` §67（TTS 查音色）、§86（模块地图）；
+> 表演词汇表与编译器真源 = `src/application/audio/performance-compiler.ts`。
 
 ## 1. 问题
 
@@ -29,8 +30,8 @@
 | **画像** | 声学画像 + 表达调色板 + 表演先验 | **编剧**（authoring） | 世界创建期，随世界持久化 | （新）`games/<id>/world/voice-design.json`，author voices.yaml 为预置世界的权威 |
 | **指导** | 此刻怎么演（delivery/pace/volume/自由提示） | **导演**（runtime） | runtime 内逐场景，不入图契约 | SceneDirective 扩展段（runtime 内存，跨 restart 延续） |
 
-演员层**不变**：DSL 协议冻结不动；台词头 `[anxious]`（§14.3）仍是逐行
-表演意图的唯一模型侧通道。
+演员层**不变**：DSL 协议冻结不动；台词头立绘/表演槽（`prompts/dsl-protocol.txt`）
+仍是逐行表演意图的唯一模型侧通道。
 
 ## 3. 数据契约
 
@@ -123,7 +124,7 @@ pitch  = mapEnergy(direction.energy ?? perf.energy ?? baseline.energy) ?? 1.0
 volume = mapVol(direction.volume ?? perf.volume ?? baseline.volume) ?? 50
 delivery 过滤：候选 = direction.delivery 前置 + perf.delivery，
                调色板 = allowed(author.semantic ∪ design.delivery)，
-               forbidden = author.forbidden ∪ design.avoid（既有 §14.1 过滤）
+               forbidden = author.forbidden ∪ design.avoid（既有调色板过滤）
 instruction（free 档）= 画像锚 + 语气段 + intensity + 导演 note（预算内截断不变）
 ```
 
@@ -195,7 +196,7 @@ export class VoiceDirectionHub {
 - **缓存正确性**：direction/baseline/design 全部流经 `CompiledPerformance`
   进 `cacheKeyFromRecipe`，指导变化自然失效旧音频，无额外失效机制。
 - **失败降级**：导演 JSON 缺 voice 段 = 无指导（现状）；compiler 永不抛
-  （§14.5 不变）；voice-design.json 损坏 = 大声报错（世界资产损坏语义）。
+  （既有纪律不变）；voice-design.json 损坏 = 大声报错（世界资产损坏语义）。
 - **单一真源**：voices.yaml 不被运行时改写；动态画像只存在于世界存储；
   导演指导在 runtime 内存（directive 缓存跨 restart 随世界延续，与 formModes 既有语义一致）。
 - **防火墙**：演员可见面 = briefing（画像的嗓音行经 characters.txt 进

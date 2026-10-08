@@ -3,10 +3,10 @@
  *
  * The Zod schemas in types.ts already enforce the structural shape of
  * interactions; this class defends the same invariants at runtime so a
- * future schema change cannot silently bypass them (plan §8.2–8.3).
+ * future schema change cannot silently bypass them.
  *
  * mode "choice" and runs through the same checks as a modern choice
- * interaction (plan §14.4: 旧式 choice 归一化为 choice).
+ * interaction (旧式 choice 归一化为 choice).
  */
 
 import type { InteractionEvent, InteractionMode, InputSpec } from "./types.js";

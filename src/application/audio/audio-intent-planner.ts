@@ -163,7 +163,7 @@ export class AudioIntentPlanner implements MediaPlannerPort {
   }
 
   /**
-   * Forward the line's §14.3 performance intent to the factory. Player
+   * Forward the line's performance intent to the factory. Player
    * lines have no performance field, so the union is narrowed by property
    * presence. All three build sites must forward it in lockstep.
    */

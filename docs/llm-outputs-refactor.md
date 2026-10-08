@@ -5,7 +5,6 @@
 >
 > - 进度对照（已完成 / 未完成，与代码同步）：`docs/status.md`
 > - 长线剧情系统：`docs/superpowers/specs/2026-08-09-narrative-director-design.md`
-> - 浏览器资源管线：`docs/superpowers/specs/2026-08-08-asset-pipeline-browser-design.md`
 >
 > 为保持源码注释中的 § 引用有效，保留章节**沿用原编号**；已删除章节的编号留空：
 > §1–§2（JSONL 时代基线与差异，该协议已于 2026-08-09 全量移除）、§84–§85（旧会话兼容与旧目录树）、
@@ -630,6 +629,20 @@ interface AssetResolver {
 第一版资源来源为静态文件；未来可接 IndexedDB / 生成资源 / 远端 URL / Blob，
 DSL 不需要改变。
 
+落地形态（浏览器资源管线，2026-08-08 spec 落地后的现状）：
+
+- **两层校验**：启动时 loader 校验（`sprite_set`/`default_variant` 交叉引用、
+  路径不逃逸素材根、文件真实存在，失败阻断点名文件）；compiler 语义校验
+  （模型引用的 bg/bgm/se id 与 variant 必须存在于 catalog）。
+- **确定性降级**（媒体错误不阻断剧情）：未知背景/BGM/SE id 丢弃该 cue 保持
+  当前状态；未知立绘 variant 丢弃该 patch（=keep）。诊断走 `Metrics` 计数
+  （`UNKNOWN_BACKGROUND`/`UNKNOWN_BGM`/`UNKNOWN_SOUND_EFFECT`/
+  `UNKNOWN_SPRITE_VARIANT`）+ console.warn，不新增 RuntimeOutput 类型。
+- **受控 URL 服务**：`GET /api/assets/manifest`（id → `/game-assets/...`
+  URL，绝不暴露绝对路径；浏览器启动拉一次，失败回退占位渲染）；
+  `GET /game-assets/*` 静态路由（`path.resolve` + `startsWith(assetRoot +
+  path.sep)` 穿越防护，`../`/`%2e%2e`/绝对路径 → 403）。
+
 ---
 
 # 61. portrait 淘汰
@@ -683,6 +696,11 @@ GameViewModel 保存 `visualState: VisualStateWire`（加入 UiProjection）。
 `web/src/stage/`（stage-renderer / background-layer / character-layer / bgm-controller /
 stage-types）：VisualState → DOM。背景 crossfade、人物 fade、variant crossfade、
 位置 translate、hide fade out——具体动画不让 LLM 决定。
+
+补充语义：BGM 用 `<audio loop>` 观察 `visualState.bgm`，autoplay 解锁在
+Start 按钮手势内完成；SE 走 `consumeCues()` 一次性播放——**不写入
+VisualState**，重连不重放（瞬态语义），GameViewModel 不得丢弃
+`presentation.cues`。BGM/SE 不接入 TTS PCM 管线。
 
 ---
 

@@ -24,7 +24,7 @@ import { z } from "zod";
 /**
  * 角色音频画像（角色音频特征设计 §3.1，编剧产出）：描述性词汇，不涉
  * 供应商参数。timbre 是 free 档 instruction 的画像锚；delivery/avoid 是
- * 表达调色板（§14.1 过滤语义同 allowed/forbidden）；baseline 是表演先验。
+ * 表达调色板（过滤语义同 allowed/forbidden）；baseline 是表演先验。
  */
 export interface CharacterVoiceDesign {
   /** 声学画像一句话（≤120 字）：年龄感/质感/音区/口音。 */

@@ -1,13 +1,13 @@
 # 叙事记忆强化与复核体系设计（facts / beliefs / lessons / audit）
 
 日期：2026-09-06
-状态：设计定稿，待实施（分期见 §12）。
+状态：**Phase A/B（含 MA-A2）已于 2026-09-17 全量落地**；原 Phase C 的
+「存档恢复记忆重建」由 v2 节点快照 digest 承接、「NG+ 记忆分层」由 v2 的
+canon 晋升承接（均随 v2 落地）。落地速览见 `docs/status.md`。
 **2026-09-09 起本 spec 归入 v2 剧情图架构**（`2026-09-09-game-graph-architecture-design.md`）
-作为其记忆子层：Phase A/B 不变；Phase C 的「存档恢复记忆重建」由 v2 节点快照
-承接、「NG+ 记忆分层」由 v2 的 canon 晋升承接，实施时随 v2 分期走。
-范围：长期记忆系统（TODO.md 第 1 条）的下一阶段——在 NarrativeDirector
-第 1–3 步（记忆过去 + 规划未来）之上，补齐「设定不丢失、决策可一致、问题
-可前馈」三块基础设施。
+作为其记忆子层。
+范围：长期记忆系统（TODO.md 第 1 条）——在 NarrativeDirector 记忆子层之上，
+补齐「设定不丢失、决策可一致、问题可前馈」三块基础设施。
 来源：`docs/novel-skill/` 长篇小说 skill 的可复用条目分析（2026-09-06 会话），
 经实时性约束裁剪后立项。本文是该分析的落地形态；采纳/不采纳清单见 §13。
 
@@ -30,22 +30,22 @@
 
 **决策一致性**如何被服务：facts 给 Writer 确定性的事实地面（而非摘要的模糊
 转述）；beliefs 给「谁知道什么」的确定边界；lessons 把已经付过学费的决策排除
-在候选之外；planner 与 Writer 读同一份带 revision 的记忆快照（已有机制）。
+在候选之外；剪报组装与 Writer 读同一份带 revision 的记忆投影（已有机制）。
 四者叠加，使同一记忆状态下的编剧决策可复现。
 
 ## 2. 核心原则（五条，全部来自 novel-skill 的实时化改造）
 
 1. **前馈不回改**：committed events 是既定事实，任何审计发现都**不触发对已
    提交内容的改写**。问题只向前流动：进教训库、进下一批的规避上下文、或由
-   planner 在计划中安排「剧情内圆场」节拍。这与现有 recovery 哲学（已发布
+   导演在编排中安排「剧情内圆场」节拍。这与现有 recovery 哲学（已发布
    前缀不回滚）同构。
 2. **增量审计**：审计只对照「本批 committed 事件 + 内存状态摘要」，绝不重读
    历史全量。成本与剧情总长度无关。
 3. **检测与修复分离**：审计只产出事实与判级（findings），不在审计路径上生成
    剧情文本；修复是 Writer 在后续生成里做的事，由提示词与计划驱动。
 4. **异步不阻塞**：所有新组件挂在现有异步钩子（consolidation 批次、checkpoint、
-   结局路径）上，fire-and-forget；`getBrief` 保持同步只读内存缓存、零 await。
-   实时性红线逐条核对见 §11。
+   结局路径）上，fire-and-forget；`getMemoryProjection` 保持同步只读内存缓存、
+   零 await。实时性红线逐条核对见 §11。
 5. **append-only 与单一真源**：facts / lessons 只增不删（修订 = 新行引用旧行
    id，历史可追溯）；beliefs 是活状态（可被 correct），归入 narrative-state.json
    与 threads/setups 同性质管理。
@@ -59,10 +59,12 @@
 2. **未来计划永不写入事实记忆**：findings 与 lessons 是**诊断数据**，不是事实
    记忆——它们不进 episodes、不进 narrative-state 的 threads/setups 段，各自
    独立存储；consolidator 的输入契约不变（仍不含计划）。
-3. **planner 不写未来台词**：planner 只是新增读取 findings 摘要与 overdue
-   setups（§10），产物仍只有 DirectorPlan。
+3. **剪报即全部出口**：facts/beliefs/lessons 只经记忆投影进演员剪报
+   （actor-briefing），无第二套提示词通道。
 
-`narrative.mode: event` 时本设计全部组件随 director 一并旁路（零行为变化）。
+（原第 3 硬约束「planner 不写未来台词」与 `narrative.mode: event` 旁路随
+M4.4/M3.5 的 planner 与 mode 删除而失去对象——规划职责归导演编排
+（`application/director/`），longform 是唯一路径。）
 
 ## 4. 数据流总览
 
@@ -77,11 +79,10 @@ MemoryConsolidator（一次 LLM 调用，输出 schema 扩展）
       └── AuditFinding[]  → lessons.jsonl / 前馈 （新增，§9）
       │
       ▼
-getBrief（同步内存快照，零 await）
+getMemoryProjection（同步内存快照，零 await）
       └── 现有段落 + [相关既定事实] + [角色认知] + [规避清单]
 
 SetupScheduler（确定性）→ 伏笔指令增加第三档「强制了断」（§8）
-PlotPlanner → 输入新增 findings 摘要与 overdue setups（§10）
 EndEvent 提交 → 终局报告（确定性聚合，§8.4）
 ```
 
@@ -139,7 +140,7 @@ Validator 规则（沿用 shadow-state 事务校验模式）：
   checkpoint），append-only；load 时按 id 重建 + 去重（与 episodes 同模式），
   损坏行跳过不抛错。
 - 内存状态：`facts` 数组副本（含 superseded 标记），随 `mutateMemory` 串行链
-  写入（与 consolidation/replan 同一互斥路径，复用 revision 竞态保护）。
+  写入（与 consolidation 同一互斥路径，复用 revision 竞态保护）。
 - brief 检索（新 `fact-retriever.ts`，纯函数，直接扫数组——规模与
   episode-retriever 同级）：按
   （在场角色 ∩ scope.characters）∪（location 匹配）∪（importance=major）
@@ -180,8 +181,8 @@ Validator：correct 必须引用现存 active belief；believe/learn 的 charact
 - brief 渲染：在场角色的 active beliefs，逐条一行；无任何 belief 记录的角色
   不渲染（零成本）。
 - 使用：Writer 获得确定性的「谁知道什么」；§9 的信息边界审计以它为对照基准。
-  它同时直接服务多周目（NG+ 继承的正是「角色们相信什么」）——接口按可导出
-  设计，跨周目持久化在存档系统落地时接入。
+  多周目：beliefs 随 `MemoryDigest` 全文嵌入图快照（v2 决议 D6），恢复不依赖
+  会话文件；跨周目的真相锚定由 canon 晋升承载。
 
 ## 7. 教训库（lessons）
 
@@ -244,7 +245,7 @@ shallow=1、mid=2–3、heavy=3+。现有 `reinforcementCount` 字段天然成�
 - validator 新增拒绝规则：runtime `SetupOp.seed` 缺 `intendedPayoff` → 拒绝
   （记 rejected op → 若反复触发自动成 lesson，见 §7.2）。
 - author seed（story-plan.yaml）缺省 → loader 记 warning，brief 中该 setup
-  标注「未定回收计划」，planner 输入中高亮。
+  标注「未定回收计划」。
 
 ### 8.3 强制了断（第三档指令）
 
@@ -256,8 +257,8 @@ age ≥ narrative.setups.max_untouched_checkpoints（默认 6）
 ```
 
 - brief 语气升级：「该伏笔已超期，本段必须推进回收或显式放弃，不得继续悬置」。
-- planner 输入携带 overdue setups 清单，要求在 horizon 内安排回收或 drop
-  节拍（`SetupOp.drop` 是合法终态，与 novel-skill「断裂须记原因」一致）。
+- 超期 setups 进导演编排视野，由 SceneDirective 安排回收或 drop 节拍
+  （`SetupOp.drop` 是合法终态，与 novel-skill「断裂须记原因」一致）。
 - 仍超期的 → 审计严重级 finding（逾期悬置）。
 
 ### 8.4 终局报告（回收率 + 成就钩子）
@@ -309,8 +310,8 @@ interface AuditFinding {
 ### 9.3 前馈路径（修复三通道，绝不回改）
 
 1. **brief 规避清单**：major+ 自动成 lesson（§7.2），下批生成即生效。
-2. **planner 联动**：planner 输入新增「未消化 findings 计数 + 严重级摘要」，
-   要求在计划 beats 中安排剧情内消化（圆场、误 会解开、揭示重排）。
+2. **导演编排联动**：未消化 findings 计数与严重级摘要进导演输入，由
+   SceneDirective 安排剧情内消化（圆场、误会解开、揭示重排）。
 3. **剧情内显式反转**：Writer 确要推翻已确立事实时，唯一合法路径是
    `FactOp.amend` + 新事件证据——机制上保证「改设定必留痕」。
 
@@ -320,17 +321,19 @@ interface AuditFinding {
 |---|---|
 | `core/narrative/memory-operation.ts` | + FactOp / BeliefOp（zod schema 与上限常量） |
 | `core/narrative/memory-types.ts` | + NarrativeMemoryState.beliefs / facts 内存投影类型 |
-| `core/narrative/narrative-brief.ts` | + relatedFacts / characterBeliefs / avoidanceLessons 字段 |
+| `core/narrative/memory-projection.ts` | + relatedFacts / characterBeliefs / avoidanceLessons 字段（M4.4 自 narrative-brief.ts 改名收缩） |
 | `application/narrative/memory-validator.ts` | + §5.2 / §6.1 / §8.2 校验规则、findings 校验 |
 | `application/narrative/setup-scheduler.ts` | + depth 门控、RESOLVE_OR_DROP 第三档 |
-| `application/narrative/fact-retriever.ts`（新） | facts → brief 相关集选取（纯函数） |
+| `application/narrative/fact-retriever.ts`（新） | facts → 投影相关集选取（纯函数） |
 | `application/narrative/narrative-context-builder.ts` | + [相关既定事实] [角色认知] [规避清单] 三段渲染 |
 | `application/narrative/lesson-service.ts`（新） | lessons 聚合/晋升/窗口管理（纯逻辑） |
+| `application/narrative/ending-report.ts`（新，MA-A） | 终局报告确定性聚合（§8.4），director-service 在 observeCommitted 检测 EndEvent 触发 |
 | `adapters/llm/narrative-consolidator-adapter.ts` | 输出 schema 扩展（facts/beliefs/findings），prompt 增补对应指令 |
 | `adapters/storage/json-narrative-memory-store.ts` | + facts.jsonl / lessons.jsonl 读写（同原子写/降级模式） |
-| `application/narrative/plot-planner.ts` | 输入 + findings 摘要与 overdue setups |
-| `src/game.ts` | EndEvent 提交 → 触发终局报告（异步）；其余零改动 |
 | `prompts/dsl-protocol.txt` | + 一行：「遵守导演便签中的既定事实与角色认知边界，推翻事实须剧情内显式铺垫」 |
+
+（原 `plot-planner.ts` 行随 M4.4 删除该组件而移除；终局报告实际挂载点是
+director-service 的 observeCommitted 检测，非 game.ts。）
 
 ## 11. 实时性红线（逐条核对）
 
@@ -340,10 +343,9 @@ interface AuditFinding {
 |---|---|---|
 | consolidator 输出扩展（facts/beliefs/findings） | 既有 consolidation 批次（积压阈值 + 节流 + 单飞） | 不变，仍 fire-and-forget |
 | facts/lessons 写盘 | `mutateMemory` 串行链内 | 内存外 IO，不阻塞任何 RuntimeCommand |
-| brief 三段渲染 | `getBrief`（同步内存快照） | 纯内存数组切片，成本受 brief_max 上限约束；**零新增 await** |
+| brief 三段渲染 | `getMemoryProjection`（同步内存快照） | 纯内存数组切片，成本受 brief_max 上限约束；**零新增 await** |
 | 强制了断指令 | classifySetup（纯函数，现有调用点） | 零成本 |
 | 终局报告 | EndEvent 提交后异步 | 结局已成立，无实时压力 |
-| findings → planner | 既有 replan 周期（后台、单飞） | 不阻塞回合 |
 
 **明确禁止**：不得在任何 RuntimeCommand / 生成请求的同步路径上新增 LLM 调用
 或文件读写；不得为等待审计结果而延迟任何一段生成；brief 必须能在任何时刻
@@ -373,14 +375,13 @@ interface AuditFinding {
 验收：端到端——确立事实的剧情段之后，间隔多段再提及该事实，Writer 表述与
 fact 一致；角色引用未获知信息时 brief 规避清单在后续批次出现对应 lesson。
 
-**Phase C —— 联动与跨会话（依赖外部系统）**
+**Phase C —— 联动与跨会话（原分期，随 v2 落地清算）**
 
-10. planner findings 联动（Phase B 后即可做，视效果决定）。
-11. **存档恢复时的记忆重建**（依赖 TODO 第 3 条 load/resume）：resume =
-    重放 events.jsonl → observeCommitted → 排空 consolidation → 校验
-    narrative-state/plan/facts/lessons 全部就绪后才放行首次生成——「绝不允许
-    只读最后两章就往下写」的机制化。
-12. NG+ 记忆分层（依赖多周目）：周目层元记忆 + beliefs/facts 的选择性继承。
+10. ~~planner findings 联动~~（planner 已随 M4.4 删除；联动职责归导演编排，
+    findings 摘要经剪辑进导演输入）。
+11. **存档恢复时的记忆重建**——由 v2 节点快照 digest 全文重建承接（决议 D6，
+    已落地）。
+12. **NG+ 记忆分层**——由 v2 的 canon 晋升承接（已落地）。
 
 ## 13. 明确不采纳清单（含理由）
 
@@ -391,7 +392,7 @@ fact 一致；角色引用未获知信息时 brief 规避清单在后续批次�
 | 出版级达标线（字数/错字率/信息密度） | 不采纳 | 指标不适用；仅伏笔回收率以结算口径吸收（§8.4） |
 | 时间线/物品账审计维 | 暂缓 | 无故事时钟与物品账本，无对照基准；待 StoryState 扩展后重估 |
 | 桥段登记（tropes） | 暂缓（P3） | 长时游玩的 LLM 循环风险真实，但需先给 episode 加场景形状标签；规模未到 |
-| 宏观重读四问 | 暂缓 | 可并入 replan 周期做健康检查；等 Phase B 效果再评估 |
+| 宏观重读四问 | 暂缓 | 可并入导演维护周期做健康检查；等 Phase B 效果再评估 |
 | 滚动摘要/超节点/三层检索视图 | 暂缓 | episodes 数十条规模，检索成本未成为瓶颈；差分记录纪律已由 consolidator prompt 吸收 |
 | 文风/反AI味、对话工艺模块 | 不采纳 | 结构一致性优先级远高于文风；对话三职可在日后进 writer guideline |
 | 独立审计器适配器（独立 LLM 调用） | 备选不启用 | 搭载 consolidator 零新增调用；若输出质量稀释再拆（接口已可拆） |
@@ -402,12 +403,12 @@ fact 一致；角色引用未获知信息时 brief 规避清单在后续批次�
 |---|---|
 | memory-operation | FactOp/BeliefOp schema 解析与拒绝（上限、缺证据、amend 引用不存在 id） |
 | memory-validator | intendedPayoff 必填拒 seed；amend 链；beliefs 上限；findings 枚举/范围/批量上限 |
-| setup-scheduler | depth 门控改发 reinforce；age 三档指令；overdue 进入 planner 输入 |
+| setup-scheduler | depth 门控改发 reinforce；age 三档指令；overdue 进投影/导演输入 |
 | fact-retriever | 角色交集/位置匹配/major 常驻/上限截断 |
 | lesson-service | rejection ×2 自动晋升；audit major+ 晋升；滚动窗口降级；渲染排序 |
 | json store | facts/lessons 写读往返、append-only、损坏行跳过、原子写 |
 | consolidator-adapter | mock LLM 返回扩展输出 → ops/findings 正确分流；缺段容错 |
-| director-service | facts/beliefs 经 mutateMemory 串行应用与 revision 推进；与 replan 互斥不回退 |
+| director-service | facts/beliefs 经 mutateMemory 串行应用与 revision 推进 |
 | context-builder | 三段渲染；无数据时零变化；brief_max 截断 |
 | game 集成 | EndEvent → ending-report.json；candidate 事件不产生任何 fact/belief/finding |
 | 端到端（手测脚本） | §12 Phase B 验收场景 |
@@ -415,7 +416,7 @@ fact 一致；角色引用未获知信息时 brief 规避清单在后续批次�
 ## 15. 成功标准
 
 - node/web 全量测试绿、双 typecheck + build 过（每 Phase 同）。
-- 实时性：生成路径零新增同步开销（测试断言 getBrief 零 await、无新同步 IO）。
+- 实时性：生成路径零新增同步开销（测试断言 getMemoryProjection 零 await、无新同步 IO）。
 - 底线可验证：① Writer 违背 runtime fact 的事件发生后，下批 brief 出现对应
   规避/圆场信号；② 角色信息越界被审计捕获并进入 lessons；③ 任意时刻重启
   进程（Phase C 后）恢复会话不丢 facts/beliefs/lessons。
