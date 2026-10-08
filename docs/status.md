@@ -187,29 +187,31 @@
   过门（三绿 + 机械检查 + subagent 只读评审）。执行清单已完成退役删除；
   未清偿项移交下方「技术债账本」与「人工验证清单」。
 
-### 技术债账本（v2 卫生门 P3 记档移交，清偿后请划掉）
+### 技术债账本（v2 卫生门 P3 记档移交 + 2026-10-09 卫生批次，清偿后请划掉）
 
 结构性（豁免在册，见 `.hygiene.config.json`，清偿后同步移除豁免）：
 
-- `game.ts`：run()/startActiveSegment() 超长、run() buffer 分支 5 层嵌套；
-  record 返回值双通道死支；段生命周期/恢复簇拆分的前置 = game.test.ts
-  32 处 `as any` 私有访问去耦合（建公共断言 API）。
-- `interaction-driver.ts`：二分 input/choice 两文件（InteractionHost 即缝）；
-  handleInteractionInput ~185 行 / handleHybridInteraction ~125 行
-  （syntheticChoice 构造 ×2）随二分一并处理。
-- `run-graph-coordinator.ts`：拆出 confluence-checker（末态索引/预筛/改绑
-  ~300 行）；sceneOutlineRefs Map 值未读（可 Set）；hydrate 双重 get。
+- `game.ts`（1576 行）：run()/startActiveSegment() 超长、run() buffer 分支
+  5 层嵌套；record 返回值双通道死支；段生命周期/恢复簇拆分的前置 =
+  game.test.ts 32 处 `as any` 私有访问去耦合（建公共断言 API）。
+  （DSL 组编译簇已于 2026-10-09 外移 `runtime/dsl-group-compiler.ts`。）
 - `openai-compatible-generator.ts`：拆出 dsl-stream-attempt
   （strip-and-continue 主循环 ~450 行）。
 - `narrative-director-service.ts`：收窄为记忆子层（M4.4 尾项）。
+- 已清偿（2026-10-09 卫生批次）：interaction-driver 二分
+  choice/input/driver 三文件（豁免移除）；run-graph-coordinator 拆出
+  `confluence-checker.ts` + 图行走算法下沉 `core/graph/walk.ts`
+  （1150→849 行，豁免移除——后续可再拆大纲维护子系统 ~270 行进 warn 线）。
 
 跨模块重复（抽共享基础设施）：
 
 - tmp+rename 原子写仓内 ~9 份；`isEnoent` 惯用法 ≥5 处；OpenAI client
   构造样板 ×5；跨 adapter 同构 JSON 调用 5 处；web/cli `parseArgs` 近重复；
-  图逆向行走循环 ×4；host 三个 GET 路由同构；web 侧 latestEnding 定位
-  两处；图存储 latestById 派生六处；config 默认值在 zod `.default` 与
-  代码 `??` 双重派生（含 bootstrap 兜底 cosyvoice_v3_flash/22050/2）。
+  host 三个 GET 路由同构；web 侧 latestEnding 定位两处；图存储 latestById
+  派生六处；config 默认值在 zod `.default` 与代码 `??` 双重派生（含
+  bootstrap 兜底 cosyvoice_v3_flash/22050/2；web 端 PublicWebConfig 兜底
+  已于 2026-10-09 收敛单源 `shared/wire/public-web-config.ts`）。
+  （图逆向行走 ×4 已随 `core/graph/walk.ts` 清偿。）
 
 行为/契约小项：
 
@@ -222,7 +224,14 @@
   测试 fixture 硬编码快照版本号应引 `SNAPSHOT_VERSION`；
   `makeCtx(null as unknown as StoryState)` 类型欺骗（入参应收窄）；
   `fast_forward` 字面量 ×4；segment-types ChoiceSelection 重抄字段；
-  测试 fixture 的 `state_patch` 冗余键 ~30 处。
+  测试 fixture 的 `state_patch` 冗余键 ~30 处；
+  `interaction-input.ts` 的 handleInteractionInput ~230 行 /
+  handleHybridInteraction 内 syntheticChoice 构造 ×2（二分时按行为
+  逐行迁移保留，函数级拆分待做）；confluence-checker 的 sceneOutlineRefs
+  Map 值未读（可 Set）与 hydrate 双重 get（随拆分迁入）；
+  源码注释引用的子节锚点 §8.5/§10.2/§11.6/§11.7/§13.x（game.ts 及
+  game*.test.ts / runtime 注释）在任何文档中均不存在——基线遗留的
+  悬空引用，语义应就近写明或改指真实出处。
 
 待实施特性（spec 在册）：
 
