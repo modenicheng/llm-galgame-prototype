@@ -30,6 +30,7 @@ import {
 import { RuntimeStatus } from "./runtime/status.js";
 import { BranchManager } from "./runtime/branch-manager.js";
 import { adoptSelectedBranch } from "./runtime/interaction-choice.js";
+import type { InteractionHost } from "./runtime/interaction-driver.js";
 import { makeTestConfig, makeTestPorts, MemoryController } from "./test-helpers.js";
 import type { MediaPlannerPort } from "./core/ports/media-planner-port.js";
 import type { AssetCatalog } from "./core/assets/types.js";
@@ -720,22 +721,9 @@ describe("v2 runtime decode — knob=2 session end-to-end", () => {
       v2Config(),
     );
 
-    // 适配 main：adoptSelectedBranch 在 InteractionDriver（M4.5 拆分），
-    // 不在 Game 上——经私有字段取驱动后直驱重试臂。
-    const game = harness.game as unknown as {
-      interactionDriver: {
-        adoptSelectedBranch: (
-          selected: { id: string; text: string },
-          choice: { type: "choice"; prompt: string; options: Array<{ id: string; text: string }> },
-          turn: number,
-          branchManager: BranchManager,
-          prefetchContext: never[],
-        ) => Promise<{ preview: Array<{ text?: string }> }>;
-      };
-      branchCharacterStates: Map<string, { labels: Record<string, string> }>;
-      branchTailStates: Map<string, unknown>;
-      characterState: { labels: Record<string, string> };
-    };
+    // 适配 main：adoptSelectedBranch 是 B2 拆分后的自由函数（host 首参），
+    // 不在 Game 门面上——经 InteractionHost 视图直驱重试臂与分支状态副本。
+    const game = harness.game as unknown as InteractionHost;
     // 场景还原：v2fwd 泵在断流前已把失败尝试的半程预测逐组写进分支副本
     // （改名 幽灵甲）——玩家从未见过这些事件（候选失败、前缀不播出）。
     game.branchCharacterStates.set("opt_ghost", { labels: { female_A: "幽灵甲" } });
@@ -792,20 +780,8 @@ describe("v2 runtime decode — knob=2 session end-to-end", () => {
       v2Config(),
     );
 
-    // 与 finding 6 同入口：经私有字段直驱重试臂。
-    const game = harness.game as unknown as {
-      interactionDriver: {
-        adoptSelectedBranch: (
-          selected: { id: string; text: string },
-          choice: { type: "choice"; prompt: string; options: Array<{ id: string; text: string }> },
-          turn: number,
-          branchManager: BranchManager,
-          prefetchContext: never[],
-        ) => Promise<{ preview: Array<{ text?: string }> }>;
-      };
-      branchCharacterStates: Map<string, { labels: Record<string, string> }>;
-      branchTailStates: Map<string, unknown>;
-    };
+    // 与 finding 6 同入口：经 InteractionHost 视图直驱重试臂。
+    const game = harness.game as unknown as InteractionHost;
     game.branchCharacterStates.set("opt_retry", { labels: { female_A: "幽灵甲" } });
     game.branchTailStates.set("opt_retry", { characters: {} });
 
