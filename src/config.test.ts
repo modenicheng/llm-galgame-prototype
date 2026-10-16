@@ -76,7 +76,7 @@ describe("loadConfig defaults", () => {
 
     expect(config.api.model).toBe("test-model");
     expect(config.api.base_url).toBe("https://api.example.com");
-    expect(config.api.api_key_env).toBe("OPENAI_API_KEY"); // default
+    expect(config.api.api_key_env).toBe("VIBEGAL_LLM_KEY"); // default
     expect(config.api.timeout_ms).toBe(60000); // default
 
     expect(config.generation.temperature).toBe(1.0); // explicit in yaml

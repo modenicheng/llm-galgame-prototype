@@ -8,13 +8,14 @@ local_web:
   controller_limit: 1
 
 api:
-  # OpenAI 兼容中转（new-api 网关）；key 在 .env 的 OPENAI_API_KEY
-  model: deepseek-v4-flash-0731
-  base_url: https://new-api.honahec.cc/v1
+  # BigModel（智谱）OpenAI 兼容端点；key 在 .env 的 VIBEGAL_LLM_KEY
+  model: glm-5.3-flash
+  base_url: https://open.bigmodel.cn/api/coding/paas/v4
   # 注意：不要用 OPENAI_API_KEY——系统环境变量里可能残留旧值且 dotenv 不覆盖已存在的变量
   api_key_env: VIBEGAL_LLM_KEY
   timeout_ms: 60000
-  # 中转网关统一用 max_tokens（若长段结尾频繁截断可尝试换回 max_completion_tokens）
+  # BigModel v4 兼容层用经典 max_tokens；流式 reasoning 走独立的
+  # delta.reasoning_content 字段，DSL 解码器只读 delta.content，不受影响
   token_limit_field: max_tokens
 
 generation:

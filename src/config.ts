@@ -425,7 +425,7 @@ const ConfigSchema = z.object({
   api: z.object({
     model: z.string().min(1),
     base_url: z.string().url().optional(),
-    api_key_env: z.string().min(1).default("OPENAI_API_KEY"),
+    api_key_env: z.string().min(1).default("VIBEGAL_LLM_KEY"),
     timeout_ms: z.number().int().positive().default(60_000),
     token_limit_field: z
       .enum(["max_completion_tokens", "max_tokens"])
