@@ -13,6 +13,7 @@ import { AudioCatalogServiceImpl } from "../../application/audio/audio-catalog-s
 import type { TaskStatusEvent } from "../../application/audio/tts-task-service.js";
 import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
 import type { UiProjection } from "../../shared/wire/ui-projection.js";
+import { WIRE_PROTOCOL_VERSION } from "../../shared/wire/schemas.js";
 import type { ServerMessage } from "../../shared/wire/server-message.js";
 import { isAllowedOrigin } from "./origin-guard.js";
 import { RuntimeWebSocket } from "./runtime-websocket.js";
@@ -367,7 +368,7 @@ describe("RuntimeWebSocket", () => {
       JSON.stringify({
         type: "client.ready",
         capabilities: { audioWorklet: true, indexedDb: true },
-        wireVersion: 2,
+        wireVersion: WIRE_PROTOCOL_VERSION,
       }),
     );
     await sleep(50);

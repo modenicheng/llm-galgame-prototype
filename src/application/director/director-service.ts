@@ -33,6 +33,13 @@ import {
   VOLUME_VALUES,
   type VoiceDirectionTarget,
 } from "../audio/performance-compiler.js";
+// 动态音乐生成（导演层）：情绪词表/指导类型真源在 shared/music（作曲与
+// 渲染两侧共用同一契约）。
+import {
+  MUSIC_INTENSITY_DEFAULT,
+  MUSIC_MOODS,
+  type SceneMusicDirection,
+} from "../../shared/music/score.js";
 // C5：导演观察窗沿用冻结的 legacy 渲染（受控身份视图的投影接入归后续
 // 任务；本文件不在 C5 文件清单内）。
 import { serializeStoryContextLegacy } from "../../story/context-builder.js";
@@ -62,12 +69,18 @@ export interface SceneDirective {
    * 由音频管线按行查询（VoiceDirectionHub），经编译器进缓存键。
    */
   voice?: Record<string, VoiceDirectionTarget>;
+  /**
+   * 本场景配乐指导（动态音乐生成三层契约的导演层）：情绪/强度/注记。
+   * 由场景音乐服务消费（作曲 → WS 推送 → 浏览器渲染），不进演员简报。
+   * 缺省 = 本场景无生成配乐（沿用当前曲目）。
+   */
+  music?: SceneMusicDirection;
 }
 
 // 词表段从 performance-compiler 运行时常量拼接（单一真源，防手抄漂移）。
 const DIRECTIVE_SYSTEM_PROMPT =
   "你是 GalGame 导演。输入场景信息与既有记忆，输出本场景的演出指令 JSON：" +
-  '{sceneGoal, defenseBeats:[string], endingPressure:boolean, voice?}。' +
+  '{sceneGoal, defenseBeats:[string], endingPressure:boolean, voice?, music?}。' +
   "sceneGoal ≤120 字；defenseBeats 是针对离谱输入的引回要点（可为空数组）；" +
   "endingPressure 仅在剧情明显接近终章时为 true。" +
   "voice 是可选的角色音频指导，仅当场景状态要求声音变化时给出，形如 " +
@@ -77,7 +90,12 @@ const DIRECTIVE_SYSTEM_PROMPT =
   `volume 只能取 ${VOLUME_VALUES.join("/")}，` +
   `pace 只能取 ${PACE_VALUES.join("/")}，` +
   `energy 只能取 ${ENERGY_VALUES.join("/")}，` +
-  "note ≤40 字。只给指令，不写台词。";
+  "note ≤40 字。" +
+  "music 是可选的本场景配乐指导，形如 " +
+  '{"mood":"tense","intensity":2,"note":"追逐感渐强"}：' +
+  `mood 只能取 ${MUSIC_MOODS.join("/")} 之一（词表外整段丢弃）；` +
+  "intensity 取 1~3（1=铺垫，2=主体，3=高潮，缺省 2）；note ≤40 字（给作曲的意图一句话）。" +
+  "只给指令，不写台词。";
 
 interface DirectorServiceOptions {
   runner: AgentRunnerPort;
@@ -115,6 +133,11 @@ export class DirectorService {
   /** 场景 id → 本场景 directive（会话内工作态缓存）。 */
   private readonly directives = new Map<string, SceneDirective>();
   private directiveRunning = false;
+  /**
+   * 指导完成监听（动态音乐生成接线）：directive 落缓存后同步回调（音乐
+   * 组作曲是调用方自己的 fire-and-forget，不阻塞导演）。仅成功路径触发。
+   */
+  private directiveListener: ((directive: SceneDirective) => void) | undefined;
 
   constructor(options: DirectorServiceOptions) {
     this.runner = options.runner;
@@ -202,6 +225,9 @@ export class DirectorService {
       if (parsed.voice !== undefined) {
         directive.voice = parsed.voice;
       }
+      if (parsed.music !== undefined) {
+        directive.music = parsed.music;
+      }
     }
     // narrowFormModes 的结果不覆盖——相位门是显式工具调用，先于最终文本落缓存。
     const previous = this.directives.get(input.sceneId);
@@ -209,7 +235,13 @@ export class DirectorService {
       directive.formModes = previous.formModes;
     }
     this.directives.set(input.sceneId, directive);
+    this.directiveListener?.(directive);
     return directive;
+  }
+
+  /** 注册指导完成监听（音乐服务接线；重复调用覆盖前值）。 */
+  setDirectiveListener(listener: (directive: SceneDirective) => void): void {
+    this.directiveListener = listener;
   }
 
   /** 场景边界异步触发入口（调用方 void 掉；失败告警不阻塞）。 */
@@ -539,10 +571,43 @@ export class DirectorService {
       if (voice !== undefined) {
         directive.voice = voice;
       }
+      const music = this.parseMusicDirection(parsed.music);
+      if (music !== undefined) {
+        directive.music = music;
+      }
       return directive;
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * music 段解析：mood 命中词表才成段（词表外整段丢弃并告警——作曲层
+   * 拿不到可靠情绪就不该瞎猜）；intensity 越界取缺省 2；note 截 40 字。
+   */
+  private parseMusicDirection(raw: unknown): SceneMusicDirection | undefined {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const v = raw as Record<string, unknown>;
+    const mood = pickEnum(v.mood, MUSIC_MOODS);
+    if (mood === undefined) {
+      if (v.mood !== undefined) {
+        this.diagnostics.warn(
+          "DirectorService",
+          `music.mood 不在词表内，已丢弃整段 music 指导：${JSON.stringify(v.mood)}`,
+        );
+      }
+      return undefined;
+    }
+    const intensity: 1 | 2 | 3 =
+      v.intensity === 1 || v.intensity === 2 || v.intensity === 3
+        ? v.intensity
+        : MUSIC_INTENSITY_DEFAULT;
+    const direction: SceneMusicDirection = { mood, intensity };
+    if (typeof v.note === "string") {
+      const note = v.note.trim().slice(0, 40);
+      if (note !== "") direction.note = note;
+    }
+    return direction;
   }
 }
 
@@ -552,6 +617,7 @@ interface ParsedDirective {
   defenseBeats: string[];
   endingPressure: boolean;
   voice?: Record<string, VoiceDirectionTarget>;
+  music?: SceneMusicDirection;
 }
 
 /** 枚举字段校验：字符串命中词表则收窄返回，否则 undefined（丢弃该字段）。 */

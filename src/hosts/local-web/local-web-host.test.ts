@@ -130,6 +130,7 @@ describe("LocalWebHost", () => {
     projection = makeFakeProjection();
     const shutdown = vi.fn(async () => {});
     const taskStatusSubscribe = vi.fn((_cb: never) => () => {});
+    const musicScoreSubscribe = vi.fn((_cb: never) => () => {});
     app = {
       game: game.game,
       audioCatalog: catalog,
@@ -139,6 +140,8 @@ describe("LocalWebHost", () => {
       metrics: {} as unknown as Metrics,
       shutdown,
       taskStatusSubscribe,
+      musicScoreSubscribe,
+      latestMusicScore: () => undefined,
     } as unknown as RuntimeApplication;
 
     host = new LocalWebHost({ config, app, dev: false, logger: () => {} });
@@ -369,6 +372,8 @@ describe("LocalWebHost POST /api/worlds (M3.3)", () => {
       metrics: {} as unknown as Metrics,
       shutdown: vi.fn(async () => {}),
       taskStatusSubscribe: vi.fn((_cb: never) => () => {}),
+      musicScoreSubscribe: vi.fn((_cb: never) => () => {}),
+      latestMusicScore: () => undefined,
     } as unknown as RuntimeApplication;
   }
 

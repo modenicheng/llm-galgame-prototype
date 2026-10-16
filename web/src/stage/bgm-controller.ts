@@ -5,8 +5,12 @@
  */
 import type { BrowserAssetResolver } from "./browser-asset-resolver.js";
 
+/** 生成曲播放态 sentinel（动态音乐生成）：apply() 的静态 id 空间不可能命中。 */
+const GENERATED_ID = "__generated__";
+
 export class BgmController {
   private currentId: string | undefined;
+  private generatedUrl: string | undefined;
   private readonly audio: HTMLAudioElement;
   private volume = 1;
   private muted = false;
@@ -47,6 +51,21 @@ export class BgmController {
     }
     const url = this.resolver.resolveBgm(id);
     if (url === undefined) return; // 未知/不可用：保持当前曲目
+    this.audio.src = url;
+    this.audio.loop = true;
+    this.audio.volume = this.muted ? 0 : this.volume;
+    void this.audio.play().catch(() => {});
+  }
+
+  /**
+   * 生成曲直达播放（动态音乐生成）：blob URL 绕过资产目录。优先级语义
+   * 「最新意图胜」——生成曲到达即接管；写手显式 @bgm（apply 的 id 值
+   * 变化）随时压回。URL 生命周期由 GeneratedBgm 管理（替换时 revoke）。
+   */
+  applyGenerated(url: string): void {
+    if (this.currentId === GENERATED_ID && this.generatedUrl === url) return;
+    this.currentId = GENERATED_ID;
+    this.generatedUrl = url;
     this.audio.src = url;
     this.audio.loop = true;
     this.audio.volume = this.muted ? 0 : this.volume;

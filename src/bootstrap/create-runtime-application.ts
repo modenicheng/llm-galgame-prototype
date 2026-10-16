@@ -54,6 +54,8 @@ import {
 } from "../application/audio/voice-design-views.js";
 import { VoiceDesignStore } from "../adapters/storage/voice-design-store.js";
 import { AudioIntentPlanner } from "../application/audio/audio-intent-planner.js";
+import { SceneMusicService } from "../application/audio/scene-music-service.js";
+import { SceneMusicComposerAdapter } from "../adapters/llm/scene-music-composer-adapter.js";
 import {
   TtsTaskServiceImpl,
   type TaskStatusEvent,
@@ -527,6 +529,17 @@ export async function createRuntimeApplication(
     speakerPalette: buildSpeakerPalette(voiceViews),
     ...(graphIdentityContext !== undefined ? { identity: graphIdentityContext } : {}),
   });
+  // 动态音乐生成（导演层接线）：directive 落缓存 → 音乐服务去重作曲 →
+  // 谱面事件广播（runtime WS → 浏览器渲染）。导演实例跨 restart 复用，
+  // 监听一次性注册即可。失败只告警，配乐永不阻塞演出。enabled=false 时
+  // 不注册监听 = 零 LLM 调用。
+  const musicEnabled = config.media.audio.music?.enabled ?? true;
+  const sceneMusic = new SceneMusicService({
+    composer: new SceneMusicComposerAdapter({ apiKey, api: config.api }),
+  });
+  if (musicEnabled) {
+    director.setDirectiveListener((directive) => sceneMusic.handleDirective(directive));
+  }
   const graphCoordinator = buildGraphCoordinator(
     gamesRoot,
     gameId,
@@ -646,6 +659,8 @@ export async function createRuntimeApplication(
       taskStatusListeners.add(listener);
       return () => taskStatusListeners.delete(listener);
     },
+    musicScoreSubscribe: (listener) => sceneMusic.subscribe(listener),
+    latestMusicScore: () => sceneMusic.latestScore(),
     shutdown: async () => {
       // Stop the run loop: the command wakes waitForCommand, which throws
       // RuntimeShutdownError out of game.run(). Yield one macrotask so the

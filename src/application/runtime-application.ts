@@ -11,6 +11,7 @@ import type { UiProjectionStore } from "./ui/ui-projection-store.js";
 import type { AudioCatalogService } from "./audio/audio-catalog-service.js";
 import type { TtsTaskService } from "./audio/tts-task-service.js";
 import type { TaskStatusEvent } from "./audio/tts-task-service.js";
+import type { SceneMusicScoreEvent } from "./audio/scene-music-service.js";
 import type { AppConfig } from "../config.js";
 import type { Metrics } from "../runtime/metrics.js";
 import type { AssetCatalog } from "../core/assets/types.js";
@@ -47,6 +48,10 @@ export interface RuntimeApplication {
   restart(): Promise<RuntimeApplication>;
   /** Subscribe to TTS task status events (hosts bridge these to the browser). */
   taskStatusSubscribe(listener: (event: TaskStatusEvent) => void): () => void;
+  /** 场景配乐谱面事件订阅（动态音乐生成；宿主桥到浏览器渲染）。 */
+  musicScoreSubscribe(listener: (event: SceneMusicScoreEvent) => void): () => void;
+  /** 最近一次谱面（WS 重连回放源；无产物时 undefined）。 */
+  latestMusicScore(): SceneMusicScoreEvent | undefined;
 }
 
 export interface RuntimeApplicationOptions {

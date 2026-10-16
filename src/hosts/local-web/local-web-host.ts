@@ -159,6 +159,8 @@ export class LocalWebHost {
       projection: this.app.projection,
       catalog: this.app.audioCatalog,
       ttsStatus: (cb) => this.app.taskStatusSubscribe(cb),
+      musicEvents: (cb) => this.app.musicScoreSubscribe(cb),
+      latestMusicScore: () => this.app.latestMusicScore(),
       token: this.token,
       controllerLimit: this.config.local_web.controller_limit,
       originGuard: (origin) => isAllowedOrigin(origin, host, port),

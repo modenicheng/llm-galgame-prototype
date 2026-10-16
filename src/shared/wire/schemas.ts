@@ -17,16 +17,18 @@
 import { z } from "zod";
 import { CharacterLabelSchema, CHARACTER_ID_PATTERN } from "../../core/characters/types.js";
 import { CharacterDialogueEventSchema } from "../../story/types.js";
+import { MusicScoreSchema } from "../music/score.js";
 
 /** 新格式对白在 wire 上的唯一校验入口（strict：拒绝混写旧 speaker）。 */
 export const NewFormatDialogueEventSchema = CharacterDialogueEventSchema;
 
 /**
  * Runtime WebSocket 协议版本。C7 = 2：audio descriptor 的 speakerId 语义
- * 收紧为稳定 CharacterId（v1 期间可能是 TTS 配置键/显示名）。两端共享
- * 本常量；不匹配的旧客户端收到 4002 close（附升级说明），不静默降级。
+ * 收紧为稳定 CharacterId（v1 期间可能是 TTS 配置键/显示名）。动态音乐
+ * 生成 = 3：新增 server → client 的 music.score 推送。两端共享本常量；
+ * 不匹配的旧客户端收到 4002 close（附升级说明），不静默降级。
  */
-export const WIRE_PROTOCOL_VERSION = 2;
+export const WIRE_PROTOCOL_VERSION = 3;
 
 /** 旧 wire 版本客户端的 close code（沿用 4001 controller-limit 的拒绝模式）。 */
 export const STALE_WIRE_CLOSE_CODE = 4002;
@@ -173,5 +175,12 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     status: z.enum(["started", "finished", "failed", "canceled"]),
     error: z.string().optional(),
     totalBytes: z.number().int().nonnegative().optional(),
+  }),
+  z.object({
+    type: z.literal("music.score"),
+    sceneId: z.string().min(1),
+    cacheKey: z.string().min(1),
+    // 浏览器侧整谱校验（与作曲适配器同一 schema 真源）。
+    score: MusicScoreSchema,
   }),
 ]);

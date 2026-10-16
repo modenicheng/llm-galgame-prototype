@@ -22,6 +22,8 @@ import { StageRenderer } from "./stage/stage-renderer.js";
 import { fetchAssetManifest } from "./stage/asset-manifest-client.js";
 import { BrowserAssetResolver } from "./stage/browser-asset-resolver.js";
 import { BgmController } from "./stage/bgm-controller.js";
+import { GeneratedBgm } from "./audio/generated-bgm.js";
+import { SoundfontMusicRenderer } from "./audio/music-renderer.js";
 import { SoundEffectController } from "./stage/sound-effect-controller.js";
 import type { StageVisualState } from "./stage/stage-types.js";
 import { el, show } from "./ui/dom.js";
@@ -64,8 +66,10 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   const stageRenderer = new StageRenderer(refs.stage, assetResolver);
   const bgmController = new BgmController(assetResolver);
   const seController = new SoundEffectController(assetResolver);
+  // 动态音乐生成：导演指导 → Node 作曲 → WS 推谱 → 此处确定性渲染播放。
+  const generatedBgm = new GeneratedBgm(bgmController, new SoundfontMusicRenderer());
   const token = tokenFromUrl();
-  const app = new GameApp({ wsUrl: wsUrlFromLocation(), token, bgmController });
+  const app = new GameApp({ wsUrl: wsUrlFromLocation(), token, bgmController, music: generatedBgm });
 
   const startScreen = new StartScreen(refs.startRoot, {
     onStart: async () => {
@@ -175,6 +179,8 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   let draftByInteractionId = new Map<string, string>();
   let lastInteractionId: string | null = null;
   let lastVisualState: StageVisualState | undefined = undefined;
+  // 最近一次应用的 visualState.bgm 值（哨兵 = 从未应用；见 render() 内说明）。
+  let lastBgmId: string | undefined = "__never__";
 
   const render = (state: GameAppState): void => {
     const view = state.view;
@@ -262,7 +268,13 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     if (visualState !== undefined && visualState !== lastVisualState) {
       lastVisualState = visualState;
       stageRenderer.apply(visualState);
-      bgmController.apply(visualState.bgm);
+      // BGM 只在 bgm 值变化时切换：跨场景携带的旧值不重放（生成曲得以
+      // 存活），写手显式 @bgm（值变化）随时压回，回档/重连恢复（值差异）
+      // 照常应用。与语音合并链同哲学：最新意图胜。
+      if (visualState.bgm !== lastBgmId) {
+        lastBgmId = visualState.bgm;
+        bgmController.apply(visualState.bgm);
+      }
       seController.consume(app.consumeCues());
     }
   };

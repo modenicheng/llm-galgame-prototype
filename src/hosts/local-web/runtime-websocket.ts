@@ -17,6 +17,7 @@ import type {
   AudioCatalogService,
 } from "../../application/audio/audio-catalog-service.js";
 import type { TaskStatusEvent } from "../../application/audio/tts-task-service.js";
+import type { SceneMusicScoreEvent } from "../../application/audio/scene-music-service.js";
 import { ClientMessageSchema, STALE_WIRE_CLOSE_CODE, WIRE_PROTOCOL_VERSION } from "../../shared/wire/schemas.js";
 import type { ServerMessage } from "../../shared/wire/server-message.js";
 import type { PublicWebConfig } from "../../shared/wire/public-web-config.js";
@@ -28,6 +29,13 @@ export interface RuntimeWebSocketDeps {
   catalog: AudioCatalogService;
   /** Subscribe bridge for TTS task status events (host: app.taskStatusSubscribe). */
   ttsStatus: (cb: (event: TaskStatusEvent) => void) => () => void;
+  /**
+   * 场景配乐谱面推送桥（动态音乐生成；host: app.musicScoreSubscribe）。
+   * 可选 = 测试窄构造不被迫接音乐面。
+   */
+  musicEvents?: (cb: (event: SceneMusicScoreEvent) => void) => () => void;
+  /** 重连回放的最近谱面（与 descriptor 目录回放同模式）。 */
+  latestMusicScore?: () => SceneMusicScoreEvent | undefined;
   /** Start the game run loop on the first controller connection (§10.5). */
   startGame: () => void;
   token: string;
@@ -123,6 +131,16 @@ export class RuntimeWebSocket {
       for (const descriptor of this.catalog.listDescriptors()) {
         this.send(ws, { type: "audio.descriptor", descriptor });
       }
+      // 动态音乐：重连回放最近谱面（浏览器端按 cacheKey 幂等渲染）。
+      const latestMusic = this.deps.latestMusicScore?.();
+      if (latestMusic !== undefined) {
+        this.send(ws, {
+          type: "music.score",
+          sceneId: latestMusic.sceneId,
+          cacheKey: latestMusic.cacheKey,
+          score: latestMusic.score,
+        });
+      }
     });
 
     const unsubGame = this.game.subscribe((output) => {
@@ -134,6 +152,14 @@ export class RuntimeWebSocket {
     });
     const unsubStatus = this.ttsStatus((event) => {
       this.send(ws, taskStatusMessage(event));
+    });
+    const unsubMusic = this.deps.musicEvents?.((event) => {
+      this.send(ws, {
+        type: "music.score",
+        sceneId: event.sceneId,
+        cacheKey: event.cacheKey,
+        score: event.score,
+      });
     });
 
     ws.on("pong", () => {
@@ -147,6 +173,7 @@ export class RuntimeWebSocket {
       unsubGame();
       unsubCatalog();
       unsubStatus();
+      unsubMusic?.();
       this.connectionState.delete(ws);
       this.controllers.delete(ws);
       if (this.controllers.size === 0) this.stopHeartbeat();

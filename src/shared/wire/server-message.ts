@@ -6,6 +6,7 @@
 import type { RuntimeOutput } from "../../core/runtime/runtime-output.js";
 import type { AudioDescriptor } from "./audio-descriptor.js";
 import type { UiProjection } from "./ui-projection.js";
+import type { MusicScore } from "../music/score.js";
 
 export type ServerMessage =
   | {
@@ -16,6 +17,12 @@ export type ServerMessage =
       type: "runtime.output";
       sequence: number;
       output: RuntimeOutput;
+    }
+  | {
+      type: "music.score";
+      sceneId: string;
+      cacheKey: string;
+      score: MusicScore;
     }
   | {
       type: "audio.descriptor";

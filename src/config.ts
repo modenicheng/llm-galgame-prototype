@@ -14,6 +14,12 @@ export interface AudioConfig {
   playback?: AudioPlaybackConfig;
   synthesis?: AudioSynthesisConfig;
   cache?: AudioCacheConfig;
+  music?: MusicGenerationConfig;
+}
+
+/** 动态音乐生成（导演指导 → LLM 符号作曲 → 浏览器渲染）。 */
+export interface MusicGenerationConfig {
+  enabled: boolean;
 }
 
 /** V2 media planner tuning (lines). */
@@ -299,6 +305,11 @@ const AudioConfigSchema = z.object({
   playback: AudioPlaybackConfigSchema.optional(),
   synthesis: AudioSynthesisConfigSchema.optional(),
   cache: AudioCacheConfigSchema.optional(),
+  music: z
+    .object({
+      enabled: z.boolean().default(true),
+    })
+    .default({ enabled: true }),
 });
 
 /** Interaction-mode policy schema; validates like the other sections. */

@@ -95,6 +95,11 @@ media:
       format: pcm_s16le
       sample_rate: 22050
 
+    # 动态音乐生成（导演音乐指导 → LLM 符号作曲 → 浏览器 soundfont 渲染；
+    # 详见 docs/scene-music-generation.md。关闭 = 不注册导演监听，零 LLM 调用）
+    music:
+      enabled: true
+
     cache:
       max_bytes: 536870912
       cleanup_target_bytes: 402653184

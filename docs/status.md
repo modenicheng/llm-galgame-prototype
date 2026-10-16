@@ -19,6 +19,7 @@
 | `.hygiene.config.json` / `.hygiene-baseline.json` | 仓库卫生自检校准值（阈值 / 豁免 / 标记基线），供用户级 `repo-hygiene` skill（`~/.agents/skills/repo-hygiene/`，不随仓库走）的机械检查脚本读取 |
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
 | `docs/agents/TTS-音色配置指南.md` | 音色创建与绑定操作指南 |
+| `docs/scene-music-generation.md` | **场景配乐动态生成（V1 已落地）**：导演音乐指导 → LLM 符号作曲 → 浏览器 soundfont 确定性渲染三层契约 |
 
 ## 已完成
 
@@ -151,6 +152,17 @@
   （local 按注册表键直取 / dashscope 按 voice_id_env）；voice-design 按
   ID join，跨 profile 冲突 `VoiceDesignConflictError` 结构化拒绝；缺绑定
   即时降级纯文本（missing_provider_binding），不再静默落 mock。
+- **场景配乐动态生成（2026-10-16 V1 落地，spec：scene-music-generation）**：
+  导演 `SceneDirective.music`（mood 词表/intensity/note）→ `SceneMusicService`
+  去重作曲（LLM 单次 JSON × `MusicScoreSchema` 硬校验 × 修复重试）→
+  WS `music.score` 推送（wire v3，重连回放）→ 浏览器 OfflineAudioContext +
+  FluidR3 采样包（`assets/audio/soundfonts/`，A1–C7 裁剪双 MIT）确定性渲染
+  （分乐器包络/程序混响 IR/尾部循环折叠回环无缝）→ WAV blob URL 经
+  `BgmController.applyGenerated` 播放。优先级「最新意图胜」（生成曲接管、
+  写手显式 @bgm 值变化压回）；缓存乐谱不缓存音频（渲染确定性）；LLM 平台
+  已切 BigModel `glm-5.3-flash`（`VIBEGAL_LLM_KEY`，端点
+  `https://open.bigmodel.cn/api/coding/paas/v4`）；真实作曲双情绪探针
+  通过（`scripts/probe-music-composer.ts`）。
 - **调度**：`audio-intent-planner` / `performance-compiler` / `tts-task-service` /
   `cache-key`，播放水位参数（startup_buffer / low_watermark / target_buffer）。
 - **播放**：`web/src/audio/`——AudioCoordinator（共享 AudioContext + AudioWorklet）、

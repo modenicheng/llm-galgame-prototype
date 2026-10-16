@@ -14,6 +14,7 @@
  * imports ONLY @shared/wire, sibling web modules and platform types.
  */
 import type { AudioDescriptor, AudioPriority } from "@shared/wire/audio-descriptor.js";
+import type { MusicScoreMessage } from "./audio/generated-bgm.js";
 import type { PublicWebConfig } from "@shared/wire/public-web-config.js";
 import { DEFAULT_PUBLIC_WEB_CONFIG } from "@shared/wire/public-web-config.js";
 import type { ServerMessage } from "@shared/wire/server-message.js";
@@ -50,6 +51,8 @@ export interface GameAppOptions {
   config?: PublicWebConfig;
   /** Optional BGM playback controller; when absent volume/mute stay coordinator-only. */
   bgmController?: BgmController;
+  /** 动态音乐生成的渲染编排（WS music.score → 渲染 → applyGenerated）。 */
+  music?: { handleScore(message: MusicScoreMessage): void };
   /** Test seams. */
   fetchImpl?: typeof fetch;
   webSocketImpl?: WebSocketCtor;
@@ -371,6 +374,10 @@ export class GameApp {
         void this.onTaskStatus(msg.taskId, msg.lineId, msg.status, msg.error).catch(() => {
           // Status bookkeeping is best-effort; never throw into the socket path.
         });
+        break;
+      case "music.score":
+        // 动态音乐生成：渲染/播放是 GeneratedBgm 自己的 fire-and-forget。
+        this.options.music?.handleScore(msg);
         break;
       default:
         this.viewModel.applyServerMessage(msg); // projection.snapshot + runtime.output

@@ -70,4 +70,18 @@ describe("BgmController", () => {
     expect(audio.play).toHaveBeenCalled();
     expect(audio.pause).toHaveBeenCalled();
   });
+
+  it("applyGenerated 直达播放；同 URL 不重复；静态 apply 值变化可压回", () => {
+    const audio = makeAudio();
+    const controller = new BgmController(new BrowserAssetResolver(manifest), () => audio as unknown as HTMLAudioElement);
+    controller.applyGenerated("blob:a");
+    expect(audio.src).toContain("blob:a");
+    expect(audio.loop).toBe(true);
+    expect(audio.play).toHaveBeenCalledTimes(1);
+    controller.applyGenerated("blob:a"); // 同 URL 幂等
+    expect(audio.play).toHaveBeenCalledTimes(1);
+    controller.apply("mystery"); // 写手显式指令压回
+    expect(audio.src).toContain("mystery.mp3");
+    expect(audio.play).toHaveBeenCalledTimes(2);
+  });
 });
