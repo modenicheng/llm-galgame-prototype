@@ -124,6 +124,11 @@
 - **BgmController**：真实 `<audio>` 循环播放（含 autoplay 手势解锁）；
   **SoundEffectController**：一次性音效播放。
 - **UiProjection.visualState**：重连恢复完整视觉状态（§107）。
+- **玩家端交互禁制（2026-10-16 自 campus 移植，服务长会话）**：boot 挂
+  `.gal-player`——禁文本选择/图片拖拽（input/textarea 恢复可选，自由输入
+  草稿不受影响；Firefox 经 dragstart 兜底）；title-in 入场动画去 filter
+  分量——keyframes 混入 filter 时主线程动画在后台标签页节流冻结，标题
+  永停 blur(8px) 起始帧。
 
 ### 音频（TTS V2/V3 管线）
 - **合成**：DashScope CosyVoice（`voices.yaml` V3 逻辑音色 → `.env` voice-id），

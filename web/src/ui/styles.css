@@ -74,6 +74,24 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* 玩家端交互禁制（.gal-player 由 main.ts boot 时挂上）：长会话连续点击
+   推进对话时禁误选文本/误拖图片；输入框/文本域恢复可选（自由输入草稿
+   编辑需要）。 */
+body.gal-player {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body.gal-player input,
+body.gal-player textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+body.gal-player img {
+  -webkit-user-drag: none;
+}
+
 #app {
   position: relative;
   isolation: isolate;
@@ -1078,16 +1096,18 @@ button {
   }
 }
 
+/* 只动 opacity+transform：keyframes 里一旦混入 filter，filter 分量走主线程
+   而 opacity/transform 走合成器——页面在后台/被遮挡时主线程动画节流冻结，
+   opacity 照常播完，标题就永远停在 blur(8px) 起始帧（backdrop-filter 遮罩
+   内尤甚）。规则同 rise-in：入场 keyframes 禁非合成器友好属性。 */
 @keyframes title-in {
   from {
     opacity: 0;
     transform: translateY(26px) scale(0.985);
-    filter: blur(8px);
   }
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
-    filter: blur(0);
   }
 }
 
