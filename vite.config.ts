@@ -13,6 +13,13 @@ export default defineConfig({
     outDir: "../dist/web",
     emptyOutDir: true,
     sourcemap: true,
+    // 多入口：主界面 + 配乐试听页（渲染器听感调参的独立工具，不启游戏）。
+    rollupOptions: {
+      input: {
+        index: path.resolve(__dirname, "web/index.html"),
+        musicDemo: path.resolve(__dirname, "web/music-demo.html"),
+      },
+    },
   },
   resolve: {
     alias: {

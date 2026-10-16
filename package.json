@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.node.json && vite build",
     "build:node": "tsc -p tsconfig.node.json",
     "build:web": "vite build",
+    "demo:music": "vite build && node scripts/serve-music-demo.mjs",
     "start": "npm run start:web",
     "start:web": "node dist/node/entrypoints/web.js",
     "start:cli": "node dist/node/entrypoints/cli.js",

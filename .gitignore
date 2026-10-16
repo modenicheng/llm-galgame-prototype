@@ -21,3 +21,6 @@ assets/raw/
 
 # v2 per-game graph storage (runtime data)
 games/
+
+# 会话级中间产物（探针输出等）
+.tmp/

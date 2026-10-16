@@ -19,7 +19,7 @@
 | `.hygiene.config.json` / `.hygiene-baseline.json` | 仓库卫生自检校准值（阈值 / 豁免 / 标记基线），供用户级 `repo-hygiene` skill（`~/.agents/skills/repo-hygiene/`，不随仓库走）的机械检查脚本读取 |
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
 | `docs/agents/TTS-音色配置指南.md` | 音色创建与绑定操作指南 |
-| `docs/scene-music-generation.md` | **场景配乐动态生成（V1 已落地）**：导演音乐指导 → LLM 符号作曲 → 浏览器 soundfont 确定性渲染三层契约 |
+| `docs/scene-music-generation.md` | **场景配乐动态生成（V1+复用已落地）**：导演音乐指导 → LLM 符号作曲 → per-game 复用谱库 → 浏览器 soundfont 确定性渲染；独立试听页 |
 
 ## 已完成
 
@@ -163,6 +163,13 @@
   已切 BigModel `glm-5.3-flash`（`VIBEGAL_LLM_KEY`，端点
   `https://open.bigmodel.cn/api/coding/paas/v4`）；真实作曲双情绪探针
   通过（`scripts/probe-music-composer.ts`）。
+  **复用谱库（V1.1，token 上界 21 首/世界）**：复用键 `mood:intensity`
+  （note 只是首作编配提示）→ `MusicLibraryStore`
+  （`games/<gameId>/music/library.json`，首写定稿/原子写/损坏拒收）——
+  命中零 token 直接广播，跨场景/周目/进程重启同曲（Leitmotif 一致）；
+  同键并发合流单次 LLM。**试听页**：`npm run demo:music` →
+  `/music-demo.html`（内置 4 首真实作曲基线 + file picker 载
+  `probe --save` 产物，生产渲染器 A/B 调参，零 token 不启游戏）。
 - **调度**：`audio-intent-planner` / `performance-compiler` / `tts-task-service` /
   `cache-key`，播放水位参数（startup_buffer / low_watermark / target_buffer）。
 - **播放**：`web/src/audio/`——AudioCoordinator（共享 AudioContext + AudioWorklet）、

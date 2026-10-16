@@ -3,17 +3,22 @@ import "dotenv/config";
  * probe-music-composer — 动态音乐生成真实链路验证（一次性探针，可常驻
  * scripts/ 作回归工具）：真实 BigModel 调用 × 真实作曲 prompt × 真实
  * MusicScoreSchema 校验，打印谱面统计。用法：
- *   npx tsx scripts/probe-music-composer.ts [mood] [intensity] [note]
+ *   npx tsx scripts/probe-music-composer.ts [mood] [intensity] [note] [--save=路径]
+ * --save 把谱面 JSON 落盘（配乐试听页 /music-demo.html 的 file picker
+ * 直接载入试听）。
  */
 import { loadConfig, loadApiKey } from "../src/config.js";
 import { MusicScoreSchema } from "../src/shared/music/score.js";
 import { SceneMusicComposerAdapter } from "../src/adapters/llm/scene-music-composer-adapter.js";
 import { musicCacheKey } from "../src/application/audio/music-cache-key.js";
 import type { SceneMusicDirection } from "../src/shared/music/score.js";
+import { writeFile } from "node:fs/promises";
 
 const mood = (process.argv[2] ?? "tense") as SceneMusicDirection["mood"];
 const intensity = (process.argv[3] ?? "2") as SceneMusicDirection["intensity"];
 const note = process.argv[4];
+const saveArg = process.argv.find((arg) => arg.startsWith("--save="));
+const savePath = saveArg !== undefined ? saveArg.slice("--save=".length) : undefined;
 
 const config = await loadConfig("config.yaml");
 const apiKey = loadApiKey(config);
@@ -49,3 +54,7 @@ for (const track of score.tracks) {
 }
 const total = score.tracks.reduce((sum, t) => sum + t.notes.length, 0);
 console.log(`总音符 ${total}；首个音符 beat=${score.tracks[0]!.notes[0]!.beat}`);
+if (savePath !== undefined) {
+  await writeFile(savePath, `${JSON.stringify(score, null, 2)}\n`, "utf8");
+  console.log(`已保存谱面 → ${savePath}`);
+}

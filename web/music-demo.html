@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>配乐试听 · vibe-gal</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(ellipse at 50% -20%, #2a2438 0%, #14111c 60%);
+        color: #d8cfbc;
+        font-family: "Noto Serif SC", "Microsoft YaHei", serif;
+        display: flex;
+        justify-content: center;
+      }
+      main { width: min(46rem, 92vw); padding: 2.5rem 0 4rem; }
+      h1 { font-size: 1.5rem; margin: 0 0 0.4rem; color: #efe6d0; }
+      p.sub { margin: 0 0 1.8rem; color: #8f8474; font-size: 0.85rem; line-height: 1.6; }
+      section { margin-bottom: 2rem; }
+      h2 { font-size: 1rem; color: #b9ad97; margin: 0 0 0.8rem; }
+      .track {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem;
+        padding: 0.75rem 1rem; margin-bottom: 0.5rem;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 0.5rem;
+      }
+      .track.active { border-color: #7d6bb8; background: rgba(125, 107, 184, 0.12); }
+      button {
+        background: #443a63; color: #efe6d0; border: none; border-radius: 0.4rem;
+        padding: 0.5rem 1rem; font-size: 0.9rem; cursor: pointer;
+        font-family: inherit;
+      }
+      button:hover:not(:disabled) { background: #58497f; }
+      button:disabled { opacity: 0.45; cursor: wait; }
+      button.playing { background: #7d6bb8; }
+      .meta { font-size: 0.75rem; color: #8f8474; }
+      .meta .label { font-size: 0.9rem; color: #d8cfbc; margin-right: 0.5rem; }
+      a.download { font-size: 0.75rem; color: #9d8fd0; }
+      #status { font-size: 0.8rem; color: #8f8474; margin: 1rem 0; min-height: 1.2em; }
+      audio { width: 100%; margin-top: 0.6rem; }
+      input[type="file"] { color: #8f8474; font-size: 0.8rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>配乐试听</h1>
+      <p class="sub">
+        生产渲染器（SoundfontMusicRenderer）的独立听感工具：符号谱 → 采样包 →
+        离线渲染 → 无缝循环 WAV。固定基线曲目用于渲染器改版 A/B 对比；
+        也可载入 <code>probe-music-composer --save</code> 的产物试听新作曲。
+        不经 WS、不启游戏——听感调参零 token。
+      </p>
+      <section>
+        <h2>基线曲目（真实 glm-5.3-flash 作曲）</h2>
+        <div id="fixtures"></div>
+      </section>
+      <section>
+        <h2>载入谱面 JSON</h2>
+        <input type="file" id="fileInput" accept=".json,application/json" />
+        <div id="fileMeta" class="meta" style="margin-top: 0.5rem"></div>
+      </section>
+      <div id="status"></div>
+      <audio id="player" controls loop></audio>
+    </main>
+    <script type="module" src="/src/music-demo.ts"></script>
+  </body>
+</html>

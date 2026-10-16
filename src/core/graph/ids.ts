@@ -58,6 +58,8 @@ export const GAME_STORAGE_LAYOUT = {
   snapshotsDir: "graph/snapshots",
   cursor: "cursor.json",
   stats: "stats.json",
+  /** 场景配乐复用谱库（mood:intensity → MusicScore；运行期可增长）。 */
+  musicLibrary: "music/library.json",
   assetsCatalog: "assets/resources.yaml",
 } as const;
 
