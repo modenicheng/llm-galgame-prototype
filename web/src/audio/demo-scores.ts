@@ -1,8 +1,9 @@
 /**
- * 试听基线谱面（真实 glm-5.3-flash 作曲产物，2026-10-16 经
+ * 试听基线谱面（真实 glm-5.3-flash 作曲产物，2026-10-16/17 经
  * scripts/probe-music-composer.ts --save 采集）——渲染器听感调参的固定
  * A/B 基线：改增益/混响/包络后重听对比，谱面恒定。覆盖对比维度：速度
- * 与密度（紧张/高潮 vs 悲伤）、音色组合（钢琴主导 vs 全奏）。
+ * 与密度（紧张/高潮 vs 悲伤）、音色组合（钢琴主导 vs 全奏）、地区音乐
+ * 身份（东亚稀疏五声 vs 凯尔特 dorian 竖琴，与同情绪 default 曲 A/B）。
  */
 import type { MusicScore, SceneMusicDirection } from "@shared/music/score.js";
 
@@ -3185,6 +3186,740 @@ export const DEMO_SCORES: DemoScore[] = [
               "dur": 1,
               "midi": 91,
               "vel": 72
+            }
+          ]
+        }
+      ]
+    },
+  },
+  {
+    label: "悲伤 · 强度 1 · 东亚",
+    direction: { mood: "sorrowful", intensity: 1, note: "雨后古镇石板路，回忆浮现", region: "east-asia" },
+    score: {
+      "version": 1,
+      "bpm": 58,
+      "key": 9,
+      "mode": "minor",
+      "bars": 16,
+      "tracks": [
+        {
+          "instrument": "bass",
+          "gain": 0.35,
+          "notes": [
+            {
+              "beat": 0,
+              "dur": 4,
+              "midi": 45,
+              "vel": 55
+            },
+            {
+              "beat": 4,
+              "dur": 4,
+              "midi": 41,
+              "vel": 50
+            },
+            {
+              "beat": 8,
+              "dur": 4,
+              "midi": 48,
+              "vel": 50
+            },
+            {
+              "beat": 12,
+              "dur": 2,
+              "midi": 43,
+              "vel": 48
+            },
+            {
+              "beat": 14,
+              "dur": 2,
+              "midi": 45,
+              "vel": 52
+            },
+            {
+              "beat": 16,
+              "dur": 4,
+              "midi": 45,
+              "vel": 55
+            },
+            {
+              "beat": 20,
+              "dur": 4,
+              "midi": 41,
+              "vel": 50
+            },
+            {
+              "beat": 24,
+              "dur": 4,
+              "midi": 48,
+              "vel": 50
+            },
+            {
+              "beat": 28,
+              "dur": 4,
+              "midi": 43,
+              "vel": 48
+            }
+          ]
+        },
+        {
+          "instrument": "pad",
+          "gain": 0.3,
+          "notes": [
+            {
+              "beat": 0,
+              "dur": 8,
+              "midi": 57,
+              "vel": 35
+            },
+            {
+              "beat": 0,
+              "dur": 8,
+              "midi": 60,
+              "vel": 30
+            },
+            {
+              "beat": 8,
+              "dur": 8,
+              "midi": 60,
+              "vel": 35
+            },
+            {
+              "beat": 8,
+              "dur": 8,
+              "midi": 64,
+              "vel": 30
+            },
+            {
+              "beat": 16,
+              "dur": 8,
+              "midi": 57,
+              "vel": 35
+            },
+            {
+              "beat": 16,
+              "dur": 8,
+              "midi": 60,
+              "vel": 30
+            },
+            {
+              "beat": 24,
+              "dur": 4,
+              "midi": 62,
+              "vel": 32
+            },
+            {
+              "beat": 24,
+              "dur": 4,
+              "midi": 65,
+              "vel": 28
+            },
+            {
+              "beat": 28,
+              "dur": 4,
+              "midi": 60,
+              "vel": 32
+            },
+            {
+              "beat": 28,
+              "dur": 4,
+              "midi": 64,
+              "vel": 28
+            }
+          ]
+        },
+        {
+          "instrument": "piano",
+          "gain": 0.55,
+          "notes": [
+            {
+              "beat": 0,
+              "dur": 1.5,
+              "midi": 72,
+              "vel": 70
+            },
+            {
+              "beat": 1.5,
+              "dur": 0.5,
+              "midi": 69,
+              "vel": 58
+            },
+            {
+              "beat": 2,
+              "dur": 2,
+              "midi": 67,
+              "vel": 62
+            },
+            {
+              "beat": 4,
+              "dur": 1,
+              "midi": 65,
+              "vel": 60
+            },
+            {
+              "beat": 5,
+              "dur": 1,
+              "midi": 67,
+              "vel": 55
+            },
+            {
+              "beat": 6,
+              "dur": 2,
+              "midi": 65,
+              "vel": 58
+            },
+            {
+              "beat": 8,
+              "dur": 2.5,
+              "midi": 72,
+              "vel": 66
+            },
+            {
+              "beat": 10.5,
+              "dur": 1.5,
+              "midi": 67,
+              "vel": 56
+            },
+            {
+              "beat": 12,
+              "dur": 2,
+              "midi": 69,
+              "vel": 60
+            },
+            {
+              "beat": 14,
+              "dur": 2,
+              "midi": 67,
+              "vel": 52
+            },
+            {
+              "beat": 16,
+              "dur": 1.5,
+              "midi": 72,
+              "vel": 70
+            },
+            {
+              "beat": 17.5,
+              "dur": 0.5,
+              "midi": 69,
+              "vel": 58
+            },
+            {
+              "beat": 18,
+              "dur": 2,
+              "midi": 67,
+              "vel": 62
+            },
+            {
+              "beat": 20,
+              "dur": 1,
+              "midi": 65,
+              "vel": 60
+            },
+            {
+              "beat": 21,
+              "dur": 1,
+              "midi": 67,
+              "vel": 55
+            },
+            {
+              "beat": 22,
+              "dur": 2,
+              "midi": 74,
+              "vel": 64
+            },
+            {
+              "beat": 24,
+              "dur": 2.5,
+              "midi": 72,
+              "vel": 66
+            },
+            {
+              "beat": 26.5,
+              "dur": 1.5,
+              "midi": 69,
+              "vel": 56
+            },
+            {
+              "beat": 28,
+              "dur": 2,
+              "midi": 67,
+              "vel": 60
+            },
+            {
+              "beat": 30,
+              "dur": 2,
+              "midi": 69,
+              "vel": 54
+            }
+          ]
+        }
+      ]
+    },
+  },
+  {
+    label: "希望 · 强度 2 · 凯尔特",
+    direction: { mood: "hopeful", intensity: 2, note: "晨光穿过薄雾，旅程开启", region: "celtic" },
+    score: {
+      "version": 1,
+      "bpm": 96,
+      "key": 2,
+      "mode": "dorian",
+      "bars": 16,
+      "tracks": [
+        {
+          "instrument": "bass",
+          "gain": 0.7,
+          "notes": [
+            {
+              "beat": 0,
+              "dur": 4,
+              "midi": 38,
+              "vel": 70
+            },
+            {
+              "beat": 4,
+              "dur": 4,
+              "midi": 45,
+              "vel": 70
+            },
+            {
+              "beat": 8,
+              "dur": 4,
+              "midi": 40,
+              "vel": 70
+            },
+            {
+              "beat": 12,
+              "dur": 4,
+              "midi": 47,
+              "vel": 70
+            },
+            {
+              "beat": 16,
+              "dur": 4,
+              "midi": 38,
+              "vel": 70
+            },
+            {
+              "beat": 20,
+              "dur": 4,
+              "midi": 45,
+              "vel": 70
+            },
+            {
+              "beat": 24,
+              "dur": 4,
+              "midi": 40,
+              "vel": 70
+            },
+            {
+              "beat": 28,
+              "dur": 2,
+              "midi": 47,
+              "vel": 70
+            },
+            {
+              "beat": 30,
+              "dur": 2,
+              "midi": 38,
+              "vel": 72
+            }
+          ]
+        },
+        {
+          "instrument": "pad",
+          "gain": 0.6,
+          "notes": [
+            {
+              "beat": 0,
+              "dur": 8,
+              "midi": 54,
+              "vel": 45
+            },
+            {
+              "beat": 0,
+              "dur": 8,
+              "midi": 61,
+              "vel": 45
+            },
+            {
+              "beat": 8,
+              "dur": 8,
+              "midi": 52,
+              "vel": 45
+            },
+            {
+              "beat": 8,
+              "dur": 8,
+              "midi": 59,
+              "vel": 45
+            },
+            {
+              "beat": 16,
+              "dur": 8,
+              "midi": 54,
+              "vel": 45
+            },
+            {
+              "beat": 16,
+              "dur": 8,
+              "midi": 61,
+              "vel": 45
+            },
+            {
+              "beat": 24,
+              "dur": 8,
+              "midi": 52,
+              "vel": 45
+            },
+            {
+              "beat": 24,
+              "dur": 8,
+              "midi": 64,
+              "vel": 45
+            }
+          ]
+        },
+        {
+          "instrument": "piano",
+          "gain": 0.9,
+          "notes": [
+            {
+              "beat": 0,
+              "dur": 0.5,
+              "midi": 66,
+              "vel": 88
+            },
+            {
+              "beat": 0.5,
+              "dur": 0.5,
+              "midi": 73,
+              "vel": 80
+            },
+            {
+              "beat": 1,
+              "dur": 0.5,
+              "midi": 78,
+              "vel": 80
+            },
+            {
+              "beat": 1.5,
+              "dur": 0.5,
+              "midi": 73,
+              "vel": 75
+            },
+            {
+              "beat": 2,
+              "dur": 1,
+              "midi": 78,
+              "vel": 85
+            },
+            {
+              "beat": 3,
+              "dur": 1,
+              "midi": 73,
+              "vel": 70
+            },
+            {
+              "beat": 4,
+              "dur": 0.5,
+              "midi": 76,
+              "vel": 88
+            },
+            {
+              "beat": 4.5,
+              "dur": 0.5,
+              "midi": 73,
+              "vel": 80
+            },
+            {
+              "beat": 5,
+              "dur": 0.5,
+              "midi": 69,
+              "vel": 80
+            },
+            {
+              "beat": 5.5,
+              "dur": 0.5,
+              "midi": 76,
+              "vel": 75
+            },
+            {
+              "beat": 6,
+              "dur": 1,
+              "midi": 73,
+              "vel": 85
+            },
+            {
+              "beat": 7,
+              "dur": 1,
+              "midi": 69,
+              "vel": 70
+            },
+            {
+              "beat": 8,
+              "dur": 0.5,
+              "midi": 67,
+              "vel": 88
+            },
+            {
+              "beat": 8.5,
+              "dur": 0.5,
+              "midi": 74,
+              "vel": 80
+            },
+            {
+              "beat": 9,
+              "dur": 0.5,
+              "midi": 79,
+              "vel": 80
+            },
+            {
+              "beat": 9.5,
+              "dur": 0.5,
+              "midi": 74,
+              "vel": 75
+            },
+            {
+              "beat": 10,
+              "dur": 1,
+              "midi": 79,
+              "vel": 85
+            },
+            {
+              "beat": 11,
+              "dur": 1,
+              "midi": 74,
+              "vel": 70
+            },
+            {
+              "beat": 12,
+              "dur": 0.5,
+              "midi": 76,
+              "vel": 88
+            },
+            {
+              "beat": 12.5,
+              "dur": 0.5,
+              "midi": 72,
+              "vel": 80
+            },
+            {
+              "beat": 13,
+              "dur": 0.5,
+              "midi": 79,
+              "vel": 80
+            },
+            {
+              "beat": 13.5,
+              "dur": 0.5,
+              "midi": 72,
+              "vel": 75
+            },
+            {
+              "beat": 14,
+              "dur": 1,
+              "midi": 74,
+              "vel": 85
+            },
+            {
+              "beat": 15,
+              "dur": 1,
+              "midi": 72,
+              "vel": 70
+            },
+            {
+              "beat": 16,
+              "dur": 0.5,
+              "midi": 78,
+              "vel": 90
+            },
+            {
+              "beat": 16.5,
+              "dur": 0.5,
+              "midi": 73,
+              "vel": 80
+            },
+            {
+              "beat": 17,
+              "dur": 0.5,
+              "midi": 81,
+              "vel": 80
+            },
+            {
+              "beat": 17.5,
+              "dur": 0.5,
+              "midi": 78,
+              "vel": 75
+            },
+            {
+              "beat": 18,
+              "dur": 1,
+              "midi": 83,
+              "vel": 88
+            },
+            {
+              "beat": 19,
+              "dur": 1,
+              "midi": 78,
+              "vel": 72
+            },
+            {
+              "beat": 20,
+              "dur": 0.5,
+              "midi": 76,
+              "vel": 88
+            },
+            {
+              "beat": 20.5,
+              "dur": 0.5,
+              "midi": 73,
+              "vel": 80
+            },
+            {
+              "beat": 21,
+              "dur": 0.5,
+              "midi": 81,
+              "vel": 80
+            },
+            {
+              "beat": 21.5,
+              "dur": 0.5,
+              "midi": 76,
+              "vel": 75
+            },
+            {
+              "beat": 22,
+              "dur": 1,
+              "midi": 78,
+              "vel": 85
+            },
+            {
+              "beat": 23,
+              "dur": 1,
+              "midi": 73,
+              "vel": 70
+            },
+            {
+              "beat": 24,
+              "dur": 0.5,
+              "midi": 74,
+              "vel": 88
+            },
+            {
+              "beat": 24.5,
+              "dur": 0.5,
+              "midi": 79,
+              "vel": 80
+            },
+            {
+              "beat": 25,
+              "dur": 0.5,
+              "midi": 74,
+              "vel": 80
+            },
+            {
+              "beat": 25.5,
+              "dur": 0.5,
+              "midi": 79,
+              "vel": 75
+            },
+            {
+              "beat": 26,
+              "dur": 1,
+              "midi": 81,
+              "vel": 85
+            },
+            {
+              "beat": 27,
+              "dur": 1,
+              "midi": 76,
+              "vel": 70
+            },
+            {
+              "beat": 28,
+              "dur": 0.5,
+              "midi": 72,
+              "vel": 88
+            },
+            {
+              "beat": 28.5,
+              "dur": 0.5,
+              "midi": 79,
+              "vel": 80
+            },
+            {
+              "beat": 29,
+              "dur": 0.5,
+              "midi": 74,
+              "vel": 80
+            },
+            {
+              "beat": 29.5,
+              "dur": 0.5,
+              "midi": 69,
+              "vel": 75
+            },
+            {
+              "beat": 30,
+              "dur": 2,
+              "midi": 66,
+              "vel": 82
+            }
+          ]
+        },
+        {
+          "instrument": "strings",
+          "gain": 0.5,
+          "notes": [
+            {
+              "beat": 0,
+              "dur": 4,
+              "midi": 64,
+              "vel": 55
+            },
+            {
+              "beat": 4,
+              "dur": 4,
+              "midi": 71,
+              "vel": 55
+            },
+            {
+              "beat": 8,
+              "dur": 4,
+              "midi": 62,
+              "vel": 55
+            },
+            {
+              "beat": 12,
+              "dur": 4,
+              "midi": 69,
+              "vel": 55
+            },
+            {
+              "beat": 16,
+              "dur": 4,
+              "midi": 66,
+              "vel": 58
+            },
+            {
+              "beat": 20,
+              "dur": 4,
+              "midi": 71,
+              "vel": 58
+            },
+            {
+              "beat": 24,
+              "dur": 4,
+              "midi": 67,
+              "vel": 58
+            },
+            {
+              "beat": 28,
+              "dur": 4,
+              "midi": 64,
+              "vel": 55
             }
           ]
         }

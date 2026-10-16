@@ -13,6 +13,7 @@ import type { CanonSnapshot } from "../../core/ports/canon-store-port.js";
 import type { RunReview } from "../../core/ports/review-store-port.js";
 import type { OutlineOp } from "../../core/ports/outline-store-port.js";
 import type { CharacterControl } from "../../core/characters/types.js";
+import type { MusicRegion } from "../../shared/music/score.js";
 import {
   DELIVERY_TAGS,
   ENERGY_VALUES,
@@ -84,6 +85,12 @@ export interface DraftCharacter {
 /** 编剧初版产物。outline 全部 planned；act 链 + 1–2 个 ending。 */
 export interface WorldDraft {
   worldSetting: string;
+  /**
+   * 世界音乐地区身份（编剧画像）：配乐创作思路的世界锚（音阶/节奏型/
+   * 乐器偏好，跨情绪一致）；缺省 = 无地区锚（default）。世界创建期落盘
+   * world/music-identity.json，运行时作 SceneMusicService 的 worldRegion。
+   */
+  musicRegion?: Exclude<MusicRegion, "default">;
   characters: DraftCharacter[];
   outline: OutlineNode[];
 }

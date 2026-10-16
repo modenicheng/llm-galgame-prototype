@@ -3,12 +3,12 @@ import "dotenv/config";
  * probe-music-composer — 动态音乐生成真实链路验证（一次性探针，可常驻
  * scripts/ 作回归工具）：真实 BigModel 调用 × 真实作曲 prompt × 真实
  * MusicScoreSchema 校验，打印谱面统计。用法：
- *   npx tsx scripts/probe-music-composer.ts [mood] [intensity] [note] [--save=路径]
+ *   npx tsx scripts/probe-music-composer.ts [mood] [intensity] [note] [--save=路径] [--region=地区]
  * --save 把谱面 JSON 落盘（配乐试听页 /music-demo.html 的 file picker
- * 直接载入试听）。
+ * 直接载入试听）；--region 指定地区音乐身份（词表 MUSIC_REGIONS）。
  */
 import { loadConfig, loadApiKey } from "../src/config.js";
-import { MusicScoreSchema } from "../src/shared/music/score.js";
+import { MusicScoreSchema, MUSIC_REGIONS, type MusicRegion } from "../src/shared/music/score.js";
 import { SceneMusicComposerAdapter } from "../src/adapters/llm/scene-music-composer-adapter.js";
 import { musicCacheKey } from "../src/application/audio/music-cache-key.js";
 import type { SceneMusicDirection } from "../src/shared/music/score.js";
@@ -17,8 +17,13 @@ import { writeFile } from "node:fs/promises";
 const mood = (process.argv[2] ?? "tense") as SceneMusicDirection["mood"];
 const intensity = (process.argv[3] ?? "2") as SceneMusicDirection["intensity"];
 const note = process.argv[4];
-const saveArg = process.argv.find((arg) => arg.startsWith("--save="));
-const savePath = saveArg !== undefined ? saveArg.slice("--save=".length) : undefined;
+const flag = (name: string): string | undefined =>
+  process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+const savePath = flag("save");
+const regionArg = flag("region");
+const region = (regionArg !== undefined && (MUSIC_REGIONS as readonly string[]).includes(regionArg)
+  ? regionArg
+  : "default") as MusicRegion;
 
 const config = await loadConfig("config.yaml");
 const apiKey = loadApiKey(config);
@@ -29,6 +34,7 @@ const score = await adapter.compose({
   sceneId: "probe_scene",
   sceneGoal: "雨夜天台对峙：主角揭穿搭档的谎言，关系濒临破裂",
   direction: { mood, intensity, ...(note !== undefined ? { note } : {}) },
+  region,
 });
 const elapsed = ((Date.now() - started) / 1000).toFixed(1);
 
@@ -40,7 +46,7 @@ if (score === null) {
 const checked = MusicScoreSchema.safeParse(score);
 console.log(`✓ 作曲成功，耗时 ${elapsed}s，schema 复验=${checked.success ? "PASS" : "FAIL"}`);
 console.log(
-  `bpm=${score.bpm} key=${score.key} mode=${score.mode} bars=${score.bars} ` +
+  `bpm=${score.bpm} key=${score.key} mode=${score.mode} bars=${score.bars} region=${region} ` +
     `循环=${((score.bars * 4 * 60) / score.bpm).toFixed(1)}s ` +
     `cacheKey=${musicCacheKey(score)}`,
 );

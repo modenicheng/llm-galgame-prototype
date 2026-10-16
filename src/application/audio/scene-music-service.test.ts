@@ -5,6 +5,7 @@ import { musicCacheKey } from "./music-cache-key.js";
 import {
   SceneMusicService,
   musicLibraryKey,
+  type SceneMusicComposeRequest,
   type SceneMusicComposerPort,
   type SceneMusicLibraryPort,
   type SceneMusicScoreEvent,
@@ -22,7 +23,7 @@ function makeDirective(music?: SceneMusicDirection, sceneId = "scene_1"): SceneD
 }
 
 function fakeComposer(
-  behavior: (request: { sceneId: string }) => Promise<MusicScore | null>,
+  behavior: (request: SceneMusicComposeRequest) => Promise<MusicScore | null>,
 ): SceneMusicComposerPort & { compose: ReturnType<typeof vi.fn> } {
   return { compose: vi.fn(behavior) };
 }
@@ -64,9 +65,19 @@ async function flush(): Promise<void> {
 }
 
 describe("musicLibraryKey", () => {
-  it("复用键 = mood:intensity，note 不参与", () => {
-    expect(musicLibraryKey({ mood: "tense", intensity: 2 })).toBe("tense:2");
-    expect(musicLibraryKey({ mood: "tense", intensity: 2, note: "不同注记" })).toBe("tense:2");
+  it("复用键 = region:mood:intensity，note 不参与", () => {
+    expect(musicLibraryKey({ mood: "tense", intensity: 2 })).toBe("default:tense:2");
+    expect(musicLibraryKey({ mood: "tense", intensity: 2, note: "不同注记" })).toBe(
+      "default:tense:2",
+    );
+  });
+
+  it("地区维度：导演覆盖 > 世界锚 > default", () => {
+    const anchored = { mood: "tense", intensity: 2 } as SceneMusicDirection;
+    expect(musicLibraryKey(anchored, "east-asia")).toBe("east-asia:tense:2");
+    expect(musicLibraryKey({ ...anchored, region: "celtic" }, "east-asia")).toBe("celtic:tense:2");
+    // 不同地区同情绪 = 不同键（各地区独立成曲）。
+    expect(musicLibraryKey(anchored, "celtic")).not.toBe(musicLibraryKey(anchored, "east-asia"));
   });
 });
 
@@ -89,7 +100,27 @@ describe("SceneMusicService", () => {
     expect(events[0]!.sceneId).toBe("scene_1");
     expect(events[0]!.cacheKey).toBe(musicCacheKey(score));
     expect(service.latestScore()).toEqual(events[0]);
-    expect(library.put).toHaveBeenCalledWith("tense:2", score);
+    expect(library.put).toHaveBeenCalledWith("default:tense:2", score);
+  });
+
+  it("世界锚地区回落：无覆盖时请求与复用键用 worldRegion", async () => {
+    const composer = fakeComposer(async () => score);
+    const library = fakeLibrary();
+    const service = new SceneMusicService({ composer, library, worldRegion: "east-asia" });
+    service.handleDirective(makeDirective(direction));
+    await flush();
+    expect(composer.compose.mock.calls[0]![0].region).toBe("east-asia");
+    expect(library.put).toHaveBeenCalledWith("east-asia:tense:2", score);
+  });
+
+  it("导演地区覆盖优先于世界锚", async () => {
+    const composer = fakeComposer(async () => score);
+    const library = fakeLibrary();
+    const service = new SceneMusicService({ composer, library, worldRegion: "east-asia" });
+    service.handleDirective(makeDirective({ mood: "tense", intensity: 2, region: "celtic" }));
+    await flush();
+    expect(composer.compose.mock.calls[0]![0].region).toBe("celtic");
+    expect(library.put).toHaveBeenCalledWith("celtic:tense:2", score);
   });
 
   it("同场景同复用键去重；键变化才重新解析", async () => {
@@ -107,7 +138,7 @@ describe("SceneMusicService", () => {
 
   it("note 变化不换复用键：谱库命中 → 零 token 广播同一首", async () => {
     const composer = fakeComposer(async () => score);
-    const library = fakeLibrary({ "tense:2": otherScore });
+    const library = fakeLibrary({ "default:tense:2": otherScore });
     const service = new SceneMusicService({ composer, library });
     const events: SceneMusicScoreEvent[] = [];
     service.subscribe((event) => events.push(event));

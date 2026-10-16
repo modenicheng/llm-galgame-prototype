@@ -18,6 +18,7 @@ import {
 } from "../../application/audio/performance-compiler.js";
 import { CharacterVoiceDesignSchema } from "../../application/outline/outline-writer.js";
 import { CharacterLabelSchema } from "../../core/characters/types.js";
+import { MUSIC_CONCRETE_REGIONS } from "../../shared/music/score.js";
 import type { OutlineOp } from "../../core/ports/outline-store-port.js";
 import type {
   OutlineMaintainerPort,
@@ -37,8 +38,11 @@ const VOICE_CONTRACT =
 
 const SYSTEM_PROMPT =
   "你是 GalGame 编剧。输入玩家的世界描述，输出开局前的世界设计 JSON：" +
-  "{worldSetting, characters:[{id,name,control,initialLabel?,description,spriteBinding?,voice?}], outline:[{id,purpose,kind,status,location?}]}。" +
+  "{worldSetting, musicRegion?, characters:[{id,name,control,initialLabel?,description,spriteBinding?,voice?}], outline:[{id,purpose,kind,status,location?}]}。" +
   "worldSetting 是世界观设定（≤500 字）。characters 2~5 名角色，description ≤200 字。" +
+  `musicRegion 是可选的世界音乐地区身份（整局配乐的创作思路锚：音阶/节奏型/乐器偏好，跨场景跨情绪一致），` +
+  `从 ${MUSIC_CONCRETE_REGIONS.join("/")} 中选最能代表世界观音乐气质的一个；` +
+  "现代都市/架空无地域文化则省略。" +
   "control 是角色控制类型（player=玩家控制 / npc=模型演绎）：恰好一名 player（玩家视角角色），其余全部 npc；" +
   "不得给 player 角色设计 voice，也不得在剧情中替 player 角色写台词、选择或确认对白——玩家话语只来自玩家输入。" +
   "initialLabel 是初始名牌（可选，匿名起点可用如「神秘女子」，缺省用 name）。" +
@@ -71,6 +75,8 @@ const RawOutlineNodeSchema = z.object({
 
 const RawWorldDraftSchema = z.object({
   worldSetting: z.string().min(1).max(2000),
+  // 地区身份词表单一真源在 shared/music/score.ts（导演覆盖/作曲 prompt 同源）。
+  musicRegion: z.exactOptional(z.enum(MUSIC_CONCRETE_REGIONS)),
   characters: z
     .array(DraftCharacterSchema)
     .min(1)
@@ -176,6 +182,7 @@ export class OutlineWriterAdapter implements OutlineWriterPort, OutlineMaintaine
     const data = schemaResult.data;
     return {
       worldSetting: data.worldSetting,
+      ...(data.musicRegion !== undefined ? { musicRegion: data.musicRegion } : {}),
       characters: data.characters,
       // 契约类型与 raw schema 字段一致（status 恒 planned），直接投影。
       outline: data.outline.map((node) => ({ ...node })),

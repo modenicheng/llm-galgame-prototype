@@ -147,7 +147,8 @@ export class SoundfontStore {
 
   constructor(
     private readonly baseUrl = "/game-assets/audio/soundfonts/",
-    private readonly fetchImpl: typeof fetch = fetch,
+    // 裸存全局 fetch 会脱离 window 接收者（Illegal invocation）——绑死。
+    private readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
   ) {}
 
   async samples(instrument: MusicInstrument): Promise<Map<number, AudioBuffer>> {
