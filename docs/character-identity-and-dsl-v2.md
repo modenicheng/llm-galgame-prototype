@@ -1,13 +1,12 @@
 # 角色身份与 Gal DSL v2 运行规范（main 分支）
 
-计划：`docs/superpowers/plans/2026-09-19-character-identity-dsl-dual-branch-repair.md`。
 本文是 C1–C8/M1–M3 落地后 **main 分支实际生效**的运行规范：身份真源链、
 DSL 双版本协议、音频身份、记忆水位、图快照 v4 与发布/回滚规则。描述的是
-「代码现在是什么」，不是「希望是什么」；与计划条目的出入一律注明。
+「代码现在是什么」，不是「希望是什么」。
 
 旧协议的完整语法参考仍是 `docs/llm-outputs-refactor.md`（已标注为 v1
-legacy 冻结文档）；本文是现行规范。校园分支的同位文档为
-`docs/character-identity-and-dsl-v2.md`（campus worktree，双方按各自
+legacy 冻结文档）；本文是现行规范。校园分支（`campus-ops-raspberry`）的
+同位文档为 `docs/character-identity-and-dsl-v2.md`（双方按各自
 现实维护，共享条目以共享契约向量为准）。
 
 ## 1. 身份真源链（M1/C2/C7）
@@ -310,7 +309,7 @@ main 的持久化是**剧情图快照**（校园是 state.v2.json 信封——�
 - **不可 upcast 的图**：恢复显式抛 `SnapshotUpcastError`（不是静默新局）；
   测试以字节指纹断言整目录只读未改写。
 
-## 8. 发布与回滚（计划 §8 原文语义；Ruling 15 翻默认后现行状态）
+## 8. 发布与回滚（Ruling 15 翻默认后现行状态）
 
 - 发布开关为服务端 `dsl.protocol_version: 1 | 2`；**新局默认值已翻为
   2**（Ruling 15：全量测试 0 红后执行的控制器指令「迁移所有路径到

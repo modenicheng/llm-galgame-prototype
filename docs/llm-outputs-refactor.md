@@ -16,7 +16,7 @@
 > **v1 legacy 协议**——解析器已冻结（`src/core/protocol/gal-dsl/legacy-line-parser.ts`），
 > 只服务显式 protocolVersion 1 的请求/存档，不再演进。现行规范见
 > `docs/character-identity-and-dsl-v2.md`（v2 `@say/@n/@name/@ch` 语法、
-> 身份真源链、图快照 v4、发布旋钮 `dsl.protocol_version`，当前默认 1）。
+> 身份真源链、图快照 v4、发布旋钮 `dsl.protocol_version`，当前默认 2）。
 > 另：§58 示例中的 `resources.yaml` `characters:` 段已移除（角色绑定在
 > 根目录 `characters.yaml`/canon，携带旧段即显式报错）；不带 `@` 的裸词
 > 指令已完全废弃（命中即 `RETIRED_ALIAS`）。本文正文按历史原样保留，

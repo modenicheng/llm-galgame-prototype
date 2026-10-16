@@ -1,6 +1,6 @@
 # 实施进度对照（status）
 
-> 快照日期：**2026-10-09**，对照 `main` 分支代码。本文是唯一的进度权威文档，
+> 快照日期：**2026-10-16**，对照 `main` 分支代码。本文是唯一的进度权威文档，
 > 设计规范见 `docs/llm-outputs-refactor.md`。
 > 后续开发完成/变更条目时请同步更新本文。
 
@@ -9,11 +9,12 @@
 | 文档 | 职能 |
 |---|---|
 | `README.md` | 运行方式、TTS 配置入口 |
-| `docs/llm-outputs-refactor.md` | DSL 协议与运行时架构的规范设计（§ 编号被源码注释引用） |
+| `docs/llm-outputs-refactor.md` | DSL v1 legacy 冻结协议参考（§ 编号被源码注释引用） |
+| `docs/character-identity-and-dsl-v2.md` | **现行运行规范**：角色身份真源链、DSL 双版本、音频身份、图快照 v4、发布/回滚 |
 | `docs/status.md`（本文） | 进度对照：已完成 / 简化 / 未完成 |
 | `docs/superpowers/specs/*` | 已落地/待实施子系统的专项设计（状态见各文头） |
 | `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md` | 长期记忆强化与复核体系（facts/beliefs/lessons/audit）下一阶段设计，待实施 |
-| `docs/superpowers/specs/2026-09-16-character-voice-design.md` | 角色音频特征设计（编剧画像/导演指导三层模型），待实施 |
+| `docs/superpowers/specs/2026-09-16-character-voice-design.md` | 角色音频特征设计（编剧画像/导演指导三层模型），V1/V2 已落地、V3 身份合成待实施 |
 | `docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md` | **v2 剧情图架构（已全量落地）**：回溯/存档/多周目三合一、编剧-导演-演员三角色、破坏性重构授权 |
 | `.hygiene.config.json` / `.hygiene-baseline.json` | 仓库卫生自检校准值（阈值 / 豁免 / 标记基线），供用户级 `repo-hygiene` skill（`~/.agents/skills/repo-hygiene/`，不随仓库走）的机械检查脚本读取 |
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
@@ -35,6 +36,18 @@
   冷启动空窗）；幻影角色去污染（knownCharacterIds 门控 + summarizeState 过滤）；
   舞台状态注入全维度显式化 + compiler `REDUNDANT_STAGE_CUE` 冗余兜底。
   `@ending` DSL 能力保留惰性解析、协议不宣传（待拍板）。
+- **角色身份与 Gal DSL v2（2026-10-16 快进合入 `feat/identity-dsl-replay`；
+  规范：`docs/character-identity-and-dsl-v2.md`）**：CharacterRoster 双源
+  归一（静态 `characters.yaml` / 生成世界 canon，`world:<gameId>` 独立
+  身份命名空间）→ CharacterRegistry 五消费方（writer 协议卡/人物卡、
+  game 展示、audio voiceProfileId、memory 身份视图、storage 快照身份块）；
+  DSL 双版本：v2 `@say/@n/@name/@ch` 原子舞台语义（line-parser-v2 /
+  compiler-v2 / text-pipeline-v2），v1 解析器冻结（legacy-line-parser，
+  只读旧档不再演进）；`dsl.protocol_version` 默认 2、config 显式 1 回退
+  （Ruling 15）；交互分支预取 label 预测折叠（branchCharacterStates 副本，
+  选中 promote / 失败丢弃，幽灵改名不渗入主机状态）；记忆
+  ValidatedProposal 身份/标签校验与请求水位；离线评估 harness
+  `scripts/evaluate-character-dsl.ts`。
 - **演出状态**：`src/core/presentation/`——KEEP/SET/RESET、first-touch 初始化、
   hide/show/exit、`bgm stop`、站位互斥、未知角色 no-op（§11–§19、§52–§56）。
 - **@end 哨兵与截断恢复**：nonce 校验、INCOMPLETE_SEGMENT、已发布前缀保留、
@@ -128,6 +141,11 @@
   导演 > 演员逐行 > 画像基线 > 恒等值（进 cacheKey）；动态角色经
   mergeVoiceDesignViews 注入（dashscope 需 `DASHSCOPE_VOICE_FALLBACK`，
   local 待 V3 身份合成）；表演词汇表运行时常量单一真源。
+- **音频身份稳定 ID（C7，随 DSL v2 合入）**：speakerId 恒为 characterId
+  （名牌仅展示、不进缓存键）；registry → voiceProfileId → voices.yaml
+  （local 按注册表键直取 / dashscope 按 voice_id_env）；voice-design 按
+  ID join，跨 profile 冲突 `VoiceDesignConflictError` 结构化拒绝；缺绑定
+  即时降级纯文本（missing_provider_binding），不再静默落 mock。
 - **调度**：`audio-intent-planner` / `performance-compiler` / `tts-task-service` /
   `cache-key`，播放水位参数（startup_buffer / low_watermark / target_buffer）。
 - **播放**：`web/src/audio/`——AudioCoordinator（共享 AudioContext + AudioWorklet）、
@@ -142,6 +160,13 @@
   游标）。原子写（tmp+rename）；快照缺失而索引行存在 = 结构损坏大声抛错。
   边 endState 内联 ⟺ 结局端点 ∨ 汇流边（2026-09-15 修订，M2 前置）；普通
   决策端点由后继入口快照派生、写入校验精确一致。
+- **图快照 v4（随 DSL v2 合入）**：快照增身份契约块（dslProtocolVersion
+  实际会话值 / rosterRevision 引用；共享 roster blob 按 revision 落盘
+  `world/rosters/` 幂等不覆写）；v3 走显式 upcast（`snapshot-upcast.ts`
+  纯函数，legacy alias 不唯一即整档拒绝），v1/v2 读取即拒
+  （`SnapshotVersionGateError`）；恢复/回溯按节点身份块还原 labels 并
+  清空分支预测副本；汇流判定携身份契约互斥链复核；pre-M1 旧档（无
+  legacy 映射登记）诚实失败显式报错，不猜不静默归因。
 - **场景内汇流（M2.2）**：边收束后后台 LLM 判定（`narrative.confluence.enabled`，
   默认关、config.yaml 开）新边末态 vs 同场景既有节点入口态，命中即改指既有
   节点（凭据 + 真实末态内联），出边改源、游标前移、新节点孤儿化；候选排除
