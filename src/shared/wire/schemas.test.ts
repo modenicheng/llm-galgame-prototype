@@ -83,8 +83,8 @@ describe("client.ready wire 版本（C7 升级/重连信号）", () => {
     expect(ClientMessageSchema.safeParse(ready()).success).toBe(true);
   });
 
-  it("版本常量配对：server=3（music.score 推送），stale close code=4002（沿用 4001 拒绝模式）", () => {
-    expect(WIRE_PROTOCOL_VERSION).toBe(3);
+  it("版本常量配对：server=4（music.score 增 themeId），stale close code=4002（沿用 4001 拒绝模式）", () => {
+    expect(WIRE_PROTOCOL_VERSION).toBe(4);
     expect(STALE_WIRE_CLOSE_CODE).toBe(4002);
   });
 });

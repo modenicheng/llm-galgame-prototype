@@ -16,7 +16,7 @@ const score: MusicScore = {
 };
 
 function message(cacheKey: string): MusicScoreMessage {
-  return { sceneId: "scene_1", cacheKey, score };
+  return { sceneId: "scene_1", themeId: "fortress-echo", cacheKey, score };
 }
 
 function fakeBuffer(): AudioBuffer {

@@ -25,10 +25,12 @@ export const NewFormatDialogueEventSchema = CharacterDialogueEventSchema;
 /**
  * Runtime WebSocket 协议版本。C7 = 2：audio descriptor 的 speakerId 语义
  * 收紧为稳定 CharacterId（v1 期间可能是 TTS 配置键/显示名）。动态音乐
- * 生成 = 3：新增 server → client 的 music.score 推送。两端共享本常量；
- * 不匹配的旧客户端收到 4002 close（附升级说明），不静默降级。
+ * 生成 = 3：新增 server → client 的 music.score 推送。主题制配乐 V2 = 4：
+ * music.score 载荷新增 themeId（旧客户端不识新字段，整体升版拒绝）。
+ * 两端共享本常量；不匹配的旧客户端收到 4002 close（附升级说明），
+ * 不静默降级。
  */
-export const WIRE_PROTOCOL_VERSION = 3;
+export const WIRE_PROTOCOL_VERSION = 4;
 
 /** 旧 wire 版本客户端的 close code（沿用 4001 controller-limit 的拒绝模式）。 */
 export const STALE_WIRE_CLOSE_CODE = 4002;
@@ -179,6 +181,8 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("music.score"),
     sceneId: z.string().min(1),
+    /** 主题制配乐（V2）：谱面所属主题 id（浏览器按 cacheKey 幂等）。 */
+    themeId: z.string().min(1),
     cacheKey: z.string().min(1),
     // 浏览器侧整谱校验（与作曲适配器同一 schema 真源）。
     score: MusicScoreSchema,

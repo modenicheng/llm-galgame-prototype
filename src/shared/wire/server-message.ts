@@ -21,6 +21,7 @@ export type ServerMessage =
   | {
       type: "music.score";
       sceneId: string;
+      themeId: string;
       cacheKey: string;
       score: MusicScore;
     }

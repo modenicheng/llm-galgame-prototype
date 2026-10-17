@@ -56,7 +56,8 @@ import { VoiceDesignStore } from "../adapters/storage/voice-design-store.js";
 import { AudioIntentPlanner } from "../application/audio/audio-intent-planner.js";
 import { SceneMusicService } from "../application/audio/scene-music-service.js";
 import { SceneMusicComposerAdapter } from "../adapters/llm/scene-music-composer-adapter.js";
-import { MusicLibraryStore } from "../adapters/storage/music-library-store.js";
+import { MusicThemeStore } from "../adapters/storage/music-theme-store.js";
+import { ComposerSessionStore } from "../adapters/storage/composer-session-store.js";
 import {
   TtsTaskServiceImpl,
   type TaskStatusEvent,
@@ -530,15 +531,17 @@ export async function createRuntimeApplication(
     speakerPalette: buildSpeakerPalette(voiceViews),
     ...(graphIdentityContext !== undefined ? { identity: graphIdentityContext } : {}),
   });
-  // 动态音乐生成（导演层接线）：directive 落缓存 → 音乐服务查谱库/作曲 →
-  // 谱面事件广播（runtime WS → 浏览器渲染）。复用键 mood:intensity 命中
-  // per-game 谱库 = 零 token（跨周目/跨进程重启 Leitmotif 一致）。
-  // 导演实例跨 restart 复用，监听一次性注册即可。失败只告警，配乐永不
-  // 阻塞演出。enabled=false 时不注册监听 = 零 LLM 调用。
+  // 动态音乐生成（导演层接线，V2 主题制）：directive 落缓存 → 音乐服务按
+  // 决策流服务（绑定命中零 LLM；未绑定调作曲家 agent 看 brief+目录+会话
+  // 决定 reuse/compose）→ 谱面事件广播（runtime WS → 浏览器渲染）。
+  // 主题目录/谱面/作曲家会话持久化 games/<gameId>/music/（跨周目/跨进程
+  // 重启 Leitmotif 一致）。导演实例跨 restart 复用，监听一次性注册即可。
+  // 失败只告警，配乐永不阻塞演出。enabled=false 时不注册监听 = 零 LLM 调用。
   const musicEnabled = config.media.audio.music?.enabled ?? true;
   const sceneMusic = new SceneMusicService({
     composer: new SceneMusicComposerAdapter({ apiKey, api: config.api }),
-    library: new MusicLibraryStore(gamesRoot, gameId),
+    themes: new MusicThemeStore(gamesRoot, gameId),
+    session: new ComposerSessionStore(gamesRoot, gameId),
     diagnostics: new ConsoleDiagnosticSink(),
   });
   if (musicEnabled) {

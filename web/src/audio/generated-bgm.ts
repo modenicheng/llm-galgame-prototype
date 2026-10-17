@@ -14,6 +14,8 @@ import { audioBufferToWavBlob, type MusicRenderer } from "./music-renderer.js";
 /** WS music.score 的载荷（ServerMessage music.score 分支的投影）。 */
 export interface MusicScoreMessage {
   sceneId: string;
+  /** 主题制配乐（V2）：谱面所属主题 id（展示/诊断用；渲染幂等仍按 cacheKey）。 */
+  themeId: string;
   cacheKey: string;
   score: MusicScore;
 }

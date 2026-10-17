@@ -123,7 +123,7 @@ export type MusicScore = z.infer<typeof MusicScoreSchema>;
 export interface SceneMusicDirection {
   mood: MusicMood;
   intensity: 1 | 2 | 3;
-  /** 作曲提示（≤40 字，导演对配乐的一句话意图）。 */
+  /** 作曲提示（≤60 字：场景情境一句话 + 编配提示——作曲家复用/新作决策的关键输入）。 */
   note?: string;
 }
 

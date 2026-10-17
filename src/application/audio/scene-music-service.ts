@@ -1,76 +1,94 @@
 /**
- * SceneMusicService — 动态音乐生成的编排层（三层契约的中间层）。
+ * SceneMusicService — 主题制配乐的编排层（V2 重写，三层契约的中间层）。
  *
- * 数据流：导演 SceneDirective.music（情绪/强度/注记）
- *   → 复用键量化 mood:intensity 查 per-game 谱库（MusicLibraryStore）
- *   → 命中 = 零 token 直接广播；未命中 = 作曲端口（LLM 单次 JSON 调用）
- *     → 落盘谱库 → musicCacheKey 指纹 → 广播订阅者（runtime WS → 浏览器渲染）。
+ * 决策流：
+ *   导演 SceneDirective.music（mood/intensity/note）
+ *   1) bindings[sceneId] 已绑定主题 → 直接发布该主题谱面，零 LLM
+ *      （覆盖日夜重访/重启续玩；谱面文件缺失 = 告警解绑走决策）
+ *   2) 未绑定 → 组装 brief 调作曲家 agent（第四 agent，持久会话）：
+ *      输入 = brief + 全量主题目录（含 motifHint 与谱面统计）+ 最近会话轮次
+ *      输出 = reuse{themeId} | compose{theme, score}
+ *   3) 持久化（主题目录 + 谱面 + sceneId 绑定 + 追加会话轮）→ publish
  *
- * 复用语义（token 上界 = 7 情绪 × 3 强度 = 21 首，通常 4~8 首）：note 只是
- * 首次作曲的编配提示，不进复用键——同世界同键恒用同一首（跨场景/跨周目/
- * 跨进程重启的 Leitmotif 一致性）。
+ * 复用决策权在作曲家 agent——目录与会话在作曲家侧，导演 prompt 不膨胀；
+ * 一局主题数目标 5~15（专辑感）。目录为空时作曲家必 compose。
  *
- * 契约对齐 TTS 管线的可观测降级：作曲/落盘失败只告警、不抛——配乐永远
+ * 契约对齐 TTS 管线的可观测降级：决策/落盘失败只告警、不抛——配乐永远
  * 滞后于演出（写手显式 @bgm 压过自动配乐；作曲未完成时沿用当前曲目）。
  */
+import {
+  COMPOSER_SESSION_WINDOW_TURNS,
+  extractMotifHint,
+  themeScoreStats,
+  type ComposerDecision,
+  type ComposerSessionTurn,
+  type MusicThemeMeta,
+  type SceneMusicBrief,
+  type ThemeCatalogEntry,
+} from "../../shared/music/theme.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { SceneDirective } from "../director/director-service.js";
-import type { MusicScore, SceneMusicDirection } from "../../shared/music/score.js";
 import { musicCacheKey } from "./music-cache-key.js";
+import type { MusicScore } from "../../shared/music/score.js";
 
-export interface SceneMusicComposeRequest {
-  sceneId: string;
-  sceneGoal?: string;
-  direction: SceneMusicDirection;
+/** 主题目录端口（MusicThemeStore 实现；测试注入 fake）。 */
+export interface MusicThemeStorePort {
+  listThemes(): Promise<MusicThemeMeta[]>;
+  getBinding(sceneId: string): Promise<string | undefined>;
+  addTheme(meta: MusicThemeMeta, bind?: { sceneId: string }): Promise<void>;
+  bindScene(sceneId: string, themeId: string): Promise<void>;
+  getScore(themeId: string): Promise<MusicScore | undefined>;
+  putScore(themeId: string, score: MusicScore): Promise<void>;
 }
 
-/** 作曲端口（LLM 适配器实现；测试注入 fake）。 */
+/** 作曲家会话端口（ComposerSessionStore 实现；测试注入 fake）。 */
+export interface ComposerSessionStorePort {
+  append(turn: ComposerSessionTurn): Promise<void>;
+  readRecent(maxTurns: number): Promise<ComposerSessionTurn[]>;
+}
+
+/** 作曲家决策输入（适配器签名；测试注入 fake）。 */
+export interface SceneMusicComposerDecisionInput {
+  brief: SceneMusicBrief;
+  catalog: ThemeCatalogEntry[];
+  sessionTurns: ComposerSessionTurn[];
+}
+
+/** 作曲家端口（LLM 适配器实现；测试注入 fake）。 */
 export interface SceneMusicComposerPort {
-  compose(request: SceneMusicComposeRequest): Promise<MusicScore | null>;
-}
-
-/** 谱库端口（MusicLibraryStore 实现；测试注入 fake）。 */
-export interface SceneMusicLibraryPort {
-  /** 复用键 → 已作曲谱面；未命中 = undefined。 */
-  get(key: string): Promise<MusicScore | undefined>;
-  /** 落盘一条谱面（键已存在 = no-op：首作即定稿）。 */
-  put(key: string, score: MusicScore): Promise<void>;
+  decide(input: SceneMusicComposerDecisionInput): Promise<ComposerDecision | null>;
 }
 
 /** 谱面产物事件（WS 推送与重连回放的载荷）。 */
 export interface SceneMusicScoreEvent {
   sceneId: string;
+  themeId: string;
   cacheKey: string;
   score: MusicScore;
 }
 
-/**
- * 复用键：mood:intensity。note 不参与（编配提示，非可听身份）——
- * 同世界同情绪档位恒用同一首。
- */
-export function musicLibraryKey(direction: SceneMusicDirection): string {
-  return `${direction.mood}:${direction.intensity}`;
-}
-
 export class SceneMusicService {
   private readonly composer: SceneMusicComposerPort;
-  private readonly library: SceneMusicLibraryPort | undefined;
+  private readonly themes: MusicThemeStorePort;
+  private readonly session: ComposerSessionStorePort;
   private readonly diagnostics: DiagnosticSink;
   private readonly listeners = new Set<(event: SceneMusicScoreEvent) => void>();
-  /** sceneId → 已服务的复用键（同场景同键不重复广播）。 */
-  private readonly servedKeys = new Map<string, string>();
-  /** 复用键 → in-flight（作曲 + 落盘全程占位，同键并发只调一次 LLM）。 */
-  private readonly composing = new Map<string, Promise<MusicScore | null>>();
+  /** 已成功服务的 sceneId（会话内不重复广播；重启后由 bindings 兜底）。 */
+  private readonly servedScenes = new Set<string>();
+  /** sceneId → in-flight 决策全程占位（同场景并发只调一次 LLM）。 */
+  private readonly deciding = new Map<string, Promise<void>>();
   private latest: SceneMusicScoreEvent | undefined;
 
   constructor(opts: {
     composer: SceneMusicComposerPort;
-    library?: SceneMusicLibraryPort;
+    themes: MusicThemeStorePort;
+    session: ComposerSessionStorePort;
     diagnostics?: DiagnosticSink;
   }) {
     this.composer = opts.composer;
-    this.library = opts.library;
+    this.themes = opts.themes;
+    this.session = opts.session;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
   }
 
@@ -78,66 +96,172 @@ export class SceneMusicService {
   handleDirective(directive: SceneDirective): void {
     const direction = directive.music;
     if (direction === undefined) return;
-    const key = musicLibraryKey(direction);
-    if (this.servedKeys.get(directive.sceneId) === key) return;
-    this.servedKeys.set(directive.sceneId, key);
-    void this.resolveScore(key, {
-      sceneId: directive.sceneId,
+    const sceneId = directive.sceneId;
+    if (this.servedScenes.has(sceneId)) return;
+    const inFlight = this.deciding.get(sceneId);
+    if (inFlight !== undefined) return;
+    const brief: SceneMusicBrief = {
+      sceneId,
       ...(directive.sceneGoal !== undefined ? { sceneGoal: directive.sceneGoal } : {}),
-      direction,
-    })
-      .then((score) => {
-        if (score === null) {
-          this.diagnostics.warn(
-            "SceneMusicService",
-            `场景 ${directive.sceneId} 作曲失败（模型两次输出均未过契约），沿用当前曲目`,
-          );
-          return;
-        }
-        this.publish(directive.sceneId, score);
-      })
-      .catch((err: unknown) => {
-        this.diagnostics.warn(
-          "SceneMusicService",
-          `场景 ${directive.sceneId} 作曲异常：${String(err)}`,
-        );
-      });
-  }
-
-  /** 复用键 → 谱面：谱库命中零 token；未命中作曲一次并落盘（同键合流）。 */
-  private async resolveScore(
-    key: string,
-    request: SceneMusicComposeRequest,
-  ): Promise<MusicScore | null> {
-    const cached = await this.library?.get(key);
-    if (cached !== undefined) return cached;
-    const inFlight = this.composing.get(key);
-    if (inFlight !== undefined) return inFlight;
+      mood: direction.mood,
+      intensity: direction.intensity,
+      ...(direction.note !== undefined ? { note: direction.note } : {}),
+    };
     const task = (async () => {
       try {
-        const score = await this.composer.compose(request);
-        if (score !== null) {
-          try {
-            await this.library?.put(key, score);
-          } catch (err: unknown) {
-            this.diagnostics.warn(
-              "SceneMusicService",
-              `复用键 ${key} 谱库落盘失败（仅本会话生效）：${String(err)}`,
-            );
-          }
-        }
-        return score;
+        await this.serve(sceneId, brief);
+      } catch (err: unknown) {
+        this.diagnostics.warn(
+          "SceneMusicService",
+          `场景 ${sceneId} 配乐解析异常：${String(err)}`,
+        );
       } finally {
-        this.composing.delete(key);
+        this.deciding.delete(sceneId);
       }
     })();
-    this.composing.set(key, task);
-    return task;
+    this.deciding.set(sceneId, task);
   }
 
-  private publish(sceneId: string, score: MusicScore): void {
+  private async serve(sceneId: string, brief: SceneMusicBrief): Promise<void> {
+    // 1) 绑定命中 = 零 LLM（日夜重访/跨周目/跨进程重启同主题）。
+    const binding = await this.themes.getBinding(sceneId);
+    if (binding !== undefined) {
+      const bound = await this.loadThemeScore(binding);
+      if (bound !== undefined) {
+        this.servedScenes.add(sceneId);
+        this.publish(sceneId, binding, bound);
+        return;
+      }
+      this.diagnostics.warn(
+        "SceneMusicService",
+        `场景 ${sceneId} 绑定主题 ${binding} 的谱面缺失/损坏，走作曲家决策重建`,
+      );
+    }
+
+    // 2) 作曲家决策。
+    const catalog = await this.buildCatalog();
+    const sessionTurns = await this.session.readRecent(COMPOSER_SESSION_WINDOW_TURNS);
+    const decision = await this.composer.decide({ brief, catalog, sessionTurns });
+    if (decision === null) {
+      this.diagnostics.warn(
+        "SceneMusicService",
+        `场景 ${sceneId} 作曲家决策失败（两次输出均未过契约），沿用当前曲目`,
+      );
+      return;
+    }
+
+    if (decision.action === "reuse") {
+      const score = await this.loadThemeScore(decision.themeId);
+      if (score === undefined) {
+        this.diagnostics.warn(
+          "SceneMusicService",
+          `场景 ${sceneId} reuse 决策指向主题 ${decision.themeId}，但谱面缺失/损坏，不发布`,
+        );
+        return;
+      }
+      try {
+        await this.themes.bindScene(sceneId, decision.themeId);
+      } catch (err: unknown) {
+        this.diagnostics.warn(
+          "SceneMusicService",
+          `场景 ${sceneId} 绑定落盘失败（仅本会话生效）：${String(err)}`,
+        );
+      }
+      await this.appendSessionTurns(brief, decision, score);
+      this.servedScenes.add(sceneId);
+      this.publish(sceneId, decision.themeId, score);
+      return;
+    }
+
+    // 3) compose：谱面 + 主题 + 绑定 + 会话，publish。
+    const { theme, score } = decision;
+    const motifHint = extractMotifHint(score);
+    const meta: MusicThemeMeta = {
+      ...theme,
+      ...(motifHint !== undefined ? { motifHint } : {}),
+    };
+    let themeId = theme.id;
+    if (catalog.some((entry) => entry.meta.id === theme.id)) {
+      // id 与已有主题冲突：保留产物，追加确定性短 hash 区分（不丢一次作曲）。
+      themeId = `${theme.id}-${musicCacheKey(score).slice(0, 4)}`;
+      meta.id = themeId;
+      this.diagnostics.warn(
+        "SceneMusicService",
+        `新主题 id ${theme.id} 与目录冲突，重命名为 ${themeId}`,
+      );
+    }
+    try {
+      await this.themes.putScore(themeId, score);
+      await this.themes.addTheme(meta, { sceneId });
+    } catch (err: unknown) {
+      this.diagnostics.warn(
+        "SceneMusicService",
+        `主题 ${themeId} 落盘失败（仅本会话生效）：${String(err)}`,
+      );
+    }
+    await this.appendSessionTurns(brief, decision, score, themeId);
+    this.servedScenes.add(sceneId);
+    this.publish(sceneId, themeId, score);
+  }
+
+  /** 主题谱面读取（绑定/reuse 共用）：缺失或损坏 = undefined（调用方告警降级）。 */
+  private async loadThemeScore(themeId: string): Promise<MusicScore | undefined> {
+    try {
+      return await this.themes.getScore(themeId);
+    } catch (err: unknown) {
+      this.diagnostics.warn(
+        "SceneMusicService",
+        `主题 ${themeId} 谱面读取失败（目录级降级）：${String(err)}`,
+      );
+      return undefined;
+    }
+  }
+
+  /** 全量目录：谱面统计从各主题谱面补齐；单条读取失败 warn + 跳过。 */
+  private async buildCatalog(): Promise<ThemeCatalogEntry[]> {
+    const metas = await this.themes.listThemes();
+    const entries: ThemeCatalogEntry[] = [];
+    for (const meta of metas) {
+      const score = await this.loadThemeScore(meta.id);
+      if (score === undefined) continue;
+      entries.push({ meta, stats: themeScoreStats(score) });
+    }
+    return entries;
+  }
+
+  /** 会话留痕：user = brief / assistant = 决策元数据（不存完整谱面）。 */
+  private async appendSessionTurns(
+    brief: SceneMusicBrief,
+    decision: ComposerDecision,
+    score: MusicScore,
+    themeId?: string,
+  ): Promise<void> {
+    const id = themeId ?? (decision.action === "reuse" ? decision.themeId : decision.theme.id);
+    const stats = themeScoreStats(score);
+    const summary = {
+      action: decision.action,
+      themeId: id,
+      ...(decision.action === "compose"
+        ? { title: decision.theme.title, concept: decision.theme.concept }
+        : {}),
+      reason: decision.reason,
+      stats: `${stats.bpm}bpm mode=${stats.mode} ${stats.instruments.join("+")} ${stats.noteCount}音`,
+    };
+    try {
+      await this.session.append({ role: "user", content: JSON.stringify(brief) });
+      await this.session.append({ role: "assistant", content: JSON.stringify(summary) });
+    } catch (err: unknown) {
+      this.diagnostics.warn(
+        "SceneMusicService",
+        `作曲家会话留痕失败（不影响本曲发布）：${String(err)}`,
+      );
+    }
+  }
+
+  private publish(sceneId: string, themeId: string, score: MusicScore): void {
     const event: SceneMusicScoreEvent = {
       sceneId,
+      themeId,
       cacheKey: musicCacheKey(score),
       score,
     };

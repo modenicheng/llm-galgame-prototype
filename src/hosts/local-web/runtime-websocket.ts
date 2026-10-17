@@ -137,6 +137,7 @@ export class RuntimeWebSocket {
         this.send(ws, {
           type: "music.score",
           sceneId: latestMusic.sceneId,
+          themeId: latestMusic.themeId,
           cacheKey: latestMusic.cacheKey,
           score: latestMusic.score,
         });
@@ -157,6 +158,7 @@ export class RuntimeWebSocket {
       this.send(ws, {
         type: "music.score",
         sceneId: event.sceneId,
+        themeId: event.themeId,
         cacheKey: event.cacheKey,
         score: event.score,
       });

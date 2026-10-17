@@ -92,9 +92,11 @@ const DIRECTIVE_SYSTEM_PROMPT =
   `energy 只能取 ${ENERGY_VALUES.join("/")}，` +
   "note ≤40 字。" +
   "music 是可选的本场景配乐指导，形如 " +
-  '{"mood":"tense","intensity":2,"note":"追逐感渐强"}：' +
+  '{"mood":"tense","intensity":2,"note":"夜巡地下堡垒，金属回响压迫，低音行进"}：' +
   `mood 只能取 ${MUSIC_MOODS.join("/")} 之一（词表外整段丢弃）；` +
-  "intensity 取 1~3（1=铺垫，2=主体，3=高潮，缺省 2）；note ≤40 字（给作曲的意图一句话）。" +
+  "intensity 取 1~3（1=铺垫，2=主体，3=高潮，缺省 2）；" +
+  "note ≤60 字 = 场景情境一句话 + 编配提示（这是作曲家判断复用还是新作的" +
+  "关键输入：情境相近的场景会共用同一主题，情境质变才触发新主题）。" +
   "只给指令，不写台词。";
 
 interface DirectorServiceOptions {
@@ -583,7 +585,8 @@ export class DirectorService {
 
   /**
    * music 段解析：mood 命中词表才成段（词表外整段丢弃并告警——作曲层
-   * 拿不到可靠情绪就不该瞎猜）；intensity 越界取缺省 2；note 截 40 字。
+   * 拿不到可靠情绪就不该瞎猜）；intensity 越界取缺省 2；note 截 60 字
+   * （情境一句话 + 编配提示——作曲家复用/新作决策的关键输入）。
    */
   private parseMusicDirection(raw: unknown): SceneMusicDirection | undefined {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
@@ -604,7 +607,7 @@ export class DirectorService {
         : MUSIC_INTENSITY_DEFAULT;
     const direction: SceneMusicDirection = { mood, intensity };
     if (typeof v.note === "string") {
-      const note = v.note.trim().slice(0, 40);
+      const note = v.note.trim().slice(0, 60);
       if (note !== "") direction.note = note;
     }
     return direction;

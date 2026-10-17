@@ -18,13 +18,14 @@ import path from "node:path";
 import { z } from "zod";
 import { GAME_STORAGE_LAYOUT } from "../../core/graph/ids.js";
 import type { ComposerSessionTurn } from "../../shared/music/theme.js";
+import type { ComposerSessionStorePort } from "../../application/audio/scene-music-service.js";
 
 const SessionLineSchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string(),
 });
 
-export class ComposerSessionStore {
+export class ComposerSessionStore implements ComposerSessionStorePort {
   private readonly filePath: string;
 
   constructor(gamesRoot: string, gameId: string) {

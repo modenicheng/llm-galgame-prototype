@@ -18,6 +18,7 @@ import { z } from "zod";
 import { GAME_STORAGE_LAYOUT } from "../../core/graph/ids.js";
 import { MusicScoreSchema, type MusicScore } from "../../shared/music/score.js";
 import { MusicThemeMetaSchema, type MusicThemeMeta } from "../../shared/music/theme.js";
+import type { MusicThemeStorePort } from "../../application/audio/scene-music-service.js";
 
 const ThemeCatalogFileSchema = z
   .object({
@@ -32,7 +33,7 @@ interface ThemeCatalog {
   bindings: Record<string, string>;
 }
 
-export class MusicThemeStore {
+export class MusicThemeStore implements MusicThemeStorePort {
   private readonly themesPath: string;
   private readonly scoresDir: string;
   private catalog: ThemeCatalog | undefined;
