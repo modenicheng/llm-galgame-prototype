@@ -15,7 +15,8 @@ import { z } from "zod";
 
 /**
  * 乐器调色板（渲染层映射到 soundfont 采样包）。作曲提示、谱面校验、
- * 渲染器三处共用——新增乐器 = 加枚举 + 渲染层补采样映射。
+ * 渲染器三处共用——新增乐器 = 加枚举 + vendor 脚本 PACKS 补 GM 映射
+ * （重采）+ 渲染层补声像/增益/混响映射（typecheck 强制穷尽）。
  */
 export const MUSIC_INSTRUMENTS = [
   "piano",
@@ -24,6 +25,12 @@ export const MUSIC_INSTRUMENTS = [
   "bass",
   "bell",
   "choir",
+  "guitar",
+  "harp",
+  "flute",
+  "marimba",
+  "organ",
+  "synth",
 ] as const;
 export type MusicInstrument = (typeof MUSIC_INSTRUMENTS)[number];
 

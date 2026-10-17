@@ -54,9 +54,15 @@ export const MUSIC_COMPOSITION_SKILL = `
 
 ## 8. 配器与音域（乐器词表 ${MUSIC_INSTRUMENTS.join("/")}）
 - bass=低音根基（midi 33~52，落拍点）；piano/strings=和声与旋律主体（55~84）；
-  pad/choir=长音铺底（48~72）；bell=高音点缀（72~96，少量、必落和弦音）。
+  pad/choir/organ=长音铺底（48~72，organ 宏大庄严、空间感强）；bell=高音点缀
+  （72~96，少量、必落和弦音）；guitar=拨弦节奏/分解（45~79，民谣叙事）；
+  harp=琶音与滑奏（48~91，梦幻/希望）；flute=木管旋律（60~93，自然/哀伤抒情）；
+  marimba=木琴点缀（48~84，童趣/俏皮）；synth=合成器 lead（48~96，现代/科技）。
+- 乐器选择与题材匹配：现代都市 synth/piano/guitar；古风 east-asia 用
+  harp/flute/marimba 替代钢琴叙事；教堂/宏大场景 organ+choir；民谣 guitar+harp。
 - intensity 1=2 轨稀疏（pad/bass+单旋律）；2=标准 3 轨；3=4~5 轨饱满加花。
-- 旋律动机通常放 piano/strings（可唱音区）；bell 只做点缀不写连续旋律。
+- 旋律动机放 piano/strings/flute/guitar（可唱音区）；bell/marimba 只做点缀；
+  同一主题跨场景复用时配器保持稳定（主题可听身份）。
 
 ## 9. 风格语汇（可选：style 提示时按此方向，未提示不强行套用）
 - east-asia：五声音阶（旋律避开 fa/si 导音张力）、bell 前置模拟筝/木鱼质感、

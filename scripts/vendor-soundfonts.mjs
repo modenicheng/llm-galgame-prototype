@@ -17,7 +17,9 @@ import path from "node:path";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const OUT_DIR = path.join(ROOT, "assets", "audio", "soundfonts");
-const CDN = "https://cdn.jsdelivr.net/gh/gleitz/midi-js-soundfonts@gh-pages/FluidR3_GM";
+// 主站 cdn.jsdelivr.net 在部分网络环境不可达；fastly 是 jsdelivr 官方
+// 镜像（同一仓库内容）。需要时也可换 gcore 镜像。
+const CDN = "https://fastly.jsdelivr.net/gh/gleitz/midi-js-soundfonts@gh-pages/FluidR3_GM";
 
 /** 调色板 → GM 乐器名（MusicInstrument 枚举的采样映射单一真源）。 */
 const PACKS = {
@@ -27,6 +29,12 @@ const PACKS = {
   bass: "acoustic_bass",
   bell: "music_box",
   choir: "choir_aahs",
+  guitar: "acoustic_guitar_steel",
+  harp: "orchestral_harp",
+  flute: "flute",
+  marimba: "marimba",
+  organ: "church_organ",
+  synth: "lead_2_sawtooth",
 };
 
 const NOTE_OFFSETS = { C: 0, "C#": 1, Db: 1, D: 2, "D#": 3, Eb: 3, E: 4, F: 5, "F#": 6, Gb: 6, G: 7, "G#": 8, Ab: 8, A: 9, "A#": 10, Bb: 10, B: 11 };

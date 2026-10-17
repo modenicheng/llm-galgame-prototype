@@ -1,16 +1,20 @@
 /**
  * SoundfontMusicRenderer — 符号谱 → 可无缝循环的 AudioBuffer（确定性）。
  *
- * 渲染链：gleitz 按乐器 JSON 包（/game-assets/audio/soundfonts/）→ 按需
- * 解码 → OfflineAudioContext 调度（最近采样 + ≤1 半音 playbackRate 微移、
- * 分乐器包络、程序生成混响 IR）→ 渲染 = 循环体 + 混响尾 → 尾部循环折叠
- * 回头部 → 峰值护栏 → 定长循环 buffer。
+ * 渲染链（V2 商业级混音母带）：gleitz 按乐器 JSON 包
+ * （/game-assets/audio/soundfonts/）→ 按需解码 → OfflineAudioContext 调度
+ * （最近采样 + ≤1 半音 playbackRate 微移、分乐器包络）→ 每轨
+ * highpass(~40Hz) → StereoPanner（乐器固定声像）→ 轨增益 → 分轨混响
+ * send（bass 近干、bell/piano 多送）→ 总线压缩（-18dB/2.5:1）+ makeup
+ * → 渲染 = 循环体 + 混响尾 → 尾部循环折叠回头部 → 响度归一
+ * （RMS ≈ -16 dBFS、峰值钳 -1 dBFS）→ 定长循环 buffer。
  *
  * 确定性契约：同谱（cacheKey）+ 同 MUSIC_RENDERER_VERSION = 逐样本同音频；
- * 任何影响输出的改动（采样映射/包络/混响/折叠/采样率）必须升
- * src/application/audio/music-cache-key.ts 的版本号使乐谱缓存失效。
+ * 任何影响输出的改动（采样映射/包络/混响/折叠/采样率/声像/压缩/归一）
+ * 必须升 src/application/audio/music-cache-key.ts 的版本号使乐谱缓存失效。
  *
- * 纯函数（时值/折叠/WAV 编码/最近采样）单独导出供测试；WebAudio 图是薄胶水。
+ * 纯函数（时值/折叠/响度数学/WAV 编码/最近采样）单独导出供测试；
+ * WebAudio 图是薄胶水。
  */
 import {
   scoreLoopBeats,
@@ -18,12 +22,26 @@ import {
   type MusicScore,
 } from "@shared/music/score.js";
 
-/** 渲染采样率：BGM 频宽上限 ~16kHz 足够，比 44.1k 省 ~28% 体积/内存。 */
-export const MUSIC_RENDER_SAMPLE_RATE = 32000;
+/**
+ * 渲染采样率：soundfont 采样原生 44.1kHz——32k 上限损失空气感，V2 回到
+ * 原生 44.1k（WAV 体积 ×1.4 可接受；解码重采样误差也归零）。
+ */
+export const MUSIC_RENDER_SAMPLE_RATE = 44100;
 /** 混响 RT60（秒）；尾部折叠区长度 ≥ 此值即无缝。 */
 export const MUSIC_REVERB_SECONDS = 2.2;
-/** 混响湿度（wet 占比）。 */
+/** 混响湿度（wet 总线 trim；分轨 send 见 REVERB_SEND）。 */
 const REVERB_WET = 0.35;
+/** 每轨低切（Hz）：清掉 40Hz 以下的隆隆声，给低频让出干净空间。 */
+const TRACK_HIGHPASS_HZ = 40;
+/** 总线压缩 + makeup：响度密度与瞬态保护的折中。 */
+const BUS_COMPRESSOR = {
+  thresholdDb: -18,
+  knee: 24,
+  ratio: 2.5,
+  attackMs: 10,
+  releaseMs: 250,
+} as const;
+const BUS_MAKEUP_GAIN = 1.25;
 /** 调色板 → 采样包文件名（与 assets/audio/soundfonts/ 一致）。 */
 const PACK_PATH: Record<MusicInstrument, string> = {
   piano: "piano",
@@ -32,6 +50,12 @@ const PACK_PATH: Record<MusicInstrument, string> = {
   bass: "bass",
   bell: "bell",
   choir: "choir",
+  guitar: "guitar",
+  harp: "harp",
+  flute: "flute",
+  marimba: "marimba",
+  organ: "organ",
+  synth: "synth",
 };
 /** 乐器基线增益（调色板平衡：点缀类压低，根基类足量）。 */
 const INSTRUMENT_GAIN: Record<MusicInstrument, number> = {
@@ -41,9 +65,48 @@ const INSTRUMENT_GAIN: Record<MusicInstrument, number> = {
   bass: 1,
   bell: 0.6,
   choir: 0.8,
+  guitar: 0.85,
+  harp: 0.7,
+  flute: 0.85,
+  marimba: 0.65,
+  organ: 0.75,
+  synth: 0.7,
+};
+/**
+ * 乐器固定声像（StereoPanner.pan，-1 全左 ~ +1 全右）：根基类居中、
+ * 旋律/点缀类左右铺开（混音纵深与宽度，商业 stereo placement 惯例）。
+ */
+const INSTRUMENT_PAN: Record<MusicInstrument, number> = {
+  bass: 0,
+  organ: 0,
+  piano: -0.15,
+  strings: 0.2,
+  pad: -0.25,
+  choir: 0.25,
+  bell: 0.3,
+  guitar: -0.25,
+  harp: 0.35,
+  flute: 0.15,
+  marimba: -0.35,
+  synth: 0.4,
+};
+/** 分轨混响 send（0=全干 1=全湿）：bass 近干保清晰，点缀/色彩类多送。 */
+const REVERB_SEND: Record<MusicInstrument, number> = {
+  bass: 0.05,
+  piano: 0.45,
+  strings: 0.3,
+  pad: 0.35,
+  bell: 0.5,
+  choir: 0.4,
+  guitar: 0.35,
+  harp: 0.45,
+  flute: 0.4,
+  marimba: 0.45,
+  organ: 0.3,
+  synth: 0.25,
 };
 /** 持续类乐器（长音铺底）：慢起音、采样循环、长释放。 */
-const SUSTAINED = new Set<MusicInstrument>(["strings", "pad", "choir"]);
+const SUSTAINED = new Set<MusicInstrument>(["strings", "pad", "choir", "organ"]);
 
 export function loopSeconds(score: MusicScore): number {
   return (scoreLoopBeats(score) * 60) / score.bpm;
@@ -187,21 +250,39 @@ export class SoundfontMusicRenderer implements MusicRenderer {
     const tailN = tailSamples(sr);
     const context = new OfflineAudioContext(2, loopN + tailN, sr);
 
-    const dry = context.createGain();
-    dry.gain.value = 1 - REVERB_WET * 0.5;
-    dry.connect(context.destination);
+    // 总线：dry + wet 汇入 → 压缩 + makeup → destination。
+    const bus = context.createDynamicsCompressor();
+    bus.threshold.value = BUS_COMPRESSOR.thresholdDb;
+    bus.knee.value = BUS_COMPRESSOR.knee;
+    bus.ratio.value = BUS_COMPRESSOR.ratio;
+    bus.attack.value = BUS_COMPRESSOR.attackMs / 1000;
+    bus.release.value = BUS_COMPRESSOR.releaseMs / 1000;
+    const makeup = context.createGain();
+    makeup.gain.value = BUS_MAKEUP_GAIN;
+    bus.connect(makeup).connect(context.destination);
+
     const convolver = context.createConvolver();
     convolver.buffer = makeImpulseResponse(context);
-    const wet = context.createGain();
-    wet.gain.value = REVERB_WET;
-    convolver.connect(wet).connect(context.destination);
+    const wetTrim = context.createGain();
+    wetTrim.gain.value = REVERB_WET;
+    convolver.connect(wetTrim).connect(bus);
 
     for (const track of score.tracks) {
       const samples = await this.store.samples(track.instrument);
-      const bus = context.createGain();
-      bus.gain.value = INSTRUMENT_GAIN[track.instrument];
-      bus.connect(dry);
-      bus.connect(convolver);
+      const send = REVERB_SEND[track.instrument];
+      // 每轨链：音符 → 轨增益 → highpass(40Hz) → 声像 → [dry 全量 + 湿按 send]。
+      const trackGain = context.createGain();
+      trackGain.gain.value = INSTRUMENT_GAIN[track.instrument];
+      const highpass = context.createBiquadFilter();
+      highpass.type = "highpass";
+      highpass.frequency.value = TRACK_HIGHPASS_HZ;
+      const panner = context.createStereoPanner();
+      panner.pan.value = INSTRUMENT_PAN[track.instrument];
+      trackGain.connect(highpass).connect(panner);
+      panner.connect(bus);
+      const sendGain = context.createGain();
+      sendGain.gain.value = send;
+      panner.connect(sendGain).connect(convolver);
       const sustained = SUSTAINED.has(track.instrument);
       for (const note of track.notes) {
         const sampleMidi = nearestSampleMidi([...samples.keys()], note.midi);
@@ -234,20 +315,23 @@ export class SoundfontMusicRenderer implements MusicRenderer {
           noteGain.gain.setValueAtTime(peak, Math.max(start, start + duration));
           noteGain.gain.linearRampToValueAtTime(0, start + duration + 0.06);
         }
-        source.connect(noteGain).connect(bus);
+        source.connect(noteGain).connect(trackGain);
         source.start(start);
         source.stop(start + duration + (sustained ? 0.5 : 0.2));
       }
     }
 
     const rendered = await context.startRendering();
-    return wrapLoopBuffer(foldTailIntoLoop(rendered, loopN), sr);
+    const folded = foldTailIntoLoop(rendered, loopN);
+    normalizeLoudness(folded);
+    return wrapLoopBuffer(folded, sr);
   }
 }
 
 /**
  * 循环折叠：渲染 = 循环体 + 尾（混响尾/越界音符尾巴）→ 尾叠回头部。
- * 纯函数（输出通道数组，不依赖 WebAudio 构造器）；峰值 >1 整体缩至 0.98。
+ * 纯函数（输出通道数组，不依赖 WebAudio 构造器）；响度归一随后由
+ * normalizeLoudness 处理（本函数不再做峰值护栏）。
  */
 export function foldTailIntoLoop(
   rendered: Pick<AudioBuffer, "numberOfChannels" | "length" | "getChannelData">,
@@ -255,22 +339,54 @@ export function foldTailIntoLoop(
 ): Float32Array<ArrayBuffer>[] {
   const tailN = Math.min(rendered.length - loopN, loopN);
   const channels: Float32Array<ArrayBuffer>[] = [];
-  let peak = 0;
   for (let ch = 0; ch < rendered.numberOfChannels; ch += 1) {
     const src = rendered.getChannelData(ch);
     const dst = new Float32Array(loopN);
     for (let i = 0; i < loopN; i += 1) dst[i] = src[i]!;
     for (let i = 0; i < tailN; i += 1) dst[i] = dst[i]! + src[loopN + i]!;
-    for (let i = 0; i < loopN; i += 1) peak = Math.max(peak, Math.abs(dst[i]!));
     channels.push(dst);
   }
-  if (peak > 1) {
-    const scale = 0.98 / peak;
-    for (const dst of channels) {
-      for (let i = 0; i < loopN; i += 1) dst[i] = dst[i]! * scale;
+  return channels;
+}
+
+/** 母带响度目标与峰值上限（dBFS）。 */
+export const MUSIC_LOUDNESS_TARGET_DB = -16;
+export const MUSIC_LOUDNESS_PEAK_DB = -1;
+
+/**
+ * 响度归一（母带后处理，纯函数、确定性）：全通道联合 RMS 归一到
+ * ≈ -16 dBFS（流媒体响度惯例），增益同时被峰值钳制（≤ -1 dBFS，
+ * 杜绝削波）——替换 V1「>1 才缩」的事后护栏。静音输入（RMS=0）不动。
+ */
+export function normalizeLoudness(
+  channels: Float32Array<ArrayBuffer>[],
+  opts: { targetDb?: number; peakCeilingDb?: number } = {},
+): void {
+  const targetDb = opts.targetDb ?? MUSIC_LOUDNESS_TARGET_DB;
+  const peakCeilingDb = opts.peakCeilingDb ?? MUSIC_LOUDNESS_PEAK_DB;
+  let sumSquares = 0;
+  let count = 0;
+  let peak = 0;
+  for (const channel of channels) {
+    for (let i = 0; i < channel.length; i += 1) {
+      const sample = channel[i]!;
+      sumSquares += sample * sample;
+      peak = Math.max(peak, Math.abs(sample));
+    }
+    count += channel.length;
+  }
+  if (count === 0) return;
+  const rms = Math.sqrt(sumSquares / count);
+  if (rms === 0) return;
+  const target = 10 ** (targetDb / 20);
+  const ceiling = 10 ** (peakCeilingDb / 20);
+  // 响度增益与峰值钳制取小：宁可响度略低于目标也不削波。
+  const gain = Math.min(target / rms, peak > 0 ? ceiling / peak : Infinity);
+  for (const channel of channels) {
+    for (let i = 0; i < channel.length; i += 1) {
+      channel[i] = Math.min(ceiling, Math.max(-ceiling, channel[i]! * gain));
     }
   }
-  return channels;
 }
 
 /** 通道数组 → 定长循环 AudioBuffer（渲染器出口处一次性组装）。 */

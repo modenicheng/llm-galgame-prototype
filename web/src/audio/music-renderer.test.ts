@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { MusicScore } from "@shared/music/score.js";
 import {
+  MUSIC_LOUDNESS_PEAK_DB,
+  MUSIC_LOUDNESS_TARGET_DB,
   MUSIC_RENDER_SAMPLE_RATE,
   MUSIC_REVERB_SECONDS,
   audioBufferToWavBlob,
@@ -8,6 +10,7 @@ import {
   foldTailIntoLoop,
   loopSeconds,
   nearestSampleMidi,
+  normalizeLoudness,
   tailSamples,
 } from "./music-renderer.js";
 
@@ -61,7 +64,6 @@ describe("foldTailIntoLoop", () => {
   }
 
   it("尾部样本叠回头部对应位置", () => {
-    // 值全部 <1，不触发峰值护栏（护栏行为另测）。
     const folded = foldTailIntoLoop(
       fakeBuffer([new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.25])]),
       4,
@@ -75,10 +77,65 @@ describe("foldTailIntoLoop", () => {
     expect(channel[3]).toBeCloseTo(0.4);
   });
 
-  it("峰值超 1 时整体缩到 0.98 护栏内", () => {
+  it("V2 起折叠不再做峰值护栏（归一化交 normalizeLoudness）", () => {
     const folded = foldTailIntoLoop(fakeBuffer([new Float32Array([2, -2, 0.5, 0.25, 3, -3])]), 4);
-    const peak = Math.max(...Array.from(folded[0]!).map(Math.abs));
-    expect(peak).toBeCloseTo(0.98);
+    expect(Array.from(folded[0]!)[0]).toBeCloseTo(5); // 2 + 尾部 3，原样保留
+  });
+});
+
+describe("normalizeLoudness（母带后处理纯函数）", () => {
+  function rms(channels: Float32Array<ArrayBuffer>[]): number {
+    let sum = 0;
+    let count = 0;
+    for (const channel of channels) {
+      for (const sample of channel) {
+        sum += sample * sample;
+        count += 1;
+      }
+    }
+    return Math.sqrt(sum / count);
+  }
+
+  function peak(channels: Float32Array<ArrayBuffer>[]): number {
+    let peak = 0;
+    for (const channel of channels) {
+      for (const sample of channel) peak = Math.max(peak, Math.abs(sample));
+    }
+    return peak;
+  }
+
+  it("RMS 归一到 -16 dBFS（响度增益主导）", () => {
+    // 峰值 0.2 的中等信号：RMS 远低于目标，增益不被峰值钳制。
+    const channels = [new Float32Array(Array.from({ length: 1000 }, (_, i) => 0.2 * Math.sin(i)))];
+    normalizeLoudness(channels);
+    const expected = 10 ** (MUSIC_LOUDNESS_TARGET_DB / 20);
+    expect(rms(channels)).toBeCloseTo(expected, 2);
+  });
+
+  it("峰值钳 -1 dBFS：响度增益被钳制时不削波", () => {
+    // 稀疏尖峰：RMS 很小 → 目标增益巨大，但峰值钳制优先（峰值正好贴上限）。
+    const samples = new Float32Array(200);
+    samples[0] = 0.9;
+    const channels = [samples];
+    normalizeLoudness(channels);
+    const ceiling = 10 ** (MUSIC_LOUDNESS_PEAK_DB / 20);
+    expect(peak(channels)).toBeCloseTo(ceiling, 6);
+    expect(peak(channels)).toBeLessThanOrEqual(1);
+  });
+
+  it("全通道联合归一（立体声左右同增益，声像保持）", () => {
+    const left = new Float32Array([0.1, 0.1, 0.1, 0.1]);
+    const right = new Float32Array([0.2, 0.2, 0.2, 0.2]);
+    normalizeLoudness([left, right]);
+    // 左右同乘一个增益（联合 RMS），相对能量比不变。
+    expect(left[0]! / 0.1).toBeCloseTo(right[0]! / 0.2, 6);
+  });
+
+  it("静音与空输入不动（除零防御）", () => {
+    const silence = [new Float32Array([0, 0, 0])];
+    normalizeLoudness(silence);
+    expect(Array.from(silence[0]!)).toEqual([0, 0, 0]);
+    expect(() => normalizeLoudness([])).not.toThrow();
   });
 });
 

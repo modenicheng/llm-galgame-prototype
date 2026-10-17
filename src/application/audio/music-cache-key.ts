@@ -9,7 +9,7 @@
 import { createHash } from "node:crypto";
 import type { MusicScore } from "../../shared/music/score.js";
 
-export const MUSIC_RENDERER_VERSION = 1;
+export const MUSIC_RENDERER_VERSION = 2;
 
 /** 递归按键名排序的规范序列化（模型 JSON 键序不稳定，语义同谱必须同键）。 */
 function canonicalJson(value: unknown): string {
