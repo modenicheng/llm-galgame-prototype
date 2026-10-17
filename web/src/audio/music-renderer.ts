@@ -247,6 +247,10 @@ export class SoundfontMusicRenderer implements MusicRenderer {
   async render(score: MusicScore): Promise<AudioBuffer> {
     const sr = MUSIC_RENDER_SAMPLE_RATE;
     const loopN = Math.round(loopSeconds(score) * sr);
+    // 已知截断（V1 同构非回归）：dur ≤8 拍（bpm 50 时 9.6s）的跨循环点
+    // 长音超出 2.2s 尾区的部分被丢弃，循环点铺底可能轻微突断——V2 新增
+    // organ 等长铺底更易触发；修法 = 尾区取 RT60 与最大越界音符尾的较大
+    // 值（影响输出，须随下一渲染版本一起）。
     const tailN = tailSamples(sr);
     const context = new OfflineAudioContext(2, loopN + tailN, sr);
 

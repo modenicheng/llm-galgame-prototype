@@ -15,6 +15,9 @@
  *
  * 契约对齐 TTS 管线的可观测降级：决策/落盘失败只告警、不抛——配乐永远
  * 滞后于演出（写手显式 @bgm 压过自动配乐；作曲未完成时沿用当前曲目）。
+ *
+ * 注意：场景音乐一经决策（绑定落定）不再随导演后续修订变化——主题是
+ * 场景的音乐身份，而非情绪档位的即时快照（与 V1「键变即重解析」不同）。
  */
 import {
   COMPOSER_SESSION_WINDOW_TURNS,
@@ -180,10 +183,16 @@ export class SceneMusicService {
       ...theme,
       ...(motifHint !== undefined ? { motifHint } : {}),
     };
+    // id 冲突检查用决策返回后的新鲜目录（决策耗时数秒，决策前快照可能
+    // 已被并发场景更新）；rename 后循环复查直到不撞（对抗性评审 P1/P2）。
+    const taken = new Set((await this.themes.listThemes()).map((t) => t.id));
     let themeId = theme.id;
-    if (catalog.some((entry) => entry.meta.id === theme.id)) {
-      // id 与已有主题冲突：保留产物，追加确定性短 hash 区分（不丢一次作曲）。
-      themeId = `${theme.id}-${musicCacheKey(score).slice(0, 4)}`;
+    if (taken.has(themeId)) {
+      const suffix = musicCacheKey(score).slice(0, 4);
+      themeId = `${theme.id}-${suffix}`;
+      for (let n = 2; taken.has(themeId); n += 1) {
+        themeId = `${theme.id}-${suffix}-${n}`;
+      }
       meta.id = themeId;
       this.diagnostics.warn(
         "SceneMusicService",
@@ -253,7 +262,7 @@ export class SceneMusicService {
     } catch (err: unknown) {
       this.diagnostics.warn(
         "SceneMusicService",
-        `作曲家会话留痕失败（不影响本曲发布）：${String(err)}`,
+        `作曲家会话留痕失败（不影响本曲发布；会话可能出现不成对轮）：${String(err)}`,
       );
     }
   }

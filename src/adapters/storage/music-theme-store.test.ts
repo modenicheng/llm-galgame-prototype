@@ -128,4 +128,40 @@ describe("MusicThemeStore", () => {
     writeFileSync(path.join(scoresDir, "fortress-echo.json"), "{ not json", "utf8");
     await expect(store2.getScore("fortress-echo")).rejects.toThrow();
   });
+
+  it("并发变更写互斥：并行 addTheme/bindScene/putScore 不丢更新（对抗性评审 P1）", async () => {
+    const root = makeRoot();
+    const store = new MusicThemeStore(root, "game_1");
+    const metaB: MusicThemeMeta = {
+      id: "market-dawn",
+      title: "晨市",
+      concept: "港口晨市",
+    };
+    // 八个并发变更（两主题 × 绑定/谱面混合）全部等齐再验目录——无写
+    // 互斥时后写者基于旧快照覆写 themes.json，先写者条目被静默丢弃。
+    await Promise.all([
+      store.addTheme(meta, { sceneId: "s1" }),
+      store.addTheme(metaB, { sceneId: "s2" }),
+      store.addTheme(metaB),
+      store.bindScene("s3", "fortress-echo"),
+      store.addTheme(meta, { sceneId: "s4" }),
+      store.putScore("fortress-echo", score),
+      store.putScore("market-dawn", otherScore),
+      store.bindScene("s5", "market-dawn"),
+    ]);
+    const reopened = new MusicThemeStore(root, "game_1");
+    await expect(reopened.listThemes()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "fortress-echo" }),
+        expect.objectContaining({ id: "market-dawn" }),
+      ]),
+    );
+    await expect(reopened.getBinding("s1")).resolves.toBe("fortress-echo");
+    await expect(reopened.getBinding("s2")).resolves.toBe("market-dawn");
+    await expect(reopened.getBinding("s3")).resolves.toBe("fortress-echo");
+    await expect(reopened.getBinding("s4")).resolves.toBe("fortress-echo");
+    await expect(reopened.getBinding("s5")).resolves.toBe("market-dawn");
+    await expect(reopened.getScore("fortress-echo")).resolves.toEqual(score);
+    await expect(reopened.getScore("market-dawn")).resolves.toEqual(otherScore);
+  });
 });

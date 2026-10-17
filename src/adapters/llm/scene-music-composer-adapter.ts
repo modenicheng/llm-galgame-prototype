@@ -43,8 +43,9 @@ const COMPOSER_SYSTEM_PROMPT =
   `\nscore 形状：{version:1, bpm, key, mode, bars, tracks:[{instrument, gain, notes:[{beat, dur, midi, vel}]}]}；` +
   "结构规则：bars 取 16 或 32（4/4）；bpm 50~170；key 是主音半音数（0=C … 11=B）；" +
   "mode 取 major/minor/dorian；instrument 只能取 " +
-  `${MUSIC_INSTRUMENTS.join("/")}，每种至多一条轨；全部轨道音符总数 ≤ 500；` +
-  "beat 是四分音符起拍（0=循环起点，必须 < bars×4）；dur 0.1~8；vel 1~127；gain 0~1。" +
+  `${MUSIC_INSTRUMENTS.join("/")}，每种至多一条轨；全部轨道音符总数 ≤ 600；` +
+  "beat 是四分音符起拍（0=循环起点，必须 < bars×4）；dur 0.1~8；vel 1~127；gain 0~1；" +
+  "reason ≤200 字。" +
   "\n复用纪律（决策规则，与作曲质量同等重要）：" +
   "同一地点/同一游戏区域/情境相近的场景必须 reuse——主题是区域的音乐身份，日夜共用；" +
   "mood/intensity 差异不构成新主题的理由（同一主题直接复用）；" +
@@ -58,12 +59,13 @@ const COMPOSER_SYSTEM_PROMPT =
   "\n只输出 JSON，不输出任何解释或包裹。" +
   `\n\n${MUSIC_COMPOSITION_SKILL}`;
 
+/** 主音半音数 → 音名（目录行展示，帮助作曲家对齐母题调性写变体）。 */
+const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
 export class SceneMusicComposerAdapter implements SceneMusicComposerPort {
   private readonly client: OpenAI;
   private readonly model: string;
   private readonly diagnostics: DiagnosticSink;
-  /** 上一次原始输出（修复轮的 assistant 回放）。 */
-  private lastRaw = "";
 
   constructor(
     opts: {
@@ -92,6 +94,9 @@ export class SceneMusicComposerAdapter implements SceneMusicComposerPort {
       role: turn.role,
       content: turn.content,
     }));
+    // 修复轮回放的本轮原始输出——局部变量：实例字段会在并发 decide
+    //（不同场景同时决策）下串台（对抗性评审 P2）。
+    let lastRaw = "";
     let lastIssues = "";
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const response = await this.client.chat.completions.create({
@@ -103,7 +108,7 @@ export class SceneMusicComposerAdapter implements SceneMusicComposerPort {
                 { role: "system", content: COMPOSER_SYSTEM_PROMPT },
                 ...history,
                 { role: "user", content: user },
-                { role: "assistant", content: this.lastRaw },
+                { role: "assistant", content: lastRaw },
                 {
                   role: "user",
                   content: `上一次输出未通过契约校验：${lastIssues}。请修正后重新输出完整决策 JSON。`,
@@ -117,7 +122,7 @@ export class SceneMusicComposerAdapter implements SceneMusicComposerPort {
         ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
       } as ChatCompletionCreateParamsNonStreaming);
       const raw = response.choices[0]?.message?.content ?? "";
-      this.lastRaw = raw;
+      lastRaw = raw;
       const parsed = this.parseDecision(raw);
       if (parsed.ok) return parsed.decision;
       lastIssues = parsed.issues;
@@ -174,7 +179,7 @@ export class SceneMusicComposerAdapter implements SceneMusicComposerPort {
             (m.style !== undefined ? `｜风格：${m.style}` : "") +
             (m.parentTheme !== undefined ? `｜母题：${m.parentTheme}` : "") +
             (m.motifHint !== undefined ? `｜动机：${m.motifHint}` : "") +
-            `｜${s.bpm}bpm ${s.key === 0 ? "C" : ""}mode=${s.mode} bars=${s.bars}` +
+            `｜${s.bpm}bpm key=${s.key}(${KEY_NAMES[s.key]}) mode=${s.mode} bars=${s.bars}` +
             ` 循环${s.loopSeconds.toFixed(0)}s ${s.instruments.join("+")} ${s.noteCount}音`,
         );
       }

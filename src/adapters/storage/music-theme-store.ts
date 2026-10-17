@@ -37,11 +37,24 @@ export class MusicThemeStore implements MusicThemeStorePort {
   private readonly themesPath: string;
   private readonly scoresDir: string;
   private catalog: ThemeCatalog | undefined;
+  /**
+   * 写互斥链：服务层不同 sceneId 的决策并发落盘时，addTheme/bindScene/
+   * putScore 必须串行——否则后写者基于旧快照整体覆写 themes.json，
+   * 先写者的主题/绑定被静默丢弃（对抗性评审 P1）。
+   */
+  private writeChain: Promise<unknown> = Promise.resolve();
 
   constructor(gamesRoot: string, gameId: string) {
     const gameDir = path.join(path.resolve(gamesRoot), gameId);
     this.themesPath = path.join(gameDir, GAME_STORAGE_LAYOUT.musicThemes);
     this.scoresDir = path.join(gameDir, GAME_STORAGE_LAYOUT.musicScoresDir);
+  }
+
+  /** 串行化一次变更操作（前序失败不阻塞后续）。 */
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const task = this.writeChain.then(operation, operation);
+    this.writeChain = task.catch(() => {});
+    return task;
   }
 
   // --- themes.json（目录 + 绑定） ---
@@ -91,34 +104,36 @@ export class MusicThemeStore implements MusicThemeStorePort {
 
   /**
    * 登记主题（可选同时绑定 sceneId）。同 id 已存在 = no-op（首作即定稿）；
-   * 但绑定仍会补写（主题已存在而绑定缺失的恢复场景）。
+   * 但绑定仍会补写（主题已存在而绑定缺失的恢复场景）。写互斥：并发
+   * addTheme/bindScene 串行落盘，杜绝快照覆写丢更新。
    */
   async addTheme(meta: MusicThemeMeta, bind?: { sceneId: string }): Promise<void> {
-    const current = await this.loadCatalog();
-    const exists = current.themes.some((theme) => theme.id === meta.id);
-    const next: ThemeCatalog = {
-      themes: exists ? current.themes : [...current.themes, meta],
-      bindings:
-        bind !== undefined && current.bindings[bind.sceneId] !== meta.id
-          ? { ...current.bindings, [bind.sceneId]: meta.id }
-          : current.bindings,
-    };
-    if (
-      next.themes === current.themes &&
-      next.bindings === current.bindings
-    ) {
-      return;
-    }
-    await this.writeCatalog(next);
+    return this.enqueue(async () => {
+      const current = await this.loadCatalog();
+      const exists = current.themes.some((theme) => theme.id === meta.id);
+      const next: ThemeCatalog = {
+        themes: exists ? current.themes : [...current.themes, meta],
+        bindings:
+          bind !== undefined && current.bindings[bind.sceneId] !== meta.id
+            ? { ...current.bindings, [bind.sceneId]: meta.id }
+            : current.bindings,
+      };
+      if (next.themes === current.themes && next.bindings === current.bindings) {
+        return;
+      }
+      await this.writeCatalog(next);
+    });
   }
 
   /** 只补绑定（reuse 决策路径：主题已在目录，绑定新 sceneId）。 */
   async bindScene(sceneId: string, themeId: string): Promise<void> {
-    const current = await this.loadCatalog();
-    if (current.bindings[sceneId] === themeId) return;
-    await this.writeCatalog({
-      themes: current.themes,
-      bindings: { ...current.bindings, [sceneId]: themeId },
+    return this.enqueue(async () => {
+      const current = await this.loadCatalog();
+      if (current.bindings[sceneId] === themeId) return;
+      await this.writeCatalog({
+        themes: current.themes,
+        bindings: { ...current.bindings, [sceneId]: themeId },
+      });
     });
   }
 
@@ -142,13 +157,19 @@ export class MusicThemeStore implements MusicThemeStorePort {
     return MusicScoreSchema.parse(JSON.parse(raw));
   }
 
-  /** 落盘主题谱面：同 id 已存在 = no-op（首写即定稿）。 */
+  /**
+   * 落盘主题谱面：同 id 已存在 = no-op（首写即定稿）。存在性复查在写
+   * 互斥锁内进行——并发同 id 的 check-then-write TOCTOU 会使后写者
+   * 覆写先写者（对抗性评审 P1）。
+   */
   async putScore(themeId: string, score: MusicScore): Promise<void> {
-    if ((await this.getScore(themeId)) !== undefined) return;
-    await mkdir(this.scoresDir, { recursive: true });
-    const target = path.join(this.scoresDir, `${themeId}.json`);
-    const tmpPath = `${target}.tmp-${process.pid}-${Date.now()}`;
-    await writeFile(tmpPath, `${JSON.stringify(score, null, 2)}\n`, "utf8");
-    await rename(tmpPath, target);
+    return this.enqueue(async () => {
+      if ((await this.getScore(themeId)) !== undefined) return;
+      await mkdir(this.scoresDir, { recursive: true });
+      const target = path.join(this.scoresDir, `${themeId}.json`);
+      const tmpPath = `${target}.tmp-${process.pid}-${Date.now()}`;
+      await writeFile(tmpPath, `${JSON.stringify(score, null, 2)}\n`, "utf8");
+      await rename(tmpPath, target);
+    });
   }
 }

@@ -97,7 +97,7 @@ function fakeSession(): ComposerSessionStorePort & {
     append: vi.fn(async (turn: { role: "user" | "assistant"; content: string }) => {
       turns.push(turn);
     }),
-    readRecent: vi.fn(async () => [...turns]),
+    readRecent: vi.fn(async (maxTurns: number) => turns.slice(-maxTurns)),
   };
 }
 
@@ -336,5 +336,50 @@ describe("SceneMusicService（V2 主题决策流）", () => {
     await flush();
     expect(events).toHaveLength(1);
     expect(warns.some((m) => m.includes("disk full"))).toBe(true);
+  });
+
+  it("决策端口 reject → 吞掉不外抛、不标记已服务（下次重试）", async () => {
+    const composer = fakeComposer(() => Promise.reject(new Error("network down")));
+    const service = new SceneMusicService({
+      composer,
+      themes: fakeThemes(),
+      session: fakeSession(),
+    });
+    expect(() => service.handleDirective(makeDirective(direction))).not.toThrow();
+    await flush();
+    service.handleDirective(makeDirective(direction));
+    await flush();
+    expect(composer.decide).toHaveBeenCalledTimes(2);
+  });
+
+  it("会话留痕失败仍发布本曲（留痕只是辅助记忆）", async () => {
+    const composer = fakeComposer(async () => ({
+      action: "compose",
+      theme: { id: "x", title: "X", concept: "c" },
+      score,
+      reason: "r",
+    }));
+    const session = fakeSession();
+    session.append = vi.fn(async () => {
+      throw new Error("session io");
+    });
+    const warns: string[] = [];
+    const service = new SceneMusicService({
+      composer,
+      themes: fakeThemes(),
+      session,
+      diagnostics: {
+        info: () => {},
+        warn: (_scope: string, message: string) => {
+          warns.push(message);
+        },
+      },
+    });
+    const events: SceneMusicScoreEvent[] = [];
+    service.subscribe((event) => events.push(event));
+    service.handleDirective(makeDirective(direction));
+    await flush();
+    expect(events).toHaveLength(1);
+    expect(warns.some((m) => m.includes("不成对轮"))).toBe(true);
   });
 });
