@@ -549,9 +549,9 @@ describe("DirectorService — voice 指导与调色板", () => {
 });
 
 // ---------------------------------------------------------------------------
-// music 指导解析（动态音乐生成：地区维度）
+// music 指导解析（动态音乐生成）
 // ---------------------------------------------------------------------------
-describe("DirectorService — music 指导解析（地区维度）", () => {
+describe("DirectorService — music 指导解析", () => {
   let root: string;
   let store: GameGraphStore;
 
@@ -577,13 +577,13 @@ describe("DirectorService — music 指导解析（地区维度）", () => {
     };
   }
 
-  it("region 词表内生效；default 归一为缺省（不覆盖世界锚）；词表外丢字段但 mood 保留", async () => {
+  it("词表内 mood/note 生效；词表外 mood 丢弃整段并告警；intensity 越界取缺省 2", async () => {
     const diagnostics = makeDiagnostics();
     const runner = makeVoiceRunner({
       sceneGoal: "x",
       defenseBeats: [],
       endingPressure: false,
-      music: { mood: "tense", intensity: 2, region: "east-asia", note: "异乡集市" },
+      music: { mood: "tense", intensity: 2, note: "异乡集市" },
     });
     const service = new DirectorService({
       runner: runner as unknown as AgentRunnerPort,
@@ -595,31 +595,31 @@ describe("DirectorService — music 指导解析（地区维度）", () => {
       scenePurpose: "异乡",
       recentSummary: "",
     });
-    expect(directive.music).toEqual({ mood: "tense", intensity: 2, region: "east-asia", note: "异乡集市" });
+    expect(directive.music).toEqual({ mood: "tense", intensity: 2, note: "异乡集市" });
 
-    const defaultRunner = makeVoiceRunner({
+    const overRunner = makeVoiceRunner({
       sceneGoal: "x",
       defenseBeats: [],
       endingPressure: false,
-      music: { mood: "warm", intensity: 1, region: "default" },
+      music: { mood: "warm", intensity: 9 },
     });
-    const defaultService = new DirectorService({
-      runner: defaultRunner as unknown as AgentRunnerPort,
+    const overService = new DirectorService({
+      runner: overRunner as unknown as AgentRunnerPort,
       store,
       diagnostics: diagnostics.sink,
     });
-    const defaultDirective = await defaultService.refreshDirective({
+    const overDirective = await overService.refreshDirective({
       sceneId: "教室",
       scenePurpose: "日常",
       recentSummary: "",
     });
-    expect(defaultDirective.music).toEqual({ mood: "warm", intensity: 1 });
+    expect(overDirective.music).toEqual({ mood: "warm", intensity: 2 });
 
     const invalidRunner = makeVoiceRunner({
       sceneGoal: "x",
       defenseBeats: [],
       endingPressure: false,
-      music: { mood: "sorrowful", intensity: 1, region: "mars" },
+      music: { mood: "drifting", intensity: 1 },
     });
     const invalidService = new DirectorService({
       runner: invalidRunner as unknown as AgentRunnerPort,
@@ -631,11 +631,11 @@ describe("DirectorService — music 指导解析（地区维度）", () => {
       scenePurpose: "闪回",
       recentSummary: "",
     });
-    expect(invalidDirective.music).toEqual({ mood: "sorrowful", intensity: 1 });
-    expect(diagnostics.warns.some((m) => m.includes("music.region"))).toBe(true);
+    expect(invalidDirective.music).toBeUndefined();
+    expect(diagnostics.warns.some((m) => m.includes("music.mood"))).toBe(true);
   });
 
-  it("系统 prompt 插值地区词表（单一真源）", async () => {
+  it("系统 prompt 插值情绪词表（单一真源）", async () => {
     const runner = makeVoiceRunner({ sceneGoal: "x", defenseBeats: [], endingPressure: false });
     const service = new DirectorService({
       runner: runner as unknown as AgentRunnerPort,
@@ -643,7 +643,7 @@ describe("DirectorService — music 指导解析（地区维度）", () => {
     });
     await service.refreshDirective({ sceneId: "s", scenePurpose: "p", recentSummary: "" });
     const system = (runner.runLoop.mock.calls[0]?.[0] as { system: string }).system;
-    expect(system).toContain("east-asia");
-    expect(system).toContain("地区音乐覆盖");
+    expect(system).toContain("sorrowful");
+    expect(system).toContain("配乐指导");
   });
 });

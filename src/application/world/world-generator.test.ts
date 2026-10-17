@@ -255,28 +255,6 @@ describe("WorldGenerator — 编剧音频画像（V2）", () => {
       readFile(path.join(root, gameId, "world", "voice-design.json"), "utf8"),
     ).rejects.toThrow();
   });
-  it("writes music-identity.json when the writer anchored a music region; omits it otherwise", async () => {
-    const anchored: WorldDraft = { ...DRAFT, musicRegion: "east-asia" };
-    const gen = new WorldGenerator({
-      writer: { writeOutline: vi.fn(async () => anchored) },
-      gamesRoot: root,
-      newGameId: () => "game_music_identity",
-    });
-    const { gameId } = await gen.generate({ userText: "东方古镇题材" });
-    expect(
-      JSON.parse(await readFile(path.join(root, gameId, "world", "music-identity.json"), "utf8")),
-    ).toEqual({ version: 1, region: "east-asia" });
-
-    const plain = new WorldGenerator({
-      writer: { writeOutline: vi.fn(async () => DRAFT) },
-      gamesRoot: root,
-      newGameId: () => "game_music_plain",
-    });
-    const plainId = (await plain.generate({ userText: "现代都市题材" })).gameId;
-    await expect(
-      readFile(path.join(root, plainId, "world", "music-identity.json"), "utf8"),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -496,4 +474,4 @@ describe("WorldGenerator — 派生人物卡（M1）", () => {
     expect(loaded.bundle.characters).toContain("【苏遥】(su_yao)");
     expect(loaded.bundle.characters).toContain("控制：玩家");
   });
-});
+});

@@ -39,26 +39,6 @@ export const MUSIC_MOODS = [
 ] as const;
 export type MusicMood = (typeof MUSIC_MOODS)[number];
 
-/**
- * 地区音乐身份词表（创作思路维度，与 mood 正交）：同地区共享音阶/节奏
- * 型/乐器偏好（原神式地区音乐身份），跨情绪一致。世界层由编剧画像锚定
- * （WorldDraft.musicRegion），导演仅在异域场景显式覆盖。
- */
-export const MUSIC_REGIONS = [
-  "default",
-  "east-asia",
-  "celtic",
-  "nordic",
-  "arabic",
-  "latin",
-  "jazz",
-  "slavic",
-] as const;
-export type MusicRegion = (typeof MUSIC_REGIONS)[number];
-/** 具体地区（编剧画像/导演覆盖可选值；"default" = 无地区锚，等价缺省）。 */
-export const MUSIC_CONCRETE_REGIONS: readonly Exclude<MusicRegion, "default">[] =
-  MUSIC_REGIONS.filter((region): region is Exclude<MusicRegion, "default"> => region !== "default");
-
 /** 强度档位（1=铺垫，2=主体，3=高潮）。 */
 export const MUSIC_INTENSITY_MIN = 1;
 export const MUSIC_INTENSITY_MAX = 3;
@@ -145,8 +125,6 @@ export interface SceneMusicDirection {
   intensity: 1 | 2 | 3;
   /** 作曲提示（≤40 字，导演对配乐的一句话意图）。 */
   note?: string;
-  /** 地区覆盖（词表内；缺省 = 世界锚定地区。仅异域/异文化场景给出）。 */
-  region?: MusicRegion;
 }
 
 /** 循环总拍数（4/4）。 */

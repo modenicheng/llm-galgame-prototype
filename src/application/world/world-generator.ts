@@ -19,7 +19,6 @@ import path from "node:path";
 import { OutlineStore } from "../../adapters/storage/outline-store.js";
 import { CanonStore } from "../../adapters/storage/canon-store.js";
 import { VoiceDesignStore } from "../../adapters/storage/voice-design-store.js";
-import { MusicIdentityStore } from "../../adapters/storage/music-identity-store.js";
 import { DEFAULT_GAMES_ROOT } from "../../bootstrap/create-runtime-application.js";
 import type { DraftCharacter, CharacterVoiceDesign, OutlineWriterPort, WorldDraft } from "../outline/outline-writer.js";
 import type { AssetCatalog } from "../../core/assets/types.js";
@@ -236,16 +235,6 @@ export class WorldGenerator {
         characters: Object.fromEntries(
           designed.map((c) => [c.id, { name: c.name, voice: c.voice }]),
         ),
-      });
-    }
-
-    // 地区音乐身份（编剧画像，动态音乐生成的世界锚）：配乐创作思路与
-    // 复用键的地区维度（同地区跨情绪共享音色语汇）；缺省不落盘（无锚，
-    // 运行时回落 default）。创建期写一次（拒绝覆写）。
-    if (draft.musicRegion !== undefined) {
-      await new MusicIdentityStore(this.gamesRoot, gameId).save({
-        version: 1,
-        region: draft.musicRegion,
       });
     }
 

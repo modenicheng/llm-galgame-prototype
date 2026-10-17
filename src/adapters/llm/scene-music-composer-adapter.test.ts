@@ -43,7 +43,6 @@ describe("SceneMusicComposerAdapter", () => {
     const score = await adapter.compose({
       sceneId: "scene_1",
       direction: { mood: "daily", intensity: 1 },
-      region: "default",
     });
     expect(score).not.toBeNull();
     expect(score!.tracks[0]!.instrument).toBe("piano");
@@ -55,7 +54,6 @@ describe("SceneMusicComposerAdapter", () => {
     const score = await adapter.compose({
       sceneId: "scene_1",
       direction: { mood: "daily", intensity: 1 },
-      region: "default",
     });
     expect(score).not.toBeNull();
   });
@@ -68,7 +66,6 @@ describe("SceneMusicComposerAdapter", () => {
     const score = await adapter.compose({
       sceneId: "scene_1",
       direction: { mood: "tense", intensity: 2 },
-      region: "default",
     });
     expect(score).not.toBeNull();
     expect(create).toHaveBeenCalledTimes(2);
@@ -85,7 +82,6 @@ describe("SceneMusicComposerAdapter", () => {
     const score = await adapter.compose({
       sceneId: "scene_1",
       direction: { mood: "tense", intensity: 2 },
-      region: "default",
     });
     expect(score).toBeNull();
     expect(create).toHaveBeenCalledTimes(2);

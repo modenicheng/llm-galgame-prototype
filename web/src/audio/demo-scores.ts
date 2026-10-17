@@ -2,8 +2,8 @@
  * 试听基线谱面（真实 glm-5.3-flash 作曲产物，2026-10-16/17 经
  * scripts/probe-music-composer.ts --save 采集）——渲染器听感调参的固定
  * A/B 基线：改增益/混响/包络后重听对比，谱面恒定。覆盖对比维度：速度
- * 与密度（紧张/高潮 vs 悲伤）、音色组合（钢琴主导 vs 全奏）、地区音乐
- * 身份（东亚稀疏五声 vs 凯尔特 dorian 竖琴，与同情绪 default 曲 A/B）。
+ * 与密度（紧张/高潮 vs 悲伤）、音色组合（钢琴主导 vs 全奏）、风格语汇
+ * （稀疏五声 vs dorian 竖琴，与同情绪默认曲 A/B）。
  */
 import type { MusicScore, SceneMusicDirection } from "@shared/music/score.js";
 
@@ -3193,8 +3193,8 @@ export const DEMO_SCORES: DemoScore[] = [
     },
   },
   {
-    label: "悲伤 · 强度 1 · 东亚",
-    direction: { mood: "sorrowful", intensity: 1, note: "雨后古镇石板路，回忆浮现", region: "east-asia" },
+    label: "悲伤 · 强度 1 · 稀疏五声",
+    direction: { mood: "sorrowful", intensity: 1, note: "雨后古镇石板路，回忆浮现" },
     score: {
       "version": 1,
       "bpm": 58,
@@ -3458,8 +3458,8 @@ export const DEMO_SCORES: DemoScore[] = [
     },
   },
   {
-    label: "希望 · 强度 2 · 凯尔特",
-    direction: { mood: "hopeful", intensity: 2, note: "晨光穿过薄雾，旅程开启", region: "celtic" },
+    label: "希望 · 强度 2 · dorian 竖琴",
+    direction: { mood: "hopeful", intensity: 2, note: "晨光穿过薄雾，旅程开启" },
     score: {
       "version": 1,
       "bpm": 96,

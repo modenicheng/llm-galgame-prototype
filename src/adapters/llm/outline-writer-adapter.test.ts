@@ -67,25 +67,13 @@ describe("OutlineWriterAdapter", () => {
     expect(draft.outline.every((n) => n.status === "planned")).toBe(true);
   });
 
-  it("musicRegion 词表内透传；词表外与 default 被 schema 拒收（画像必须是具体地区）", async () => {
-    const valid = JSON.parse(VALID_JSON);
-    valid.musicRegion = "east-asia";
-    const draft = await makeAdapter(JSON.stringify(valid)).writeOutline({
+  it("多余未知键（如已拆除的 musicRegion）被 schema 静默剥除不透传", async () => {
+    const legacy = JSON.parse(VALID_JSON);
+    legacy.musicRegion = "east-asia";
+    const draft = await makeAdapter(JSON.stringify(legacy)).writeOutline({
       userText: "东方古镇题材",
     });
-    expect(draft.musicRegion).toBe("east-asia");
-
-    const invalid = JSON.parse(VALID_JSON);
-    invalid.musicRegion = "atlantis";
-    await expect(
-      makeAdapter(JSON.stringify(invalid)).writeOutline({ userText: "任意描述" }),
-    ).rejects.toThrow("outline 输出解析失败");
-
-    const defaultRegion = JSON.parse(VALID_JSON);
-    defaultRegion.musicRegion = "default";
-    await expect(
-      makeAdapter(JSON.stringify(defaultRegion)).writeOutline({ userText: "任意描述" }),
-    ).rejects.toThrow("outline 输出解析失败");
+    expect("musicRegion" in draft).toBe(false);
   });
 
   it("throws a clear error on non-JSON output", async () => {

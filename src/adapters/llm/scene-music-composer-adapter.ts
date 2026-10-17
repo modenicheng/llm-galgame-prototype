@@ -14,7 +14,6 @@ import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import {
   MUSIC_INSTRUMENTS,
   MUSIC_MOODS,
-  MUSIC_REGIONS,
   MusicScoreSchema,
   type MusicScore,
 } from "../../shared/music/score.js";
@@ -40,16 +39,6 @@ const COMPOSER_SYSTEM_PROMPT =
   "intensity 1=少轨道稀疏音符（pad+bass+单旋律），2=标准三轨，3=全轨饱满加花；" +
   "mood 参考：daily 大调轻钢琴；warm 大调 strings+pad；tense 小调快 bpm、bass 每拍；" +
   "sorrowful 小调慢 bpm 钢琴分解；mysterious dorian bell+choir；hopeful 大调渐开；climax 全轨推进。" +
-  "region 是地区音乐身份，与 mood 正交：region 定创作思路（音阶/节奏型/乐器偏好——同地区各情绪" +
-  "曲目共享音色语汇，如游戏各地区的配乐家族），mood 定情绪能量。地区要领：" +
-  "east-asia 五声音阶（旋律避开 fa/si 的导音张力）、bell 前置点缀模拟筝/木鱼质感、" +
-  "钢琴线性单旋律多留白、bass 轻而稀；celtic dorian、pad/strings 叠五度持续音 drone、" +
-  "钢琴竖琴式分解琶音、旋律多六度跳进；nordic 小调慢板、choir/pad 宽幅长音、" +
-  "音符稀疏空间大、bass 长音踏板；arabic 含增二度的色彩音阶（如和声小调 6~7 级）、" +
-  "低音 drone、旋律装饰性快速邻音、重复推动的节奏音型；latin 大调切分重音（弱拍重音）、" +
-  "bass 活跃行走低音、钢琴节奏柱式；jazz 七/九和弦延伸音、钢琴 swing 附点、strings 弱化为 pad；" +
-  "slavic 小调宽广民歌旋律、choir/strings 主体、大跳后级进回落、bass 沉稳长音；" +
-  `default 无地区约束。region 只能取 ${MUSIC_REGIONS.join("/")} 之一。` +
   "只输出 JSON，不输出任何解释或包裹。";
 
 export class SceneMusicComposerAdapter implements SceneMusicComposerPort {
@@ -153,7 +142,6 @@ export class SceneMusicComposerAdapter implements SceneMusicComposerPort {
       `sceneId: ${request.sceneId}`,
       `目标：${request.sceneGoal ?? "（无）"}`,
       "===== 音乐指导 =====",
-      `region: ${request.region}（地区音乐身份，创作思路见地区要领）`,
       `mood: ${direction.mood}（词表：${MUSIC_MOODS.join("/")}）`,
       `intensity: ${direction.intensity}`,
     ];

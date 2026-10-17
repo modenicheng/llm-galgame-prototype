@@ -38,7 +38,6 @@ import {
 import {
   MUSIC_INTENSITY_DEFAULT,
   MUSIC_MOODS,
-  MUSIC_REGIONS,
   type SceneMusicDirection,
 } from "../../shared/music/score.js";
 // C5：导演观察窗沿用冻结的 legacy 渲染（受控身份视图的投影接入归后续
@@ -95,10 +94,7 @@ const DIRECTIVE_SYSTEM_PROMPT =
   "music 是可选的本场景配乐指导，形如 " +
   '{"mood":"tense","intensity":2,"note":"追逐感渐强"}：' +
   `mood 只能取 ${MUSIC_MOODS.join("/")} 之一（词表外整段丢弃）；` +
-  "intensity 取 1~3（1=铺垫，2=主体，3=高潮，缺省 2）；note ≤40 字（给作曲的意图一句话）；" +
-  `region 是可选的地区音乐覆盖，只能取 ${MUSIC_REGIONS.join("/")} 之一——` +
-  "仅当本场景明确处于与主体世界不同的地域/文化（异国场景、他乡回忆、风格突变）才给出，" +
-  "其余场景一律省略（世界基调已由编剧画像锚定）。" +
+  "intensity 取 1~3（1=铺垫，2=主体，3=高潮，缺省 2）；note ≤40 字（给作曲的意图一句话）。" +
   "只给指令，不写台词。";
 
 interface DirectorServiceOptions {
@@ -587,9 +583,7 @@ export class DirectorService {
 
   /**
    * music 段解析：mood 命中词表才成段（词表外整段丢弃并告警——作曲层
-   * 拿不到可靠情绪就不该瞎猜）；intensity 越界取缺省 2；note 截 40 字；
-   * region 词表外丢弃该字段并告警（mood 仍有效），"default" 归一为缺省
-   * （= 不覆盖世界锚）。
+   * 拿不到可靠情绪就不该瞎猜）；intensity 越界取缺省 2；note 截 40 字。
    */
   private parseMusicDirection(raw: unknown): SceneMusicDirection | undefined {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
@@ -612,17 +606,6 @@ export class DirectorService {
     if (typeof v.note === "string") {
       const note = v.note.trim().slice(0, 40);
       if (note !== "") direction.note = note;
-    }
-    const region = pickEnum(v.region, MUSIC_REGIONS);
-    if (region === undefined) {
-      if (v.region !== undefined) {
-        this.diagnostics.warn(
-          "DirectorService",
-          `music.region 不在词表内，已丢弃该字段（mood/intensity 仍生效）：${JSON.stringify(v.region)}`,
-        );
-      }
-    } else if (region !== "default") {
-      direction.region = region;
     }
     return direction;
   }

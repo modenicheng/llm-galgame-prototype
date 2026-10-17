@@ -1,15 +1,14 @@
 /**
  * SceneMusicService — 动态音乐生成的编排层（三层契约的中间层）。
  *
- * 数据流：导演 SceneDirective.music（情绪/强度/注记/地区覆盖）
- *   → 复用键量化 region:mood:intensity 查 per-game 谱库（MusicLibraryStore；
- *     region = 导演覆盖 > 世界锚 worldRegion > default）
+ * 数据流：导演 SceneDirective.music（情绪/强度/注记）
+ *   → 复用键量化 mood:intensity 查 per-game 谱库（MusicLibraryStore）
  *   → 命中 = 零 token 直接广播；未命中 = 作曲端口（LLM 单次 JSON 调用）
  *     → 落盘谱库 → musicCacheKey 指纹 → 广播订阅者（runtime WS → 浏览器渲染）。
  *
- * 复用语义（token 上界 = 地区数 × 7 情绪 × 3 强度；单地区世界即 21 首，
- * 通常 4~8 首）：note 只是首次作曲的编配提示，不进复用键——同世界同键
- * 恒用同一首（跨场景/跨周目/跨进程重启的 Leitmotif 一致性）。
+ * 复用语义（token 上界 = 7 情绪 × 3 强度 = 21 首，通常 4~8 首）：note 只是
+ * 首次作曲的编配提示，不进复用键——同世界同键恒用同一首（跨场景/跨周目/
+ * 跨进程重启的 Leitmotif 一致性）。
  *
  * 契约对齐 TTS 管线的可观测降级：作曲/落盘失败只告警、不抛——配乐永远
  * 滞后于演出（写手显式 @bgm 压过自动配乐；作曲未完成时沿用当前曲目）。
@@ -17,15 +16,13 @@
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import type { SceneDirective } from "../director/director-service.js";
-import type { MusicRegion, MusicScore, SceneMusicDirection } from "../../shared/music/score.js";
+import type { MusicScore, SceneMusicDirection } from "../../shared/music/score.js";
 import { musicCacheKey } from "./music-cache-key.js";
 
 export interface SceneMusicComposeRequest {
   sceneId: string;
   sceneGoal?: string;
   direction: SceneMusicDirection;
-  /** 生效地区（服务层已解析：导演覆盖 > 世界锚 > default）。 */
-  region: MusicRegion;
 }
 
 /** 作曲端口（LLM 适配器实现；测试注入 fake）。 */
@@ -49,21 +46,16 @@ export interface SceneMusicScoreEvent {
 }
 
 /**
- * 复用键：region:mood:intensity。note 不参与（编配提示，非可听身份）；
- * region 是地区音乐身份（导演覆盖 > 世界锚 worldRegion > default）——
- * 同地区各情绪共享创作思路，跨情绪各成一首。
+ * 复用键：mood:intensity。note 不参与（编配提示，非可听身份）——
+ * 同世界同情绪档位恒用同一首。
  */
-export function musicLibraryKey(
-  direction: SceneMusicDirection,
-  worldRegion?: MusicRegion,
-): string {
-  return `${direction.region ?? worldRegion ?? "default"}:${direction.mood}:${direction.intensity}`;
+export function musicLibraryKey(direction: SceneMusicDirection): string {
+  return `${direction.mood}:${direction.intensity}`;
 }
 
 export class SceneMusicService {
   private readonly composer: SceneMusicComposerPort;
   private readonly library: SceneMusicLibraryPort | undefined;
-  private readonly worldRegion: MusicRegion | undefined;
   private readonly diagnostics: DiagnosticSink;
   private readonly listeners = new Set<(event: SceneMusicScoreEvent) => void>();
   /** sceneId → 已服务的复用键（同场景同键不重复广播）。 */
@@ -75,13 +67,10 @@ export class SceneMusicService {
   constructor(opts: {
     composer: SceneMusicComposerPort;
     library?: SceneMusicLibraryPort;
-    /** 世界锚地区（编剧画像 music-identity.json；导演未覆盖时生效）。 */
-    worldRegion?: MusicRegion;
     diagnostics?: DiagnosticSink;
   }) {
     this.composer = opts.composer;
     this.library = opts.library;
-    this.worldRegion = opts.worldRegion;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
   }
 
@@ -89,15 +78,13 @@ export class SceneMusicService {
   handleDirective(directive: SceneDirective): void {
     const direction = directive.music;
     if (direction === undefined) return;
-    const region = direction.region ?? this.worldRegion ?? "default";
-    const key = musicLibraryKey(direction, this.worldRegion);
+    const key = musicLibraryKey(direction);
     if (this.servedKeys.get(directive.sceneId) === key) return;
     this.servedKeys.set(directive.sceneId, key);
     void this.resolveScore(key, {
       sceneId: directive.sceneId,
       ...(directive.sceneGoal !== undefined ? { sceneGoal: directive.sceneGoal } : {}),
       direction,
-      region,
     })
       .then((score) => {
         if (score === null) {
