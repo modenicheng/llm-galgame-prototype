@@ -60,6 +60,12 @@ export const GAME_STORAGE_LAYOUT = {
   stats: "stats.json",
   /** 场景配乐复用谱库（mood:intensity → MusicScore；运行期可增长）。 */
   musicLibrary: "music/library.json",
+  /** 主题制配乐目录（V2）：主题元数据 + sceneId 绑定（运行期可增长）。 */
+  musicThemes: "music/themes.json",
+  /** 主题制配乐谱面目录（V2）：每主题一文件 `<themeId>.json`。 */
+  musicScoresDir: "music/scores",
+  /** 作曲家持久会话（V2）：追加式 JSONL，不存完整谱面。 */
+  musicSession: "music/session.jsonl",
   assetsCatalog: "assets/resources.yaml",
 } as const;
 
