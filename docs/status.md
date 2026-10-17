@@ -19,7 +19,8 @@
 | `.hygiene.config.json` / `.hygiene-baseline.json` | 仓库卫生自检校准值（阈值 / 豁免 / 标记基线），供用户级 `repo-hygiene` skill（`~/.agents/skills/repo-hygiene/`，不随仓库走）的机械检查脚本读取 |
 | `docs/novel-skill/` | 长篇小说创作 skill（外部参考素材，非本项目规范） |
 | `docs/agents/TTS-音色配置指南.md` | 音色创建与绑定操作指南 |
-| `docs/scene-music-generation.md` | **场景配乐动态生成（V1+复用+地区已落地）**：导演音乐指导 → LLM 符号作曲 → per-game 复用谱库（region:mood:intensity）→ 浏览器 soundfont 确定性渲染；独立试听页 |
+| `docs/scene-music-generation.md` | **场景配乐动态生成（V2 主题制已落地）**：作曲家第四 agent（skill/持久会话/reuse\|compose 决策）→ per-game 主题目录（themes/scores/session）→ 浏览器 soundfont 确定性渲染（V2 混音母带链、12 乐器）；独立试听页 |
+| `docs/superpowers/specs/2026-10-18-music-v2-theme-architecture.md` | 音乐 V2 主题制架构设计定稿（作曲家决策流/数据层/渲染 V2/拆除清单），已随实现轮落地 |
 
 ## 已完成
 
@@ -155,27 +156,32 @@
 - **场景配乐动态生成（2026-10-16 V1 落地，spec：scene-music-generation）**：
   导演 `SceneDirective.music`（mood 词表/intensity/note）→ `SceneMusicService`
   去重作曲（LLM 单次 JSON × `MusicScoreSchema` 硬校验 × 修复重试）→
-  WS `music.score` 推送（wire v3，重连回放）→ 浏览器 OfflineAudioContext +
+  WS `music.score` 推送（重连回放）→ 浏览器 OfflineAudioContext +
   FluidR3 采样包（`assets/audio/soundfonts/`，A1–C7 裁剪双 MIT）确定性渲染
-  （分乐器包络/程序混响 IR/尾部循环折叠回环无缝）→ WAV blob URL 经
-  `BgmController.applyGenerated` 播放。优先级「最新意图胜」（生成曲接管、
+  → WAV blob URL 经 `BgmController.applyGenerated` 播放。优先级「最新意图胜」（生成曲接管、
   写手显式 @bgm 值变化压回）；缓存乐谱不缓存音频（渲染确定性）；LLM 平台
   已切 BigModel `glm-5.3-flash`（`VIBEGAL_LLM_KEY`，端点
-  `https://open.bigmodel.cn/api/coding/paas/v4`）；真实作曲双情绪探针
-  通过（`scripts/probe-music-composer.ts`）。
-  **复用谱库（V1.1，token 上界单地区 21 首/世界）**：复用键
-  `region:mood:intensity`（note 只是首作编配提示）→ `MusicLibraryStore`
-  （`games/<gameId>/music/library.json`，首写定稿/原子写/损坏拒收）——
-  命中零 token 直接广播，跨场景/周目/进程重启同曲（Leitmotif 一致）；
-  同键并发合流单次 LLM。**地区音乐身份（V1.2，与 voice-design 同构）**：
-  编剧世界锚 `WorldDraft.musicRegion`（词表 east-asia/celtic/nordic/
-  arabic/latin/jazz/slavic，落盘 `world/music-identity.json` 创建期写一次）
-  + 导演场景级 region 覆盖（仅异域场景给）> 世界锚 > default；作曲 prompt
-  含地区→创作思路映射（五声稀疏/dorian drone/增二度……，与 mood 正交）。
-  **试听页**：`npm run demo:music` → `/music-demo.html`（内置 6 首真实
-  作曲基线含地区 A/B + file picker 载 `probe --save` 产物，生产渲染器
-  A/B 调参，零 token 不启游戏；真浏览器双曲渲染播放已验证，修复了
-  SoundfontStore 裸 fetch 的 Illegal invocation）。
+  `https://open.bigmodel.cn/api/coding/paas/v4`）。
+  **V2 主题制架构（2026-10-18 重构，spec：
+  2026-10-18-music-v2-theme-architecture）**：可听身份从复用键
+  （region:mood:intensity，V1.2 地区维度已拆除）改为作曲家命名的主题实体
+  ——同场景日夜共用、同区域共用、一局成一张 OST 专辑（5–15 主题）。
+  决策流：`bindings[sceneId]` 命中零 LLM 直接发布；未绑定调**作曲家第四
+  agent**（`decide(brief, catalog, sessionTurns)` 判别联合
+  reuse|compose；`MUSIC_COMPOSITION_SKILL` 和声纪律硬约束注入 system；
+  复用纪律进 prompt；预算 300s/16k token；thinking disabled）。数据层
+  `music/themes.json`（主题+绑定）+ `music/scores/<themeId>.json`（首作
+  即定稿）+ `music/session.jsonl`（作曲家会话，不存谱面只留摘要；窗口
+  截断不做压缩）；`motifHint` 服务层从谱面确定性提取（LLM 不写防幻觉）、
+  变体主题 parentTheme 引用母题。WS wire v3→v4（music.score 增 themeId）。
+  **渲染 V2**：每轨 highpass(40Hz)+乐器固定声像+分轨混响 send → 总线
+  压缩+makeup → `normalizeLoudness` 纯函数（RMS≈-16dBFS、峰钳-1dBFS）
+  → 44.1kHz；乐器 6→12（+guitar/harp/flute/marimba/organ/synth，vendor
+  CDN 切 fastly 镜像全量重采）；`MUSIC_RENDERER_VERSION` 1→2。真实
+  BigModel 双轮探针验证 compose（40.9s《地底堡垒·机械残响》）+reuse
+  （2.0s 同主题，复用纪律成立）。**试听页**：`npm run demo:music` →
+  `/music-demo.html`（内置 6 首真实作曲基线 + file picker 载探针产物，
+  渲染 A/B 调参零 token 不启游戏）。
 - **调度**：`audio-intent-planner` / `performance-compiler` / `tts-task-service` /
   `cache-key`，播放水位参数（startup_buffer / low_watermark / target_buffer）。
 - **播放**：`web/src/audio/`——AudioCoordinator（共享 AudioContext + AudioWorklet）、

@@ -1,132 +1,140 @@
-# 场景配乐动态生成（动态音乐生成 V1）
+# 场景配乐动态生成（V2 主题制架构）
 
-状态：**V1 已落地（2026-10-16）**——导演指导层、作曲层、浏览器渲染层全链
-贯通；真实作曲链路经 glm-5.3-flash 双情绪探针验证（scripts/probe-music-composer.ts）。
-**V1.1（同日）**：per-game 复用谱库（token 上界 21 首/世界）+ 独立试听页
-（`npm run demo:music` → /music-demo.html，零 token 听感调参）。**V1.2
-（2026-10-17）**：地区音乐身份维度（编剧世界锚 + 导演场景覆盖，复用键
-region:mood:intensity）；真浏览器听感验证通过（试听页双曲渲染播放）。
+状态：**V2 已落地（2026-10-18）**——主题制决策流、作曲家第四 agent
+（skill 注入 + 持久会话）、渲染 V2 混音母带链、乐器 12 件全链贯通；
+真实 BigModel 双轮探针验证 compose+reuse 两分支（scripts/probe-music-composer.ts）。
+历史：V1（2026-10-16 三层贯通）、V1.1（复用谱库+试听页）、V1.2（地区
+维度，已于 V2 拆除——地区身份误解了「主题制」的真实需求）。
+设计定稿：`docs/superpowers/specs/2026-10-18-music-v2-theme-architecture.md`。
 
-## 0. 定位与选型结论
+## 0. 定位与选型结论（V1 继承，不变）
 
 GalGame 场景 BGM 的需求画像：1–3 分钟**无人声、可无缝循环、情绪匹配、
-多周目可复现**——与"AI 整曲生成"（带人声、不循环、每曲成本）错位。本机
-无 CUDA 独显（AMD 780M 核显）排除了本地神经模型（ACE-Step 1.5 要
-≥12GB VRAM）。因此 V1 走 **LLM 符号作曲 + soundfont 确定性渲染**：
+多周目可复现**。本机无 CUDA 独显排除本地神经模型，走 **LLM 符号作曲 +
+soundfont 确定性渲染**：免费、离线、秒级渲染、无缝循环是构造性质、
+同谱同渲染器版本 = 逐样本同音频。云 API/本地神经模型留作未来 OP/ED
+整曲的第二渲染后端。
 
-- 免费（符号层几百~几千 token）、离线（采样包随仓库分发）、秒级渲染；
-- 无缝循环是构造性质（小节对齐 + 混响尾折叠回环）；
-- 同谱同渲染器版本 = 逐样本同音频（回放/多周目一致性）；
-- 云 API / 本地神经模型留作未来 OP/ED 整曲的第二渲染后端，接在同一
-  作曲服务后面（renderer-agnostic 契约）。
+## 1. V2 核心转变：复用键 → 主题实体 + 作曲家决策
 
-## 1. 三层契约（与角色音频特征范式同构）
+V1.x 的可听身份是情绪档位的函数（复用键 mood:intensity），意味着同一
+地点的日夜两访、同一区域的不同场景会拿到不同曲子——OST 专辑感不存在。
+V2 把可听身份改为**作曲家命名的主题实体**：
 
-| 层 | 模块 | 职责 |
+- 同一场景日夜共用一个主题（sceneId 绑定）
+- 同一游戏区域（如地下堡垒）共用一个主题（作曲家 reuse 决策）
+- 一局游戏最终形成 5–15 首主题曲目（专辑纪律）
+- 复用与否由**作曲家 agent**在看过场景 brief 与已有主题目录后决定——
+  导演只给情绪/情境（prompt 不膨胀），目录与会话在作曲家侧
+
+决策流（`SceneMusicService`，V2 重写）：
+
+```
+导演 SceneDirective.music{mood,intensity,note}   ← note =「情境一句话+编配提示」（≤60 字）
+  1) bindings[sceneId] 已绑定主题 → 直接发布该主题谱面，零 LLM
+     （覆盖日夜重访/重启续玩；谱面缺失 = 告警走决策重建）
+  2) 未绑定 → 组装 brief 调作曲家 agent：
+       输入 = brief + 全量主题目录（含 motifHint 与谱面统计）+ 最近 30 轮会话 + 作曲 skill
+       输出 = {action:"reuse", themeId, reason} | {action:"compose", theme, score, reason}
+  3) 持久化（主题目录 + 谱面 + sceneId 绑定 + 追加会话轮）→ publish
+```
+
+## 2. 数据层（games/<gameId>/music/）
+
+| 文件 | 内容 | 惯例 |
 |---|---|---|
-| 导演指导 | `SceneDirective.music`（`src/application/director/director-service.ts`） | 场景边界产出 `{mood, intensity, note?, region?}`；情绪/地区词表 `MUSIC_MOODS`/`MUSIC_REGIONS` 单一真源（`src/shared/music/score.ts`），插值进导演 prompt；mood 词表外整段丢弃并告警，region 词表外丢字段（mood 仍生效）、`"default"` 归一为缺省 |
-| 作曲 | `SceneMusicService`（`src/application/audio/scene-music-service.ts`）+ `SceneMusicComposerAdapter`（`src/adapters/llm/`） | 复用键 `(mood:intensity)` 先查 per-game 谱库（命中 = 零 token 直接广播）；未命中单次 JSON LLM 调用产出符号谱（`MusicScoreSchema` 硬校验，失败携 zod issue 修复重试一次，双败降级）→ 落盘谱库；产物带 `musicCacheKey`（谱面指纹 + `MUSIC_RENDERER_VERSION`）广播；同键 in-flight 合流 |
-| 渲染 | `web/src/audio/music-renderer.ts` + `generated-bgm.ts` | OfflineAudioContext + FluidR3 采样包（按乐器懒加载）→ 分乐器包络/程序混响 IR/最近采样微移 → 渲染体+尾 → 尾部循环折叠 → WAV blob URL → `BgmController.applyGenerated` |
+| `themes.json` | `{version:1, themes:[MusicThemeMeta], bindings:Record<sceneId,themeId>}` | tmp+rename 原子写、ENOENT=空、损坏大声抛错；运行期可增长（沿 stats.json 模式）；bindings 只增不删 |
+| `scores/<themeId>.json` | 每主题一份 MusicScore | MusicScoreSchema 复验；首写即定稿（同 id 覆写 no-op） |
+| `session.jsonl` | 作曲家持久会话：user=brief / assistant=决策摘要（**不含完整谱面**） | 追加式；窗口截断最近 30 轮，V2 不做 LLM 压缩（估算字符 > 300k 再引入） |
 
-符号谱（`src/shared/music/score.ts`，Node/Web 两侧共用）：`{version, bpm,
-key, mode, bars, tracks:[{instrument, gain, notes:[{beat, dur, midi, vel}]}]}`；
-乐器调色板 piano/strings/pad/bass/bell/choir；跨字段校验（音符起拍落在
-循环内、每乐器一轨、总量 ≤600）。**缓存的是乐谱不是音频**——渲染确定性
-使重渲染即可复现，无需浏览器端有损编码器。
+`MusicThemeMeta = { id: slug; title: 中文曲名; concept: 一句话主题概念;
+style?: 风格短语（原地区知识降级为风格提示语汇）; motifHint?: 头 4–8 音
+MIDI 序列（服务层从谱面旋律轨**确定性提取**，LLM 不写防幻觉——schema
+拒收）; parentTheme?: 变体主题引用的母题 }`。单一真源
+`src/shared/music/theme.ts`（含 ComposerDecision 判别联合与
+SceneMusicBrief 契约）。store：`music-theme-store.ts`（一类管两处）+
+`composer-session-store.ts`。
 
-## 2. 传输与接线
+V1.1/V1.2 的 `music/library.json`、V1.2 的 `world/music-identity.json`
+自然孤儿化不迁移（本机无存量档；旧文件留存无害）。
 
-- 谱面经 runtime WS 新消息 `music.score {sceneId, cacheKey, score}` 推送
-  （`WIRE_PROTOCOL_VERSION` 2→3，旧页面按 4002 明确拒绝）；重连时回放
-  最近谱面（与 descriptor 目录回放同模式），浏览器按 cacheKey 幂等。
-- Bootstrap：`director.setDirectiveListener` → `SceneMusicService`
-  （fire-and-forget，失败只告警）；`media.audio.music.enabled=false`
-  （默认 true）= 不注册监听，零 LLM 调用。
-- 采样包：`assets/audio/soundfonts/<palette>.json`（FluidR3_GM gleitz
-  抽取，A1–C7 裁剪，双 MIT 署名见同目录 LICENSE.md），经 `/game-assets/`
-  静态路由分发；重建脚本 `scripts/vendor-soundfonts.mjs`。
+## 3. 作曲家 agent（第四 agent）
 
-## 3. 播放优先级语义：「最新意图胜」
+- **作曲 skill**（`src/adapters/llm/music-composition-skill.ts`，TS 模板
+  字符串注入 system prompt）：和声纪律硬约束——全轨同 key/mode、先定
+  2~4 和弦循环、非和弦音仅 ≤半拍经过/邻音且须解决、跨轨禁小二度/三全音
+  碰撞（延留解决除外）、bell 必落和弦音、避平行五八度、bass 走根音、
+  pad 补根三五、声部不交叠、末小节回主和弦或属七悬置；调式色彩用法
+  （dorian 自然 6 级、和声小调增二度只在旋律声部）；原 7 地区创作思路
+  降级为可选 style 语汇（east-asia 五声/celtic drone/…）；主题动机复现
+  规则（引用母题 motifHint 变形发展、变体填 parentTheme）——针对 V1
+  试听违和点（半音碰撞/非和弦音长鸣/声部交叠）可执行化。
+- **适配器**（`scene-music-composer-adapter.ts` 重写）：`decide(brief,
+  catalog, sessionTurns)`；messages = system + 会话历史 + 本轮 user；
+  ComposerDecisionSchema 判别联合硬校验 × 修复重试一次 × 双败 null。
+  预算（用户明示放宽）：timeout ≥300s、max_tokens 16000（reuse 不写谱面
+  天然省 token）；thinking 保持 disabled（听感不达标时第一调参项）。
+- **复用纪律**（system prompt）：同一地点/区域/相近情境必 reuse；mood/
+  intensity 差异不 fork 主题；只有导演 note 明示质变才建 parentTheme
+  变体；一局主题数目标 5–15；目录空必 compose。
+- **服务降级语义**：决策双败/落盘失败只告警沿用当前曲；compose 主题 id
+  与目录冲突时追加确定性短 hash 重命名（不丢作曲）；reuse 指向缺失谱面
+  = 告警不发布；in-flight 按 sceneId 合流。
 
-- 生成曲渲染完成即接管播放（`BgmController.applyGenerated`，blob URL
-  绕过资产目录；旧 URL 替换时 revoke，生成曲内存峰值恒为单曲）。
-- 写手显式 `@bgm`（visualState.bgm **值变化**）随时压回——与语音合并链
-  「导演 > 编剧」同哲学；重发同值不算新意图。
-- 跨场景携带的旧 bgm 值不重放（main.ts 按「值变化才 apply」驱动），
-  生成曲因此能跨场景存活；`@bgm stop`（值变 undefined）静音，下一场景
-  生成曲到达后接管。
-- 作曲/渲染失败 = 沿用当前曲目（可观测降级，不阻塞演出）。
+## 4. 传输与接线
 
-## 4. 地区音乐身份（V1.2）与谱库复用（V1.1）
+- WS `music.score {sceneId, themeId, cacheKey, score}`（wire **v4**，
+  旧客户端 4002 明确拒绝）；重连回放最近谱面；浏览器按 cacheKey 幂等。
+- Bootstrap：`media.audio.music.enabled=false`（默认 true）= 不注册
+  监听，零 LLM。导演 `setDirectiveListener` → SceneMusicService
+  fire-and-forget。
+- 采样包 12 件：`assets/audio/soundfonts/<palette>.json`（FluidR3_GM
+  gleitz 抽取 A1–C7 裁剪，双 MIT）；vendor 脚本 CDN 用 fastly 镜像。
 
-电影/游戏配乐除情绪外还有**地区创作思路**维度（原神式：同地区各情绪
-曲目共享音色语汇与音阶/节奏习惯）。落地为与 voice-design 同构的两层：
+## 5. 渲染 V2（`web/src/audio/music-renderer.ts`）
 
-- **编剧世界锚**：`WorldDraft.musicRegion`（词表 `MUSIC_CONCRETE_REGIONS`：
-  east-asia/celtic/nordic/arabic/latin/jazz/slavic，单一真源 shared/music）
-  ——世界创建期按世界观选定，落盘 `world/music-identity.json`
-  （`MusicIdentityStore`，创建期写一次拒绝覆写）；现代都市/架空无地域
-  文化则省略（无锚 = default）。旧世界无此文件 → 回落 default，无需迁移。
-- **导演场景覆盖**：`SceneDirective.music.region`——仅当场景明确处于异域/
-  异文化（异国场景、他乡回忆、风格突变）才给出；其余省略，世界基调由
-  锚接管（导演 prompt 明示此语义）。
-- **生效优先级**：导演覆盖 > 世界锚 > default（`SceneMusicService` 解析，
-  作曲请求携带生效值；作曲 prompt 含地区→创作思路映射——east-asia 五声
-  稀疏留白、celtic dorian+五度 drone、arabic 增二度+低音 drone 等，
-  与 mood 正交）。
+- 每轨链：highpass(40Hz) → StereoPanner（乐器固定声像：bass/organ 居中、
+  piano -0.15/strings +0.2/pad -0.25/choir +0.25/bell +0.3/guitar -0.25/
+  harp +0.35/flute +0.15/marimba -0.35/synth +0.4）→ 轨增益 → 分轨混响
+  send（bass 0.05 近干、bell 0.5/piano 0.45 多送）。
+- 总线：DynamicsCompressor（-18dB/2.5:1/10ms/250ms）+ makeup 1.25。
+- 后处理 `normalizeLoudness` 纯函数：全通道联合 RMS 归一 ≈ -16 dBFS +
+  峰值钳 -1 dBFS（替换「>1 才缩」护栏；增益与钳制取小宁低勿削波）。
+- 采样率 44100（soundfont 原生）；`MUSIC_RENDERER_VERSION = 2`——
+  凡影响输出的改动必须升版使乐谱缓存失效。
+- 乐器 12 件：piano/strings/pad/bass/bell/choir + **guitar/harp/flute/
+  marimba/organ/synth**（枚举/vendor PACKS/渲染器声像增益混响三表同源，
+  typecheck 强制穷尽）；skill 配器语汇含题材匹配表（现代 synth/古风
+  harp+flute+marimba/教堂 organ+choir）。分批编辑契约不做：单次 JSON +
+  16k token 预算足够。
 
-复用谱库（重新生成即重新花 token，而 GalGame BGM 的可听身份只有
-地区 × 情绪 × 强度——note 是编配提示不是身份）。复用键 =
-`region:mood:intensity`（7 地区 × 7 情绪 × 3 强度理论上界；单地区世界
-即 21 首，通常 4~8 首），谱库落盘 `games/<gameId>/music/library.json`
-（`MusicLibraryStore`，沿 stats.json 先例：tmp+rename 原子写、缺文件空库、
-损坏大声抛错、**首写即定稿**——同键覆写 no-op，世界音乐身份不漂移）。
+## 6. 播放优先级语义（V1 继承，不变）
 
-- 命中谱库 → 零 token 直接广播（跨场景、跨周目、跨进程重启同曲 =
-  Leitmotif 一致性）；note 只在首作时进 prompt。
-- 未命中 → 作曲一次（同键并发合流为单次 LLM 调用）→ put 落盘 → 广播。
-  落盘失败只告警（谱面仍本会话生效）。
-- 新世界（缺省时间戳 gameId）= 新谱库新曲；续玩同一 gameId = 复用旧曲。
-  V1.1 时代的旧键（`mood:intensity`）不与新键（`region:mood:intensity`）
-  冲突——旧条目自然孤儿化，等同一次性重作曲。
-- 浏览器不缓存渲染音频：跨曲往返重渲染（秒级、确定性）；内存峰值恒为
-  单曲 blob。
+「最新意图胜」：生成曲渲染完成即接管；写手显式 `@bgm` 值变化随时压回；
+`@bgm stop` 静音待下一场景；作曲/渲染失败 = 沿用当前曲目（可观测降级，
+不阻塞演出）。
 
-## 5. 听感调参与试听工具
+## 7. 试听与调参
 
-`npm run demo:music`（= `vite build` + `scripts/serve-music-demo.mjs`，零
-依赖静态服务）→ http://127.0.0.1:4319/music-demo.html：内置 6 首基线谱面
-（真实 glm-5.3-flash 作曲，`web/src/audio/demo-scores.ts`；含地区维度
-A/B：东亚悲伤 vs 默认悲伤、凯尔特希望）+ file picker 载入
-`probe-music-composer.ts --save=xx.json [--region=xx]` 产物 → 生产渲染器
-渲染 → WAV 循环播放/下载。调参闭环零 token：改增益/混响/prompt →
-build → A/B 对比，基线谱面恒定。改渲染输出（采样映射/包络/混响/折叠/
-采样率）记得升 `MUSIC_RENDERER_VERSION`。
+`npm run demo:music` → `/music-demo.html`：内置 6 首基线谱面（真实
+glm-5.3-flash 产物，标签去地区框架、谱面恒定作渲染 A/B 基线）+ file
+picker 载 `probe-music-composer.ts --save` 产物 → 生产渲染器 → WAV
+循环播放/下载。改渲染输出记得升 `MUSIC_RENDERER_VERSION`。
 
-已知修复：SoundfontStore 曾以裸全局 `fetch` 作默认注入参数，浏览器调用
-抛 `Illegal invocation`（真浏览器验证暴露）——已绑 `globalThis.fetch.bind
-(globalThis)`（沿 audio-downloader 先例）；不影响音频输出，不升渲染版本。
+## 8. 验证记录
 
-## 6. 验证记录（2026-10-16/17）
-
-- 探针（真实 BigModel）：tense/2 → 138bpm A 小调 163 音符（bass 每拍、
-  钢琴旋律、弦乐长音），40.9s，schema PASS；sorrowful/1 → 58bpm 稀疏
-  70 音符 66s 循环，21.3s，schema PASS——情绪→编配映射成立。
-- 基线四曲（V1.1，--save 采入试听页）：tense/2 132bpm 210 音符 29s 循环；
-  sorrowful/1 54bpm 64 音符 71s；warm/1 76bpm C 大调 钢琴+music box 互答
-  78 音符（按 note 编配）；climax/3 138bpm 五轨全奏 156 音符。单首作曲
-  16.7~40.0s、~2-4k 输出 token。
-- 地区双曲（V1.2）：east-asia sorrowful/1 58bpm 仅 39 音符三轨低增益
-  （稀疏留白，与默认悲伤曲 64 音符钢琴主导形成可听对比）；celtic
-  hopeful/2 96bpm **dorian** + 竖琴式钢琴 47 音符 + pad/strings 铺——
-  地区→创作思路映射（调式/织体/密度）成立。
-- 真浏览器听感验证（V1.2，试听页）：紧张曲渲染 3.6MB WAV 循环播放
-  （duration=29.09s 与谱面循环长一致）、东亚曲切换渲染 8.1MB 播放正常；
-  修复裸 fetch 前的同页面曾稳定抛 Illegal invocation（正式会话同样会踩）。
-- 单测：谱面 schema/服务复用语义（谱库命中零 LLM、同键合流、落盘失败
-  降级、note 不进键、地区键与 worldRegion 回落/覆盖）/identity store
-  （写一次拒覆写、损坏拒收）/library store（原子写、首写定稿、跨实例恢复）
-  /导演 region 解析（词表外丢字段保 mood、default 归一）/编剧 musicRegion
-  schema/适配器修复轮/渲染时值数学/循环折叠/WAV 头/GeneratedBgm 编排
-  （含取代丢弃与幂等）/BgmController 生成路径。
-- 待办：真实游戏会话内的端到端听感验收（首场景边界生成曲接管体验）。
+- **V2 探针（2026-10-18，真实 BigModel glm-5.3-flash）**：第一轮空目录
+  brief（tense/2 夜巡地下堡垒）→ compose《地底堡垒·机械残响》
+  （68bpm minor 16bars 93 音符四轨，motifHint=81,84,81,84，40.9s，
+  schema PASS）；第二轮同堡垒昼访（mysterious/1）→ **reuse 同一主题**
+  （理由：「昼夜共用主题身份——mood/intensity 差异不构成新主题理由」，
+  2.0s）——复用纪律在真实模型上成立，reuse 轮 token/耗时断崖下降。
+- 单测（V2 全量 149 文件 2195+ 绿）：theme 契约（slug/判别联合/motifHint
+  拒收 LLM 幻觉）、双 store（原子写/首作定稿/跨实例恢复/损坏拒收/窗口
+  截断）、服务决策流（绑定命中零 LLM/reuse 绑定落盘/compose 三件套/
+  id 冲突重命名/孤儿绑定重建/双败重试/sceneId 合流/落盘失败仅告警）、
+  适配器（skill 禁令子串/预算 300s·16k/会话历史进 messages/修复轮/
+  围栏解析）、导演 note 60 字、wire v4、渲染归一化数学（RMS/峰值钳/
+  声像保持/静音防御）。
+- 待办：真实游戏会话端到端听感验收（渲染 V2 母带响度与声像真浏览器
+  复听；`npm run demo:music`）。
