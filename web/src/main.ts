@@ -150,8 +150,18 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
   window.addEventListener("keydown", (event) => {
     if (event.isComposing || event.keyCode === 229) return; // IME composition
-    if (event.target instanceof HTMLButtonElement) return; // buttons self-handle
     const mode = app.state().view.mode;
+    // Esc has no native button behavior, so it is handled BEFORE the
+    // button-target guard below: with a preview button focused (Tab), Esc
+    // must still reach cancelPreview instead of being swallowed.
+    if (event.key === "Escape") {
+      if (mode === "INPUT_PREVIEW") {
+        event.preventDefault();
+        app.cancelPreview();
+      }
+      return;
+    }
+    if (event.target instanceof HTMLButtonElement) return; // buttons self-handle
     if (event.key === "Enter" || event.key === " ") {
       if (mode === "PLAYING") {
         event.preventDefault();
@@ -160,8 +170,6 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
         event.preventDefault();
         app.confirmPreview();
       }
-    } else if (event.key === "Escape") {
-      if (mode === "INPUT_PREVIEW") app.cancelPreview();
     }
   });
 
