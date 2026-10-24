@@ -114,8 +114,8 @@ function parseSetup(
       prerequisites: fields.prerequisites ?? [],
     });
     // 「没有回收计划的伏笔不许下场」（记忆 spec §8.2）：author seed 缺
-    // intended_payoff 只记 warning（brief 标注「未定回收计划」、planner 输入
-    // 高亮）；运行时 seed 该伏笔会被 validator 硬拒。
+    // intended_payoff 只记 warning（brief 标注「未定回收计划」）；运行时
+    // seed 该伏笔会被 validator 硬拒。
     if (setup.intendedPayoff === undefined) {
       diagnostics.warn(
         WARN_SCOPE,

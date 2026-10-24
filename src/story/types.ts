@@ -2,9 +2,9 @@
  * Core protocol types for the LLM-driven GalGame story engine.
  *
  * These types define the new generation protocol where the model returns a
- * GenerationEnvelope containing both narrative events and a state patch,
- * as the terminal event type, and BranchCandidate formalizes the prefetch
- * branch transaction model.
+ * GenerationEnvelope containing narrative events and the DSL segment end
+ * status as the terminal event type, and BranchCandidate formalizes the
+ * prefetch branch transaction model.
  */
 
 import { z } from "zod";

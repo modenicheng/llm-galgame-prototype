@@ -28,9 +28,22 @@ export type { StatsSnapshot };
 export class StatsStore implements StatsStorePort {
   private readonly filePath: string;
   private snapshot: StatsSnapshot | null = null;
+  /**
+   * 写互斥链（同 MusicThemeStore 纪律）：recordSettlement 是「读-改-整体
+   * 覆写」，并发结算会互相覆盖计数。当前调用方（协调器 mutationChain）
+   * 已串行，此链是 store 自身设防。
+   */
+  private writeChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly gamesRoot: string, private readonly gameId: string) {
     this.filePath = path.join(path.resolve(gamesRoot), gameId, GAME_STORAGE_LAYOUT.stats);
+  }
+
+  /** 串行化一次变更操作（前序失败不阻塞后续）。 */
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const task = this.writeChain.then(operation, operation);
+    this.writeChain = task.catch(() => {});
+    return task;
   }
 
   /** 读宽容：缺文件 = 空统计；损坏大声抛错（统计损坏即不可信）。 */
@@ -59,7 +72,19 @@ export class StatsStore implements StatsStorePort {
    * 结算一个完结周目：结局 +1，路径上每条边 +1。同一周目重复结算为
    * no-op（幂等——重放路径不重复计）。
    */
-  async recordSettlement(runId: string, endingId: string, traversedEdgeIds: readonly string[]): Promise<StatsSnapshot> {
+  recordSettlement(
+    runId: string,
+    endingId: string,
+    traversedEdgeIds: readonly string[],
+  ): Promise<StatsSnapshot> {
+    return this.enqueue(() => this.recordSettlementUnsafe(runId, endingId, traversedEdgeIds));
+  }
+
+  private async recordSettlementUnsafe(
+    runId: string,
+    endingId: string,
+    traversedEdgeIds: readonly string[],
+  ): Promise<StatsSnapshot> {
     const current = await this.load();
     if (current.settledRuns.includes(runId)) return current;
 
@@ -69,7 +94,7 @@ export class StatsStore implements StatsStorePort {
       edges: bumpAll(current.edges, traversedEdgeIds),
     };
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    const tmpPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+    const tmpPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await writeFile(tmpPath, JSON.stringify(next, null, 2), "utf8");
     await rename(tmpPath, this.filePath);
     this.snapshot = next;

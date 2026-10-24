@@ -86,6 +86,10 @@ export async function handleChoice(
   //（运行循环据此切到后继节点的恢复表单）。
   const fastForward = host.takePendingFastForward();
   if (fastForward !== undefined) {
+    // 快进跳过了 adoptSelectedBranch（唯一取消未选分支的路径）：预取组
+    // 必须整组丢弃，否则孤儿泵持续回写 branchTailStates/名牌表，与
+    // 恢复表单重建的同 id 选项竞写同一键。
+    branchManager?.discardAll();
     for (const option of choice.options) {
       host.status.removeJob(`branch:${option.id}`);
     }

@@ -293,7 +293,7 @@ async function sha256File(filePath: string): Promise<string> {
 // 在线评估指标 schema（§10.1：按任务 × 内容包分组；V2 gate 接线）
 // ---------------------------------------------------------------------------
 
-/** §10.1 采样设计常量：24 确定输入 × 每版本重复 3 次 = 144 次主生成。 */
+/** §10.1 采样设计常量：24 确定输入 × 每版本重复 3 次 × 冻结/现行两版本 = 144 次主生成。 */
 export const SAMPLE_DESIGN = {
   deterministicInputs: 24,
   campusScenarios: 12,
@@ -775,7 +775,7 @@ async function evaluateMainVectors(
         TEMPLATE_LITERAL_CASE.values,
       );
       pass = rendered === TEMPLATE_LITERAL_CASE.expected;
-      detail = `rendered=${JSON.stringify(pass ? rendered : rendered)}（期望 ${JSON.stringify(TEMPLATE_LITERAL_CASE.expected)}）`;
+      detail = `rendered=${JSON.stringify(rendered)}（期望 ${JSON.stringify(TEMPLATE_LITERAL_CASE.expected)}）`;
     } catch (error) {
       pass = false;
       detail = `计划模块不可用：${error instanceof Error ? error.message : String(error)}`;
@@ -2008,7 +2008,7 @@ export function renderSummaryMarkdown(report: OfflineEvaluationReport): string {
   lines.push(`- 状态：${report.online.status}`);
   lines.push(`- 原因：${report.online.reason}`);
   lines.push(
-    "- 采样设计：24 确定输入（校园 12 + main 12）× 每版本 3 次 = 144 次主生成；repair 每次 ≤1，另计预算。",
+    "- 采样设计：24 确定输入（校园 12 + main 12）× 每版本 3 次 × 冻结/现行两版本 = 144 次主生成；repair 每次 ≤1，另计预算。",
   );
   lines.push("");
   return lines.join("\n");

@@ -13,10 +13,11 @@ import type {
 import type { AppConfig } from "../../config.js";
 import type { Game } from "../../game.js";
 import type { ChoiceEvent, HybridInteraction, RuntimePlayableEvent } from "../../schema.js";
-import { TerminalUI } from "./terminal-ui.js";
+import { TerminalUI, UserExitError } from "./terminal-ui.js";
 
 export class CliController {
   private game: Game | null = null;
+  private userExit: UserExitError | null = null;
 
   constructor(
     private readonly ui: TerminalUI,
@@ -26,7 +27,20 @@ export class CliController {
   attach(game: Game): void {
     this.game = game;
     game.subscribe((output) => {
-      void this.onOutput(output);
+      this.onOutput(output).catch((error) => {
+        if (error instanceof UserExitError) {
+          // Ctrl+C 在渲染/等待路径上抛出，不经过 game.run() 的 await 链；
+          // 折回 shutdown 命令让 run() 以 RuntimeShutdownError 解退，
+          // 退出码由 main().catch 统一处理。
+          this.userExit = error;
+          this.dispatch({ type: "shutdown" });
+          return;
+        }
+        // 其余渲染错误维持既有崩溃语义：以未捕获异常暴露原始错误。
+        setImmediate(() => {
+          throw error;
+        });
+      });
     });
   }
 
@@ -34,6 +48,7 @@ export class CliController {
   async run(): Promise<void> {
     if (!this.game) throw new Error("CliController: attach() 必须在 run() 之前调用");
     await this.game.run();
+    if (this.userExit !== null) throw this.userExit;
   }
 
   private async onOutput(output: RuntimeOutput): Promise<void> {

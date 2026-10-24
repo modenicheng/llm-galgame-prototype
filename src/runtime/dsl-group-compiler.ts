@@ -57,7 +57,7 @@ export function compileDslGroup(
   });
   for (const diagnostic of diagnostics) {
     deps.metrics.recordAssetDiagnostic(diagnostic.code);
-    console.warn(`[assets] ${diagnostic.code}: ${diagnostic.id}`);
+    deps.diagnostics.warn("assets", `${diagnostic.code}: ${diagnostic.id}`);
   }
   const main = compiled.group.main;
   if (main.type === "dialogue") {

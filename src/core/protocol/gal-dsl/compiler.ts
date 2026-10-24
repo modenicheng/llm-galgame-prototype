@@ -172,7 +172,7 @@ function resolveDialogue(
  * 素材语义校验（spec §7）：未知 id/variant 的 cue 被丢弃（降级为保持现状），
  * 剧情继续；诊断写入 diagnostics。保持确定性。
  *
- * §15 sprite-set 禁令：character_patch 显式换用非该角色 allowed_sprite_sets
+ * §8 sprite-set 禁令：character_patch 显式换用非该角色 allowed_sprite_sets
  * 内的素材组（如 `苏遥[linche:calm]`）会被丢弃——普通角色
  * 只能使用自己的素材组，换装/伪装需要角色绑定里显式列 allowed_sprite_sets。
  *
@@ -208,7 +208,7 @@ function filterInvalidCues(
       keep = cue.assetId in catalog.soundEffects;
       if (!keep) diagnostics?.push({ code: "UNKNOWN_SOUND_EFFECT", id: cue.assetId });
     } else if (cue.type === "character_patch") {
-      // §15: cross-character spriteSet swaps require an explicit allow-list.
+      // §8: cross-character spriteSet swaps require an explicit allow-list.
       const entry = registry.resolveById(cue.character);
       if (
         cue.spriteSet !== undefined &&
@@ -1144,21 +1144,6 @@ export async function compileSegmentV2WithRepair(
     assetDiagnostics: [...first.assetDiagnostics, ...repaired.assetDiagnostics],
     repairRequested: true,
     repairApplied: true,
-  };
-}
-
-/** 便捷入口：整段文本 → 组 + 哨兵状态 + 预测状态（测试/整文回放用）。 */
-export function compileDslSegmentTextV2(
-  text: string,
-  options: Omit<CompileSegmentV2Options, "text">,
-): DslSegmentResultV2 & Pick<CompileSegmentV2Result, "ok" | "diagnostics" | "assetDiagnostics"> {
-  const result = compileSegmentV2({ ...options, text });
-  return {
-    ok: result.ok,
-    groups: result.groups,
-    status: result.status,
-    diagnostics: result.diagnostics,
-    assetDiagnostics: result.assetDiagnostics,
   };
 }
 

@@ -135,6 +135,10 @@ export class DirectorService {
   /** 场景 id → 本场景 directive（会话内工作态缓存）。 */
   private readonly directives = new Map<string, SceneDirective>();
   private directiveRunning = false;
+  /** 单飞在跑时到达的最新一次边界触发：本轮结束后补跑，不丢弃。 */
+  private pendingDirective:
+    | { sceneId: string; scenePurpose: string; recentSummary: string; cast?: string[] }
+    | undefined;
   /**
    * 指导完成监听（动态音乐生成接线）：directive 落缓存后同步回调（音乐
    * 组作曲是调用方自己的 fire-and-forget，不阻塞导演）。仅成功路径触发。
@@ -236,6 +240,15 @@ export class DirectorService {
     if (previous?.formModes !== undefined) {
       directive.formModes = previous.formModes;
     }
+    // defenseBeats 是累积语义（evaluateFreeInput 追加、actor-briefing 只读
+    // 消费）：整体换新对象时不得把旧对象上已累积的节拍一并抹掉。
+    if (
+      directive.defenseBeats.length === 0 &&
+      previous !== undefined &&
+      previous.defenseBeats.length > 0
+    ) {
+      directive.defenseBeats = previous.defenseBeats;
+    }
     this.directives.set(input.sceneId, directive);
     this.directiveListener?.(directive);
     return directive;
@@ -254,7 +267,12 @@ export class DirectorService {
     /** 在场角色稳定 ID（场景名单权威，M2 §6.2——见 refreshDirective）。 */
     cast?: string[];
   }): void {
-    if (this.directiveRunning) return;
+    if (this.directiveRunning) {
+      // 单飞语义改为「记住最新、结束补跑」而非「丢弃」：边界刷新在飞时
+      // 进入的新场景，否则要到下一个边界才有 sceneGoal/defenseBeats/music。
+      this.pendingDirective = input;
+      return;
+    }
     this.directiveRunning = true;
     void this.refreshDirective(input)
       .catch((err: unknown) => {
@@ -262,6 +280,9 @@ export class DirectorService {
       })
       .finally(() => {
         this.directiveRunning = false;
+        const pending = this.pendingDirective;
+        this.pendingDirective = undefined;
+        if (pending !== undefined) this.triggerDirective(pending);
       });
   }
 

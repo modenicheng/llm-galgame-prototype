@@ -39,14 +39,6 @@ export function createInitialState(
 }
 
 /**
- * Produce a compact text summary of the current story state for the LLM.
- *
- * The output is designed to fit within a small fraction of the context
- * window (typically 300–600 tokens) while conveying the most important
- * structural information: which scene we are in, who is present, what
- * threads are open, and what the player has been doing recently.
- */
-/**
  * C6 §5.3（评审 Important 修复，port 自 campus 05f3772）：recap 摘要以
  * 结构化数据块插入——`recent_summary` 由压缩器从已提交事件产出，玩家
  * 文本可以存活进梗概，属二阶注入通道；逐字 JSON 序列化（kind/source
@@ -57,6 +49,14 @@ export function recapDataBlock(recentSummary: string): string {
   return JSON.stringify({ kind: "recap", source: "summarizer", text: recentSummary });
 }
 
+/**
+ * Produce a compact text summary of the current story state for the LLM.
+ *
+ * The output is designed to fit within a small fraction of the context
+ * window (typically 300–600 tokens) while conveying the most important
+ * structural information: which scene we are in, who is present, and what
+ * the player has been doing recently.
+ */
 export function summarizeState(state: StoryState): string {
   const lines: string[] = [];
 

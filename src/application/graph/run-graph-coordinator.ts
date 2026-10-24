@@ -868,7 +868,12 @@ export class RunGraphCoordinator implements RunGraphPort {
         const allEdges = await this.store.listEdges();
         const traversed: string[] = [];
         let nodeId: DecisionId | null = null;
-        const endingEdge = allEdges.find((e) => e.to.kind === "ending" && e.to.id === endingId);
+        // listEdges 是首次出现序：同一结局 id 跨周目易重号，必须倒序取
+        // 最近写入的那条边（与 endingTextOf 同规则），否则本局路径会算到
+        // 旧周目头上。
+        const endingEdge = [...allEdges]
+          .reverse()
+          .find((e) => e.to.kind === "ending" && e.to.id === endingId);
         if (endingEdge !== undefined) {
           traversed.push(endingEdge.id);
           nodeId = endingEdge.from;

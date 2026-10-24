@@ -262,10 +262,10 @@ export class ConfluenceChecker {
     //   已完结 = 上方守卫已拦），endState 不变、写入门禁照常通过。
     const relinked = this.deps.relinkOpenEdge(context.newNodeId, candidate);
     if (!relinked) {
-      const outEdge = edges.find(
-        (item) => item.id !== context.edgeId && item.from === context.newNodeId,
-      );
-      if (outEdge !== undefined) {
+      // 孤儿可能有多条历史出边（先前周目经过该节点）：find 只重挂第一条
+      // 会把其余 from 残留在孤儿上——全部重挂（仅改 from，endState 不变）。
+      for (const outEdge of edges) {
+        if (outEdge.id === context.edgeId || outEdge.from !== context.newNodeId) continue;
         await this.store.putEdge({ ...outEdge, from: candidate });
       }
     }

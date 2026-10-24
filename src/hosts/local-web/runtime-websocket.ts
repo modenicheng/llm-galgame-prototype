@@ -89,12 +89,18 @@ export class RuntimeWebSocket {
 
   /**
    * Point the websocket at a freshly rebuilt game after a session restart
-   * (RuntimeApplication.restart + restart_session command). Existing
-   * connections keep their original subscription; new connections observe
-   * the new game.
+   * (RuntimeApplication.restart + restart_session command).
+   *
+   * 既有连接订阅的是旧 game 实例，旧会话不再产生输出——保留会让浏览器
+   * 永久停在等待。按既有 close-code 拒绝模式断开，浏览器走重连拿到
+   * 新 game 的快照基线（新 game 的 run 循环由宿主负责启动）。
    */
   rebase(game: Game): void {
     this.game = game;
+    this.sessionEnded = false;
+    for (const ws of this.controllers) {
+      ws.close(1000, "session rebased");
+    }
   }
 
   handle(ws: WebSocket, req: IncomingMessage): void {
@@ -146,6 +152,9 @@ export class RuntimeWebSocket {
 
     const unsubGame = this.game.subscribe((output) => {
       if (output.type === "session_ended") this.sessionEnded = true;
+      // 结局后经 retrace 重入的新周目会再发 session_started：复位标志，
+      // 否则任一控制器断开都会连坐关闭其余控制器。
+      else if (output.type === "session_started") this.sessionEnded = false;
       this.send(ws, { type: "runtime.output", sequence: ++sequence, output });
     });
     const unsubCatalog = this.catalog.subscribe((event) => {
@@ -204,8 +213,13 @@ export class RuntimeWebSocket {
       case "runtime.command": {
         if (!this.acceptingCommands) return;
         if (this.recentCommandIds.has(message.commandId)) return; // dedup
+        // Set 迭代序即插入序：淘汰最旧而不是整表清空（清空会把去重窗口
+        // 归零，旧 commandId 可立即重放）。
         if (this.recentCommandIds.size >= COMMAND_ID_DEDUP_CAP) {
-          this.recentCommandIds.clear();
+          for (const id of this.recentCommandIds) {
+            this.recentCommandIds.delete(id);
+            if (this.recentCommandIds.size < COMMAND_ID_DEDUP_CAP) break;
+          }
         }
         this.recentCommandIds.add(message.commandId);
         this.game.dispatch(message.command);

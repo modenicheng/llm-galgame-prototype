@@ -676,26 +676,6 @@ export class StoryGenerator {
       .join("\n")}`;
   }
 
-  /** OpenAI streaming request body (DeepSeek thinking toggle as TOP-LEVEL field). */
-  private buildStreamRequest(
-    maxTokens: number,
-    userContent: string,
-  ): ChatCompletionCreateParamsStreaming {
-    return {
-      model: this.config.api.model,
-      temperature: this.config.generation.temperature,
-      ...(this.config.api.token_limit_field === "max_tokens"
-        ? { max_tokens: maxTokens }
-        : { max_completion_tokens: maxTokens }),
-      ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
-      messages: [
-        { role: "system" as const, content: this.systemPrompt },
-        { role: "user" as const, content: userContent },
-      ],
-      stream: true,
-    };
-  }
-
   /**
    * DSL-mode streaming request (docs §40–§51).
    *

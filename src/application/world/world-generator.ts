@@ -255,7 +255,7 @@ export class WorldGenerator {
 }
 
 async function writeAtomic(filePath: string, content: string): Promise<void> {
-  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   await writeFile(tmpPath, content, "utf8");
   await rename(tmpPath, filePath);
 }

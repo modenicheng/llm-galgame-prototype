@@ -233,11 +233,13 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
     const fetchImpl = this.options.fetchImpl ?? fetch;
     const decode = this.options.decode ?? ((base64Chunk: string) => Buffer.from(base64Chunk, "base64"));
 
-    // External signal aborts the fetch controller. The `once` listener
-    // self-removes when it fires; if the session settles first it simply stays
-    // attached to the caller-owned signal and later aborts are no-ops.
+    // External signal aborts the fetch controller. The bridge listener is
+    // removed once the session takes over (onAbort below) or when the fetch
+    // path throws — leaving it attached would accumulate listeners on a
+    // caller-owned signal that outlives this session.
     const controller = new AbortController();
-    signal.addEventListener("abort", () => controller.abort(), { once: true });
+    const onCallerAbort = (): void => controller.abort();
+    signal.addEventListener("abort", onCallerAbort, { once: true });
     if (signal.aborted) controller.abort();
 
     // Official CosyVoice HTTP API: synthesis params live inside `input`
@@ -274,34 +276,40 @@ export class DashScopeCosyVoiceProvider implements TtsProviderPort {
 
     // Abort propagates as-is (the caller triggered it); network failures
     // also propagate unchanged — typed mapping only covers HTTP/SSE/timeout.
-    const response = await fetchImpl(baseUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "X-DashScope-Data-Inspector": "enable",
-        "X-DashScope-SSE": "enable",
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+    // finally 摘桥：走到会话建立后由 onAbort 接管中止职责，本监听退役。
+    let response: Response;
+    try {
+      response = await fetchImpl(baseUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "X-DashScope-Data-Inspector": "enable",
+          "X-DashScope-SSE": "enable",
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      let detail = "";
-      try {
-        const text = await response.text();
-        if (text.length > 0) detail = text.slice(0, 300);
-      } catch {
-        // best effort — the status code is the primary signal
+      if (!response.ok) {
+        let detail = "";
+        try {
+          const text = await response.text();
+          if (text.length > 0) detail = text.slice(0, 300);
+        } catch {
+          // best effort — the status code is the primary signal
+        }
+        ttsLog("provider-http", String(response.status), `detail=${detail}`);
+        throw new TtsProviderError(
+          `http_${response.status}`,
+          `DashScope TTS request failed with HTTP ${response.status}${detail === "" ? "" : `: ${detail}`}`,
+        );
       }
-      ttsLog("provider-http", String(response.status), `detail=${detail}`);
-      throw new TtsProviderError(
-        `http_${response.status}`,
-        `DashScope TTS request failed with HTTP ${response.status}${detail === "" ? "" : `: ${detail}`}`,
-      );
-    }
-    if (response.body === null) {
-      throw new TtsProviderError("sse_parse", "DashScope TTS response has no body");
+      if (response.body === null) {
+        throw new TtsProviderError("sse_parse", "DashScope TTS response has no body");
+      }
+    } finally {
+      signal.removeEventListener("abort", onCallerAbort);
     }
 
     // Session state shared by the background driver, the timeout, and abort.

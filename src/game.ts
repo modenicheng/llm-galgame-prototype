@@ -123,8 +123,6 @@ import type {
 } from "./story/types.js";
 import type { RuntimeStatus } from "./runtime/status.js";
 
-// 段生命周期类型已迁至 ./runtime/segment-types.ts（M4.5 交互驱动拆分）。
-
 /**
  * Host-provided ports. The Game receives concrete adapters (Node CLI
  * wires file stores / system clock; tests wire in-memory fakes).
@@ -436,6 +434,10 @@ export class Game implements InteractionHost {
     let outcome: SegmentOutcome;
     if (resume.kind === "active") {
       this.events.length = 0;
+      // 恢复表单重建后会产生新的作用域 id：上一会话的活跃交互/预览 id
+      // 不得残留，否则陈旧命令可过 dispatch 门并在 deferredCommands 滞留。
+      this.activeInteractionId = null;
+      this.activePreviewId = null;
       segment = this.startRestoredSegment(resume.restore);
       outcome = await this.resumeRestoredInteraction(segment);
     } else {
@@ -1168,11 +1170,6 @@ export class Game implements InteractionHost {
     for (const listener of this.listeners) listener(output);
   }
 
-  /**
-   * Publish `interaction_resolved` for `interactionId` — the interaction
-   * can no longer be submitted from that moment on (§5.4). Callers release
-   * the active interaction scope immediately after.
-   */
   /**
    * Await the next command matching `predicate`. Commands that do not
    * match are deferred and re-checked by later waiters — except §10.2
@@ -1914,9 +1911,7 @@ export class Game implements InteractionHost {
     }
   }
 
-  /**
-   * Check the formal playback watermark.
-   */
+  /** 在 RuntimeStatus 上登记生成任务的 running/ready/failed 生命周期。 */
   private async runTrackedJob<T>(
     id: string,
     label: string,

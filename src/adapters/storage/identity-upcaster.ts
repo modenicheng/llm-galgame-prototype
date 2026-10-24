@@ -49,21 +49,6 @@ import type { StoredEvent } from "../../schema.js";
 // 错误类型（显式拒绝，不静默误读）
 // ---------------------------------------------------------------------------
 
-/**
- * 快照身份格式版本不被本程序支持（"旧程序读到新格式"或"读到未来格式"）。
- * 抛错而非降级解析——静默误读比恢复失败更危险。
- */
-export class UnsupportedSnapshotFormatError extends Error {
-  constructor(
-    message: string,
-    readonly foundVersion: number,
-    readonly supportedVersion: number,
-  ) {
-    super(message);
-    this.name = "UnsupportedSnapshotFormatError";
-  }
-}
-
 /** legacy 映射与 roster 作用域不一致：映射不允许跨世界生效。 */
 export class IdentityUpcastScopeMismatchError extends Error {
   constructor(

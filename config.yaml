@@ -108,11 +108,9 @@ media:
       partial_ttl_minutes: 10
       candidate_ttl_hours: 1
 
-# 角色 → 逻辑音色配置映射（V2；M1 起为 author 兼容视图）
-# key 只用稳定内部 characterId（按 ID join）。中文显示名别名副本已随 M1
-# 移除——角色到 profile 的权威绑定由根目录 characters.yaml 名册给出，
-# 两侧冲突会在装配期大声报错（禁止 last-wins）。缺任一角色 → 该角色
-# 台词静音（build-skip no-character）。
+# 角色绑定段已随 C7 移除：角色到逻辑音色的权威绑定在根目录
+# characters.yaml 的 voiceProfileId（与 voices.yaml 按 ID join，装配期
+# 冲突大声报错）。缺绑定角色 → 该角色台词静音（build-skip no-character）。
 game:
   sessions_dir: sessions
   show_line_ids: true

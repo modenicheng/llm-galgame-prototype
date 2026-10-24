@@ -6,7 +6,7 @@
 canon 晋升承接（均随 v2 落地）。落地速览见 `docs/status.md`。
 **2026-09-09 起本 spec 归入 v2 剧情图架构**（`2026-09-09-game-graph-architecture-design.md`）
 作为其记忆子层。
-范围：长期记忆系统（TODO.md 第 1 条）——在 NarrativeDirector 记忆子层之上，
+范围：长期记忆系统——在 NarrativeDirector 记忆子层之上，
 补齐「设定不丢失、决策可一致、问题可前馈」三块基础设施。
 来源：`docs/novel-skill/` 长篇小说 skill 的可复用条目分析（2026-09-06 会话），
 经实时性约束裁剪后立项。本文是该分析的落地形态；采纳/不采纳清单见 §13。
@@ -15,7 +15,7 @@ canon 晋升承接（均随 v2 落地）。落地速览见 `docs/status.md`。
 
 ## 1. 背景与两条底线
 
-讨论共识（见 TODO.md）：长期记忆系统是 **LLM 编剧的上下文管理系统**，两条
+讨论共识（2026-09，原记录于 TODO.md 旧版）：长期记忆系统是 **LLM 编剧的上下文管理系统**，两条
 底线是**不能吞设定**与**决策结果要一致**。
 
 当前 NarrativeDirector 已有 threads / setups / anchors / episodes，但对照底线
@@ -270,7 +270,7 @@ novel-skill 出版级达标线的「伏笔回收率 ≥ 95%」改造为游戏结
 - 口径：`回收率 = paid_off / (paid_off + dropped + 结算时仍 active)`；
   threads 终态分布、beliefs unresolved 数、lessons 摘要附后。
 - 产物：`sessions/<id>/ending-report.json`（确定性聚合，无 LLM）；Web 结局
-  画面可选择渲染（后续波次），它是成就/收集系统（TODO 第 5 条）的现成数据源。
+  画面可选择渲染（后续波次），它是成就/收集系统（TODO.md P3）的现成数据源。
 
 ## 9. 异步审计（findings）
 

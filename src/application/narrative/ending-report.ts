@@ -2,8 +2,8 @@
  * 终局报告聚合（记忆 spec §8.4，MA-A）——确定性纯函数，无 LLM。
  *
  * 触发：EndEvent（type "end"）经 observeCommitted 到达导演时异步聚合，
- * 产物写 `sessions/<id>/ending-report.json`。它是成就/收集系统（TODO 第 5
- * 条）与 M5.4 结算页的现成数据源；M5.4 复用本聚合，不另建第二套。
+ * 产物写 `sessions/<id>/ending-report.json`。它是成就/收集系统（TODO.md
+ * P3）与 M5.4 结算页的现成数据源；M5.4 复用本聚合，不另建第二套。
  */
 
 import type {

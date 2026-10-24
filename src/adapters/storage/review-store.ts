@@ -32,7 +32,7 @@ export class ReviewStore implements ReviewStorePort {
   async save(review: RunReview): Promise<void> {
     const checked = ReviewFileSchema.parse(review);
     await mkdir(this.dir, { recursive: true });
-    const tmpPath = `${this.reviewPath(checked.runId)}.tmp-${process.pid}-${Date.now()}`;
+    const tmpPath = `${this.reviewPath(checked.runId)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await writeFile(tmpPath, JSON.stringify(checked, null, 2), "utf8");
     await rename(tmpPath, this.reviewPath(checked.runId));
   }

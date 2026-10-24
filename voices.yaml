@@ -1,6 +1,7 @@
 # 角色音色配置 V3（严格）
 #
-# 每个角色通过 config.yaml characters.<key>.voice_profile 引用一个逻辑音色。
+# 角色到逻辑音色的绑定：根目录 characters.yaml 对应角色的 voiceProfileId
+# （C7 真源；config.yaml 不接受 characters 绑定段）。
 # dashscope 绑定只有两个核心字段：
 #   - model:         CosyVoice 模型名（与音色匹配，如 cosyvoice-v3-flash）
 #   - voice_id_env:  存放 voice-id 的环境变量名（voice-id 放 .env，像 API key 一样，

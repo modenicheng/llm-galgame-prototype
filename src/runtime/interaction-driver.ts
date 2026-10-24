@@ -322,6 +322,10 @@ export class InteractionDriver {
       // M5.3 同选项快进（混合表单的预设选项路径）。
       const hybridFastForward = this.host.takePendingFastForward();
       if (hybridFastForward !== undefined) {
+        // 与 choice 快进同理由：跳过了 adoptSelectedBranch，预取组整组
+        // 丢弃，孤儿泵不得继续回写分支预测状态表。
+        branchManager?.discardAll();
+        this.host.status.clearBranches();
         return { type: "choice", nextTurn: turn + 1, preview: [], fastForward: hybridFastForward };
       }
 

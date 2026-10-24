@@ -124,8 +124,11 @@ async function readJsonlLines(filePath: string): Promise<string[]> {
   let raw: string;
   try {
     raw = await readFile(filePath, "utf8");
-  } catch {
-    return [];
+  } catch (error) {
+    // 只把「缺文件」当空日志（全新周目/世界）；占用/权限等读错误必须大声
+    // 抛——吞成空列表会让恢复路径的 worldMaxSeq 归零，与既有边 seq 撞号。
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
   return raw.split("\n").filter((line) => line.trim().length > 0);
 }
@@ -256,7 +259,7 @@ export class GameGraphStore implements GraphStorePort {
       this.rosterBlobRevisions.add(parsed.revision);
       return;
     }
-    const tmpPath = `${blobPath}.tmp-${process.pid}-${Date.now()}`;
+    const tmpPath = `${blobPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await mkdir(path.dirname(blobPath), { recursive: true });
     await writeFile(tmpPath, JSON.stringify(parsed), "utf8");
     await rename(tmpPath, blobPath);
@@ -357,7 +360,7 @@ export class GameGraphStore implements GraphStorePort {
 
   private async writeSnapshot(decisionId: DecisionId, snapshot: StateSnapshot): Promise<void> {
     const snapshotPath = this.filePath(decisionSnapshotPath(decisionId));
-    const tmpPath = `${snapshotPath}.tmp-${process.pid}-${Date.now()}`;
+    const tmpPath = `${snapshotPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await writeFile(tmpPath, JSON.stringify(snapshot), "utf8");
     await rename(tmpPath, snapshotPath);
     await this.ensureRosterBlobOf(snapshot);
@@ -561,7 +564,7 @@ export class GameGraphStore implements GraphStorePort {
 
   async saveCursor(cursor: ActiveCursor): Promise<void> {
     const cursorPath = this.filePath(GAME_STORAGE_LAYOUT.cursor);
-    const tmpPath = `${cursorPath}.tmp-${process.pid}-${Date.now()}`;
+    const tmpPath = `${cursorPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await writeFile(tmpPath, JSON.stringify(cursor), "utf8");
     await rename(tmpPath, cursorPath);
   }

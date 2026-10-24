@@ -118,8 +118,9 @@ V1.1/V1.2 的 `music/library.json`、V1.2 的 `world/music-identity.json`
 
 `npm run demo:music` → `/music-demo.html`：内置 6 首基线谱面（真实
 glm-5.3-flash 产物，标签去地区框架、谱面恒定作渲染 A/B 基线）+ file
-picker 载 `probe-music-composer.ts --save` 产物 → 生产渲染器 → WAV
-循环播放/下载。改渲染输出记得升 `MUSIC_RENDERER_VERSION`。
+picker 载 `probe-music-composer.ts --save=谱面路径` 产物（裸 `--save`
+不落盘）→ 生产渲染器 → WAV 循环播放/下载。改渲染输出记得升
+`MUSIC_RENDERER_VERSION`。
 
 ## 8. 验证记录
 

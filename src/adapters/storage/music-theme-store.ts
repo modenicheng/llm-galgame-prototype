@@ -82,7 +82,7 @@ export class MusicThemeStore implements MusicThemeStorePort {
 
   private async writeCatalog(next: ThemeCatalog): Promise<void> {
     await mkdir(path.dirname(this.themesPath), { recursive: true });
-    const tmpPath = `${this.themesPath}.tmp-${process.pid}-${Date.now()}`;
+    const tmpPath = `${this.themesPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await writeFile(
       tmpPath,
       `${JSON.stringify({ version: 1, themes: next.themes, bindings: next.bindings }, null, 2)}\n`,
@@ -167,7 +167,7 @@ export class MusicThemeStore implements MusicThemeStorePort {
       if ((await this.getScore(themeId)) !== undefined) return;
       await mkdir(this.scoresDir, { recursive: true });
       const target = path.join(this.scoresDir, `${themeId}.json`);
-      const tmpPath = `${target}.tmp-${process.pid}-${Date.now()}`;
+      const tmpPath = `${target}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       await writeFile(tmpPath, `${JSON.stringify(score, null, 2)}\n`, "utf8");
       await rename(tmpPath, target);
     });

@@ -1,7 +1,7 @@
 # 实施进度对照（status）
 
-> 快照日期：**2026-10-16**，对照 `main` 分支代码。本文是唯一的进度权威文档，
-> 设计规范见 `docs/llm-outputs-refactor.md`。
+> 快照日期：**2026-10-16 起，滚动更新（最近 2026-10-24）**，对照 `main` 分支代码。
+> 本文是唯一的进度权威文档，设计规范见 `docs/llm-outputs-refactor.md`。
 > 后续开发完成/变更条目时请同步更新本文。
 
 ## 文档地图
@@ -9,11 +9,12 @@
 | 文档 | 职能 |
 |---|---|
 | `README.md` | 运行方式、TTS 配置入口 |
+| `TODO.md` | 路线图（2026-10-24 功能差距评审版）：P1 主菜单框架/玩家端地基 → P2 表现层 → P3 成就/相册一体 → P4 歌曲生成；未拍板设想的候选池另列 |
 | `docs/llm-outputs-refactor.md` | DSL v1 legacy 冻结协议参考（§ 编号被源码注释引用） |
 | `docs/character-identity-and-dsl-v2.md` | **现行运行规范**：角色身份真源链、DSL 双版本、音频身份、图快照 v4、发布/回滚 |
 | `docs/status.md`（本文） | 进度对照：已完成 / 简化 / 未完成 |
 | `docs/superpowers/specs/*` | 已落地/待实施子系统的专项设计（状态见各文头） |
-| `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md` | 长期记忆强化与复核体系（facts/beliefs/lessons/audit）下一阶段设计，待实施 |
+| `docs/superpowers/specs/2026-09-06-narrative-memory-audit-design.md` | 长期记忆强化与复核体系（facts/beliefs/lessons/audit）：Phase A/B 已于 2026-09-17 全量落地；尾项（检索增强/一致性校验）暂缓，见 TODO.md 引擎侧 |
 | `docs/superpowers/specs/2026-09-16-character-voice-design.md` | 角色音频特征设计（编剧画像/导演指导三层模型），V1/V2 已落地、V3 身份合成待实施 |
 | `docs/superpowers/specs/2026-09-09-game-graph-architecture-design.md` | **v2 剧情图架构（已全量落地）**：回溯/存档/多周目三合一、编剧-导演-演员三角色、破坏性重构授权 |
 | `.hygiene.config.json` / `.hygiene-baseline.json` | 仓库卫生自检校准值（阈值 / 豁免 / 标记基线），供用户级 `repo-hygiene` skill（`~/.agents/skills/repo-hygiene/`，不随仓库走）的机械检查脚本读取 |
@@ -21,6 +22,7 @@
 | `docs/agents/TTS-音色配置指南.md` | 音色创建与绑定操作指南 |
 | `docs/scene-music-generation.md` | **场景配乐动态生成（V2 主题制已落地）**：作曲家第四 agent（skill/持久会话/reuse\|compose 决策）→ per-game 主题目录（themes/scores/session）→ 浏览器 soundfont 确定性渲染（V2 混音母带链、12 乐器）；独立试听页 |
 | `docs/superpowers/specs/2026-10-18-music-v2-theme-architecture.md` | 音乐 V2 主题制架构设计定稿（作曲家决策流/数据层/渲染 V2/拆除清单），已随实现轮落地 |
+| `prompts/` + `config.yaml` / `characters.yaml` / `voices.yaml` / `story-plan.yaml` | 模型协议与运行配置文档面：`prompts/dsl-protocol.txt` 是每会话注入的语法基座，配置文件头注承载纪律（config.yaml 顶部自引 docs §57/§74） |
 
 ## 已完成
 
@@ -37,7 +39,8 @@
   S1/S2/N1 边界加固）；段失败即后台启动修复段（fail-fast，消除读空队列后的
   冷启动空窗）；幻影角色去污染（knownCharacterIds 门控 + summarizeState 过滤）；
   舞台状态注入全维度显式化 + compiler `REDUNDANT_STAGE_CUE` 冗余兜底。
-  `@ending` DSL 能力保留惰性解析、协议不宣传（待拍板）。
+  `@ending` DSL 能力保留惰性解析；协议侧（语法基座 + 协议卡）已教授
+  `@ending <档位> <结尾词>`，运行时消费（结算联动）待拍板。
 - **角色身份与 Gal DSL v2（2026-10-16 快进合入 `feat/identity-dsl-replay`；
   规范：`docs/character-identity-and-dsl-v2.md`）**：CharacterRoster 双源
   归一（静态 `characters.yaml` / 生成世界 canon，`world:<gameId>` 独立
@@ -266,7 +269,8 @@
 
 跨模块重复（抽共享基础设施）：
 
-- tmp+rename 原子写仓内 ~9 份；`isEnoent` 惯用法 ≥5 处；OpenAI client
+- tmp+rename 原子写仓内 ~9 份（tmp 文件名已带随机分量，写互斥仍待收口）；
+  内联 ENOENT-only 判断 ~10 处（可抽共享帮助函数）；OpenAI client
   构造样板 ×5；跨 adapter 同构 JSON 调用 5 处；web/cli `parseArgs` 近重复；
   host 三个 GET 路由同构；web 侧 latestEnding 定位两处；图存储 latestById
   派生六处；config 默认值在 zod `.default` 与代码 `??` 双重派生（含
@@ -276,7 +280,7 @@
 
 行为/契约小项：
 
-- canon-store saveScaffold catch-all 应 ENOENT-only；canon-store-port
+- canon-store-port
   getCanon 的 throw 契约迫使调用方吞错（宜 `| undefined`）；
   readSceneHistory 静默 continue 无告警；outline-writer-adapter
   maintainOutline 解析失败与 schema 失败混报；loadCanonQuietly 死防御
@@ -290,9 +294,17 @@
   handleHybridInteraction 内 syntheticChoice 构造 ×2（二分时按行为
   逐行迁移保留，函数级拆分待做）；confluence-checker 的 sceneOutlineRefs
   Map 值未读（可 Set）与 hydrate 双重 get（随拆分迁入）；
-  源码注释引用的子节锚点 §8.5/§10.2/§11.6/§11.7/§13.x（game.ts 及
-  game*.test.ts / runtime 注释）在任何文档中均不存在——基线遗留的
-  悬空引用，语义应就近写明或改指真实出处。
+  源码注释引用的子节锚点 §8.4/§8.5/§10.2/§11.6/§11.7/§13.x（game.ts 及
+  game*.test.ts / runtime 注释）在任何文档中均不存在，以及已随文档退役的
+  编号族「计划 §N」「Task N」「spec §7」「Task G」（出处文档已删除）——
+  基线遗留的悬空引用，语义应就近写明或改指真实出处。
+- 已清偿（2026-10-24 整理批次）：canon saveScaffold / game-graph-store
+  readJsonlLines / 记忆 state load 的 ENOENT-only 收口（防读错误降级成
+  空态后回写清零）；tmp 文件名加随机分量；run-graph 结局结算边改倒序取
+  最新（与 endingTextOf 同规则）；confluence 孤儿出边全量重挂；
+  同选项快进中止孤儿回应流/分支预取组；CLI Ctrl+C 折回关停链
+  （UserExitError 不再成为未处理拒绝）；maintenance add schema 收窄
+  kind=act、整纲「至少 2 act」refine 与 prompt 对齐。
 
 待实施特性（spec 在册）：
 

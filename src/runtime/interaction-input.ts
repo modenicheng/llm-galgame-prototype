@@ -250,6 +250,8 @@ export async function handleInteractionInput(
     // detected via the `failure` field because commit() already moved the
     // session to "committed".
     let liveSession: InputResponseSession | null = null;
+    // 修复请求的控制器要留在作用域内：同选项快进返回时靠它中止孤儿流。
+    let liveRepairController: AbortController | null = null;
     if (
       responseSession.settled &&
       responseSession.failure !== null &&
@@ -263,6 +265,7 @@ export async function handleInteractionInput(
         bridgeEvents,
       });
       const repair = startInputResponseGeneration(host, interaction, turn, text, liveSession);
+      liveRepairController = repair.controller;
       void repair.promise.catch(() => undefined);
       host.status.setJob(
         "input-response",
@@ -285,6 +288,11 @@ export async function handleInteractionInput(
     // M5.3 同选项快进（free_input 与既有出边文本严格相等）：命中即零生成。
     const fastForward = host.takePendingFastForward();
     if (fastForward !== undefined) {
+      // 快进把恢复点交给运行循环后，仍在生成的回应流（直播接管或修复
+      // 请求）必须中止——否则 done 回调会把预测尾态/名牌写回 host，晚到
+      // 即覆写已恢复的快照状态。abort 后泵迟到组与 done 回调均早退。
+      responseController.abort();
+      liveRepairController?.abort();
       host.status.removeJob("input-response");
       return { type: "committed", preview: [], fastForward };
     }

@@ -36,6 +36,12 @@ export class OutlineStore implements OutlineStorePort {
   private nodes: OutlineNode[];
   private revision: number;
   private loaded = false;
+  /**
+   * 写互斥链（同 MusicThemeStore 纪律）：applyRevision 是「读-改-整体
+   * 覆写」，并发时后写者会基于旧快照覆写、静默丢弃先写者。当前调用方
+   * （维护链串行）已保证，此链是 store 自身设防。
+   */
+  private writeChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly gamesRoot: string, private readonly gameId: string) {
     this.dir = path.join(path.resolve(gamesRoot), gameId);
@@ -45,6 +51,13 @@ export class OutlineStore implements OutlineStorePort {
 
   private get outlinePath(): string {
     return path.join(this.dir, GAME_STORAGE_LAYOUT.outline);
+  }
+
+  /** 串行化一次变更操作（前序失败不阻塞后续）。 */
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const task = this.writeChain.then(operation, operation);
+    this.writeChain = task.catch(() => {});
+    return task;
   }
 
   private get logPath(): string {
@@ -89,7 +102,11 @@ export class OutlineStore implements OutlineStorePort {
     return { nodes: this.nodes, revision: this.revision };
   }
 
-  async applyRevision(ops: OutlineOp[], reason: string): Promise<number> {
+  applyRevision(ops: OutlineOp[], reason: string): Promise<number> {
+    return this.enqueue(() => this.applyRevisionUnsafe(ops, reason));
+  }
+
+  private async applyRevisionUnsafe(ops: OutlineOp[], reason: string): Promise<number> {
     if (ops.length === 0) {
       throw new Error("outline applyRevision 收到空批次");
     }
@@ -139,7 +156,7 @@ export class OutlineStore implements OutlineStorePort {
 
     // 落盘：先原子写全量，再追加日志（同批生效）。
     await mkdir(this.dir, { recursive: true });
-    const tmpPath = `${this.outlinePath}.tmp-${process.pid}-${Date.now()}`;
+    const tmpPath = `${this.outlinePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await writeFile(
       tmpPath,
       JSON.stringify({ revision: nextRevision, nodes: nextNodes }),

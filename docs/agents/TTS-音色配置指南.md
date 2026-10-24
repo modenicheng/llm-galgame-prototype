@@ -80,14 +80,18 @@ COSYVOICE_VOICE_SYSTEM_SAMPLE=longanyang               # 系统音色直接填�
 
 ### 2. `voices.yaml` 引用
 
-角色通过 `config.yaml` 的 `voice_profile` 引用 `voices.yaml` 中的逻辑音色:
+逻辑音色注册在 `voices.yaml`；角色到逻辑音色的绑定写在根目录 `characters.yaml`
+对应角色条目的 `voiceProfileId`（C7：config.yaml 不接受 `characters` 绑定段，
+启动校验会直接拒绝）：
 
 ```yaml
-# config.yaml
-characters:
-  suyao:
+# characters.yaml（characters 列表中的对应角色条目，节选）
+  - id: suyao
     name: 苏遥
-    voice_profile: suyao_main
+    control: npc
+    persona: |
+      …人物卡…
+    voiceProfileId: suyao_main
 ```
 
 ```yaml

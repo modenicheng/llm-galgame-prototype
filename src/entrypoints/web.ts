@@ -185,10 +185,20 @@ async function main(): Promise<void> {
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
-    if (shuttingDown) return;
+    // 第二次信号绕过守卫强制退出：关停链若挂起（落盘/连接关闭），玩家
+    // 必须保留强退手段。
+    if (shuttingDown) {
+      console.log(`received ${signal} again; forcing exit`);
+      process.exit(1);
+    }
     shuttingDown = true;
     console.log(`received ${signal}; shutting down`);
-    await host.shutdown();
+    try {
+      await host.shutdown();
+    } catch (error) {
+      console.error("shutdown failed:", error);
+      process.exit(1);
+    }
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));

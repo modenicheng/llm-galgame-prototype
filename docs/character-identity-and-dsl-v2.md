@@ -6,8 +6,8 @@ DSL 双版本协议、音频身份、记忆水位、图快照 v4 与发布/回�
 
 旧协议的完整语法参考仍是 `docs/llm-outputs-refactor.md`（已标注为 v1
 legacy 冻结文档）；本文是现行规范。校园分支（`campus-ops-raspberry`）的
-同位文档为 `docs/character-identity-and-dsl-v2.md`（双方按各自
-现实维护，共享条目以共享契约向量为准）。
+同位文档与本文路径相同（`docs/character-identity-and-dsl-v2.md`，见该
+分支下的同名文件；双方按各自现实维护，共享条目以共享契约向量为准）。
 
 ## 1. 身份真源链（M1/C2/C7）
 

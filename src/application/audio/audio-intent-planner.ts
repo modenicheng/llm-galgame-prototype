@@ -33,6 +33,8 @@ interface TimelineEntry {
 export class AudioIntentPlanner implements MediaPlannerPort {
   /** Formal path timeline in presentation order. */
   private readonly timeline: TimelineEntry[] = [];
+  /** line_id → timeline 下标（timeline 只增不删；O(1) 查重/定位，替代全表扫描）。 */
+  private readonly timelineIndex = new Map<string, number>();
   /** Index of the line currently at the "current" position; -1 = none. */
   private currentIndex = -1;
   /** Candidate branch → its lines (promotable on selection). */
@@ -40,12 +42,18 @@ export class AudioIntentPlanner implements MediaPlannerPort {
 
   constructor(private readonly options: AudioIntentPlannerOptions) {}
 
+  private pushTimelineEntry(event: RuntimePlayableEvent): number {
+    const index = this.timeline.length;
+    this.timeline.push({ event, active: true });
+    this.timelineIndex.set(event.line_id, index);
+    return index;
+  }
+
   registerActive(lines: RuntimePlayableEvent[]): void {
     const addedIndices: number[] = [];
     for (const event of lines) {
-      if (this.timeline.some((entry) => entry.event.line_id === event.line_id)) continue;
-      addedIndices.push(this.timeline.length);
-      this.timeline.push({ event, active: true });
+      if (this.timelineIndex.has(event.line_id)) continue;
+      addedIndices.push(this.pushTimelineEntry(event));
     }
     if (this.currentIndex === -1 && this.timeline.length > 0) {
       this.currentIndex = 0;
@@ -77,7 +85,7 @@ export class AudioIntentPlanner implements MediaPlannerPort {
     for (let i = 0; i < lines.length; i += 1) {
       const event = lines[i];
       if (event === undefined) continue;
-      if (this.timeline.some((entry) => entry.event.line_id === event.line_id)) continue;
+      if (this.timelineIndex.has(event.line_id)) continue;
       const priority: AudioPriority =
         i < this.options.candidatePrefetchLines ? "candidate_first_line" : "background";
       const result = this.options.factory.build(
@@ -107,9 +115,8 @@ export class AudioIntentPlanner implements MediaPlannerPort {
 
     const addedIndices: number[] = [];
     for (const event of promoted) {
-      if (this.timeline.some((entry) => entry.event.line_id === event.line_id)) continue;
-      addedIndices.push(this.timeline.length);
-      this.timeline.push({ event, active: true });
+      if (this.timelineIndex.has(event.line_id)) continue;
+      addedIndices.push(this.pushTimelineEntry(event));
     }
     if (this.currentIndex === -1 && this.timeline.length > 0) {
       this.currentIndex = 0;
@@ -144,8 +151,8 @@ export class AudioIntentPlanner implements MediaPlannerPort {
   }
 
   markPresented(lineId: string): void {
-    const index = this.timeline.findIndex((entry) => entry.event.line_id === lineId);
-    if (index < 0) return;
+    const index = this.timelineIndex.get(lineId);
+    if (index === undefined) return;
     if (this.currentIndex === -1 || index >= this.currentIndex) {
       this.currentIndex = index + 1;
     }

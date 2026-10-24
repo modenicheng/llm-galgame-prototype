@@ -14,8 +14,11 @@ TypeScript + Node.js 实现的 LLM GalGame 预研项目，支持：
 - v2 剧情图：回溯/存档/多周目三合一（图面板「剧情图」入口），跨周目
   canon 晋升与结算统计。
 
-设计规范与架构见 [docs/llm-outputs-refactor.md](./docs/llm-outputs-refactor.md)，
-当前进度见 [docs/status.md](./docs/status.md)，路线图见 [TODO.md](./TODO.md)。
+设计规范与架构：现行协议见
+[docs/character-identity-and-dsl-v2.md](./docs/character-identity-and-dsl-v2.md)；
+v1 历史规范 [docs/llm-outputs-refactor.md](./docs/llm-outputs-refactor.md) 已冻结保留
+（代码注释仍引用其 § 编号）。当前进度见 [docs/status.md](./docs/status.md)，
+路线图见 [TODO.md](./TODO.md)。
 TTS 音色创建与绑定见 [docs/agents/TTS-音色配置指南.md](./docs/agents/TTS-音色配置指南.md)。
 
 ## 运行
@@ -33,17 +36,21 @@ Copy-Item .env.example .env
 npm run dev
 ```
 
-调试运行时状态面板（缓冲、任务、媒体状态；普通模式不显示）：
+调试运行时状态面板（缓冲、任务、媒体状态；CLI 入口）：
 
 ```bash
-npm run dev -- --debug-runtime
+npm run dev:cli -- --debug-runtime
 ```
+
+web 入口的同款面板由 `config.yaml` 的 `debug.runtime_status` 控制
+（当前随库值为 `true`，即 web 模式默认显示）。
 
 ## TTS 语音（可选）
 
-默认 `config.yaml` 的 `media.audio.synthesis.provider: dashscope` 会启用 DashScope 语音合成，
-启动时需要 `.env` 中已配置 `DASHSCOPE_API_KEY` 及 `voices.yaml` 引用的音色变量
-（创建与绑定方法见 [docs/agents/TTS-音色配置指南.md](./docs/agents/TTS-音色配置指南.md)）。
+config.yaml 当前 `media.audio.synthesis.provider: disabled`（纯文本运行）。
+schema 缺省值是 `dashscope`；启用语音需要：`.env` 配置 `DASHSCOPE_API_KEY`
+及 `voices.yaml` 引用的音色变量，并把 `provider` 改回 `dashscope`
+（音色创建与绑定方法见 [docs/agents/TTS-音色配置指南.md](./docs/agents/TTS-音色配置指南.md)）。
 
 也可切换 `synthesis.provider: local` 走本机 Qwen3-TTS 推理服务
 （qwentts.cpp 等，OpenAI 兼容流式 PCM；无需任何 API key）：

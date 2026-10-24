@@ -4,7 +4,6 @@ import type { AppConfig } from "../config.js";
 import { createRuntimeApplication } from "../bootstrap/create-runtime-application.js";
 import type { RuntimeApplication } from "../application/runtime-application.js";
 import { RestartRequestedError, RuntimeShutdownError } from "../core/runtime/errors.js";
-import type { Game } from "../game.js";
 import type { Metrics } from "../runtime/metrics.js";
 import { CliController } from "../apps/cli/cli-controller.js";
 import { TerminalUI, UserExitError } from "../apps/cli/terminal-ui.js";
@@ -94,15 +93,14 @@ async function main(): Promise<void> {
     }
     throw error;
   }
-  printMetrics(app.game, app.metrics);
+  printMetrics(app.metrics);
 }
 
 /**
- * Render the metrics summary. `game` is retained for call-site parity with
- * the pre-refactor host; the snapshot comes from the shared metrics
- * instance the Game was composed with (identical data to `game.getMetrics()`).
+ * Render the metrics summary from the shared metrics instance
+ * (identical data to `game.getMetrics()`).
  */
-function printMetrics(game: Game, metrics: Metrics): void {
+function printMetrics(metrics: Metrics): void {
   const snap = metrics.snapshot();
   console.log("\n═══════ 运行指标汇总 ═══════");
 

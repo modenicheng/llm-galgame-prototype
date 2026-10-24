@@ -83,9 +83,17 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
 
   async load(): Promise<{ state: NarrativeMemoryState; episodes: EpisodeMemory[] }> {
     let state: NarrativeMemoryState = EMPTY_STATE;
+    let raw: string;
     try {
-      const raw = await readFile(this.statePath, "utf8");
-      if (raw.trim().length > 0) {
+      raw = await readFile(this.statePath, "utf8");
+    } catch (error) {
+      // 只把「缺文件」当空态；占用/权限等读错误必须抛——吞成空态会在
+      // 下一次 saveState 全量覆写时把整份会话记忆清零。
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return { state, episodes: await this.loadJsonl(this.episodesPath, EpisodeMemorySchema) };
+    }
+    if (raw.trim().length > 0) {
+      try {
         const parsed: unknown = JSON.parse(raw);
         // Structural corruption (valid JSON, wrong shape) must degrade the
         // same way as syntax corruption: only a zod-valid state is used.
@@ -93,10 +101,10 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
         if (checked.success) {
           state = checked.data;
         }
+      } catch {
+        // Corrupt state file → empty state, never throw.
+        state = EMPTY_STATE;
       }
-    } catch {
-      // Missing or corrupt state file → empty state, never throw.
-      state = EMPTY_STATE;
     }
 
     // 与 facts/lessons 同一泛化 jsonl 通道（损坏行跳过、按 id 去重）。
@@ -108,7 +116,9 @@ export class JsonNarrativeMemoryStore implements NarrativeMemoryStorePort {
   /** tmp+rename 原子写（saveState/savePlan/writeEndingReport 共用）。 */
   private async writeAtomic(filePath: string, content: string): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+    // 随机分量：同毫秒并发写者不得共用同一 tmp 文件（互踩后 rename 报错
+    // 或把踩脏内容转正）。
+    const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await writeFile(tmpPath, content, "utf8");
     await rename(tmpPath, filePath);
   }

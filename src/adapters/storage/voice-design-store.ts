@@ -60,7 +60,7 @@ export class VoiceDesignStore {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
-    const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+    const tmp = `${target}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(tmp, `${JSON.stringify(file, null, 2)}\n`, "utf8");
     await rename(tmp, target);

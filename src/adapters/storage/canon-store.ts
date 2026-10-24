@@ -83,6 +83,12 @@ export class CanonStore {
   private readonly dir: string;
   private snapshot: CanonSnapshot;
   private loaded = false;
+  /**
+   * 写互斥链（同 MusicThemeStore 纪律）：saveScaffold/applyPromotion 是
+   * 「读-改-整体覆写」，并发时后写者会基于旧快照覆写、静默丢弃先写者。
+   * 当前调用方（promoter 单飞）已串行，此链是 store 自身设防。
+   */
+  private writeChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly gamesRoot: string, private readonly gameId: string) {
     this.dir = path.join(path.resolve(gamesRoot), gameId);
@@ -101,6 +107,13 @@ export class CanonStore {
 
   private get logPath(): string {
     return path.join(this.dir, GAME_STORAGE_LAYOUT.worldCanonLog);
+  }
+
+  /** 串行化一次变更操作（前序失败不阻塞后续）。 */
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const task = this.writeChain.then(operation, operation);
+    this.writeChain = task.catch(() => {});
+    return task;
   }
 
   /** 惰性加载；缺文件 = 空 canon（revision 0，兼容 M3.3 前的旧世界）。 */
@@ -140,7 +153,14 @@ export class CanonStore {
   }
 
   /** 世界生成的脚手架：仅在 canon.json 不存在时合法（大声拒绝覆写）。 */
-  async saveScaffold(world: {
+  saveScaffold(world: {
+    worldSetting: string;
+    characters: CanonCharacter[];
+  }): Promise<void> {
+    return this.enqueue(() => this.saveScaffoldUnsafe(world));
+  }
+
+  private async saveScaffoldUnsafe(world: {
     worldSetting: string;
     characters: CanonCharacter[];
   }): Promise<void> {
@@ -148,8 +168,14 @@ export class CanonStore {
     try {
       await readFile(this.canonPath, "utf8");
       exists = true;
-    } catch {
-      exists = false;
+    } catch (err) {
+      // 只把 ENOENT 视为「不存在」；占用/权限等读错误当「不存在」放行
+      // 会覆写既有 canon，与头注「大声拒绝覆写」矛盾。
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        exists = false;
+      } else {
+        throw err;
+      }
     }
     if (exists) {
       throw new Error(`canon 脚手架拒绝写入：${this.canonPath} 已存在（不覆写既有 canon）`);
@@ -162,7 +188,7 @@ export class CanonStore {
       exceptions: [],
     };
     await mkdir(path.dirname(this.canonPath), { recursive: true });
-    const tmpPath = `${this.canonPath}.tmp-${process.pid}-${Date.now()}`;
+    const tmpPath = `${this.canonPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await writeFile(tmpPath, JSON.stringify(next, null, 2), "utf8");
     await rename(tmpPath, this.canonPath);
     const logLine: CanonLogLine = {
@@ -176,7 +202,11 @@ export class CanonStore {
     this.loaded = true;
   }
 
-  async applyPromotion(ops: CanonOp[], reason: string): Promise<number> {
+  applyPromotion(ops: CanonOp[], reason: string): Promise<number> {
+    return this.enqueue(() => this.applyPromotionUnsafe(ops, reason));
+  }
+
+  private async applyPromotionUnsafe(ops: CanonOp[], reason: string): Promise<number> {
     if (ops.length === 0) {
       throw new Error("canon applyPromotion 收到空批次");
     }
@@ -214,7 +244,7 @@ export class CanonStore {
 
     // 落盘：先原子写全量，再追加日志（append-only 留痕，同批生效）。
     await mkdir(path.dirname(this.canonPath), { recursive: true });
-    const tmpPath = `${this.canonPath}.tmp-${process.pid}-${Date.now()}`;
+    const tmpPath = `${this.canonPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await writeFile(tmpPath, JSON.stringify(next, null, 2), "utf8");
     await rename(tmpPath, this.canonPath);
     const logLine: CanonLogLine = {

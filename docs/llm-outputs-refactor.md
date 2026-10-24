@@ -17,8 +17,10 @@
 > 只服务显式 protocolVersion 1 的请求/存档，不再演进。现行规范见
 > `docs/character-identity-and-dsl-v2.md`（v2 `@say/@n/@name/@ch` 语法、
 > 身份真源链、图快照 v4、发布旋钮 `dsl.protocol_version`，当前默认 2）。
-> 另：§58 示例中的 `resources.yaml` `characters:` 段已移除（角色绑定在
-> 根目录 `characters.yaml`/canon，携带旧段即显式报错）；不带 `@` 的裸词
+> 另：§58 示例中的 `resources.yaml` `characters:` 段与 §7 的同名段已移除
+> （角色绑定在根目录 `characters.yaml`/canon，携带旧段即显式报错）；§66
+> 提到的 `web/src/stage/` 下 layer 文件名已随实现演进；§86「当前实际」是
+> 2026-09 目录快照；不带 `@` 的裸词
 > 指令已完全废弃（命中即 `RETIRED_ALIAS`）。本文正文按历史原样保留，
 > 不再随现行协议更新。
 
@@ -979,7 +981,7 @@ web/src/
 ```
 
 依赖方向：`entrypoints/hosts/apps → bootstrap → adapters → application → core`；
-core 不导入 Node / OpenAI / CLI（`core/architecture.test.ts` 静态扫描保证）。
+core 不导入 Node / OpenAI / CLI（`src/core/architecture.test.ts` 静态扫描保证）。
 
 ---
 

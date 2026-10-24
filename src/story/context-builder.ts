@@ -38,10 +38,7 @@ export interface ContextInput {
   registry?: CharacterRegistry;
   /** Optional author-enforced constraints. */
   authorConfig?: AuthorConfig;
-  /** Per-turn narrative director brief (rendered as a director note). */
-  /**
-   * M4.2 剪报通道（actor-briefing 组装产物）。D9 布局不变——历史区仍置前。
-   */
+  /** Per-turn director brief（M4.2 剪报通道，actor-briefing 组装产物）。 */
   actorBriefing?: string;
 }
 

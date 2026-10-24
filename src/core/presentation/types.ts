@@ -153,7 +153,7 @@ export interface CharacterRegistryEntry {
   /** Default slot (e.g. "left"). */
   defaultPosition: CharacterPosition;
   /**
-   * Sprite sets the character may use (docs §15): the compiler drops any
+   * Sprite sets the character may use (docs §8): the compiler drops any
    * `[spriteSet:variant]` patch outside this list. Defaults to [spriteSet].
    */
   allowedSpriteSets: string[];

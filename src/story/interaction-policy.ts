@@ -5,8 +5,7 @@
  * interactions; this class defends the same invariants at runtime so a
  * future schema change cannot silently bypass them.
  *
- * mode "choice" and runs through the same checks as a modern choice
- * interaction (旧式 choice 归一化为 choice).
+ * 旧式 choice 归一化为 mode "choice"，与现行 choice 交互走同一组检查。
  */
 
 import type { InteractionEvent, InteractionMode, InputSpec } from "./types.js";
@@ -31,7 +30,7 @@ interface PolicyCandidate {
 
 /**
  * Normalize an interaction event into the shape the checks operate on. Field presence is preserved so that
- * checks 6–8 can still detect schema-bypassing extra/missing fields.
+ * checks 6–7 can still detect schema-bypassing extra/missing fields.
  */
 function toCandidate(interaction: InteractionEvent): PolicyCandidate {
   if (interaction.mode === "choice") {

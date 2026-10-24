@@ -97,8 +97,9 @@ const RawWorldDraftSchema = z.object({
     .min(3)
     .max(12)
     .refine(
-      (nodes) => nodes.some((n) => n.kind === "act"),
-      { message: "至少 1 个 act 节点" },
+      // 与 system prompt / 头注同契约：至少 2 个幕节点（结局节点另计）。
+      (nodes) => nodes.filter((n) => n.kind === "act").length >= 2,
+      { message: "至少 2 个 kind=act 的幕节点" },
     )
     .refine(
       (nodes) => {
@@ -268,7 +269,9 @@ const RawMaintenanceAddSchema = z.object({
   node: z.object({
     id: z.string().min(1).max(64),
     purpose: z.string().min(1).max(OUTLINE_PURPOSE_MAX_LENGTH),
-    kind: z.enum(["act", "ending"]),
+    // 与维护 prompt「add 只允许新幕节点」单源一致：结局节点的数量/前缀
+    // 契约由整纲生成独占（ol_end_，1~2 个），违约输出走整批拒绝 + 修复。
+    kind: z.literal("act"),
     status: z.literal("planned"),
     location: z.exactOptional(z.string().min(1).max(64)),
   }),
