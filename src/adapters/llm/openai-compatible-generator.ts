@@ -18,7 +18,12 @@ import type {
   VisualStateReducer,
 } from "../../core/presentation/types.js";
 import { StreamLineDecoder } from "../../core/protocol/gal-dsl/stream-decoder.js";
-import { parseDslLine, parseDslV2Line } from "../../core/protocol/gal-dsl/line-parser.js";
+import {
+  detectDialogueTailNarration,
+  narrationLabelLeaked,
+  parseDslLine,
+  parseDslV2Line,
+} from "../../core/protocol/gal-dsl/line-parser.js";
 import {
   DslSegmentParser,
   DslSegmentParserV2,
@@ -1494,6 +1499,14 @@ export class StoryGenerator {
         } catch (error) {
           if (!(error instanceof DslProtocolError)) throw error;
           return { ok: false, error };
+        }
+        // 输出卫生观测（campus c54501b/7cf90ad）：`@n 旁白：…` 的标签
+        // 剥离已在 parse 内完成（语义门重解析一致），这里对原始行计数；
+        // 台词尾缀旁白只计数不改写——叙述会被当台词配音念出，值得盯着。
+        if (parsed.kind === "narration" && narrationLabelLeaked(rawLine)) {
+          this.metrics?.recordNarrationLabelStripped();
+        } else if (parsed.kind === "say" && detectDialogueTailNarration(parsed.text)) {
+          this.metrics?.recordTailNarrationDetected();
         }
         const canonical: string[] = [];
         // 收尾协议共享修复（与 v1 同语义）：interaction 哨兵前表单未闭合

@@ -10,7 +10,13 @@
  *   永不进入 v2 语法（@say 在 v1 是未知指令）；缺省版本 = 1。
  */
 import { describe, it, expect } from "vitest";
-import { parseDslV2Line, parseDslLine } from "./line-parser.js";
+import {
+  detectDialogueTailNarration,
+  narrationLabelLeaked,
+  parseDslLine,
+  parseDslV2Line,
+  stripNarrationLabel,
+} from "./line-parser.js";
 import { DslProtocolError } from "./types.js";
 import type { DslErrorCode, DslLineV2 } from "./types.js";
 
@@ -239,5 +245,45 @@ describe("parseDslLine — 版本路由（缺省 1；v2 请求不见 v1 语法�
   it("knownSpeakers 透传给 v1（既有调用形状不变）", () => {
     const known = new Set(["苏遥"]);
     expect(parseDslLine("苏遥：你好", known)).toMatchObject({ kind: "dialogue" });
+  });
+});
+
+describe("输出卫生：旁白自标注与台词尾缀旁白（campus c54501b/7cf90ad 移植）", () => {
+  it("@n 旁白：正文 —— 全角冒号标签确定性剥离", () => {
+    expect(parseDslV2Line("@n 旁白：他捏着手机愣了两秒，还是塞回了裤兜。")).toEqual({
+      kind: "narration",
+      text: "他捏着手机愣了两秒，还是塞回了裤兜。",
+    });
+  });
+
+  it("@n 旁白: 正文 —— 半角冒号同样剥离", () => {
+    expect(parseDslV2Line("@n 旁白: 门缝里透出一线微光。")).toEqual({
+      kind: "narration",
+      text: "门缝里透出一线微光。",
+    });
+  });
+
+  it("正文里非行首的「旁白」不受影响；纯函数对不适用形状返回 null", () => {
+    expect(parseDslV2Line("@n 他低声念出屏幕上的两个字：旁白。")).toEqual({
+      kind: "narration",
+      text: "他低声念出屏幕上的两个字：旁白。",
+    });
+    expect(stripNarrationLabel("（旁白）[手稿]：混排")).toBeNull();
+    expect(stripNarrationLabel("旁白：")).toBeNull();
+  });
+
+  it("narrationLabelLeaked 只认 @n 行首标签（供生成器计数）", () => {
+    expect(narrationLabelLeaked("@n 旁白：正文")).toBe(true);
+    expect(narrationLabelLeaked("@n旁白: 正文")).toBe(true);
+    expect(narrationLabelLeaked("@n 旁白正文")).toBe(false);
+    expect(narrationLabelLeaked("@say linche 旁白：正文")).toBe(false);
+  });
+
+  it("detectDialogueTailNarration：句末后代词起句检出、省略号边界排除", () => {
+    expect(detectDialogueTailNarration("定稿啦。她拈一颗塞进嘴里，又推两颗到我手边。")).toBe(true);
+    expect(detectDialogueTailNarration("出去。")).toBe(false);
+    expect(detectDialogueTailNarration("你去问她。她会答应的。")).toBe(true); // 已知误报类，接受
+    expect(detectDialogueTailNarration("等等……她走得也太快了")).toBe(false); // 省略号边界排除
+    expect(detectDialogueTailNarration("「出去。」她合上了门")).toBe(true); // 引号收尾
   });
 });
