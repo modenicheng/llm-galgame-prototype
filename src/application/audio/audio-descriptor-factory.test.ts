@@ -839,3 +839,47 @@ describe("C1 contract vector — voice profile stability across labels (R02)", (
     expect(available(renamed).descriptor.speakerId).toBe(RENAME_IDENTITY_CASE.characterId);
   });
 });
+
+describe("qwen3 punctuation compat（campus 48013ff 移植）", () => {
+  const qwen3Voices: VoicesConfig = {
+    version: 3,
+    profiles: {
+      suyao_main: {
+        semantic: { base_description: "温柔的少女声", allowed_delivery: [], forbidden_delivery: [] },
+        providers: {
+          dashscope: {
+            model: "qwen3-tts-vc-2026-01-22",
+            voice_id_env: "SUYAO_VOICE_ID",
+            voice_revision: 3,
+            instruction_mode: "none",
+          },
+        },
+      },
+    },
+  };
+
+  it("adapts dash-laden text into recipe.text and a fresh cache key", () => {
+    const factory = makeFactory({ voices: qwen3Voices });
+    const result = recipeOf(
+      factory.build(dialogue("suyao", "苏遥", "你居然——", "l15"), { type: "active" }, "current"),
+    );
+    expect(result.text).toBe("你居然……");
+    // The adapted text is the audio identity: a previously cached
+    // dash-dropped synthesis must not be replayed.
+    const plain = recipeOf(
+      factory.build(dialogue("suyao", "苏遥", "你居然……", "l15"), { type: "active" }, "current"),
+    );
+    expect(result.cacheKey).toBe(plain.cacheKey);
+  });
+
+  it("keeps the original text (and stable cache key) for non-qwen3 bindings", () => {
+    const result = recipeOf(
+      makeFactory().build(
+        dialogue("suyao", "苏遥", "价格从三千——五千不等。", "l16"),
+        { type: "active" },
+        "current",
+      ),
+    );
+    expect(result.text).toBe("价格从三千——五千不等。");
+  });
+});

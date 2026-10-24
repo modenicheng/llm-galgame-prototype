@@ -32,6 +32,8 @@ import type {
 } from "../../shared/wire/audio-descriptor.js";
 import type { InternalAudioRecipe } from "./internal-audio-recipe.js";
 import { cacheKeyFromRecipe, type CacheKeyRecipe } from "./cache-key.js";
+import { adaptQwen3TtsText } from "./qwen3-text-compat.js";
+import { ttsModelFamilyOf } from "../../core/ports/tts-model-family.js";
 import type { CharacterId, CharacterRegistry } from "../../core/characters/types.js";
 import type { LegacyIdentityResolver } from "../../core/characters/legacy-identity.js";
 import {
@@ -215,8 +217,24 @@ export class AudioDescriptorFactory {
     });
 
     const seed = this.options.seedFor(event.line_id);
+    // qwen3-tts has no pacing tags and drops punctuation outside its
+    // training vocabulary (a 破折号 reads straight through) — rewrite the
+    // dash family into supported pause punctuation. Applied here so the
+    // adapted text feeds BOTH the cache key and the recipe: previously
+    // cached (dash-dropped) lines get a fresh key and re-synthesize.
+    const compat =
+      ttsModelFamilyOf(binding.model) === "qwen3-tts"
+        ? adaptQwen3TtsText(event.text)
+        : { text: event.text, dashToPause: 0, rangeToDao: 0 };
+    if (compat.dashToPause > 0 || compat.rangeToDao > 0) {
+      ttsLog(
+        "punct-adapt",
+        event.line_id,
+        `dash_to_pause=${compat.dashToPause} range_to_dao=${compat.rangeToDao}`,
+      );
+    }
     const cacheKey = cacheKeyFromRecipe(
-      this.cacheKeyRecipe(binding, voiceId, event.text, compiled, seed),
+      this.cacheKeyRecipe(binding, voiceId, compat.text, compiled, seed),
     );
     ttsLog(
       "build",
@@ -228,7 +246,7 @@ export class AudioDescriptorFactory {
     const recipe: InternalAudioRecipe = {
       lineId: event.line_id,
       cacheKey,
-      text: event.text,
+      text: compat.text,
       model: binding.model,
       voiceId,
       voiceRevision: binding.voice_revision,
