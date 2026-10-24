@@ -17,6 +17,12 @@ import { DialogueBox } from "./ui/dialogue-box.js";
 import { InteractionPanel } from "./ui/interaction-panel.js";
 import { PreviewPanel } from "./ui/input-panel.js";
 import { ControlsBar } from "./ui/controls.js";
+import { SettingsMenu } from "./ui/settings-menu.js";
+import {
+  loadPlayerSettings,
+  savePlayerSettings,
+  type PlayerSettings,
+} from "./storage/player-settings.js";
 import { EndScreen, ErrorBanner } from "./ui/end-screen.js";
 import { StageRenderer } from "./stage/stage-renderer.js";
 import { fetchAssetManifest } from "./stage/asset-manifest-client.js";
@@ -69,7 +75,17 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
   // 动态音乐生成：导演指导 → Node 作曲 → WS 推谱 → 此处确定性渲染播放。
   const generatedBgm = new GeneratedBgm(bgmController, new SoundfontMusicRenderer());
   const token = tokenFromUrl();
-  const app = new GameApp({ wsUrl: wsUrlFromLocation(), token, bgmController, music: generatedBgm });
+  // Player preferences persist across reloads (accidental refreshes, session
+  // restarts): restore once here and save on every change in the menu hooks.
+  const playerSettings: PlayerSettings = loadPlayerSettings();
+  const persistSettings = (): void => savePlayerSettings(playerSettings);
+  const app = new GameApp({
+    wsUrl: wsUrlFromLocation(),
+    token,
+    bgmController,
+    music: generatedBgm,
+    initialSettings: playerSettings,
+  });
 
   const startScreen = new StartScreen(refs.startRoot, {
     onStart: async () => {
@@ -100,6 +116,7 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     const dialogueBox = new DialogueBox(refs.dialogueRoot, {
     onAdvance: () => app.advance(),
   });
+  dialogueBox.setCharsPerSecond(playerSettings.textSpeed);
   const interactionPanel = new InteractionPanel(refs.interactionRoot, {
     onSelect: (optionId) => app.selectChoice(optionId),
     onSubmit: (text) => app.submitInput(text),
@@ -112,17 +129,59 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     refs.controlsRoot,
     {
       onModeToggle: (mode) => app.setMode(mode),
-      onVolume: (v) => app.setVolume(v),
-      onMute: (m) => app.setMuted(m),
-      onSpeed: (cps) => {
+      onOpenSettings: () => toggleSettings(),
+    },
+    { mode: "manual" },
+  );
+  const settingsMenu = new SettingsMenu(
+    refs.controlsRoot,
+    {
+      onVoiceVolume: (v) => {
+        playerSettings.voiceVolume = v;
+        app.setVoiceVolume(v);
+        persistSettings();
+      },
+      onBgmVolume: (v) => {
+        playerSettings.bgmVolume = v;
+        app.setBgmVolume(v);
+        persistSettings();
+      },
+      onMute: (m) => {
+        playerSettings.muted = m;
+        app.setMuted(m);
+        persistSettings();
+      },
+      onTextSpeed: (cps) => {
+        playerSettings.textSpeed = cps;
         app.setTextSpeed(cps);
         dialogueBox.setCharsPerSecond(cps);
+        persistSettings();
       },
     },
-    { mode: "manual", volume: 1, muted: false, speed: 32 },
+    {
+      voiceVolume: playerSettings.voiceVolume,
+      bgmVolume: playerSettings.bgmVolume,
+      muted: playerSettings.muted,
+      textSpeed: playerSettings.textSpeed,
+    },
+    { anchor: controls.settingsTrigger },
   );
+  // 浮层（设置）打开期间控制条常显，否则鼠标离开角落时入口随栏淡出。
+  const syncControlsPinned = (): void => {
+    refs.controlsRoot.classList.toggle("controls--pinned", settingsMenu.isOpen());
+  };
+  const toggleSettings = (): void => {
+    settingsMenu.toggle();
+    syncControlsPinned();
+  };
   const endScreen = new EndScreen(refs.endRoot, {
-    onRestart: () => window.location.reload(),
+    // 不整页刷新（campus 6a77141 移植）：restart_session 走命令通道，
+    // 服务端 rebuild 后经投影回开场，AudioContext 解锁与字体/缓存预热
+    // 全保留；命令发不出去（无连接）时才退回 reload。
+    onRestart: () => {
+      if (app.hasConnection()) app.restartSession();
+      else window.location.reload();
+    },
   });
   const errorBanner = new ErrorBanner(refs.bannerRoot);
 
@@ -150,8 +209,28 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
   window.addEventListener("keydown", (event) => {
     if (event.isComposing || event.keyCode === 229) return; // IME composition
-    if (event.target instanceof HTMLButtonElement) return; // buttons self-handle
+    // 设置菜单打开时独占键盘：Esc 关闭它，其余按键不进入剧情路由
+    // （面板里的滑杆/复选框需要方向键与空格，且菜单后的舞台不应推进）。
+    if (settingsMenu.isOpen()) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        settingsMenu.close();
+        syncControlsPinned();
+      }
+      return;
+    }
     const mode = app.state().view.mode;
+    // Esc has no native button behavior, so it is handled BEFORE the
+    // button-target guard below: with a preview button focused (Tab), Esc
+    // must still reach cancelPreview instead of being swallowed.
+    if (event.key === "Escape") {
+      if (mode === "INPUT_PREVIEW") {
+        event.preventDefault();
+        app.cancelPreview();
+      }
+      return;
+    }
+    if (event.target instanceof HTMLButtonElement) return; // buttons self-handle
     if (event.key === "Enter" || event.key === " ") {
       if (mode === "PLAYING") {
         event.preventDefault();
@@ -160,8 +239,6 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
         event.preventDefault();
         app.confirmPreview();
       }
-    } else if (event.key === "Escape") {
-      if (mode === "INPUT_PREVIEW") app.cancelPreview();
     }
   });
 
@@ -204,6 +281,10 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
     const selectingMode =
       mode === "CHOICE_SELECTING" || mode === "HYBRID_SELECTING" || mode === "INPUT_EDITING";
+
+    // 表单/预览出现时压暗舞台（.stage__veil），保证表单文字可读；预览是
+    // 同一次交互的确认页，一并遮罩。无条件按模式驱动，重连投影同样恢复。
+    show(refs.interactionVeil, selectingMode || mode === "INPUT_PREVIEW");
 
     if (modeChanged || projectionRestored) {
       if (selectingMode) {

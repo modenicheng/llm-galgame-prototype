@@ -24,3 +24,6 @@ games/
 
 # 会话级中间产物（探针输出等）
 .tmp/
+
+# image-gen 工具默认输出目录
+output/

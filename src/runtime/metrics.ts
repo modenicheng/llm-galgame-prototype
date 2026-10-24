@@ -76,6 +76,17 @@ export interface ErrorStats {
   schema_validation_failures: number;
 }
 
+/**
+ * Model-output hygiene counters (campus c54501b/7cf90ad 同款观测的 v2 形态)：
+ * 剥离/检测本身发生在解析器与生成器，这里只做计数。
+ */
+export interface HygieneStats {
+  /** `@n 旁白：…` 自标注标签被确定性剥离的行数。 */
+  narration_label_stripped: number;
+  /** 台词句末后续写叙述（会被当台词配音念出）的检出行数——只计数不改写。 */
+  tail_narration_detected: number;
+}
+
 /** Player interaction latency samples. */
 export interface PlayerTimingStats {
   /** Milliseconds from choice confirmation to first playable line. */
@@ -93,6 +104,7 @@ export interface MetricsSnapshot {
   waste: WasteStats;
   input: InputStats;
   errors: ErrorStats;
+  hygiene: HygieneStats;
   player: PlayerTimingStats;
   /** Asset diagnostic counts (spec §7), code → occurrences. */
   asset_diagnostics?: Record<string, number>;
@@ -150,6 +162,10 @@ export class Metrics {
 
   // --- Errors ---
   private schemaValidationFailures = 0;
+
+  // --- Output hygiene ---
+  private narrationLabelStripped = 0;
+  private tailNarrationDetected = 0;
 
   // --- Player timing ---
   private choiceToNextLineSamples: number[] = [];
@@ -249,6 +265,16 @@ export class Metrics {
     this.schemaValidationFailures += 1;
   }
 
+  /** Call when an `@n 旁白：…` self-label was stripped by the parser. */
+  recordNarrationLabelStripped(): void {
+    this.narrationLabelStripped += 1;
+  }
+
+  /** Call when a dialogue line carries trailing narration (detected, not rewritten). */
+  recordTailNarrationDetected(): void {
+    this.tailNarrationDetected += 1;
+  }
+
   /**
    * Record the wall-clock latency from the moment the player confirms a
    * choice until the first playable line of the selected branch is
@@ -325,6 +351,10 @@ export class Metrics {
       errors: {
         schema_validation_failures: this.schemaValidationFailures,
       },
+      hygiene: {
+        narration_label_stripped: this.narrationLabelStripped,
+        tail_narration_detected: this.tailNarrationDetected,
+      },
       player: {
         choice_to_next_line_ms: [...this.choiceToNextLineSamples],
       },
@@ -357,6 +387,8 @@ export class Metrics {
     this.staleInputEventDroppedCount = 0;
     this.responsePromotedLiveCount = 0;
     this.schemaValidationFailures = 0;
+    this.narrationLabelStripped = 0;
+    this.tailNarrationDetected = 0;
     this.choiceToNextLineSamples = [];
     this.assetDiagnostics.clear();
   }

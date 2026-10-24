@@ -154,6 +154,40 @@ function missingBody(what: string, rawLine: string): DslProtocolError {
   );
 }
 
+/**
+ * 「旁白」自标注标签剥离（campus c54501b 同款行为，v2 形态）。实测模型
+ * 会把旁白写成 `旁白：正文` / `旁白: 正文`：v1 裸行全角形式把标签播进
+ * 玩家正文、半角形式造出 speaker=「旁白」的名牌；v2 里则漏进 `@n` 的
+ * 逐字正文。旁白行本身没有名字，标签是纯泄漏记号——确定性剥掉收进旁白
+ * 正文。v2 的 characterId 是注册稳定 ID，正文首部的 `旁白：` 不可能是
+ * 合法引用，无需 v1 的 knownSpeakers 例外。返回 null 表示不适用（无
+ * 冒号或正文为空）。纯函数：剥离在 parseDslV2Line 的 @n 分支完成，
+ * 生成器的泄漏计数共用同一正则，勿在两处重写。
+ */
+export function stripNarrationLabel(text: string): string | null {
+  const match = /^旁白\s*[:：]\s*(.+)$/.exec(text);
+  return match !== null ? match[1]! : null;
+}
+
+/** @n 行是否带「旁白：」自标注泄漏（剥离发生在 parse；此谓词供生成器计数）。 */
+export function narrationLabelLeaked(rawLine: string): boolean {
+  return /^@n\s*旁白\s*[:：]/.test(rawLine.trim());
+}
+
+/**
+ * 台词尾缀旁白检测（campus 7cf90ad 同款；仅观测计数，不做任何改写）。
+ * 实测模型会把动作旁白缀在台词同一行尾部，叙述被当作台词用该角色配音
+ * 念出。这里**无法**确定性拆分：句末后接「她/他」起句也可能是角色在说
+ * 第三者，自动剥离会吃掉正常台词——所以只计数不改写。启发式刻意排除
+ * 省略号边界（合法台词的实测误报类）；无代词形态检不出，接受漏报。
+ * 纯函数：与生成器的计数共用，勿在两处重写正则。
+ */
+const DIALOGUE_TAIL_NARRATION_RE = /[。！？][”’」』"']?\s*(?:她|他)/;
+
+export function detectDialogueTailNarration(text: string): boolean {
+  return DIALOGUE_TAIL_NARRATION_RE.test(text);
+}
+
 function unknownV2Command(rawLine: string): DslProtocolError {
   return new DslProtocolError(
     "UNKNOWN_COMMAND",
@@ -312,11 +346,13 @@ export function parseDslV2Line(rawLine: string): DslLineV2 {
     return { kind: "say", characterId: tokens[0]!, text: body };
   }
 
-  // 6. @n <单行旁白正文>。
+  // 6. @n <单行旁白正文>。「旁白：」自标注标签是纯泄漏记号，确定性
+  //    剥掉（语义门从规范文本重解析走同一分支，剥离保持一致）。
   if (hasCommandWord(line, "@n")) {
     const { body } = takeTokens(line.slice("@n".length), 0);
     if (body === "") throw missingBody("@n 缺少旁白正文", rawLine);
-    return { kind: "narration", text: body };
+    const stripped = stripNarrationLabel(body);
+    return { kind: "narration", text: stripped !== null ? stripped : body };
   }
 
   // 7. @name <characterId> set <名牌文本> | @name <characterId> reset。

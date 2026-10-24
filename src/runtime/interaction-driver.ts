@@ -131,6 +131,14 @@ export interface InteractionHost {
     tailState: VisualState;
     tailLabels: CharacterRuntimeState;
   };
+  /**
+   * beat 组 cue 折叠（port 自 campus c8cb600）：无播放队列可占位的路径
+   * （分支预取/输入应答物化）把 beat cue 前置进下一个可播行的 stage。
+   */
+  mergeBeatCues(
+    beatCues: readonly StageCue[],
+    playable: RuntimePlayableEvent,
+  ): RuntimePlayableEvent;
   /** 版本路由提交：v1 草组走冻结的 compileGroup；v2 编译组只应用。 */
   compileRoutedGroup(
     draft: AnyStreamedGroup,

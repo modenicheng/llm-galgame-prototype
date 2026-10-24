@@ -25,6 +25,24 @@ export interface BgmAsset {
   id: string;
   src: string;
   description: string;
+  /** 已合并 bgm_playback 全局默认的每曲播放参数；无任何配置时缺省。 */
+  playback?: BgmPlayback | undefined;
+}
+
+/**
+ * BGM 播放微调：裁切窗口 + 淡入淡出（秒）。
+ * 纯播放表现参数，模型目录不投影（toModelCatalog 只透出 description），
+ * 只随公开 manifest 下发到浏览器。
+ */
+export interface BgmPlayback {
+  /** 循环窗口起点（秒，含）。缺省 0。 */
+  start?: number | undefined;
+  /** 循环窗口终点（秒，含尾）；播放到达即回卷 start。缺省播到文件末尾。 */
+  end?: number | undefined;
+  /** 曲目开始时的淡入时长（秒）。0/缺省 = 立即全量音量。 */
+  fadeIn?: number | undefined;
+  /** 切歌/停止前的淡出时长（秒）。0/缺省 = 立即切换。 */
+  fadeOut?: number | undefined;
 }
 
 export interface SoundEffectAsset {
@@ -77,7 +95,7 @@ export interface ModelAssetCatalog {
  */
 export interface PublicAssetManifest {
   backgrounds: Record<string, { url: string }>;
-  bgm: Record<string, { url: string }>;
+  bgm: Record<string, { url: string; playback?: BgmPlayback }>;
   soundEffects: Record<string, { url: string }>;
   spriteSets: Record<string, { variants: Record<string, { url: string }> }>;
 }

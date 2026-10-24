@@ -278,13 +278,16 @@ export function createBranchManager(
       });
       // 泵：与旧 onGroup 直连语义等价——组到达即编译并喂给 onEvent
       // （branch-local visual state 逐组折叠；v2 的 labelOps 同步折进
-      // 分支名牌副本，port 自 campus a1b7aac + cb7804b）。
+      // 分支名牌副本，port 自 campus a1b7aac + cb7804b）。beat 组没有
+      // 播放队列可占位：其 cue 折叠进下一行随播放生效（port 自 campus
+      // c8cb600 的 mergeBeatCues 语义）。
+      let pendingBeatCues: StageCue[] = [];
       const pump = (async () => {
         for await (const group of handle.events) {
           // handoff/取消后的迟到组不再折叠：预测状态必须与玩家可见的
           // 已提交前缀一致（迟到事件被消费侧丢弃，不播放）。
           if (signal.aborted) break;
-          const { playable, tailState, nextLabels } = host.compileRoutedGroup(
+          const { playable, cues, tailState, nextLabels } = host.compileRoutedGroup(
             group,
             branchState,
             branchLabels,
@@ -299,8 +302,12 @@ export function createBranchManager(
           host.branchTailStates.set(option.id, branchState);
           host.branchCharacterStates.set(option.id, branchLabels);
           if (playable !== null) {
-            materialized.push(playable);
-            onEvent(playable);
+            const event = host.mergeBeatCues(pendingBeatCues, playable);
+            pendingBeatCues = [];
+            materialized.push(event);
+            onEvent(event);
+          } else if (group.main.type === "beat") {
+            pendingBeatCues.push(...cues);
           }
         }
       })();

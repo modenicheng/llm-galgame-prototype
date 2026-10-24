@@ -88,6 +88,7 @@ import type {
   InputInteraction,
   InteractionEvent,
   PlayerDialogueEvent,
+  RuntimeBeatEvent,
   RuntimeModelEvent,
   RuntimePlayableEvent,
   RuntimeBufferEvent,
@@ -616,7 +617,7 @@ export class Game implements InteractionHost {
       turn: restore.turnFloor,
       taskId: this.ids.nextGenerationId(`resume:${restore.turnFloor}`),
       events: [interaction],
-      queue: new AsyncEventQueue<RuntimeModelEvent>(),
+      queue: new AsyncEventQueue<RuntimeModelEvent | RuntimeBeatEvent>(),
       done: Promise.resolve(),
       branchManager: this.interactionDriver.createBranchManagerForTerminal(
         interaction,
@@ -793,7 +794,7 @@ export class Game implements InteractionHost {
     prefetchedEvents: StoryContextEvent[],
     repairReason?: string,
   ): ActiveSegment {
-    const queue = new AsyncEventQueue<RuntimeModelEvent>();
+    const queue = new AsyncEventQueue<RuntimeModelEvent | RuntimeBeatEvent>();
     const taskId = this.ids.nextGenerationId(kind === "opening" ? "opening" : `continuation:${turn}`);
     const segment: ActiveSegment = {
       turn,
@@ -1048,6 +1049,19 @@ export class Game implements InteractionHost {
       }
 
       const event = next.value;
+      if (event.type === "beat") {
+        // The beat plays at its queue position: its cues apply exactly when
+        // everything before it has been presented — same timing contract as
+        // a line's `stage` payload. No buffer advance (beats never enter
+        // playbackBuffer), no media, no advance wait: beats paint the stage
+        // without pausing. An empty cue set never reaches the queue; a
+        // redundant one was dropped by the compiler's cue filter.
+        const presentation = this.applyPlayableStage(event.stage ?? []);
+        if (presentation !== undefined) {
+          this.emit({ type: "stage_beat_ready", presentation });
+        }
+        continue;
+      }
       if (isPlayableEvent(event)) {
         if (!firstPlayableSeen) {
           firstPlayableSeen = true;
@@ -1388,13 +1402,19 @@ export class Game implements InteractionHost {
       return;
     }
 
-    // Beat: a bare stage node. v1 applies it at commit time (no buffering)
-    // and emits stage_beat_ready; the renderer decides its duration.
-    this.renderedVisualState = tailState;
-    this.emit({
-      type: "stage_beat_ready",
-      presentation: { cues, visualState: tailState },
-    });
+    // Beat: a pure stage node. It enters the playback timeline like a line:
+    // its prelude cues ride the queue and apply exactly when playback
+    // reaches the beat's position — same timing contract as a line's
+    // `stage` payload. Applying at parse time fired bg/BGM/sprite switches
+    // while earlier buffered lines were still playing (and syncing
+    // rendered ← tail also leaked those lines' own cues early). The
+    // predictive tail was already advanced by compileRoutedGroup above;
+    // nothing else to do here for the state. Beats never enter
+    // playbackBuffer/segment.events/media — they are runtime-only
+    // timeline shadows (campus c8cb600 移植).
+    if (cues.length > 0) {
+      segment.queue.push({ type: "beat", line_id: this.nextLineId(), stage: cues });
+    }
   }
   /**
    * Segment end sentinel handling (docs §44–§51, §76):
@@ -1615,8 +1635,11 @@ export class Game implements InteractionHost {
     let state = baseState;
     let labelState = labels;
     const events: RuntimePlayableEvent[] = [];
+    // 分支预取/输入应答路径没有播放队列可给 beat 占位：其 cue 折叠进下一
+    // 个可播行（前置——语义顺序保留），随该行播放生效（campus c8cb600）。
+    let pendingBeatCues: StageCue[] = [];
     for (const draft of groups) {
-      const { playable, tailState, nextLabels } = this.compileRoutedGroup(
+      const { playable, cues, tailState, nextLabels } = this.compileRoutedGroup(
         draft,
         state,
         labelState,
@@ -1625,7 +1648,10 @@ export class Game implements InteractionHost {
       state = tailState;
       labelState = nextLabels;
       if (playable !== null) {
-        events.push(playable);
+        events.push(this.mergeBeatCues(pendingBeatCues, playable));
+        pendingBeatCues = [];
+      } else if (draft.main.type === "beat") {
+        pendingBeatCues.push(...cues);
       } else {
         this.diagnostics.warn(
           "DSL",
@@ -1633,7 +1659,33 @@ export class Game implements InteractionHost {
         );
       }
     }
+    if (pendingBeatCues.length > 0) {
+      // Trailing beat: no line left to ride. The predictive tail already
+      // includes its state; the rendered stage catches up via the tail on
+      // the next adopt/restore boundary.
+      this.diagnostics.warn(
+        "DSL",
+        "段尾 beat 的舞台 cue 未折叠进任何行（预测尾部已包含其状态）",
+      );
+    }
     return { events, tailState: state, tailLabels: labelState };
+  }
+
+  /**
+   * Branch/input-response paths have no playback queue to hold a beat at
+   * its position: the beat group's cues ride the NEXT playable line
+   * (prepended — semantic order preserved) so they apply at that line's
+   * playback instead of vanishing with the skipped beat group. The caller
+   * clears its pending buffer after a successful merge.
+   */
+  mergeBeatCues(
+    beatCues: readonly StageCue[],
+    playable: RuntimePlayableEvent,
+  ): RuntimePlayableEvent {
+    if (beatCues.length === 0) return playable;
+    if (playable.type !== "dialogue" && playable.type !== "narration") return playable;
+    const stage = [...beatCues, ...(playable.stage ?? [])];
+    return stage.length > 0 ? { ...playable, stage } : playable;
   }
 
   async record(event: StoredEvent): Promise<"recorded" | "fast_forwarded"> {
