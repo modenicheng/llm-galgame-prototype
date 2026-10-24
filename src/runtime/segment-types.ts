@@ -5,7 +5,7 @@
 import type { AsyncEventQueue } from "../core/runtime/async-event-queue.js";
 import type { SegmentEndStatus } from "../core/protocol/gal-dsl/types.js";
 import type { BranchManager } from "./branch-manager.js";
-import type { RuntimeModelEvent, RuntimePlayableEvent } from "../schema.js";
+import type { RuntimeBeatEvent, RuntimeModelEvent, RuntimePlayableEvent } from "../schema.js";
 import type { InputResponseSession } from "../core/interaction/input-session.js";
 import type { LiveBranchSelection } from "./prefetch.js";
 import type { RestorePoint } from "../core/ports/run-graph-port.js";
@@ -14,7 +14,8 @@ export interface ActiveSegment {
   turn: number;
   taskId: string;
   events: RuntimeModelEvent[];
-  queue: AsyncEventQueue<RuntimeModelEvent>;
+  /** 播放时间线：模型事件 + 舞台 beat（其 cue 在播放位生效）。 */
+  queue: AsyncEventQueue<RuntimeModelEvent | RuntimeBeatEvent>;
   done: Promise<void>;
   branchManager: BranchManager | null;
   terminal: RuntimeModelEvent | null;
