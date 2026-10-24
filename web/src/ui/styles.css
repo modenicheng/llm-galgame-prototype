@@ -200,6 +200,31 @@ button {
   pointer-events: none;
 }
 
+/* 交互遮罩（campus 3b844c8 移植）：表单（选项/输入/预览）出现时压暗并轻模糊
+   舞台（氛围层 + 立绘），保证表单文字在亮背景/立绘上的可读性。作为 stage
+   末子元素盖住立绘，仍位于 scene（z:2）之下。入场只动自身 opacity——
+   backdrop-filter 元素的祖先带 opacity 动画会采样跳变（Backdrop Root），
+   自身动画是安全路径。 */
+.stage__veil {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(180deg, rgba(7, 9, 13, 0.58), rgba(5, 7, 10, 0.72));
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  animation: veil-in 360ms var(--ease-out) both;
+  pointer-events: none;
+}
+
+@keyframes veil-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 /* --------------------------------------------------------------------------
    Stage renderer layers (StageRenderer) — placeholder picture of the wire
    visualState: a tinted background slab + per-character silhouettes on the

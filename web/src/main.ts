@@ -122,7 +122,13 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
     { mode: "manual", volume: 1, muted: false, speed: 32 },
   );
   const endScreen = new EndScreen(refs.endRoot, {
-    onRestart: () => window.location.reload(),
+    // 不整页刷新（campus 6a77141 移植）：restart_session 走命令通道，
+    // 服务端 rebuild 后经投影回开场，AudioContext 解锁与字体/缓存预热
+    // 全保留；命令发不出去（无连接）时才退回 reload。
+    onRestart: () => {
+      if (app.hasConnection()) app.restartSession();
+      else window.location.reload();
+    },
   });
   const errorBanner = new ErrorBanner(refs.bannerRoot);
 
@@ -212,6 +218,10 @@ export async function boot(root?: HTMLElement | null): Promise<void> {
 
     const selectingMode =
       mode === "CHOICE_SELECTING" || mode === "HYBRID_SELECTING" || mode === "INPUT_EDITING";
+
+    // 表单/预览出现时压暗舞台（.stage__veil），保证表单文字可读；预览是
+    // 同一次交互的确认页，一并遮罩。无条件按模式驱动，重连投影同样恢复。
+    show(refs.interactionVeil, selectingMode || mode === "INPUT_PREVIEW");
 
     if (modeChanged || projectionRestored) {
       if (selectingMode) {

@@ -764,9 +764,24 @@ export class GameApp {
     this.client?.sendCommand(crypto.randomUUID(), command);
   }
 
+  /** 命令通道是否可用（结尾页等按连接状态选命令或兜底路径）。 */
+  hasConnection(): boolean {
+    return this.client !== null;
+  }
+
   /** M5.3 回溯：在指定决策节点开启新周目（服务器端弃局记账，图零删除）。 */
   retrace(decisionId: string): void {
     this.sendCommand({ type: "retrace", decisionId });
+  }
+
+  /**
+   * 结尾页「重新开始」：发送 restart_session（campus 6a77141 移植的
+   * 不刷新路径）。服务端 rebuild 运行时并把 websocket rebase 到新局，
+   * 客户端经投影自然回到开场——AudioContext 解锁与已预热字体/缓存
+   * 全部保留；整页 reload 只作为命令发不出去时的兜底。
+   */
+  restartSession(): void {
+    this.sendCommand({ type: "restart_session" });
   }
 
   private sendCacheReport(lineId: string, cacheKey: string, result: "hit" | "miss" | "partial" | "corrupt"): void {
