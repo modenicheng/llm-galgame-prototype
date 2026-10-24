@@ -601,15 +601,17 @@ describe("GameApp", () => {
     });
   });
 
-  it("serves a coordinator-backed state (buffered ms, mode, volume) through the public surface", async () => {
+  it("serves a coordinator-backed state (buffered ms, mode, volumes) through the public surface", async () => {
     const { app, ws } = await setupApp();
     app.setMode("auto");
-    app.setVolume(0.42);
+    app.setVoiceVolume(0.42);
+    app.setBgmVolume(0.7);
     app.setMuted(true);
     app.setTextSpeed(48);
     const state = app.state();
     expect(state.playbackMode).toBe("auto");
-    expect(state.volume).toBe(0.42);
+    expect(state.voiceVolume).toBe(0.42);
+    expect(state.bgmVolume).toBe(0.7);
     expect(state.muted).toBe(true);
     expect(state.textSpeed).toBe(48);
     expect(state.configSource).toBe("server");

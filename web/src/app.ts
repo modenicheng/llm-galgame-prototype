@@ -24,6 +24,7 @@ import { PcmDecoder } from "./audio/pcm-decoder.js";
 import { RuntimeClient, type ConnectionState, type RuntimeCommandWire, type WebSocketCtor } from "./runtime/runtime-client.js";
 import { GameViewModel, type RuntimePlayableEventWire, type ViewModelState } from "./runtime/game-view-model.js";
 import type { BgmController } from "./stage/bgm-controller.js";
+import { DEFAULT_PLAYER_SETTINGS, type PlayerSettings } from "./storage/player-settings.js";
 import type { StageCueWire } from "./stage/stage-types.js";
 import { AudioDb } from "./storage/audio-db.js";
 import { AudioCacheWriter, type CacheWriteOptions } from "./storage/audio-cache-writer.js";
@@ -49,8 +50,10 @@ export interface GameAppOptions {
   token: string;
   /** Preloaded server config; when omitted the app fetches GET /api/config. */
   config?: PublicWebConfig;
-  /** Optional BGM playback controller; when absent volume/mute stay coordinator-only. */
+  /** Optional BGM playback controller; when absent bgm volume/mute stay app-only. */
   bgmController?: BgmController;
+  /** Restored player preferences (volumes/mute/speed); defaults when absent. */
+  initialSettings?: PlayerSettings;
   /** 动态音乐生成的渲染编排（WS music.score → 渲染 → applyGenerated）。 */
   music?: { handleScore(message: MusicScoreMessage): void };
   /** Test seams. */
@@ -63,7 +66,10 @@ export interface GameAppState {
   view: ViewModelState;
   connection: ConnectionState;
   playbackMode: PlaybackMode;
-  volume: number;
+  /** 语音（TTS）音量，0..1；独立于 BGM。 */
+  voiceVolume: number;
+  /** BGM 音量，0..1；独立于语音。 */
+  bgmVolume: number;
   muted: boolean;
   textSpeed: number;
   audioPlaying: boolean;
@@ -116,9 +122,10 @@ export class GameApp {
   private configSource: "server" | "defaults" = "defaults";
   private connection: ConnectionState = "closed";
   private playbackMode: PlaybackMode = "manual";
-  private volume = 1;
-  private muted = false;
-  private textSpeed = 32;
+  private voiceVolume: number;
+  private bgmVolume: number;
+  private muted: boolean;
+  private textSpeed: number;
   private audioPlaying = false;
   private underrunCount = 0;
 
@@ -140,6 +147,15 @@ export class GameApp {
     this.options = options;
     this.db = options.db ?? new AudioDb();
     this.bgmController = options.bgmController ?? null;
+    const initial = options.initialSettings ?? DEFAULT_PLAYER_SETTINGS;
+    this.voiceVolume = clampUnit(initial.voiceVolume);
+    this.bgmVolume = clampUnit(initial.bgmVolume);
+    this.muted = initial.muted;
+    this.textSpeed = clampSpeed(initial.textSpeed);
+    // The BGM controller predates start(): apply the restored values now so
+    // the first unlocked track already plays at the persisted level.
+    this.bgmController?.setVolume(this.bgmVolume);
+    this.bgmController?.setMuted(this.muted);
     this.viewModel.subscribe(() => this.handleViewNotify());
   }
 
@@ -187,6 +203,10 @@ export class GameApp {
       if (this.coordinator !== null && !this.coordinator.available) {
         this.coordinator = null;
       }
+      // The coordinator constructor cannot know the restored preferences —
+      // push them before any playback starts (init only builds the node).
+      this.coordinator?.setVolume(this.voiceVolume);
+      this.coordinator?.setMuted(this.muted);
       await this.db.open();
       const writeOptions: CacheWriteOptions = {
         writeBatchBytes: this.config.audio.cache.write_batch_bytes,
@@ -266,7 +286,8 @@ export class GameApp {
       view: this.viewModel.state(),
       connection: this.connection,
       playbackMode: this.playbackMode,
-      volume: this.volume,
+      voiceVolume: this.voiceVolume,
+      bgmVolume: this.bgmVolume,
       muted: this.muted,
       textSpeed: this.textSpeed,
       audioPlaying: this.audioPlaying,
@@ -336,10 +357,15 @@ export class GameApp {
     this.emitState();
   }
 
-  setVolume(v: number): void {
-    this.volume = Math.min(1, Math.max(0, v));
-    this.coordinator?.setVolume(this.volume);
-    this.bgmController?.setVolume(this.volume);
+  setVoiceVolume(v: number): void {
+    this.voiceVolume = clampUnit(v);
+    this.coordinator?.setVolume(this.voiceVolume);
+    this.emitState();
+  }
+
+  setBgmVolume(v: number): void {
+    this.bgmVolume = clampUnit(v);
+    this.bgmController?.setVolume(this.bgmVolume);
     this.emitState();
   }
 
@@ -351,7 +377,7 @@ export class GameApp {
   }
 
   setTextSpeed(charsPerSec: number): void {
-    this.textSpeed = Math.min(120, Math.max(5, charsPerSec));
+    this.textSpeed = clampSpeed(charsPerSec);
     this.emitState();
   }
 
@@ -853,4 +879,12 @@ export function interactionIdOf(value: unknown): string | null {
   if (value === null || typeof value !== "object") return null;
   const id = (value as { interaction_id?: unknown }).interaction_id;
   return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+function clampUnit(v: number): number {
+  return Math.min(1, Math.max(0, v));
+}
+
+function clampSpeed(charsPerSec: number): number {
+  return Math.round(Math.min(120, Math.max(5, charsPerSec)));
 }
