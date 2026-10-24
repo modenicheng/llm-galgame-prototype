@@ -261,8 +261,23 @@ describe("RuntimeWebSocket", () => {
     expect(second.type).toBe("runtime.output");
   });
 
-  it("forwards interaction_resolved outputs unchanged", async () => {
+  it("notifyError broadcasts a synthetic runtime_error continuing the connection sequence（campus 8e029ff 移植）", async () => {
     const client = await connect();
+    game.emit({ type: "session_started", sessionId: "s1", location: "mem" });
+    await waitForMessage(client.messages, (m) => m.type === "runtime.output");
+    runtimeWs.notifyError("run_loop_exited", "api timeout");
+    const message = await waitForMessage(
+      client.messages,
+      (m) => m.type === "runtime.output" && m.sequence === 2,
+    );
+    expect(message).toEqual({
+      type: "runtime.output",
+      sequence: 2,
+      output: { type: "runtime_error", code: "run_loop_exited", message: "api timeout" },
+    });
+  });
+
+  it("forwards interaction_resolved outputs unchanged", async () => {    const client = await connect();
     game.emit({
       type: "interaction_resolved",
       interactionId: "int_1",

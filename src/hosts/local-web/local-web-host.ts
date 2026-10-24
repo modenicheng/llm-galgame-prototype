@@ -247,20 +247,32 @@ export class LocalWebHost {
     if (this.gameStarted) return;
     this.gameStarted = true;
     void this.app.game.run().catch((error: unknown) => {
-      // RuntimeShutdownError is the expected shutdown path.
-      if (error instanceof RuntimeShutdownError) return;
-      if (error instanceof RestartRequestedError) {
-        void this.handleRestart();
-        return;
-      }
-      if (error instanceof RetraceRequestedError) {
-        void this.handleRetrace(error.decisionId);
-        return;
-      }
-      this.logger(
-        `game run loop exited: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      this.handleRunLoopExit("", error);
     });
+  }
+
+  /**
+   * run loop 退出的统一收口：预期关停静默；Restart/Retrace 走各自重建；
+   * 其余致命错误除日志外合成 runtime_error 广播（campus 8e029ff 移植——
+   * 此前只写日志，浏览器永远停在 CONTENT_WAITING，恢复入口只剩刷新开
+   * 新局）。恢复路径不变：结尾页/控制端的 restart_session 仍可重建会话。
+   */
+  private handleRunLoopExit(where: string, error: unknown): void {
+    // RuntimeShutdownError is the expected shutdown path.
+    if (error instanceof RuntimeShutdownError) return;
+    if (error instanceof RestartRequestedError) {
+      void this.handleRestart();
+      return;
+    }
+    if (error instanceof RetraceRequestedError) {
+      void this.handleRetrace(error.decisionId);
+      return;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    this.logger(`game run loop exited${where}: ${message}`);
+    const output = { type: "runtime_error" as const, code: "run_loop_exited", message };
+    this.app.projection.applyOutput(output);
+    this.runtimeWs.notifyError("run_loop_exited", message);
   }
 
   /**
@@ -276,8 +288,7 @@ export class LocalWebHost {
       return;
     }
     void this.app.game.run().catch((error: unknown) => {
-      if (error instanceof RuntimeShutdownError) return;
-      this.logger(`game run loop exited after retrace: ${String(error)}`);
+      this.handleRunLoopExit(" after retrace", error);
     });
   }
 
@@ -291,8 +302,7 @@ export class LocalWebHost {
     await this.app.restart();
     this.runtimeWs.rebase(this.app.game);
     void this.app.game.run().catch((error: unknown) => {
-      if (error instanceof RuntimeShutdownError) return;
-      this.logger(`game run loop exited after restart: ${String(error)}`);
+      this.handleRunLoopExit(" after restart", error);
     });
   }
 
@@ -334,8 +344,7 @@ export class LocalWebHost {
       this.app = app;
       this.runtimeWs.rebase(this.app.game);
       void this.app.game.run().catch((error: unknown) => {
-        if (error instanceof RuntimeShutdownError) return;
-        this.logger(`game run loop exited after world swap: ${String(error)}`);
+        this.handleRunLoopExit(" after world swap", error);
       });
       this.sendJson(res, 200, { gameId });
     } catch (error) {

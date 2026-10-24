@@ -65,6 +65,8 @@ export class RuntimeWebSocket {
   /** Accepted connections (all controllers; extras are rejected). */
   private readonly controllers = new Set<WebSocket>();
   private readonly connectionState = new Map<WebSocket, ConnectionState>();
+  /** Per-connection output sequence (§8.1); shared by live outputs and notifyError. */
+  private readonly sequenceByWs = new Map<WebSocket, number>();
   private readonly recentCommandIds = new Set<string>();
   private acceptingCommands = true;
   private sessionEnded = false;
@@ -103,6 +105,19 @@ export class RuntimeWebSocket {
     }
   }
 
+  /**
+   * Run loop 整体死亡广播（campus 8e029ff 移植）：API 超时击穿等致命错误
+   * 此前只写宿主日志，浏览器永远停在 CONTENT_WAITING。合成 runtime_error
+   * 按既有 runtime.output 通道下发——在线客户端立即转 ERROR 相位；宿主
+   * 同时把同一输出喂给投影 store，重连快照同样恢复错误态。
+   */
+  notifyError(code: string, message: string): void {
+    const output = { type: "runtime_error" as const, code, message };
+    for (const ws of this.controllers) {
+      this.send(ws, { type: "runtime.output", sequence: this.nextSequence(ws), output });
+    }
+  }
+
   handle(ws: WebSocket, req: IncomingMessage): void {
     if (this.extractToken(req.url) !== this.token) {
       ws.terminate();
@@ -128,7 +143,6 @@ export class RuntimeWebSocket {
     this.connectionState.set(ws, { alive: true });
     this.ensureHeartbeat();
 
-    let sequence = 0;
     // handleUpgrade invokes this callback while the socket is still
     // CONNECTING; `send` drops messages before OPEN, so defer the initial
     // snapshot + descriptor catalog until the handshake completes.
@@ -155,7 +169,7 @@ export class RuntimeWebSocket {
       // 结局后经 retrace 重入的新周目会再发 session_started：复位标志，
       // 否则任一控制器断开都会连坐关闭其余控制器。
       else if (output.type === "session_started") this.sessionEnded = false;
-      this.send(ws, { type: "runtime.output", sequence: ++sequence, output });
+      this.send(ws, { type: "runtime.output", sequence: this.nextSequence(ws), output });
     });
     const unsubCatalog = this.catalog.subscribe((event) => {
       this.send(ws, this.mapCatalogEvent(event));
@@ -186,6 +200,7 @@ export class RuntimeWebSocket {
       unsubStatus();
       unsubMusic?.();
       this.connectionState.delete(ws);
+      this.sequenceByWs.delete(ws);
       this.controllers.delete(ws);
       if (this.controllers.size === 0) this.stopHeartbeat();
       // Once the run loop has finished, no socket can ever drive the game
@@ -197,6 +212,12 @@ export class RuntimeWebSocket {
     ws.on("error", () => {
       // The close event follows; nothing to recover here.
     });
+  }
+
+  private nextSequence(ws: WebSocket): number {
+    const next = (this.sequenceByWs.get(ws) ?? 0) + 1;
+    this.sequenceByWs.set(ws, next);
+    return next;
   }
 
   private onMessage(raw: unknown, ws: WebSocket): void {
