@@ -6,12 +6,14 @@
     <meta name="color-scheme" content="dark" />
     <meta name="description" content="灯影夜话 —— 本地 AI 视觉小说。深夜灯下，一段由你与 AI 共同落笔的故事。" />
     <title>灯影夜话 · 本地 AI 视觉小说</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;500;600;700;900&display=swap"
-      rel="stylesheet"
-    />
+    <!-- Webfonts are vendored locally (web/public/fonts, regen:
+         scripts/vendor-webfonts.mjs): same unicode-range subsets as Google
+         Fonts but served by this host, so there is no network dependency
+         (offline hosts, blocked DNS) and no cross-origin font swap delay.
+         The stylesheet is render-blocking on purpose: the @font-face rules
+         must exist before first layout so CJK text never paints in the
+         fallback stack first. -->
+    <link rel="stylesheet" href="/fonts/fonts.css" />
   </head>
   <body>
     <div id="app"></div>
