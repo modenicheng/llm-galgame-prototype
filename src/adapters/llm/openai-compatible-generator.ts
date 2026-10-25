@@ -64,7 +64,8 @@ import {
   buildProtocolCard,
 } from "../../application/prompts/protocol-card.js";
 import type { BaseDslTaskType } from "../../core/protocol/gal-dsl/capabilities.js";
-import type { LLMRequestCounts, Metrics } from "../../runtime/metrics.js";
+import type { LLMRequestType, Metrics } from "../../runtime/metrics.js";
+import { parseLLMUsage, type LLMUsageReading } from "./llm-usage.js";
 import type {
   ChoiceEvent,
   ChoiceOption,
@@ -563,7 +564,7 @@ export class StoryGenerator {
       options,
     );
     return this.requestDslEnvelope(
-      "continuation",
+      "input_response",
       "input_response",
       ["buffer"],
       nonce,
@@ -605,7 +606,7 @@ export class StoryGenerator {
       options,
     );
     return this.requestDslEnvelope(
-      "continuation",
+      "input_bridge",
       "input_bridge",
       ["buffer"],
       nonce,
@@ -691,7 +692,7 @@ export class StoryGenerator {
    * attempt and are asserted by tests verbatim.
    */
   private async requestDslEnvelope(
-    type: LLMRequestCounts extends Record<infer K, number> ? K : never,
+    type: LLMRequestType,
     taskType: BaseDslTaskType,
     allowedReasons: readonly SegmentEndReason[],
     nonce: string,
@@ -763,7 +764,7 @@ export class StoryGenerator {
    * dropped (docs §49–§50).
    */
   private async attemptDslStream(
-    type: LLMRequestCounts extends Record<infer K, number> ? K : never,
+    type: LLMRequestType,
     taskType: string,
     allowedReasons: readonly SegmentEndReason[],
     nonce: string,
@@ -781,7 +782,13 @@ export class StoryGenerator {
     const allGroups: EventGroupDraft[] = [];
     let streamAborted = false;
     let failureReason = "";
-    let usage = { input: 0, output: 0 };
+    let usage: { input: number; output: number; cachedInput?: number } = {
+      input: 0,
+      output: 0,
+    };
+    // Real counters reported by the provider on the final stream chunk;
+    // null when the gateway strips usage (estimate fallback below).
+    let apiUsage: LLMUsageReading | null = null;
 
     // Strip-continue state: the raw model lines consumed so far (the
     // continuation replays them verbatim as an assistant prefix), a deferred
@@ -823,6 +830,7 @@ export class StoryGenerator {
             ...(({ thinking: { type: "disabled" } }) as unknown as Record<string, unknown>),
             messages,
             stream: true,
+            stream_options: { include_usage: true },
           } as ChatCompletionCreateParamsStreaming,
           { signal: activeController.signal },
         );
@@ -845,6 +853,7 @@ export class StoryGenerator {
             delta?: { content?: string | null };
             finish_reason?: string | null;
           }>;
+          usage?: unknown;
         }>,
         lineDecoder: StreamLineDecoder,
       ): AsyncGenerator<string> =>
@@ -854,6 +863,11 @@ export class StoryGenerator {
             // choices); capture it before the content check skips the chunk.
             const chunkFinish = chunk.choices?.[0]?.finish_reason;
             if (chunkFinish) finishReason = chunkFinish;
+            // Usage rides the final chunk too — capture before skipping
+            // empty-choice chunks. Last report wins across strip-continue
+            // streams (the continuation replays the prefix).
+            const chunkUsage = parseLLMUsage(chunk.usage);
+            if (chunkUsage) apiUsage = chunkUsage;
             const content = chunk.choices?.[0]?.delta?.content;
             if (!content) continue;
             if (firstLineMs === 0) firstLineMs = Date.now();
@@ -1247,12 +1261,25 @@ export class StoryGenerator {
       }
 
       const latencyMs = Date.now() - callStart;
-      usage = { input: 0, output: Math.ceil(streamChars / 4) };
+      // apiUsage 在行流闭包内赋值，TS 控制流不追踪跨闭包写入——经函数读取
+      // 避免 never 收窄。
+      const reportedUsage = (): LLMUsageReading | null => apiUsage;
+      const reported = reportedUsage();
+      if (reported) {
+        usage = {
+          input: reported.input,
+          output: reported.output,
+          cachedInput: reported.cachedInput,
+        };
+      } else {
+        // Provider didn't report usage: keep the legacy char-based estimate.
+        usage = { input: 0, output: Math.ceil(streamChars / 4) };
+      }
       // err= mirrors the legacy cross-attempt semantics: the failure of the
       // PREVIOUS attempt when this one succeeds — that is how operators
       // identify a successful repair retry in the logs.
       console.log(
-        `[LLM] ${type}(${taskType}) ${latencyMs}ms lines=${lineIndex} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${failureReason || priorFailure || "ok"}`,
+        `[LLM] ${type}(${taskType}) ${latencyMs}ms lines=${lineIndex} in=${usage.input} out=${usage.output} cached=${usage.cachedInput ?? 0} src=${reported ? "api" : "est"} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${failureReason || priorFailure || "ok"}`,
       );
 
       // Structurally invalid line with nothing forwarded yet → retry with
@@ -1377,7 +1404,7 @@ export class StoryGenerator {
   // -----------------------------------------------------------------------
 
   private async attemptDslStreamV2(
-    type: LLMRequestCounts extends Record<infer K, number> ? K : never,
+    type: LLMRequestType,
     taskType: BaseDslTaskType,
     allowedReasons: readonly SegmentEndReason[],
     nonce: string,
@@ -1449,7 +1476,13 @@ export class StoryGenerator {
       emitCommits(fed.commits);
       return true;
     };
-    const usage = { input: 0, output: 0 };
+    const usage: { input: number; output: number; cachedInput?: number } = {
+      input: 0,
+      output: 0,
+    };
+    // 主流 SSE 最终块回报的真实计数；尾部修复（非流式）的回报会累加进来。
+    // null = 网关剥离了 usage，回退字符估算。
+    let apiUsage: LLMUsageReading | null = null;
     let finishReason: string | null = null;
     /** ending 哨兵 epilogue 窗口收齐后停止消费（结局残留不解析）。 */
     let endingSettled = false;
@@ -1477,6 +1510,7 @@ export class StoryGenerator {
             { role: "user" as const, content: userPrompt },
           ],
           stream: true,
+          stream_options: { include_usage: true },
         } as ChatCompletionCreateParamsStreaming,
         { signal: activeController.signal },
       );
@@ -1559,9 +1593,14 @@ export class StoryGenerator {
               delta?: { content?: string | null };
               finish_reason?: string | null;
             }>;
+            usage?: unknown;
           };
           const chunkFinish = chunk.choices?.[0]?.finish_reason;
           if (chunkFinish) finishReason = chunkFinish;
+          // usage 同样搭乘最终块（通常 choices 为空）——在空 choices 跳过
+          // 之前捕获。
+          const chunkUsage = parseLLMUsage(chunk.usage);
+          if (chunkUsage) apiUsage = chunkUsage;
           const content = chunk.choices?.[0]?.delta?.content;
           if (!content) continue;
           if (firstLineMs === 0) firstLineMs = Date.now();
@@ -1661,9 +1700,18 @@ export class StoryGenerator {
       }
 
       const latencyMs = Date.now() - callStart;
-      usage.output = Math.ceil(streamChars / 4);
+      // apiUsage 在 SSE 流闭包内赋值——经函数读取避免 TS never 收窄。
+      const reportedUsage = (): LLMUsageReading | null => apiUsage;
+      const reported = reportedUsage();
+      if (reported) {
+        usage.input = reported.input;
+        usage.output = reported.output;
+        usage.cachedInput = reported.cachedInput;
+      } else {
+        usage.output = Math.ceil(streamChars / 4);
+      }
       console.log(
-        `[LLM] ${type}(${taskType}) v2 ${latencyMs}ms lines=${lineIndex} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${failureReason || priorFailure || "ok"}`,
+        `[LLM] ${type}(${taskType}) v2 ${latencyMs}ms lines=${lineIndex} in=${usage.input} out=${usage.output} cached=${usage.cachedInput ?? 0} src=${reported ? "api" : "est"} first=${firstLineMs ? firstLineMs - callStart : "?"}ms err=${failureReason || priorFailure || "ok"}`,
       );
 
       // 空输出（只有围栏不算）。
@@ -1718,6 +1766,20 @@ export class StoryGenerator {
           const content = (
             response as { choices?: Array<{ message?: { content?: string | null } }> }
           ).choices?.[0]?.message?.content;
+          // 修复是同一逻辑请求的一部分：usage 有回报就累加进本次统计
+          // （上方 log 在修复前打印，只含主流部分）。
+          const repairUsage = parseLLMUsage(
+            (response as { usage?: unknown }).usage,
+          );
+          if (repairUsage) {
+            apiUsage = apiUsage
+              ? {
+                  input: apiUsage.input + repairUsage.input,
+                  output: apiUsage.output + repairUsage.output,
+                  cachedInput: apiUsage.cachedInput + repairUsage.cachedInput,
+                }
+              : repairUsage;
+          }
           if (typeof content !== "string" || content.trim() === "") return null;
           return content;
         } catch (error) {
@@ -1773,6 +1835,15 @@ export class StoryGenerator {
             gateDiagnostic = fed.diagnostic;
           }
         }
+      }
+
+      // 修复 usage 已并入 apiUsage——重新落值供下方统计使用（无 apiUsage
+      // 时维持上方的主流字符估算）。
+      const reportedAfterRepair = reportedUsage();
+      if (reportedAfterRepair) {
+        usage.input = reportedAfterRepair.input;
+        usage.output = reportedAfterRepair.output;
+        usage.cachedInput = reportedAfterRepair.cachedInput;
       }
 
       const firstDiagnostic = gateDiagnostic;

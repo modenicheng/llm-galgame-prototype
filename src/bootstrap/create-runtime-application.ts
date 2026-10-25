@@ -500,7 +500,7 @@ export async function createRuntimeApplication(
     const outlineStore = new OutlineStore(gamesRoot, gameId);
     outline = {
       store: outlineStore,
-      maintainer: new OutlineWriterAdapter({ apiKey, api: config.api }),
+      maintainer: new OutlineWriterAdapter({ apiKey, api: config.api, metrics }),
     };
   }
   // M3.6：canon 存储（跨周目世界真相）。缺省新世界 = 空 canon（读宽容），
@@ -595,6 +595,7 @@ export async function createRuntimeApplication(
           ? { registry: characterRegistry.registry }
           : {}),
         diagnostics,
+        metrics,
       });
       const service = new NarrativeDirectorService({
         config: config.narrative,

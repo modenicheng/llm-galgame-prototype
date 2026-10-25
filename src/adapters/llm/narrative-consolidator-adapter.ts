@@ -26,6 +26,8 @@ import {
 } from "../../story/event-projection.js";
 import type { ProjectedEvent } from "../../story/event-projection.js";
 import type { CharacterRegistry } from "../../core/characters/types.js";
+import type { Metrics } from "../../runtime/metrics.js";
+import { parseLLMUsage } from "./llm-usage.js";
 import type {
   MemoryConsolidatorPort,
   ConsolidationRequest,
@@ -98,6 +100,7 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
   private readonly client: OpenAI;
   private readonly model: string;
   private readonly diagnostics: DiagnosticSink;
+  private readonly metrics: Metrics | undefined;
 
   constructor(private readonly opts: {
     apiKey: string;
@@ -107,6 +110,7 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
     registry?: CharacterRegistry;
     diagnostics?: DiagnosticSink;
     client?: OpenAI;
+    metrics?: Metrics;
   }) {
     this.client =
       opts.client ??
@@ -117,6 +121,7 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
       });
     this.model = opts.api.model;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
+    this.metrics = opts.metrics;
   }
 
   async consolidate(request: ConsolidationRequest): Promise<ConsolidationResult> {
@@ -135,6 +140,7 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
 
     const userMessage = this.buildUserMessage(request, evidence, identity);
 
+    const callStart = Date.now();
     const response = await this.client.chat.completions.create({
       model: this.model,
       messages: [
@@ -146,6 +152,14 @@ export class NarrativeConsolidatorAdapter implements MemoryConsolidatorPort {
     });
 
     const rawContent = response.choices[0]?.message?.content ?? "";
+    this.metrics?.recordLLMRequest(
+      "narrative_consolidation",
+      parseLLMUsage(response.usage) ?? {
+        input: 0,
+        output: Math.ceil(rawContent.length / 4),
+      },
+      Date.now() - callStart,
+    );
 
     let parsed: unknown;
     try {

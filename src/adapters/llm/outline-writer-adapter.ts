@@ -9,6 +9,8 @@ import { z } from "zod";
 import type { AppConfig } from "../../config.js";
 import type { DiagnosticSink } from "../../core/ports/diagnostic-sink.js";
 import { silentDiagnosticSink } from "../../core/ports/diagnostic-sink.js";
+import type { Metrics } from "../../runtime/metrics.js";
+import { parseLLMUsage } from "./llm-usage.js";
 import { OUTLINE_PURPOSE_MAX_LENGTH } from "../../core/outline/types.js";
 import {
   DELIVERY_TAGS,
@@ -121,12 +123,14 @@ export class OutlineWriterAdapter implements OutlineWriterPort, OutlineMaintaine
   private readonly client: OpenAI;
   private readonly model: string;
   private readonly diagnostics: DiagnosticSink;
+  private readonly metrics: Metrics | undefined;
 
   constructor(private readonly opts: {
     apiKey: string;
     api: AppConfig["api"];
     diagnostics?: DiagnosticSink;
     client?: OpenAI;
+    metrics?: Metrics;
   }) {
     this.client =
       opts.client ??
@@ -137,11 +141,13 @@ export class OutlineWriterAdapter implements OutlineWriterPort, OutlineMaintaine
       });
     this.model = opts.api.model;
     this.diagnostics = opts.diagnostics ?? silentDiagnosticSink;
+    this.metrics = opts.metrics;
   }
 
   async writeOutline(request: OutlineWriterRequest): Promise<WorldDraft> {
     const userMessage = this.buildUserMessage(request);
 
+    const callStart = Date.now();
     const response = await this.client.chat.completions.create({
       model: this.model,
       messages: [
@@ -153,6 +159,14 @@ export class OutlineWriterAdapter implements OutlineWriterPort, OutlineMaintaine
     });
 
     const rawContent = response.choices[0]?.message?.content ?? "";
+    this.metrics?.recordLLMRequest(
+      "outline",
+      parseLLMUsage(response.usage) ?? {
+        input: 0,
+        output: Math.ceil(rawContent.length / 4),
+      },
+      Date.now() - callStart,
+    );
 
     let parsed: unknown;
     try {
@@ -239,6 +253,7 @@ export class OutlineWriterAdapter implements OutlineWriterPort, OutlineMaintaine
       }
     }
 
+    const callStart = Date.now();
     const response = await this.client.chat.completions.create({
       model: this.model,
       messages: [
@@ -250,6 +265,14 @@ export class OutlineWriterAdapter implements OutlineWriterPort, OutlineMaintaine
     });
 
     const rawContent = response.choices[0]?.message?.content ?? "";
+    this.metrics?.recordLLMRequest(
+      "outline",
+      parseLLMUsage(response.usage) ?? {
+        input: 0,
+        output: Math.ceil(rawContent.length / 4),
+      },
+      Date.now() - callStart,
+    );
     let parsed: unknown;
     try {
       parsed = JSON.parse(rawContent);
