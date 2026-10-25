@@ -542,6 +542,15 @@ CLI 侧（cli.ts:52）在第 3 步后直接 TerminalUI/CliController 驱动 game
 13. `src/hosts/local-web/with-resolvers.d.ts:1-9` — ES2022 lib 缺 ES2024.Promise 的本地 ambient 补丁（文件自述为权宜）；tsconfig 升 lib 后应删除。
 14. `src/hosts/local-web/runtime-websocket.ts:121-141` 与 `src/hosts/local-web/audio-stream-route.ts:97-101` — 同一 Local Session Token 在 WS 走 URL query、HTTP 走 `x-session-token` 头（§8.3 设计如此），但 token 比对逻辑分散在两处且无共享测试夹具。
 
+## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+
+1. **三个配置开关**：
+   - `debug.runtime_status`（config.ts:183-186，cli.ts:82 与 `--debug-runtime` 或合）——不带 CLI 参数也能持久打开运行时状态面板，功能完整。
+   - `input.show_generation_status`（config.ts:166-167，terminal-ui.ts:104 与 debug mode 双重门控）——两面旗帜管一件事；合为一面时"默认不显示"的行为不变。
+   - `app.default_host`（config.ts:192，zod 默认 "web"，全仓无消费者）——现状是死键。
+2. **wire 版本闸门时序**（runtime-websocket.ts）：现状快照 setImmediate 先下发、`client.ready` 才验版本——旧客户端白收一份完整快照再被 close(4002)。连接时先验版本是另一种形态；runtime-websocket.test.ts:366/380 断言现序，改动与测试同批。
+3. **快照异步下发时机**：快照在连接后异步（setImmediate）而非握手内同步——前端 BOOTSTRAP 态的容忍依赖这个时序，两端契约，改动需两端同批。
+
 **ui-projection-store 归属建议**：`UiProjectionStoreImpl`（application/ui/ui-projection-store.ts:53）依赖 `core/runtime/runtime-output`（01 域）并维护有行为状态机，不宜下沉 shared；其数据形状 `UiProjection` 已在 shared/wire。建议维持 application 层（它是 RuntimeApplication 的读模型组件，装配根与 WS 宿主各自消费其接口），重构时可将 `UiProjectionStore` 接口移入 core/ports 与其他端口对齐；不建议并入宿主域。
 
 **本域层级建议**：维持任务书框架——L0 = `src/shared/wire/*` + `src/shared/tts-log.ts`（纯数据/zod/日志，Node 与浏览器双端可 import，无 Node 专属 import；tts-log 以 declare process 保持浏览器安全类型）；L4 = hosts/entrypoints/bootstrap/config/schema（进程边界与装配）。两点异议/细化：① `src/schema.ts` 虽在 src 根，实际是事件类型枢纽（被 30+ 文件引用、一半内容再导出 story/types），建议在层级图中标注为「L0.5 类型聚合」或并入 wire 相邻的共享类型层，而不是随宿主域走；② `src/config.ts` 同时承担「类型 + zod + 加载器」三职且被全域 import，应属独立的配置层（L4 之内），而非宿主子模块——`src/config/public-web-config.ts` 是 config→wire 的单向桥，方向约束已在文件头固定，重构需保持。

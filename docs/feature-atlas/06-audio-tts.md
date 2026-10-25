@@ -514,3 +514,12 @@
 8. `src/application/audio/tts-task-service.ts:26` 429 重试延迟表 `[1000, 2000, 4000]` 为硬编码常量，与 `minProviderStartIntervalMs`（可注入，:84-85）不对称；重试参数不可配置。
 9. `src/application/audio/voice-design-views.ts:117` local provider 下动态角色不注入（注释「identity gap until V3」）——设计画像与 local 合成组合时静默无声（走 voiceless 降级），是已知能力缺口而非 bug。
 10. `src/application/audio/scene-music-service.ts:81-84` `servedScenes`/`deciding` 均为进程内状态：跨进程重启后靠 bindings 兜底（注释自述），会话留痕读窗口 30 轮（theme.ts:119）超限即静默截断。
+
+## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+
+1. **429 重试语义**（tts-task-service.ts）：`started` 事件只发一次（`startedNotified` :109、:296-303）；重排队 `enqueuedAt = Date.now()`（:318）——重试条目移同优先级 FIFO 队尾；3 次后放弃转 failed（:314）。延迟表 `[1000,2000,4000]` 是策略数字，配置化是常见整理方向。
+2. **pumpQueue 单定时器**（tts-task-service.ts:252-255）：现状全局单 `pumpTimer`（入口先 clear）防泵风暴——手工纪律，可随调度器抽象（optimization-plan 样板族）收编。
+3. **compose id 冲突循环复查**（scene-music-service.ts:190-195）：短 hash 后缀仍撞时继续追加——"重命名收敛成功"是这条路径的效果。
+4. **谱面缺失行为（勘误正文）**：不"解绑"——warn 后落入作曲家决策，靠 compose 路径 `addTheme(meta, {sceneId})` 重绑覆盖（:130-142）。
+5. **handleDirective 判定顺序与失败重入**（scene-music-service.ts:103-105）：先 `servedScenes` 后 in-flight；`deciding` finally 删除——失败可被后续 directive 重试。
+6. **声音优先级链**："导演 > 演员逐行 > 画像基线 > 恒等值"（performance-compiler.ts:319-338），恒等值进 cacheKey。

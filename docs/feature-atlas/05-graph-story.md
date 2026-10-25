@@ -437,3 +437,10 @@ LLM 面状态摘要：[Scene] 段 + [已记录人物状态]（累计状态非在
 - **L1 核心领域**：core/graph 全部 7 文件（纯 schema/纯函数，无 IO）+ story 的 types.ts、reconcile.ts、state.ts、event-projection.ts、interaction-policy.ts（同为纯类型/纯函数领域规则）。
 - **L2 应用服务**：application/graph 三文件（run-graph-coordinator/confluence-checker/graph-view——协调器与汇流是典型应用服务；graph-view 是读侧视图装配，但其直接 readFile 应改走 port）。
 - **异议/说明**：story/context-builder.ts 是 prompt 序列化，消费方在 adapters/llm（L3），但其自身无 IO、纯字符串装配，介于 L1/L2 之间；建议与 openai-compatible-generator 的分工一并重划（序列化归 core/story，装配归 adapter）。story 目录现状横跨「领域内核」与「LLM 序列化」两类职责，且 story/types 被 core 依赖（§7 第 2 条），重构时宜把 story/types 拆为 L0 契约层或并入 core。
+
+## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+
+1. **汇流行走 visited 环保护**（run-graph-coordinator.ts:335）：现状靠运行时守卫防环。设计评注：另一种形态是让汇流改绑在构造上保证无环，守卫降为断言。
+2. **同结局"最新文本胜"**：结算边 `[...edges].reverse().find(...)`（run-graph-coordinator.ts）实现的是"最近写入的同终点边胜出"——多周目重抵同一结局时玩家看到最新一次的结局文本（与 `endingTextOf` 一致）。语义与 reverse 扫描这个实现可分开评价。
+3. **汇流孤儿出边改绑**（confluence-checker）：新节点既有出边随迁 re-hook（`putEdge({...outEdge, from: candidate})`）——缺失时图视图出现幽灵分叉。
+4. **fresh 周目 seq 从世界最大值播种**（game.ts:452-454，M2.1 决议）：同世界新 root 周目与既有边 seq 不重叠；其正确性依赖 10 域的 ENOENT-only 读判据（10 附A）。

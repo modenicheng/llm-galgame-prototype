@@ -310,3 +310,9 @@ close → deleteDatabase（blocked 也 reject）→ 重新 open；每个 storage
 9. `music-renderer.ts:252-253` — render 已知截断（dur≤8 拍长音越界部分丢弃，循环点可能突断），注释标明修复须连同 `src/application/audio/music-cache-key.ts` 版本号（确定性契约）。
 10. `test-utils.ts` — 测试基建文件存于生产目录 `storage/` 下（非 `*.test.ts` 命名），会被生产构建图纳入解析（无运行时消费者）。
 11. `audio-coordinator.ts:47` 与 `audio-coordinator.ts:233-235` — `mode` 字段被 setMode 写入但本类内无任何读取处（auto/manual 差异全在 app 侧）——字段冗余，仅作状态回显。
+
+## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+
+1. **`audio.cache_report` 现状是无消费者的协议**（web/src/app.ts:813-815、runtime-websocket.ts:262-265）：浏览器上报 `{result: "hit"|"miss"|"partial"|"corrupt"}`，服务端仅 ack——无 metrics 无 logging，不参与任何闭环。`"corrupt"` 是永不产出的防御态（全仓无生产写入点）。设计评注：一条没人读的上报，"接进 diagnostics/metrics"与"从 ClientMessageSchema 删除"都是自洽方向。
+2. **`audio.buffer_report` 周期**：`BUFFER_REPORT_INTERVAL_MS = 2000`（app.ts:42）——策略数字。
+3. **双层去重分工**：路由层 `activeCacheKeys` 409（每 cacheKey 单 HTTP 消费者）+ 任务层 refcount 合流——现状两层都在；只留一层时，双标签页场景可能出现 join 半截 PCM 流或重复扣并发额度。

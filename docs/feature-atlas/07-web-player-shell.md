@@ -523,20 +523,22 @@ unknown→plain record 收窄（choices/input-panel/end-screen/interaction-panel
 
 ## 7. 重构关注点（事实清单）
 
-- `web/src/ui/controls.ts:88-104` — `ControlsBar.show()/hide()/setMode()/setSettingsOpen()` 四个公有方法在域内无任何生产调用方（显隐由 main.ts 直接 `show(refs.controlsRoot,...)` 控制、模式翻转由构造器内部点击路径完成）；死接口面。
-- `web/src/ui/dialogue-box.ts:101-110` — `DialogueBox.clear()` 无生产调用方（连 HEADING/交互切换清场都未用）。
-- `web/src/ui/dialogue-box.ts:88-90`、`web/src/ui/typewriter.ts:40-42` — `isTyping`、`progress` getter 无生产调用方。
-- `web/src/ui/interaction-panel.ts:131-135` — `setSubmitting` 注释自述「RESERVED … no active caller」，仅测试调用。
-- `web/src/ui/start-screen.ts:30-32`、`web/src/ui/end-screen.ts:49-51`、`web/src/ui/end-screen.ts:68-70` — `StartScreen.show`、`EndScreen.hide`、`ErrorBanner.hide` 无生产调用方。
-- `web/src/main.ts:116` — 缩进异常（该行 4 空格缩进，上下文均 2 空格；疑为 mountWorldCreateForm 插入后未格式化）。
-- `web/src/main.ts:190-208` — GraphPanel 的 overlay 根与按钮由 main.ts 直接 `el()` 创建并 append（graphBtn 进 controlsRoot、graphOverlay 进 appRoot），未纳入 layout.ts 骨架；控制条内出现跨模块 append。
-- `web/src/main.ts:386-394` — `mountWorldCreateForm` 用 `innerHTML` 字符串拼接表单（本文件唯一 innerHTML 使用点），与全文件 `el()` 程序化建 DOM 风格不一致。
-- `web/src/main.ts:262-361` — `render` 闭包持 8 个可变局部状态（started/lastMode/lastProjectionSeq/lastPreviewText/draftByInteractionId/lastInteractionId/lastVisualState/lastBgmId），boot() 全长 312 行单体；BGM「值变化才 apply」与「visualState 引用变化才重渲染」两条 memoization 规则内嵌于此，属隐式契约。
-- `web/src/app.ts:107-876` — GameApp 770 行单类，同时承担消息路由、音频获取状态机（DescriptorEntry 五态）、缓存编排、报告循环、配置加载与状态广播；私有方法 25 个。
-- `web/src/app.ts:94-97` — `PauseInfo` 以 `as` 断言从 `RuntimePlayableEventWire` 之外读取 `performance.pause_after_ms`（746-748 行处 cast），该字段未进 wire 类型。
-- `web/src/runtime/runtime-client.ts:243-255` — `readyMessage` 在连接层探测 AudioWorklet 能力（createAudioWorkletNode/AudioWorkletNode 存在性），能力探测逻辑与 app.ts:203 的 available 判定分散两处。
-- `web/src/ui/controls.ts:48-76` — ControlsBar 用原生 `document.createElement` 装配，未用 ui/dom.ts 的 `el()`（域内其余组件统一用 el）。
-- `web/src/ui/graph-panel.ts:196-199` — `asView` 只做 `typeof object` 判定即 cast，字段校验全靠下游可选链；与 dom.ts `asRecord`、input-panel `asInputInteraction` 的严格逐字段收窄风格不一致。
-- `web/src/app.ts:57-58` — `GameAppOptions.music` 以 `{ handleScore(message) }` 结构化类型注入而非直接收 `GeneratedBgm`，为测试留缝但使 music.score 链路多一层间接。
-- `web/src/ui/layout.ts:33-179` 与 `web/src/ui/interaction-panel.ts:62-67` — 骨架在 layout.ts 声明、InteractionPanel 用 `querySelector` 字符串类名回取子节点；类名改动需跨两文件同步（dialogue-box/input-panel/end-screen/start-screen 同模式）。
-- `web/src/main.ts:114` — `void mountWorldCreateForm(appRoot)` 与后续组件构造交错执行（fire-and-forget，无序完成），表单出现时机与游戏组件装配无同步保证。
+> 编号 7.1–7.17 供 optimization-plan 跨域引用（OP-20/OP-33 引「07 §7.11/16/17」的旧号已按本表校正）。
+
+- **7.1** `web/src/ui/controls.ts:88-104` — `ControlsBar.show()/hide()/setMode()/setSettingsOpen()` 四个公有方法在域内无任何生产调用方（显隐由 main.ts 直接 `show(refs.controlsRoot,...)` 控制、模式翻转由构造器内部点击路径完成）；死接口面。
+- **7.2** `web/src/ui/dialogue-box.ts:101-110` — `DialogueBox.clear()` 无生产调用方（连 HEADING/交互切换清场都未用）。
+- **7.3** `web/src/ui/dialogue-box.ts:88-90`、`web/src/ui/typewriter.ts:40-42` — `isTyping`、`progress` getter 无生产调用方。
+- **7.4** `web/src/ui/interaction-panel.ts:131-135` — `setSubmitting` 注释自述「RESERVED … no active caller」，仅测试调用。
+- **7.5** `web/src/ui/start-screen.ts:30-32`、`web/src/ui/end-screen.ts:49-51`、`web/src/ui/end-screen.ts:68-70` — `StartScreen.show`、`EndScreen.hide`、`ErrorBanner.hide` 无生产调用方。
+- **7.6** `web/src/main.ts:116` — 缩进异常（该行 4 空格缩进，上下文均 2 空格；疑为 mountWorldCreateForm 插入后未格式化）。
+- **7.7** `web/src/main.ts:190-208` — GraphPanel 的 overlay 根与按钮由 main.ts 直接 `el()` 创建并 append（graphBtn 进 controlsRoot、graphOverlay 进 appRoot），未纳入 layout.ts 骨架；控制条内出现跨模块 append。
+- **7.8** `web/src/main.ts:386-394` — `mountWorldCreateForm` 用 `innerHTML` 字符串拼接表单（本文件唯一 innerHTML 使用点），与全文件 `el()` 程序化建 DOM 风格不一致。
+- **7.9** `web/src/main.ts:262-361` — `render` 闭包持 8 个可变局部状态（started/lastMode/lastProjectionSeq/lastPreviewText/draftByInteractionId/lastInteractionId/lastVisualState/lastBgmId），boot() 全长 312 行单体；BGM「值变化才 apply」与「visualState 引用变化才重渲染」两条 memoization 规则内嵌于此，属隐式契约。
+- **7.10** `web/src/app.ts:107-876` — GameApp 770 行单类，同时承担消息路由、音频获取状态机（DescriptorEntry 五态）、缓存编排、报告循环、配置加载与状态广播；私有方法 25 个。
+- **7.11** `web/src/app.ts:94-97` — `PauseInfo` 以 `as` 断言从 `RuntimePlayableEventWire` 之外读取 `performance.pause_after_ms`（746-748 行处 cast），该字段未进 wire 类型。
+- **7.12** `web/src/runtime/runtime-client.ts:243-255` — `readyMessage` 在连接层探测 AudioWorklet 能力（createAudioWorkletNode/AudioWorkletNode 存在性），能力探测逻辑与 app.ts:203 的 available 判定分散两处。
+- **7.13** `web/src/ui/controls.ts:48-76` — ControlsBar 用原生 `document.createElement` 装配，未用 ui/dom.ts 的 `el()`（域内其余组件统一用 el）。
+- **7.14** `web/src/ui/graph-panel.ts:196-199` — `asView` 只做 `typeof object` 判定即 cast，字段校验全靠下游可选链；与 dom.ts `asRecord`、input-panel `asInputInteraction` 的严格逐字段收窄风格不一致。
+- **7.15** `web/src/app.ts:57-58` — `GameAppOptions.music` 以 `{ handleScore(message) }` 结构化类型注入而非直接收 `GeneratedBgm`，为测试留缝但使 music.score 链路多一层间接。
+- **7.16** `web/src/ui/layout.ts:33-179` 与 `web/src/ui/interaction-panel.ts:62-67` — 骨架在 layout.ts 声明、InteractionPanel 用 `querySelector` 字符串类名回取子节点；类名改动需跨两文件同步（dialogue-box/input-panel/end-screen/start-screen 同模式）。
+- **7.17** `web/src/main.ts:114` — `void mountWorldCreateForm(appRoot)` 与后续组件构造交错执行（fire-and-forget，无序完成），表单出现时机与游戏组件装配无同步保证。

@@ -583,4 +583,11 @@ v1 批式全链（测试/回退）：`parseDslSegmentText`（text-pipeline.ts:40
 9. `src/core/protocol/gal-dsl/closing-repair.ts:4-10` 与 `legacy-line-parser.ts:53-59`——CHARACTER_POSITIONS 五位置词集合**重复定义**（line-parser.ts:104-110 还有第三份 V2_CHARACTER_POSITIONS）。
 10. `src/core/protocol/gal-dsl/segment-validator.ts:114`——`this.sink.push(line as unknown as L)` 双重断言绕过泛型（类型系统未表达"实例 sink 与实例行版本恒一致"约束，注释 L113 自认）。
 11. 测试文件命名错位：`text-pipeline-v2.test.ts` 不测 text-pipeline.ts，测的是 compiler.ts 的 v2 批式/修复入口（文件名会误导覆盖率归因）。
-12. v1 冻结承诺（legacy-line-parser.ts:4-11）是重构硬约束：该文件"行为与 C4 之前逐字节一致、不许回头改"；v1 相关代码（legacy 解析器、compileEventGroup(V2 之外的 v1 路径)、closing-repair、group-builder v1 半边）只能整体退役，不能渐进改写。
+12. v1 冻结声明（legacy-line-parser.ts:4-11 文件头自述）："行为与 C4 之前逐字节一致、不许回头改"——这是代码自身的声明。该声明之下，v1 相关代码（legacy 解析器、compileEventGroup(V2 之外的 v1 路径)、closing-repair、group-builder v1 半边）整体退役或整体搬移是两种自洽路径；渐进改写会让「逐字节一致」失去可验证性。
+
+## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+
+1. **结构失败停流与修复轮的 abort 边界**（openai-compatible-generator.ts:1454-1462）：现状 `activeController` 走变量 + 修复前换新控制器（campus c41582e 注释："结构失败用它停流，语义门的修复调用前换新"）。设计评注：两类 abort 共用时，结构类错误（解析失败/能力越权）会失去那一次尾部修复——无论新实现里修复轮怎么组织，这个边界对应的效果值得有等价物。
+2. **v2 双败分流**（openai-compatible-generator.ts:1773-1786）：修复后仍失败时，已有转发前缀（`allGroups.length > 0`）→ `fail` 交运行时修复链（玩家见半段+续修）；空 → `retry` 整体重试。这决定失败呈现形态。
+3. **表单收尾的双层归属**（openai-compatible-generator.ts:1523-1540）：现状 parser 物化 `"@/?"`（空表单不补，交语义门修复）+ 语义门修复轮两处都能收尾。设计评注：单一职责可归一处；该代码紧邻 v1 自述冻结面与流式门控主路径，动手前值得想清楚。效果层面：玩家看到的永远是已闭合表单。
+4. **`@ending` epilogue 现状**（game.ts:1437-1441 合成固定文本"故事到此结束。"；全仓无「剧终」UI 接线；generator :1454 endingSettled 后停止消费）：解析能力在、运行时消费缺——半截能力。迁移时"整体实现"与"整体裁掉"都通，随 TODO 引擎侧条目一起想。

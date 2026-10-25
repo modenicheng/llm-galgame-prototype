@@ -406,3 +406,14 @@ previewId/interactionId/generationId/frozenText/bridgeEvents。
 - `core/runtime/*`、`core/interaction/*`、`interaction/input-engine.ts` 属 **L1 核心领域**（无外部依赖的纯契约与状态机）——现状即如此，无需移动。
 - `runtime/*` 机制层（调度/预取/缓冲/指标/状态）建议定位 **L1.5 或 L2 之下**：它们只依赖 core 与 story，但 `metrics.ts` 被 adapters 反向依赖（见 §7.3）需要先把「LLM 观测」收进 port 或挪到 adapters 侧。
 - `game.ts` 是事实上的 **L2 应用服务**（编排 ports + 调 application/director + 驱动 L3 生成器），建议按 §1 的 10 类职责拆为 run-loop / segment-lifecycle / dsl-routing / identity-briefing / playback 等模块后再定位；InteractionHost 宽接口是拆分的第一个收口点。
+
+## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+
+1. **预取泵 abort 中断守卫**（interaction-choice.ts:287-289）：预测状态与玩家可见的已提交前缀保持一致——handoff/取消后迟到组不折叠进 `branchTailStates/branchCharacterStates`。设计评注：这是与实现形态无关的效果约束；新实现里若无等价物，会出现名牌幽灵改名、背景漂移。
+2. **快进后的孤儿流清理**：现状是三条 bespoke 路径——choice（interaction-choice.ts:88-97，孤儿泵与恢复表单同 id 选项竞写键）、hybrid（interaction-driver.ts:337-342）、input（interaction-input.ts:288-298，`responseController` + `liveRepairController` 双控制器齐 abort；晚到的 done 回调会覆写已恢复快照，延迟爆雷型）。设计评注：三入口保护的是同一个效果（快进后在途流不再写 host），却长成了三份实现；若追求更简形态，可把快进收口为单一通道（统一 abort + discard）。
+3. **交互作用域 id 的入口重置**（game.ts:437-441、:457-459）：恢复/快进时清空 `activeInteractionId/activePreviewId`，否则上一会话的陈旧命令能过 dispatch 门并在 `deferredCommands` 滞留。设计评注：效果是"陈旧命令不可达"；若追求根除"残留"类问题，命令纪元 id（会话重建递增、信封携带）是另一种形态。
+4. **预取 final-batch 兜底**（prefetch.ts:192-196）：provider 可能不经 onEvent 直接返回完整批次，返回值逐条重放给 live listeners——否则非流式 provider 下选中的分支在 handoff 边界丢最后一批。设计评注：也可通过收紧 provider 契约（全部事件经 onEvent）消解，兜底退化为断言。
+5. **checkpoint 晚于玩家事件正式提交**（interaction-choice.ts:79-82、interaction-driver.ts:326-327）：整理批次包含玩家选择事件；先 checkpoint 后提交时，线程/伏笔状态机会从第一拍就偏。
+6. **桥接缓冲确认点重取**（interaction-input.ts:186-190）：bridge 预取可能比表单打开晚到达（代码注释明示会发生），confirm 时重取（幂等）。设计评注：效果是"晚到但有效的桥接不丢失"；另一种形态是把桥缓冲所有权在交互开启时移交会话，消灭竞态窗口而非容忍它。
+7. **回应泵 abort 后迟到组丢弃并计数**（interaction-input.ts:364-367，`recordStaleInputEventDropped`）。
+8. **live 选支的续写历史差异**（game.ts:545-547）：live 全量事件而非 preview 已到达前缀——preview 本质是前缀不是全量，这是语义不是实现巧合。

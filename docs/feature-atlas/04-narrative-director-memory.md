@@ -524,3 +524,10 @@ worldSetting + characters + outline（全 planned 的 act 链 + 1–2 ending）�
 - application/director（DirectorService/actor-briefing）→ **L2**（LLM 编排服务）；但其对 audio/music 词表的依赖属跨域契约，宜经 port/共享内核中转。
 - application/outline/outline-writer.ts → **建议移至 L1**（core/ports 或 core/outline）：它是纯 port+类型定义，被 L3 adapter 实现、被多个 L2 消费，留在 application 造成 adapters→application 反向依赖（§7.7）。
 - narrative-director-test-kit.ts → 建议移入 test-support/（L6 工具链）。
+
+## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+
+1. **defenseBeats 条件继承**（director-service.ts:244-251）：新解析给出节拍 → 整体替换；零节拍且旧有 → 继承旧累积。"无条件累积"和"无条件替换"各有对应的坏结果（永久累积旧节拍 / 丢新节拍）。配套截断（beats 截 5 条 :578-582、单条 120 字 :446、追加 `.slice(-3)` :452）是策略数字——收进 config 或常量单源是常见整理方向，非义务。
+2. **影子交换回读 checkpointCount**（narrative-director-service.ts:708-709）：checkpoint 在 LLM 调用期间的增量不被影子事务回滚——回滚时 `classifySetup` 的伏笔超期数学（age）会永远偏小。
+3. **演员信息边界**：可见面 = 导演剪报（相关历史/人物信息/人物状态/本场景指令），防守节拍的执行完全经剪报文本（actor-briefing.ts:42-44）；现状不可见面 = `SceneDirective.voice/music` 不进剪报 + 大纲节点/结局候选/其他周目。设计评注：这是信息边界的两面——扩大可见面是设计决定，其代价（演员上下文泄密/剧透路径）也随决定而来。
+4. **声音优先级链**："导演 > 演员逐行 > 画像基线 > 恒等值"落在 performance-compiler.ts:319-338，恒等值进 cacheKey。

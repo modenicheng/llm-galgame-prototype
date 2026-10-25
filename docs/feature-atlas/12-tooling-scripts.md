@@ -609,3 +609,9 @@ vitest 侧：`vitest.config.ts` 仅 15 行（globals/node 环境/include src+web
 10. `src/game-test-kit.ts:271-276` — `GameScopingInternals` 以非受检 cast 窥探 Game 私有字段（注释已文档化该依赖）；Game 内部字段重命名会静默破坏 scoping 断言（TS 不检查 structural cast）。
 11. `src/test-helpers.ts:330-336` — `MemoryController.waitFor` 为 5ms 轮询无超时：被等待条件永不满足时测试挂死而非失败。
 12. `package.json:7-23` — 16 条 scripts 中 `dev`（`npm run dev:web` 别名）与 `test:watch` 等无文档交叉引用；`smoke-e2e` 未入 scripts 段（见第 8 条）。
+
+## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+
+- **包管理器**：本文与 00~12 各域的 `pnpm` 字样按 13 号文档 §3 的倾向保留（对比与理由见彼处）；若实施确认 pnpm，路径是 `pnpm import`（转换现有 package-lock.json）→ 删 package-lock.json → 提交 pnpm-lock.yaml，并顺带把 `"latest"` 版本 spec 收成确定版本。
+- **`dev` 别名脚本**（`npm run dev:web`）与无交叉引用的 scripts——收口 scripts 段时一并整理即可。
+- **`GameScopingInternals` 非受检 cast 与 `waitFor` 无超时轮询**：waitFor 加超时后失败而非挂死，属测试基建改进，不涉生产代码。

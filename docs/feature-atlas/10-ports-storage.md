@@ -615,3 +615,8 @@
 12. **测试空洞**：`review-store.ts` 无测试文件；`console-diagnostic-sink.ts`、`system-clock.ts` 无测试；`stored-event.ts` 仅经 game-graph-store.test.ts 间接覆盖（:276-300 interaction 信封回归）。
 13. **端口文件职责混合**：`diagnostic-sink.ts:17-20`（null 对象实现）、`story-generator-port.ts:42-51,157-180`（legacyGenerationIdentity/createGenerationHandle 可运行 helper）、`identity-snapshot-port.ts`（整文件是共享规范而非端口）——「ports 目录 = 纯契约」的约定被三处打破。
 14. **JSONL 损坏行策略分裂**：图记录/payload「损坏行跳过不掩盖后续」（game-graph-store.ts:189-191,540-542）vs 作曲家会话「任一行损坏大声抛错」（composer-session-store.ts:60-64）vs canon/outline 全量文件「损坏即抛」——三种策略并存各有理由（注释均有说明），但无统一文档化判据。
+
+## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+
+1. **ENOENT-only 读判据**：现状判据 = 语义上"文件不存在 = 合法空态"的列举读（sessions 目录未建、首轮周目无记录）才只吞 ENOENT，其余 fs 错误抛出。因果链（game-graph-store.ts:123-134）：吞掉非 ENOENT 读错误 → 恢复路径 `worldMaxSeq` 归零 → 新边 seq 与既有边撞号 → 静默数据损坏。`fileExists`（:136-144）同纪律。本文件 §7.3 所列三处 catch-all（getRosterBlob:274-275、listPayloadIds:551-553、review-store.ts:58-61）与判据相悖，属历史遗留——若希望"照抄邻居"在机制上不可能，共享 `isMissingFile(err)` 工具（OP-19 已含）是一种形态。
+2. **缺文件 ≠ 坏文件的粒度区分**：json-narrative-memory-store 整文件级（fs 错误 ENOENT-only、解析失败保空不抛——"记忆丢了游戏还能跑"）；game-graph-store 单行级（坏行跳过不掩盖后续）。两种容错语义各有适用面，表驱动文档化（10 §7.14 三策略的收口）是常见整理方向。
