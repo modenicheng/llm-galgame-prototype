@@ -168,7 +168,7 @@
 
 #### `SceneMusicService`（class） — `:74-291`
 - `handleDirective(directive)`（`:99-126`）：导演回调入口（同步、fire-and-forget）；无 music 指导 / 已服务 / in-flight 占位中则跳过；`deciding` Map 保证同场景并发只调一次 LLM；异常仅 `diagnostics.warn`。
-- `serve(sceneId, brief)`（`:128-214`）：①绑定命中 → `loadThemeScore` 直发（零 LLM；谱面缺失告警解绑走决策）；②`buildCatalog` + `readRecent(COMPOSER_SESSION_WINDOW_TURNS=30)` → `composer.decide`；null（两败）→ 告警沿用当前曲目；③reuse → 读谱、`bindScene` 落盘（失败仅本会话生效）、会话留痕、发布；④compose → `extractMotifHint` 补主题指纹、id 冲突用 `musicCacheKey(score).slice(0,4)` 短 hash 重命名（决策后取新鲜目录防并发撞 id）、putScore+addTheme 落盘（失败仅本会话）、留痕、发布。
+- `serve(sceneId, brief)`（`:128-214`）：①绑定命中 → `loadThemeScore` 直发（零 LLM；谱面缺失告警后转作曲家决策重绑）；②`buildCatalog` + `readRecent(COMPOSER_SESSION_WINDOW_TURNS=30)` → `composer.decide`；null（两败）→ 告警沿用当前曲目；③reuse → 读谱、`bindScene` 落盘（失败仅本会话生效）、会话留痕、发布；④compose → `extractMotifHint` 补主题指纹、id 冲突用 `musicCacheKey(score).slice(0,4)` 短 hash 重命名（决策后取新鲜目录防并发撞 id）、putScore+addTheme 落盘（失败仅本会话）、留痕、发布。
 - `loadThemeScore`（`:217-227`）：谱面读取，缺失/损坏 → undefined（调用方告警降级）。
 - `buildCatalog`（`:230-239`）：全量主题目录 + `themeScoreStats` 统计，单条失败跳过。
 - `appendSessionTurns`（`:242-268`）：user=brief / assistant=决策元数据 JSON（不存完整谱面）；留痕失败不阻塞发布。
@@ -515,11 +515,11 @@
 9. `src/application/audio/voice-design-views.ts:117` local provider 下动态角色不注入（注释「identity gap until V3」）——设计画像与 local 合成组合时静默无声（走 voiceless 降级），是已知能力缺口而非 bug。
 10. `src/application/audio/scene-music-service.ts:81-84` `servedScenes`/`deciding` 均为进程内状态：跨进程重启后靠 bindings 兜底（注释自述），会话留痕读窗口 30 轮（theme.ts:119）超限即静默截断。
 
-## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+## 附A · 设计评注（观察与可能方向，非约束）
 
 1. **429 重试语义**（tts-task-service.ts）：`started` 事件只发一次（`startedNotified` :109、:296-303）；重排队 `enqueuedAt = Date.now()`（:318）——重试条目移同优先级 FIFO 队尾；3 次后放弃转 failed（:314）。延迟表 `[1000,2000,4000]` 是策略数字，配置化是常见整理方向。
 2. **pumpQueue 单定时器**（tts-task-service.ts:252-255）：现状全局单 `pumpTimer`（入口先 clear）防泵风暴——手工纪律，可随调度器抽象（optimization-plan 样板族）收编。
 3. **compose id 冲突循环复查**（scene-music-service.ts:190-195）：短 hash 后缀仍撞时继续追加——"重命名收敛成功"是这条路径的效果。
-4. **谱面缺失行为（勘误正文）**：不"解绑"——warn 后落入作曲家决策，靠 compose 路径 `addTheme(meta, {sceneId})` 重绑覆盖（:130-142）。
+4. **谱面缺失的再绑定**：命中绑定但谱面缺失/损坏时只 warn 并转作曲家决策，重绑由 compose 路径的 `addTheme(meta, {sceneId})` 覆盖完成（:130-142）——没有显式解绑操作。
 5. **handleDirective 判定顺序与失败重入**（scene-music-service.ts:103-105）：先 `servedScenes` 后 in-flight；`deciding` finally 删除——失败可被后续 directive 重试。
 6. **声音优先级链**："导演 > 演员逐行 > 画像基线 > 恒等值"（performance-compiler.ts:319-338），恒等值进 cacheKey。

@@ -597,7 +597,7 @@ vitest 侧：`vitest.config.ts` 仅 15 行（globals/node 环境/include src+web
 
 ## 7. 重构关注点
 
-1. `scripts/evaluate-character-dsl.ts:1-2084` — 2084 行单文件，超出 `.hygiene.config.json` source fail=900 阈值三倍但未入 allowlist；评估逻辑（约 1000 行）与 12 场景全文数据（L879-1148，v2Text/v1Text 逐行内联约 270 行）+ 6 缺陷数据（L1166-1255）混在一体。README 目录无对应使用文档（docs/ 下无该 harness 说明）。附（optimization-plan 复核补实）：`.hygiene.config.json` allowlist 现有 5 项，其中 `src/game.ts` 豁免注释「现 1576 行」、generator 豁免注释「1172 行」均已过期（实际 1983/1927）；`memory-validator.ts`(1188)、`run-graph-coordinator.ts`(929)、`compiler.ts`(1381) 超过 fail=900 却未入 allowlist；hygiene 工具扫描范围是否含 scripts/ 仍为 TODO-未核实。
+1. `scripts/evaluate-character-dsl.ts:1-2084` — 2084 行单文件，超出 `.hygiene.config.json` source fail=900 阈值三倍但未入 allowlist；评估逻辑（约 1000 行）与 12 场景全文数据（L879-1148，v2Text/v1Text 逐行内联约 270 行）+ 6 缺陷数据（L1166-1255）混在一体。README 目录无对应使用文档（docs/ 下无该 harness 说明）。另：`.hygiene.config.json` allowlist 现有 5 项，其中 `src/game.ts` 豁免注释「现 1576 行」、generator 豁免注释「1172 行」均已过期（实际 1983/1927）；`memory-validator.ts`(1188)、`run-graph-coordinator.ts`(929)、`compiler.ts`(1381) 超过 fail=900 却未入 allowlist；hygiene 工具扫描范围是否含 scripts/ 仍为 TODO-未核实。
 2. `scripts/evaluate-character-dsl.ts:2070-2073` — `invokedAsCli` 判定注释称防"vitest 动态导入"，但 main 分支零 import 者（grep 验证）；export 面 21 个符号全部无消费者，为跨分支复用而导出（campus 同源脚本共享的口径）。
 3. `scripts/smoke-e2e.mjs:78-81` — 动态 import `AudioDescriptorFactory`/`AudioIntentPlanner` 后均未使用，`const factory = null` 死赋值（注释自认够不到内部 factory）；手写 descriptor 的注释链（L74-92 三段"we can't..."）暴露组合根封装的可达性缺口。
 4. `src/tools/image-gen/README.md:347` — "仅本工具的 52 个用例"已过时：实测 6 测试文件 77 个 it（client 18/cutout 20/env 5/files 6/matting 5/validate 23）。
@@ -610,8 +610,8 @@ vitest 侧：`vitest.config.ts` 仅 15 行（globals/node 环境/include src+web
 11. `src/test-helpers.ts:330-336` — `MemoryController.waitFor` 为 5ms 轮询无超时：被等待条件永不满足时测试挂死而非失败。
 12. `package.json:7-23` — 16 条 scripts 中 `dev`（`npm run dev:web` 别名）与 `test:watch` 等无文档交叉引用；`smoke-e2e` 未入 scripts 段（见第 8 条）。
 
-## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+## 附A · 设计评注（观察与可能方向，非约束）
 
-- **包管理器**：本文与 00~12 各域的 `pnpm` 字样按 13 号文档 §3 的倾向保留（对比与理由见彼处）；若实施确认 pnpm，路径是 `pnpm import`（转换现有 package-lock.json）→ 删 package-lock.json → 提交 pnpm-lock.yaml，并顺带把 `"latest"` 版本 spec 收成确定版本。
+- **包管理器**：本文统一使用 `pnpm` 命令；倾向对比与迁移路径见 13 号文档 §3。
 - **`dev` 别名脚本**（`npm run dev:web`）与无交叉引用的 scripts——收口 scripts 段时一并整理即可。
 - **`GameScopingInternals` 非受检 cast 与 `waitFor` 无超时轮询**：waitFor 加超时后失败而非挂死，属测试基建改进，不涉生产代码。

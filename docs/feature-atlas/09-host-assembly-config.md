@@ -25,7 +25,7 @@
 - **配置加载校验链**（`src/config.ts` + `src/config/public-web-config.ts`）：config.yaml → yaml `parse` → 手工 C7 检查（残留 `characters` 段显式报错，config.ts:627-636）→ `ConfigSchema.parse`（zod：分节 schema + `.default()` 填充 + `superRefine` 跨字段校验）→ `AppConfig`。作者配置 `prompts/author.yaml` → `loadAuthorConfig`（ENOENT → `DEFAULT_AUTHOR_CONFIG`）。浏览器安全切片 `toPublicWebConfig`（AppConfig → PublicWebConfig，Node-only builder，wire 类型永不反向 import Node config）。
 - **线缆协议**（`src/shared/wire/` + `src/shared/tts-log.ts`）：Node 宿主与浏览器共享的纯数据类型 + zod schema。**wire 协议版本 = 4**（`WIRE_PROTOCOL_VERSION`，schemas.ts:33；演进：C7=2 稳定 speakerId、动态音乐=3、主题制配乐 V2=4 新增 themeId）。版本不匹配的客户端被 close 4002（`STALE_WIRE_CLOSE_CODE`）。
 
-边界外：TTS provider 实现（adapters/tts，见 06 域）、Game/run 循环（01 域）、图视图构建逻辑本体（05 域）、浏览器端消费（07/08 域）。`ui-projection-store.ts` 位于 application 层但被本域宿主直接消费，归属讨论见 §7。
+边界外：TTS provider 实现（adapters/tts，见 06 域）、Game/run 循环（01 域）、图视图构建逻辑本体（05 域）、浏览器端消费（07/08 域）。`ui-projection-store.ts` 位于 application 层但被本域宿主直接消费，归属讨论见 §8。
 
 ## 2. 模块清单
 
@@ -527,7 +527,7 @@ CLI 侧（cli.ts:52）在第 3 步后直接 TerminalUI/CliController 驱动 game
 
 ## 7. 重构关注点（事实清单）
 
-1. `src/bootstrap/create-runtime-application.ts:355-698` — 343 行单函数组合根；`...(x !== undefined ? { x } : {})` 的 exactOptionalPropertyTypes 展开样板在 L267-286/274-285/309-326/341-353/391/516-522/532/564/594-608/621-626 等处出现（初稿记「10 余处」，optimization-plan 复核 grep 实测 22 处）；`new GameGraphStore(gamesRoot, gameId, {identity})` 在同一函数内独立构造 3 次（L267 协调器、L309 导演、L342 晋升器）。
+1. `src/bootstrap/create-runtime-application.ts:355-698` — 343 行单函数组合根；`...(x !== undefined ? { x } : {})` 的 exactOptionalPropertyTypes 展开样板在 L267-286/274-285/309-326/341-353/391/516-522/532/564/594-608/621-626 等处出现（grep 实测 22 处）；`new GameGraphStore(gamesRoot, gameId, {identity})` 在同一函数内独立构造 3 次（L267 协调器、L309 导演、L342 晋升器）。
 2. `src/config.ts:217-274` — 每个 zod 分节 schema 的默认值书写两遍（`.default(对象)` 字面量 + 每个 `.default(值)`，如 AudioPlannerConfigSchema L217-222）；`DEFAULT_NARRATIVE_CONFIG`（L109）与 NarrativeConfigSchema 内联默认（L361-433）也是两份同一事实。
 3. `src/config.ts:627-636` — C7 characters 段拒绝是 zod 之外的手工检查（在 `parse` 与 `ConfigSchema.parse` 之间），config 校验链分散为「手工守卫 + zod 两段」。
 4. `src/shared/wire/public-web-config.ts:42-65` 与 `src/config.ts:224-256` — `DEFAULT_PUBLIC_WEB_CONFIG` 的 playback/cache/format 数值（350/500/2500/6500/262144/300/22050）与 AudioPlaybackConfigSchema/AudioSynthesisConfigSchema 的 zod 默认值重复维护；`toPublicWebConfig`（config/public-web-config.ts:18-34）又对 zod 已填默认的字段逐个 `??` 回退（手拼 config 绕过 zod 的场景，见 create-runtime-application.ts:255 注释）。
@@ -542,7 +542,12 @@ CLI 侧（cli.ts:52）在第 3 步后直接 TerminalUI/CliController 驱动 game
 13. `src/hosts/local-web/with-resolvers.d.ts:1-9` — ES2022 lib 缺 ES2024.Promise 的本地 ambient 补丁（文件自述为权宜）；tsconfig 升 lib 后应删除。
 14. `src/hosts/local-web/runtime-websocket.ts:121-141` 与 `src/hosts/local-web/audio-stream-route.ts:97-101` — 同一 Local Session Token 在 WS 走 URL query、HTTP 走 `x-session-token` 头（§8.3 设计如此），但 token 比对逻辑分散在两处且无共享测试夹具。
 
-## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+## 8. 建议层级定位
+
+- **ui-projection-store 归属**：`UiProjectionStoreImpl`（application/ui/ui-projection-store.ts:53）依赖 `core/runtime/runtime-output`（01 域）并维护有行为状态机，不宜下沉 shared（数据形状 `UiProjection` 已在 shared/wire）；它是 RuntimeApplication 的读模型组件，装配根与 WS 宿主各自消费其接口——维持 application 层，`UiProjectionStore` 接口可随重构移入 core/ports 与其他端口对齐，不并入宿主域。
+- **本域分层**：L0 = `src/shared/wire/*` + `src/shared/tts-log.ts`（纯数据/zod/日志，Node 与浏览器双端可 import，无 Node 专属 import；tts-log 以 declare process 保持浏览器安全类型）；L4 = hosts/entrypoints/bootstrap/config/schema（进程边界与装配）。两点细化：① `src/schema.ts` 虽在 src 根，实际是事件类型枢纽（被 30+ 文件引用、一半内容再导出 story/types），宜标注为「L0.5 类型聚合」或并入 wire 相邻的共享类型层，而非随宿主域走；② `src/config.ts` 同时承担「类型 + zod + 加载器」三职且被全域 import，属独立的配置层（L4 之内）而非宿主子模块——`src/config/public-web-config.ts` 是 config→wire 的单向桥，方向约束已在文件头固定。
+
+## 附A · 设计评注（观察与可能方向，非约束）
 
 1. **三个配置开关**：
    - `debug.runtime_status`（config.ts:183-186，cli.ts:82 与 `--debug-runtime` 或合）——不带 CLI 参数也能持久打开运行时状态面板，功能完整。
@@ -550,7 +555,3 @@ CLI 侧（cli.ts:52）在第 3 步后直接 TerminalUI/CliController 驱动 game
    - `app.default_host`（config.ts:192，zod 默认 "web"，全仓无消费者）——现状是死键。
 2. **wire 版本闸门时序**（runtime-websocket.ts）：现状快照 setImmediate 先下发、`client.ready` 才验版本——旧客户端白收一份完整快照再被 close(4002)。连接时先验版本是另一种形态；runtime-websocket.test.ts:366/380 断言现序，改动与测试同批。
 3. **快照异步下发时机**：快照在连接后异步（setImmediate）而非握手内同步——前端 BOOTSTRAP 态的容忍依赖这个时序，两端契约，改动需两端同批。
-
-**ui-projection-store 归属建议**：`UiProjectionStoreImpl`（application/ui/ui-projection-store.ts:53）依赖 `core/runtime/runtime-output`（01 域）并维护有行为状态机，不宜下沉 shared；其数据形状 `UiProjection` 已在 shared/wire。建议维持 application 层（它是 RuntimeApplication 的读模型组件，装配根与 WS 宿主各自消费其接口），重构时可将 `UiProjectionStore` 接口移入 core/ports 与其他端口对齐；不建议并入宿主域。
-
-**本域层级建议**：维持任务书框架——L0 = `src/shared/wire/*` + `src/shared/tts-log.ts`（纯数据/zod/日志，Node 与浏览器双端可 import，无 Node 专属 import；tts-log 以 declare process 保持浏览器安全类型）；L4 = hosts/entrypoints/bootstrap/config/schema（进程边界与装配）。两点异议/细化：① `src/schema.ts` 虽在 src 根，实际是事件类型枢纽（被 30+ 文件引用、一半内容再导出 story/types），建议在层级图中标注为「L0.5 类型聚合」或并入 wire 相邻的共享类型层，而不是随宿主域走；② `src/config.ts` 同时承担「类型 + zod + 加载器」三职且被全域 import，应属独立的配置层（L4 之内），而非宿主子模块——`src/config/public-web-config.ts` 是 config→wire 的单向桥，方向约束已在文件头固定，重构需保持。

@@ -575,7 +575,7 @@ v1 批式全链（测试/回退）：`parseDslSegmentText`（text-pipeline.ts:40
 1. `src/core/protocol/gal-dsl/compiler.ts:269-351` 与 `:353-1381`——**两代编译器同居一文件**：v1 三函数（compileEventGroup/compileEventGroups，83 行）与 v2 全套（单组/段/修复/门，约 1030 行）用一条分隔注释（L353-355）切分；v2 段还在文件中部（L357-389）出现第二批 import。文件职责双倍，建议拆 v1-compiler / v2-compiler。
 2. `src/core/protocol/gal-dsl/group-builder.ts:22-200` 与 `:214-384`——EventGroupBuilder 与 EventGroupBuilderV2 **结构性重复**：表单分支、FORM_ALREADY_OPEN/CONTENT_INSIDE_OPEN_FORM 错误文案、finish 语义逐字相同，仅 prelude 元素类型不同（泛型化空间明显）；segment-validator.ts 的 DslSegmentParser/DslSegmentParserV2 已用基类消重，group-builder 未跟进。
 3. `src/core/protocol/gal-dsl/compiler.ts:188-263`（filterInvalidCues，v1）与 `:571-608`（applyCue 闭包，v2）——**素材校验+冗余去重逻辑双实现**：诊断码与丢弃规则相同，但 v1 是先收集后链式校验、v2 是逐 cue 即时归约；两处行为一致性无共享单源。
-4. 生产 v2 路径只走 `createV2SegmentGate`（openai-compatible-generator.ts:1426,1755）；**批式入口 compileSegmentV2（compiler.ts:939）、compileSegmentV2WithRepair（compiler.ts:1104）、compileEventGroups（compiler.ts:339）、parseDslSegmentText（text-pipeline.ts:40）均无运行时调用方**——唯一域外消费者是 scripts/evaluate-character-dsl.ts:70-73 离线评估 harness（删除会破坏验收面板，见 12 域文档）。批式与门式刻意保持等价（compiler-v2.test.ts:704 等价性测试），但等价性靠测试维护而非代码共享（walkV2Lines 与 pushLine 各自实现同一管线）。（勘误：初稿误记「无生产调用方」，经 optimization-plan 复核修正。）
+4. 生产 v2 路径只走 `createV2SegmentGate`（openai-compatible-generator.ts:1426,1755）；**批式入口 compileSegmentV2（compiler.ts:939）、compileSegmentV2WithRepair（compiler.ts:1104）、compileEventGroups（compiler.ts:339）、parseDslSegmentText（text-pipeline.ts:40）均无运行时调用方**——唯一域外消费者是 scripts/evaluate-character-dsl.ts:70-73 离线评估 harness（删除会破坏验收面板，见 12 域文档）。批式与门式刻意保持等价（compiler-v2.test.ts:704 等价性测试），但等价性靠测试维护而非代码共享（walkV2Lines 与 pushLine 各自实现同一管线）。
 5. `src/core/protocol/gal-dsl/compiler.ts:23-28` 与 `:357-362`——**两个同名 CharacterRegistry**：v1 用 presentation/types.js 的（素材注册表），v2 用 characters/types.js 的并别名 RosterCharacterRegistry（roster）；同名不同物，跨文件阅读易混淆。
 6. `src/core/protocol/gal-dsl/text-pipeline.ts:20-21`——死导入：`parseDslV2Line`、`DslSegmentParserV2` 导入后未使用（本文件只有 v1 批式入口）；`src/core/protocol/gal-dsl/line-parser.ts:53`——`parseDslLegacyLine` 别名**全仓零引用**。
 7. `src/core/protocol/gal-dsl/types.ts:304-339` 与 `:482-489`——`DslErrorCode` 与 `DslSemanticDiagnosticCode` 语义码字面量重叠（UNKNOWN_CHARACTER_ID 等 7 个码在两个类型中重复声明，注释要求"一字不改"）。
@@ -585,7 +585,7 @@ v1 批式全链（测试/回退）：`parseDslSegmentText`（text-pipeline.ts:40
 11. 测试文件命名错位：`text-pipeline-v2.test.ts` 不测 text-pipeline.ts，测的是 compiler.ts 的 v2 批式/修复入口（文件名会误导覆盖率归因）。
 12. v1 冻结声明（legacy-line-parser.ts:4-11 文件头自述）："行为与 C4 之前逐字节一致、不许回头改"——这是代码自身的声明。该声明之下，v1 相关代码（legacy 解析器、compileEventGroup(V2 之外的 v1 路径)、closing-repair、group-builder v1 半边）整体退役或整体搬移是两种自洽路径；渐进改写会让「逐字节一致」失去可验证性。
 
-## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+## 附A · 设计评注（观察与可能方向，非约束）
 
 1. **结构失败停流与修复轮的 abort 边界**（openai-compatible-generator.ts:1454-1462）：现状 `activeController` 走变量 + 修复前换新控制器（campus c41582e 注释："结构失败用它停流，语义门的修复调用前换新"）。设计评注：两类 abort 共用时，结构类错误（解析失败/能力越权）会失去那一次尾部修复——无论新实现里修复轮怎么组织，这个边界对应的效果值得有等价物。
 2. **v2 双败分流**（openai-compatible-generator.ts:1773-1786）：修复后仍失败时，已有转发前缀（`allGroups.length > 0`）→ `fail` 交运行时修复链（玩家见半段+续修）；空 → `retry` 整体重试。这决定失败呈现形态。

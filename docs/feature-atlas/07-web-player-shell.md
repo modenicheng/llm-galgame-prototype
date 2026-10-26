@@ -523,7 +523,7 @@ unknown→plain record 收窄（choices/input-panel/end-screen/interaction-panel
 
 ## 7. 重构关注点（事实清单）
 
-> 编号 7.1–7.17 供 optimization-plan 跨域引用（OP-20/OP-33 引「07 §7.11/16/17」的旧号已按本表校正）。
+> 编号 7.1–7.17 供 optimization-plan 跨域引用。
 
 - **7.1** `web/src/ui/controls.ts:88-104` — `ControlsBar.show()/hide()/setMode()/setSettingsOpen()` 四个公有方法在域内无任何生产调用方（显隐由 main.ts 直接 `show(refs.controlsRoot,...)` 控制、模式翻转由构造器内部点击路径完成）；死接口面。
 - **7.2** `web/src/ui/dialogue-box.ts:101-110` — `DialogueBox.clear()` 无生产调用方（连 HEADING/交互切换清场都未用）。

@@ -513,7 +513,7 @@ worldSetting + characters + outline（全 planned 的 act 链 + 1–2 ending）�
 10. **测试基建位于生产目录**：narrative-director-test-kit.ts 在 src/application/narrative/ 下（无 .test 后缀），被 4 个测试文件消费；makeConfig（L36-40）浅合并整段 narrative 正是 normalizeNarrativeConfig（narrative-director-service.ts:130-143）存在的原因——注释自述「Callers may shallow-merge configs」。
 11. **retrieveFacts 同策略重复执行**：每轮 brief（narrative-director-service.ts:376-380）与每次 consolidate（selectCitableReferences，memory-validator.ts:1060-1064）各扫一次 facts；satisfiedSetupIds 对每个 setup 全量重算 prerequisites（narrative-director-service.ts:326-330）。
 12. **narrative-director-service.ts:21 直接 import adapter 类型**：`StoryPlan` 来自 ../../adapters/static/story-plan-loader.js——应用服务依赖 adapters 层类型，方向倒置。
-13. **恢复路径 episodes 缓存清空**（narrative-director-service.ts:399-406 注释，M1.1 决议）：restoreFromDigest 后 relevantEpisodes 检索在 episodes 重新积累前返回空——是有意设计但重构时需保留语义。
+13. **恢复路径 episodes 缓存清空**（narrative-director-service.ts:399-406 注释，M1.1 决议）：restoreFromDigest 后 relevantEpisodes 检索在 episodes 重新积累前返回空——有意设计；恢复初期 brief 因此不含旧 episode，改动会改变该行为。
 
 ## 8. 建议层级定位（对建议框架的回应）
 
@@ -525,9 +525,9 @@ worldSetting + characters + outline（全 planned 的 act 链 + 1–2 ending）�
 - application/outline/outline-writer.ts → **建议移至 L1**（core/ports 或 core/outline）：它是纯 port+类型定义，被 L3 adapter 实现、被多个 L2 消费，留在 application 造成 adapters→application 反向依赖（§7.7）。
 - narrative-director-test-kit.ts → 建议移入 test-support/（L6 工具链）。
 
-## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+## 附A · 设计评注（观察与可能方向，非约束）
 
 1. **defenseBeats 条件继承**（director-service.ts:244-251）：新解析给出节拍 → 整体替换；零节拍且旧有 → 继承旧累积。"无条件累积"和"无条件替换"各有对应的坏结果（永久累积旧节拍 / 丢新节拍）。配套截断（beats 截 5 条 :578-582、单条 120 字 :446、追加 `.slice(-3)` :452）是策略数字——收进 config 或常量单源是常见整理方向，非义务。
 2. **影子交换回读 checkpointCount**（narrative-director-service.ts:708-709）：checkpoint 在 LLM 调用期间的增量不被影子事务回滚——回滚时 `classifySetup` 的伏笔超期数学（age）会永远偏小。
 3. **演员信息边界**：可见面 = 导演剪报（相关历史/人物信息/人物状态/本场景指令），防守节拍的执行完全经剪报文本（actor-briefing.ts:42-44）；现状不可见面 = `SceneDirective.voice/music` 不进剪报 + 大纲节点/结局候选/其他周目。设计评注：这是信息边界的两面——扩大可见面是设计决定，其代价（演员上下文泄密/剧透路径）也随决定而来。
-4. **声音优先级链**："导演 > 演员逐行 > 画像基线 > 恒等值"落在 performance-compiler.ts:319-338，恒等值进 cacheKey。
+4. **声音优先级链的导演入口**：链本体与 cacheKey 语义的评注见 06 附A-6（performance-compiler.ts:319-338）；本域的贡献是 `SceneDirective.voice` 作为链首输入——导演指导在场时覆盖演员逐行意图。

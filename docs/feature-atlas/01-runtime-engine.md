@@ -400,14 +400,14 @@ previewId/interactionId/generationId/frozenText/bridgeEvents。
 13. `src/core/runtime/async-event-queue.ts:29` — `next()` 方法缩进异常（4 空格 vs 文件其余 2 空格）；行为无影响，提示该文件有未过格式化的手工修改。
 14. `src/interaction/input-engine.ts:45` 与 `src/core/interaction/input-session.ts` — 自由输入的两阶段状态被两个状态机分别记录（InputEngine.session.phase 与 InputResponseSession.status），提交路径以 ResponseSession 为准、InputEngine 仅在 handleInteractionInput 内短暂使用（startEditing→updateDraft→requestPreview→commit/cancel 同步调用），职责可合并。
 
-## 附：本域建议层级（供整体重构参考）
+## 8. 建议层级定位（供整体重构参考）
 
 按建议分层框架，本域现状横跨 L1/L2：
 - `core/runtime/*`、`core/interaction/*`、`interaction/input-engine.ts` 属 **L1 核心领域**（无外部依赖的纯契约与状态机）——现状即如此，无需移动。
 - `runtime/*` 机制层（调度/预取/缓冲/指标/状态）建议定位 **L1.5 或 L2 之下**：它们只依赖 core 与 story，但 `metrics.ts` 被 adapters 反向依赖（见 §7.3）需要先把「LLM 观测」收进 port 或挪到 adapters 侧。
 - `game.ts` 是事实上的 **L2 应用服务**（编排 ports + 调 application/director + 驱动 L3 生成器），建议按 §1 的 10 类职责拆为 run-loop / segment-lifecycle / dsl-routing / identity-briefing / playback 等模块后再定位；InteractionHost 宽接口是拆分的第一个收口点。
 
-## 附A · 设计评注（2026-10-25 复核轮——观察与可能方向，非约束）
+## 附A · 设计评注（观察与可能方向，非约束）
 
 1. **预取泵 abort 中断守卫**（interaction-choice.ts:287-289）：预测状态与玩家可见的已提交前缀保持一致——handoff/取消后迟到组不折叠进 `branchTailStates/branchCharacterStates`。设计评注：这是与实现形态无关的效果约束；新实现里若无等价物，会出现名牌幽灵改名、背景漂移。
 2. **快进后的孤儿流清理**：现状是三条 bespoke 路径——choice（interaction-choice.ts:88-97，孤儿泵与恢复表单同 id 选项竞写键）、hybrid（interaction-driver.ts:337-342）、input（interaction-input.ts:288-298，`responseController` + `liveRepairController` 双控制器齐 abort；晚到的 done 回调会覆写已恢复快照，延迟爆雷型）。设计评注：三入口保护的是同一个效果（快进后在途流不再写 host），却长成了三份实现；若追求更简形态，可把快进收口为单一通道（统一 abort + discard）。

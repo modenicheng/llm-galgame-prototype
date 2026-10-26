@@ -2,7 +2,7 @@
 
 > 基线：origin/main @ `78704e9`（2026-10-24，含 PR #1 合并 port/campus-general-2026-10-24）
 > 全仓规模（实测）：生产代码 221 文件 / 53,993 行（src + web/src + scripts，含 .d.ts）｜测试 158 文件 / 54,375 行｜数据资产另有 prompts/（5 文件 327 行）、config.yaml（139 行）、characters.yaml（78 行）、story-plan.yaml（75 行）、voices.yaml（106 行）、assets/（背景/立绘/BGM/音效/soundfont）、web/public/fonts（195 个 woff2 子集，约 56 MB）、web/src/audio/demo-scores.ts（3,929 行谱面数据）
-> 本目录共 12 份功能域文档 + 本总图 + 优化方案（optimization-plan.md），全部为函数级梳理，行号针对基线 commit。
+> 本目录 = 12 份功能域文档（01~12）+ 本总图 + 迁移参考（13）+ 前端讨论提纲（14）+ 优化方案（optimization-plan.md）；域文档为函数级梳理，行号针对基线 commit。
 
 ## 1. 这个系统是什么
 
@@ -99,8 +99,8 @@ LLM 驱动的视觉小说引擎：玩家在浏览器游玩；服务器端 run lo
 | 10 | 端口与存储适配 | [10-ports-storage.md](10-ports-storage.md) | 34 文件 / 3,591 行 | L1 端口 + L3 存储 |
 | 11 | 角色·世界观·资产 | [11-character-world-assets.md](11-character-world-assets.md) | 11 文件 / 2,246 行 / 86 导出 | L1 身份/资产 + L2 编排 |
 | 12 | 工具链 | [12-tooling-scripts.md](12-tooling-scripts.md) | 21 文件 / 5,959 行 / 119 导出 | L6（独立/贴域/测试基建三档） |
-| 13 | 迁移参考（设计评注/行为对照/工具倾向/代号表） | [13-migration-guide.md](13-migration-guide.md) | 全局参考件（2026-10-25 评注轮） | 全局 |
-| 14 | 前端操作设计讨论提纲 | [14-frontend-design-decisions.md](14-frontend-design-decisions.md) | 话题面整理（2026-10-25） | L5 全局 |
+| 13 | 迁移参考（设计评注/行为对照/工具倾向/代号表） | [13-migration-guide.md](13-migration-guide.md) | 全局参考件 | 全局 |
+| 14 | 前端操作设计讨论提纲 | [14-frontend-design-decisions.md](14-frontend-design-decisions.md) | 话题面整理 | L5 全局 |
 
 口径说明：各域文档头部统计为该域自身口径（个别域计入相邻文件或数据资产），全局总量以本文件头部实测为准；行号与符号均针对基线 `78704e9`，后续提交会使行号漂移，重构定位时以符号名 + `git grep` 复核。
 
@@ -114,14 +114,7 @@ LLM 驱动的视觉小说引擎：玩家在浏览器游玩；服务器端 run lo
 6. **命名治理**：`director` 一词三义（DirectorService 场景演出 / NarrativeDirectorService 记忆导演 / director-service 命名误导）；同名 `CharacterRegistry`（v1 素材口径 / v2 roster 口径）。
 7. **配置与缓存键一致性**：配置默认值三份重复维护（09）；缓存键双体系风格不一 + factory recipe 与 cache-key 必须同步演进的配对脆弱性（06）。
 
-## 7. 阅读指南（重构时怎么用这套文档）
-
-1. 先读本文件 §2/§3 建立分层与依赖方向直觉；
-2. 进入目标域文档：§2 模块清单定位文件 → §3 函数级明细看签名/行号/调用方/步骤 → §4 数据流看链路；
-3. 动手前查 optimization-plan.md 中对应条目（优先级/建议/风险/验证方式）与 §5「有意设计」记录（原作者声明的背景证据）；
-4. 行号漂移后用符号名 + `git grep` 重新定位，勿盲信旧行号。
-
-## 8. 与既有文档的关系
+## 7. 与既有文档的关系
 
 - `docs/asset-management.md`：资产生产→注册→校验→投影→模型调用的权威流程（11 域文档的资产部分与其互补）。
 - `docs/character-identity-and-dsl-v2.md`：身份 DSL v2 的设计文档（11/02 域的背景）。
